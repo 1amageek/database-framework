@@ -47,7 +47,9 @@ public enum ByteConversion {
     @inlinable
     public static func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
         guard bytes.count == 8 else { return 0 }
-        return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
+        return bytes.withUnsafeBytes {
+            Int64(littleEndian: $0.load(as: Int64.self))
+        }
     }
 
     // MARK: - Scaled Double Conversion (Fixed-Point)
@@ -91,6 +93,8 @@ public enum ByteConversion {
     @inlinable
     public static func bytesToUInt64(_ bytes: [UInt8]) -> UInt64 {
         guard bytes.count == 8 else { return 0 }
-        return bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
+        return bytes.withUnsafeBytes {
+            UInt64(littleEndian: $0.load(as: UInt64.self))
+        }
     }
 }
