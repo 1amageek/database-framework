@@ -14,6 +14,8 @@ Database provides:
 
 ## Two-Package Architecture
 
+Database is designed as a two-package system to enable **client-server model sharing**:
+
 ```
 database-kit (client-safe)          database-framework (server-only)
 ├── Core/                           ├── DatabaseEngine/
@@ -25,8 +27,79 @@ database-kit (client-safe)          database-framework (server-only)
 │   └── VectorIndexKind             │   └── VectorIndexKind+Maintainable
 ```
 
-- **database-kit**: Platform-independent model definitions and index type specifications (iOS, macOS, Linux, Windows)
-- **database-framework**: FoundationDB-dependent index execution (server-only, requires libfdb_c)
+### Why Two Packages?
+
+| Package | Purpose | Platform |
+|---------|---------|----------|
+| **database-kit** | Model definitions, index type metadata | iOS, macOS, Linux, Windows |
+| **database-framework** | Index maintenance, FoundationDB operations | macOS, Linux, Windows (server) |
+
+This separation allows:
+- **Shared models**: Same `@Persistable` structs on iOS client and server
+- **Type-safe indexes**: Define indexes in database-kit, execute in database-framework
+- **No client dependencies**: iOS apps don't need FoundationDB
+
+### How They Connect
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      database-kit                               │
+│  ┌─────────────────┐    ┌──────────────────────────────────┐   │
+│  │   IndexKind     │    │     @Persistable Model           │   │
+│  │  (protocol)     │    │  #Index<User>([\.email])         │   │
+│  └────────┬────────┘    └──────────────────────────────────┘   │
+└───────────┼─────────────────────────────────────────────────────┘
+            │ defines WHAT to index
+            ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                    database-framework                           │
+│  ┌─────────────────────────┐    ┌────────────────────────────┐ │
+│  │ IndexKindMaintainable   │───▶│    IndexMaintainer         │ │
+│  │ (protocol extension)    │    │  (concrete implementation) │ │
+│  └─────────────────────────┘    └────────────────────────────┘ │
+│            │                               │                    │
+│            │ creates                       │ executes           │
+│            ▼                               ▼                    │
+│  ┌─────────────────────────────────────────────────────────────┐│
+│  │                    FoundationDB                             ││
+│  └─────────────────────────────────────────────────────────────┘│
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Protocol Bridge
+
+The `IndexKindMaintainable` protocol bridges metadata and runtime:
+
+```swift
+// In database-kit: Defines WHAT to index
+public struct ScalarIndexKind: IndexKind {
+    public static let identifier = "scalar"
+    // ... metadata only, no FDB dependency
+}
+
+// In database-framework: Defines HOW to maintain index
+extension ScalarIndexKind: IndexKindMaintainable {
+    public func makeIndexMaintainer<Item: Persistable>(...) -> any IndexMaintainer<Item> {
+        return ScalarIndexMaintainer(...)  // FDB-dependent implementation
+    }
+}
+```
+
+### Dependency Flow
+
+```swift
+// Server-side Package.swift
+dependencies: [
+    .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "1.0.0"),
+]
+
+// Import both packages - framework extends kit's types
+import Core           // from database-kit
+import Database       // from database-framework (includes IndexKindMaintainable extensions)
+```
+
+When you import `Database`, all `IndexKindMaintainable` extensions are automatically registered, enabling the framework to create the appropriate `IndexMaintainer` for each `IndexKind`.
 
 ## Supported Platforms
 
