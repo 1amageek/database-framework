@@ -53,16 +53,11 @@ import Core
 // 1. Initialize FoundationDB (once at startup)
 try await FDBClient.initialize()
 
-// 2. Define schema
-let schema = Schema(
-    entities: [Schema.Entity(from: User.self)],
-    version: Schema.Version(1, 0, 0)
-)
-
-// 3. Create container
+// 2. Create container with schema
+let schema = Schema([User.self])
 let container = try FDBContainer(for: schema)
 
-// 4. Use context for operations
+// 3. Use context for operations
 let context = await container.mainContext
 
 let user = User(email: "alice@example.com", name: "Alice")

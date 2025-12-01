@@ -20,8 +20,11 @@ let package = Package(
         .library(name: "Database", targets: ["Database"]),
     ],
     dependencies: [
-        .package(path: "../database-kit"),
-        .package(path: "../fdb-swift-bindings"),
+        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        .package(
+            url: "https://github.com/1amageek/fdb-swift-bindings.git",
+            branch: "feature/directory-layer"
+        ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.0.0"),
     ],
