@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -41,7 +40,7 @@ import FoundationDB
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct PermutedIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
     public let kind: PermutedIndexKind
     public let subspace: Subspace
@@ -308,6 +307,6 @@ public struct PermutedIndexMaintainer<Item: Persistable>: IndexMaintainer {
             }
         }
 
-        return subspace.pack(Tuple(allElements))
+        return try packAndValidate(Tuple(allElements))
     }
 }

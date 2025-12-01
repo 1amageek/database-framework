@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -31,7 +30,7 @@ import FoundationDB
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct SpatialIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
     public let kind: SpatialIndexKind
     public let subspace: Subspace
@@ -247,7 +246,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: IndexMaintainer {
             }
         }
 
-        return subspace.pack(Tuple(allElements))
+        return try packAndValidate(Tuple(allElements))
     }
 
     private func encodeSpatialCode(coordinates: [Double]) throws -> UInt64 {

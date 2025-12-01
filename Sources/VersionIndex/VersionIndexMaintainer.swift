@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -34,7 +33,7 @@ import FoundationDB
 /// Key: [I]/Document_version/[uuid]/[versionstamp1] = [timestamp1][snapshot1]
 /// Key: [I]/Document_version/[uuid]/[versionstamp2] = [timestamp2][snapshot2]
 /// ```
-public struct VersionIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -203,13 +202,8 @@ public struct VersionIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple? = nil,
         transaction: any TransactionProtocol
     ) async throws {
-        // Extract primary key
-        let primaryKeyTuple: Tuple
-        if let providedId = id {
-            primaryKeyTuple = providedId
-        } else {
-            primaryKeyTuple = try DataAccess.extractId(from: item, using: idExpression)
-        }
+        // Extract primary key using protocol method
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
 
         // Serialize item
         let itemData = try DataAccess.serialize(item)
@@ -246,7 +240,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: IndexMaintainer {
         item: Item,
         transaction: any TransactionProtocol
     ) async throws {
-        let primaryKeyTuple = try DataAccess.extractId(from: item, using: idExpression)
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
 
         // Build key: [subspace][primaryKey]
         var key = subspace.pack(primaryKeyTuple)
@@ -273,7 +267,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Get primary key subspace for an item
     private func getPrimaryKeySubspace(for item: Item) throws -> (subspace: Subspace, beginKey: [UInt8], endKey: [UInt8]) {
-        let primaryKeyTuple = try DataAccess.extractId(from: item, using: idExpression)
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
         let beginKey = subspace.pack(primaryKeyTuple)
         let endKey = beginKey + [0xFF]
         return (Subspace(prefix: beginKey), beginKey, endKey)

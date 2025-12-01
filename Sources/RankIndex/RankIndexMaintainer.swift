@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -41,7 +40,7 @@ import FoundationDB
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
     public let kind: RankIndexKind
     public let subspace: Subspace
@@ -84,7 +83,7 @@ public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
             if let oldKey = try buildScoreKey(for: oldItem) {
                 transaction.clear(key: oldKey)
                 // Decrement count atomically
-                let decrementBytes = int64ToBytes(-1)
+                let decrementBytes = ByteConversion.int64ToBytes(-1)
                 transaction.atomicOp(key: countKey, param: decrementBytes, mutationType: .add)
             }
         }
@@ -94,7 +93,7 @@ public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
             if let newKey = try buildScoreKey(for: newItem) {
                 transaction.setValue([], for: newKey)
                 // Increment count atomically
-                let incrementBytes = int64ToBytes(1)
+                let incrementBytes = ByteConversion.int64ToBytes(1)
                 transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
             }
         }
@@ -109,7 +108,7 @@ public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let scoreKey = try buildScoreKey(for: item, id: id) {
             transaction.setValue([], for: scoreKey)
             // Increment count atomically
-            let incrementBytes = int64ToBytes(1)
+            let incrementBytes = ByteConversion.int64ToBytes(1)
             transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
         }
     }
@@ -249,7 +248,7 @@ public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
         guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
             return 0
         }
-        return bytesToInt64(bytes)
+        return ByteConversion.bytesToInt64(bytes)
     }
 
     /// Get score at a given percentile
@@ -346,7 +345,7 @@ public struct RankIndexMaintainer<Item: Persistable>: IndexMaintainer {
             }
         }
 
-        return scoresSubspace.pack(Tuple(allElements))
+        return try packAndValidate(Tuple(allElements), in: scoresSubspace)
     }
 }
 
@@ -438,15 +437,3 @@ internal struct TopKHeap<Element> {
     }
 }
 
-// MARK: - Helper Functions for Atomic Counter
-
-/// Convert Int64 to little-endian bytes for FDB atomic operations
-private func int64ToBytes(_ value: Int64) -> [UInt8] {
-    return withUnsafeBytes(of: value.littleEndian) { Array($0) }
-}
-
-/// Convert little-endian bytes to Int64
-private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-    guard bytes.count == 8 else { return 0 }
-    return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
-}

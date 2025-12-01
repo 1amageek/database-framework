@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -37,7 +36,7 @@ import FoundationDB
 /// // Minimum price by (category, brand)
 /// Key: [I]/Product_category_brand_price_min/["electronics"]/["Apple"]/[99900]/[789] = ''
 /// ```
-public struct MinIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct MinIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -148,31 +147,17 @@ public struct MinIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private Methods
 
     private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> FDB.Bytes {
-        let indexedValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        let indexedValues = try evaluateIndexFields(from: item)
 
         // Extract primary key
-        let primaryKeyTuple: Tuple
-        if let providedId = id {
-            primaryKeyTuple = providedId
-        } else {
-            primaryKeyTuple = try DataAccess.extractId(from: item, using: idExpression)
-        }
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
 
         var allValues: [any TupleElement] = indexedValues
 
         // Append primary key elements
-        for i in 0..<primaryKeyTuple.count {
-            if let element = primaryKeyTuple[i] {
-                allValues.append(element)
-            }
-        }
+        allValues.append(contentsOf: extractIdElements(from: primaryKeyTuple))
 
-        let tuple = Tuple(allValues)
-        return subspace.pack(tuple)
+        return try packAndValidate(Tuple(allValues))
     }
 
     private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {
@@ -214,7 +199,7 @@ public struct MinIndexMaintainer<Item: Persistable>: IndexMaintainer {
 /// Key: [I]/User_city_age_max/["Tokyo"]/[42]/[456] = ''
 /// // Query: Scan from end of ["Tokyo"] range → last key = maximum
 /// ```
-public struct MaxIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct MaxIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -325,31 +310,17 @@ public struct MaxIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private Methods
 
     private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> FDB.Bytes {
-        let indexedValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        let indexedValues = try evaluateIndexFields(from: item)
 
         // Extract primary key
-        let primaryKeyTuple: Tuple
-        if let providedId = id {
-            primaryKeyTuple = providedId
-        } else {
-            primaryKeyTuple = try DataAccess.extractId(from: item, using: idExpression)
-        }
+        let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
 
         var allValues: [any TupleElement] = indexedValues
 
         // Append primary key elements
-        for i in 0..<primaryKeyTuple.count {
-            if let element = primaryKeyTuple[i] {
-                allValues.append(element)
-            }
-        }
+        allValues.append(contentsOf: extractIdElements(from: primaryKeyTuple))
 
-        let tuple = Tuple(allValues)
-        return subspace.pack(tuple)
+        return try packAndValidate(Tuple(allValues))
     }
 
     private func extractNumericValue(_ element: any TupleElement) throws -> Int64 {

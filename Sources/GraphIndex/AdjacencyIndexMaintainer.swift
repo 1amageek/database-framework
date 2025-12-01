@@ -55,15 +55,11 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Adjacency index kind with configuration
     public let kind: AdjacencyIndexKind
 
-    /// Subspace for outgoing edges
-    private var outgoingSubspace: Subspace {
-        subspace.subspace("adj")
-    }
+    /// Cached subspace for outgoing edges (computed once at init)
+    private let outgoingSubspace: Subspace
 
-    /// Subspace for incoming edges
-    private var incomingSubspace: Subspace {
-        subspace.subspace("adj_in")
-    }
+    /// Cached subspace for incoming edges (computed once at init)
+    private let incomingSubspace: Subspace
 
     // MARK: - Initialization
 
@@ -84,6 +80,9 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.subspace = subspace
         self.idExpression = idExpression
         self.kind = kind
+        // Cache subspaces at initialization
+        self.outgoingSubspace = subspace.subspace("adj")
+        self.incomingSubspace = subspace.subspace("adj_in")
     }
 
     // MARK: - IndexMaintainer

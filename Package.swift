@@ -15,6 +15,7 @@ let package = Package(
         .library(name: "RankIndex", targets: ["RankIndex"]),
         .library(name: "PermutedIndex", targets: ["PermutedIndex"]),
         .library(name: "GraphIndex", targets: ["GraphIndex"]),
+        .library(name: "TripleIndex", targets: ["TripleIndex"]),
         .library(name: "AggregationIndex", targets: ["AggregationIndex"]),
         .library(name: "VersionIndex", targets: ["VersionIndex"]),
         .library(name: "Database", targets: ["Database"]),
@@ -102,6 +103,15 @@ let package = Package(
             ]
         ),
         .target(
+            name: "TripleIndex",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Triple", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        .target(
             name: "AggregationIndex",
             dependencies: [
                 "DatabaseEngine",
@@ -128,6 +138,7 @@ let package = Package(
                 "RankIndex",
                 "PermutedIndex",
                 "GraphIndex",
+                "TripleIndex",
                 "AggregationIndex",
                 "VersionIndex",
             ]
@@ -190,6 +201,20 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // TripleIndex tests
+        .testTarget(
+            name: "TripleIndexTests",
+            dependencies: [
+                "TripleIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Triple", package: "database-kit"),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),

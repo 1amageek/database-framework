@@ -82,15 +82,11 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     private let subspace: Subspace
     private let kind: AdjacencyIndexKind
 
-    /// Subspace for outgoing edges
-    private var outgoingSubspace: Subspace {
-        subspace.subspace("adj")
-    }
+    /// Cached subspace for outgoing edges (computed once at init)
+    private let outgoingSubspace: Subspace
 
-    /// Subspace for incoming edges
-    private var incomingSubspace: Subspace {
-        subspace.subspace("adj_in")
-    }
+    /// Cached subspace for incoming edges (computed once at init)
+    private let incomingSubspace: Subspace
 
     // MARK: - Initialization
 
@@ -108,6 +104,9 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
         self.database = database
         self.subspace = subspace
         self.kind = kind
+        // Cache subspaces at initialization
+        self.outgoingSubspace = subspace.subspace("adj")
+        self.incomingSubspace = subspace.subspace("adj_in")
     }
 
     // MARK: - 1-Hop Queries

@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -41,7 +40,7 @@ import FoundationDB
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct CountIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -117,29 +116,29 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Compare groupings if both exist (update case)
         if let old = oldGrouping, let new = newGrouping {
-            let oldKey = subspace.pack(Tuple(old))
-            let newKey = subspace.pack(Tuple(new))
+            let oldKey = try packAndValidate(Tuple(old))
+            let newKey = try packAndValidate(Tuple(new))
 
             if oldKey == newKey {
                 // Same group, count unchanged - no operation needed
                 return
             } else {
                 // Different groups: decrement old, increment new
-                let decrement = int64ToBytes(-1)
+                let decrement = ByteConversion.int64ToBytes(-1)
                 transaction.atomicOp(key: oldKey, param: decrement, mutationType: .add)
 
-                let increment = int64ToBytes(1)
+                let increment = ByteConversion.int64ToBytes(1)
                 transaction.atomicOp(key: newKey, param: increment, mutationType: .add)
             }
         } else if let new = newGrouping {
             // Insert: increment new group
-            let newKey = subspace.pack(Tuple(new))
-            let increment = int64ToBytes(1)
+            let newKey = try packAndValidate(Tuple(new))
+            let increment = ByteConversion.int64ToBytes(1)
             transaction.atomicOp(key: newKey, param: increment, mutationType: .add)
         } else if let old = oldGrouping {
             // Delete: decrement old group
-            let oldKey = subspace.pack(Tuple(old))
-            let decrement = int64ToBytes(-1)
+            let oldKey = try packAndValidate(Tuple(old))
+            let decrement = ByteConversion.int64ToBytes(-1)
             transaction.atomicOp(key: oldKey, param: decrement, mutationType: .add)
         }
         // else: both nil, nothing to do
@@ -156,16 +155,11 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let groupingValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
-        let groupingTuple = Tuple(groupingValues)
-        let countKey = subspace.pack(groupingTuple)
+        let groupingValues = try evaluateIndexFields(from: item)
+        let countKey = try packAndValidate(Tuple(groupingValues))
 
         // Increment count
-        let increment = int64ToBytes(1)
+        let increment = ByteConversion.int64ToBytes(1)
         transaction.atomicOp(key: countKey, param: increment, mutationType: .add)
     }
 
@@ -177,13 +171,8 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let groupingValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
-        let groupingTuple = Tuple(groupingValues)
-        return [subspace.pack(groupingTuple)]
+        let groupingValues = try evaluateIndexFields(from: item)
+        return [try packAndValidate(Tuple(groupingValues))]
     }
 
     // MARK: - Query Methods
@@ -198,14 +187,13 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
         groupingValues: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        let groupingTuple = Tuple(groupingValues)
-        let countKey = subspace.pack(groupingTuple)
+        let countKey = try packAndValidate(Tuple(groupingValues))
 
         guard let bytes = try await transaction.getValue(for: countKey) else {
             return 0
         }
 
-        return bytesToInt64(bytes)
+        return ByteConversion.bytesToInt64(bytes)
     }
 
     /// Get all counts in this index
@@ -229,26 +217,11 @@ public struct CountIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
             let keyTuple = try subspace.unpack(key)
             let elements = try Tuple.unpack(from: keyTuple.pack())
-            let count = bytesToInt64(value)
+            let count = ByteConversion.bytesToInt64(value)
 
             results.append((grouping: elements, count: count))
         }
 
         return results
-    }
-
-    // MARK: - Private Helpers
-
-    /// Convert Int64 to little-endian bytes for atomic operations
-    private func int64ToBytes(_ value: Int64) -> [UInt8] {
-        return withUnsafeBytes(of: value.littleEndian) { Array($0) }
-    }
-
-    /// Convert little-endian bytes to Int64
-    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        guard bytes.count == 8 else {
-            return 0
-        }
-        return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
     }
 }

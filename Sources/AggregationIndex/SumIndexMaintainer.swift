@@ -5,7 +5,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 
@@ -46,7 +45,7 @@ import FoundationDB
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
+public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -100,15 +99,11 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Extract grouping and sum values
         let oldData: (groupingKey: FDB.Bytes, sumValue: Double)?
         if let oldItem = oldItem {
-            let values = try DataAccess.evaluateIndexFields(
-                from: oldItem,
-                keyPaths: index.keyPaths,
-                expression: index.rootExpression
-            )
+            let values = try evaluateIndexFields(from: oldItem)
             if values.count >= 2 {
                 let groupingValues = Array(values.dropLast())
                 let sumValue = try extractNumericValue(values.last!)
-                let groupingKey = subspace.pack(Tuple(groupingValues))
+                let groupingKey = try packAndValidate(Tuple(groupingValues))
                 oldData = (groupingKey, sumValue)
             } else {
                 oldData = nil
@@ -119,15 +114,11 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         let newData: (groupingKey: FDB.Bytes, sumValue: Double)?
         if let newItem = newItem {
-            let values = try DataAccess.evaluateIndexFields(
-                from: newItem,
-                keyPaths: index.keyPaths,
-                expression: index.rootExpression
-            )
+            let values = try evaluateIndexFields(from: newItem)
             if values.count >= 2 {
                 let groupingValues = Array(values.dropLast())
                 let sumValue = try extractNumericValue(values.last!)
-                let groupingKey = subspace.pack(Tuple(groupingValues))
+                let groupingKey = try packAndValidate(Tuple(groupingValues))
                 newData = (groupingKey, sumValue)
             } else {
                 newData = nil
@@ -175,11 +166,7 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let values = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        let values = try evaluateIndexFields(from: item)
 
         guard values.count >= 2 else {
             throw IndexError.invalidConfiguration(
@@ -190,8 +177,7 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let groupingValues = Array(values.dropLast())
         let sumValue = try extractNumericValue(values.last!)
 
-        let groupingTuple = Tuple(groupingValues)
-        let sumKey = subspace.pack(groupingTuple)
+        let sumKey = try packAndValidate(Tuple(groupingValues))
 
         // Add to sum
         try await addToSum(key: sumKey, value: sumValue, transaction: transaction)
@@ -204,19 +190,14 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let values = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        let values = try evaluateIndexFields(from: item)
 
         guard values.count >= 2 else {
             return []
         }
 
         let groupingValues = Array(values.dropLast())
-        let groupingTuple = Tuple(groupingValues)
-        return [subspace.pack(groupingTuple)]
+        return [try packAndValidate(Tuple(groupingValues))]
     }
 
     // MARK: - Query Methods
@@ -231,14 +212,13 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         groupingValues: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Double {
-        let groupingTuple = Tuple(groupingValues)
-        let sumKey = subspace.pack(groupingTuple)
+        let sumKey = try packAndValidate(Tuple(groupingValues))
 
         guard let bytes = try await transaction.getValue(for: sumKey) else {
             return 0.0
         }
 
-        return scaledBytesToDouble(bytes)
+        return ByteConversion.scaledBytesToDouble(bytes)
     }
 
     /// Get all sums in this index
@@ -262,7 +242,7 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
             let keyTuple = try subspace.unpack(key)
             let elements = try Tuple.unpack(from: keyTuple.pack())
-            let sum = scaledBytesToDouble(value)
+            let sum = ByteConversion.scaledBytesToDouble(value)
 
             results.append((grouping: elements, sum: sum))
         }
@@ -271,11 +251,6 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     // MARK: - Private Helpers
-
-    /// Scale factor for fixed-point representation
-    /// 6 decimal places provides precision for most financial calculations
-    /// Range: ±9,223,372,036,854.775807 (Int64.max / scale)
-    private static var scaleFactor: Double { 1_000_000.0 }
 
     /// Add value to sum using atomic operation
     ///
@@ -292,9 +267,8 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
         value: Double,
         transaction: any TransactionProtocol
     ) async throws {
-        // Convert to fixed-point Int64 for atomic operation
-        let scaledValue = Int64(value * Self.scaleFactor)
-        let bytes = withUnsafeBytes(of: scaledValue.littleEndian) { Array($0) }
+        // Convert to fixed-point Int64 for atomic operation using ByteConversion
+        let bytes = ByteConversion.doubleToScaledBytes(value)
 
         // Use atomic add - no read required, concurrent-safe
         transaction.atomicOp(key: key, param: bytes, mutationType: .add)
@@ -331,17 +305,5 @@ public struct SumIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 "Got: \(type(of: element))."
             )
         }
-    }
-
-    /// Convert fixed-point Int64 bytes back to Double
-    ///
-    /// Reads an Int64 in little-endian format and converts to Double
-    /// by dividing by scale factor.
-    private func scaledBytesToDouble(_ bytes: [UInt8]) -> Double {
-        guard bytes.count == 8 else {
-            return 0.0
-        }
-        let scaledValue = bytes.withUnsafeBytes { $0.load(as: Int64.self).littleEndian }
-        return Double(scaledValue) / Self.scaleFactor
     }
 }
