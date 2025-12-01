@@ -1,6 +1,6 @@
 # Database
 
-A Swift package providing server-side database operations powered by FoundationDB. Database implements the index maintenance logic for index types defined in DatabaseKit.
+A Swift package providing server-side database operations powered by FoundationDB. Database implements the index maintenance logic for index types defined in [DatabaseKit](https://github.com/1amageek/database-kit).
 
 ## Overview
 
@@ -10,6 +10,23 @@ Database provides:
 - **FDBContext**: Change tracking and batch operations
 - **Index Maintainers**: Concrete implementations for all index types
 - **Migration System**: Schema versioning and online index building
+- **OnlineIndexer**: Background index building for schema migrations
+
+## Two-Package Architecture
+
+```
+database-kit (client-safe)          database-framework (server-only)
+├── Core/                           ├── DatabaseEngine/
+│   ├── Persistable (protocol)      │   ├── FDBContainer
+│   ├── IndexKind (protocol)        │   ├── FDBContext
+│   └── IndexDescriptor             │   ├── IndexMaintainer (protocol)
+│                                   │   └── IndexKindMaintainable (protocol)
+├── Vector/, FullText/, etc.        ├── VectorIndex/, FullTextIndex/, etc.
+│   └── VectorIndexKind             │   └── VectorIndexKind+Maintainable
+```
+
+- **database-kit**: Platform-independent model definitions and index type specifications (iOS, macOS, Linux, Windows)
+- **database-framework**: FoundationDB-dependent index execution (server-only, requires libfdb_c)
 
 ## Supported Platforms
 
@@ -20,11 +37,25 @@ Database provides:
 | Windows | Swift 6.2+ |
 | iOS/watchOS/tvOS/visionOS | Not supported (requires FoundationDB) |
 
+## Prerequisites
+
+FoundationDB must be installed and running locally:
+
+```bash
+# macOS (Homebrew)
+brew install foundationdb
+
+# Start the service
+brew services start foundationdb
+```
+
+The linker expects `libfdb_c` at `/usr/local/lib`.
+
 ## Installation
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/anthropics/database.git", from: "1.0.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "1.0.0")
 ]
 ```
 
@@ -44,18 +75,46 @@ dependencies: [
 | `VersionIndex` | Version history with versionstamps |
 | `Database` | All-in-one re-export |
 
+## Build and Test
+
+```bash
+# Build the project
+swift build
+
+# Run all tests (requires local FoundationDB running)
+swift test
+
+# Run a specific test file
+swift test --filter DatabaseEngineTests.ScalarIndexKindTests
+
+# Run a specific test function
+swift test --filter "DatabaseEngineTests.ScalarIndexKindTests/testScalarIndexKindIdentifier"
+
+# Build with release optimization
+swift build -c release
+```
+
 ## Quick Start
 
 ```swift
-import DatabaseEngine
+import Database  // All-in-one import
 import Core
 
-// 1. Initialize FoundationDB (once at startup)
-try await FDBClient.initialize()
+// 1. Define your model in database-kit
+@Persistable
+struct User {
+    #Directory<User>("app", "users")
+    #Index<User>([\.email], unique: true)
+    #Index<User>([\.createdAt])
+
+    var email: String
+    var name: String
+    var createdAt: Date = Date()
+}
 
 // 2. Create container with schema
 let schema = Schema([User.self])
-let container = try FDBContainer(for: schema)
+let container = try await FDBContainer(for: schema)
 
 // 3. Use context for operations
 let context = await container.mainContext
@@ -63,6 +122,9 @@ let context = await container.mainContext
 let user = User(email: "alice@example.com", name: "Alice")
 context.insert(user)
 try await context.save()
+
+// 4. Query data
+let users = try await context.fetch(FDBFetchDescriptor<User>())
 ```
 
 ## Extensible Architecture
@@ -355,26 +417,328 @@ try await container.migrateIfNeeded(to: AppSchemaV2.self)
 | `AdjacencyIndexKind` | `AdjacencyIndexMaintainer` | Graph adjacency list traversal |
 | `VersionIndexKind` | `VersionIndexMaintainer` | FDB versionstamp history |
 
-## Testing
+## Adding a New Index Type
+
+To add a new index type to database-framework:
+
+### Step 1: Define IndexKind in database-kit
+
+Create the index type definition in the `database-kit` package:
+
+```swift
+// database-kit/Sources/TimeSeries/TimeSeriesIndexKind.swift
+import Core
+
+public struct TimeSeriesIndexKind: IndexKind {
+    public static let identifier = "timeseries"
+    public static let subspaceStructure = SubspaceStructure.hierarchical
+
+    public let resolution: TimeResolution
+
+    public enum TimeResolution: String, Codable, Sendable {
+        case second, minute, hour, day
+    }
+
+    public init(resolution: TimeResolution = .minute) {
+        self.resolution = resolution
+    }
+
+    public static func validateTypes(_ types: [Any.Type]) throws {
+        guard types.count >= 1, types[0] == Date.self else {
+            throw IndexTypeValidationError.typeMismatch(
+                field: "timestamp", expected: "Date", actual: String(describing: types.first)
+            )
+        }
+    }
+}
+```
+
+### Step 2: Create Index Module in database-framework
+
+Create a new directory `Sources/TimeSeriesIndex/` with two files:
+
+**File 1: IndexKindMaintainable extension**
+
+```swift
+// Sources/TimeSeriesIndex/TimeSeriesIndexKind.swift
+import Core
+import DatabaseEngine
+import FoundationDB
+import TimeSeries  // from database-kit
+
+extension TimeSeriesIndexKind: IndexKindMaintainable {
+    public func makeIndexMaintainer<Item: Persistable>(
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexConfiguration]
+    ) -> any IndexMaintainer<Item> {
+        return TimeSeriesIndexMaintainer<Item>(
+            index: index,
+            kind: self,
+            subspace: subspace.subspace(index.name),
+            idExpression: idExpression
+        )
+    }
+}
+```
+
+**File 2: IndexMaintainer implementation**
+
+```swift
+// Sources/TimeSeriesIndex/TimeSeriesIndexMaintainer.swift
+import Core
+import DatabaseEngine
+import FoundationDB
+import TimeSeries
+
+public struct TimeSeriesIndexMaintainer<Item: Persistable>: IndexMaintainer {
+    public let index: Index
+    public let kind: TimeSeriesIndexKind
+    public let subspace: Subspace
+    public let idExpression: KeyExpression
+
+    public var customBuildStrategy: (any IndexBuildStrategy<Item>)? { nil }
+
+    public func updateIndex(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any TransactionProtocol
+    ) async throws {
+        if let old = oldItem {
+            let key = try buildKey(for: old)
+            transaction.clear(key: key)
+        }
+        if let new = newItem {
+            let key = try buildKey(for: new)
+            transaction.setValue([], for: key)
+        }
+    }
+
+    public func scanItem(
+        _ item: Item,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let key = try buildKey(for: item, id: id)
+        transaction.setValue([], for: key)
+    }
+
+    public func computeIndexKeys(for item: Item, id: Tuple) async throws -> [FDB.Bytes] {
+        return [try buildKey(for: item, id: id)]
+    }
+
+    private func buildKey(for item: Item, id: Tuple? = nil) throws -> [UInt8] {
+        // Implementation details...
+        return subspace.pack(Tuple())
+    }
+}
+```
+
+### Step 3: Update Package.swift
+
+Add the new module to `Package.swift`:
+
+```swift
+// Add product
+.library(name: "TimeSeriesIndex", targets: ["TimeSeriesIndex"]),
+
+// Add target
+.target(
+    name: "TimeSeriesIndex",
+    dependencies: [
+        "DatabaseEngine",
+        .product(name: "Core", package: "database-kit"),
+        .product(name: "TimeSeries", package: "database-kit"),
+        .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+    ]
+),
+
+// Add to Database target dependencies
+.target(
+    name: "Database",
+    dependencies: [
+        // ... existing dependencies
+        "TimeSeriesIndex",
+    ]
+),
+```
+
+### Step 4: Add Tests
+
+Create `Tests/TimeSeriesIndexTests/TimeSeriesIndexBehaviorTests.swift`:
 
 ```swift
 import Testing
-import DatabaseEngine
+import FoundationDB
+@testable import TimeSeriesIndex
+@testable import DatabaseEngine
+@testable import Core
 
-@Test func testCustomIndex() async throws {
-    // Tests run against local FoundationDB
-    try await FDBClient.initialize()
+@Suite("TimeSeriesIndex Behavior Tests")
+struct TimeSeriesIndexBehaviorTests {
+    init() async throws {
+        try await FDBTestSetup.shared.initialize()
+    }
 
-    let container = try FDBContainer(for: testSchema)
-    let context = await container.mainContext
-
-    // Test your index operations...
+    @Test("Index entries are created correctly")
+    func indexEntriesCreated() async throws {
+        // Test implementation...
+    }
 }
+```
+
+### Index Maintainer Pattern
+
+Each index module follows this structure:
+
+```
+Sources/
+└── TimeSeriesIndex/
+    ├── TimeSeriesIndexKind.swift      # extension TimeSeriesIndexKind: IndexKindMaintainable
+    └── TimeSeriesIndexMaintainer.swift # struct TimeSeriesIndexMaintainer: IndexMaintainer
+```
+
+The `IndexMaintainer` protocol requires:
+
+| Method | Purpose |
+|--------|---------|
+| `updateIndex(oldItem:newItem:transaction:)` | Update index on insert/update/delete |
+| `scanItem(_:id:transaction:)` | Build index entry during batch indexing |
+| `computeIndexKeys(for:id:)` | Return expected keys for scrubber verification |
+| `customBuildStrategy` | Optional custom build strategy (e.g., HNSW) |
+
+## Testing
+
+Tests use a shared singleton for FDB initialization to avoid "API version may be set only once" errors:
+
+```swift
+import Testing
+@testable import DatabaseEngine
+
+@Suite struct MyTests {
+    init() async throws {
+        try await FDBTestSetup.shared.initialize()
+    }
+
+    @Test func testCustomIndex() async throws {
+        let container = try await FDBContainer(for: testSchema)
+        let context = await container.mainContext
+        // Test your index operations...
+    }
+}
+```
+
+## Data Layout in FoundationDB
+
+```
+[fdb]/R/[PersistableType]/[id]           → Protobuf-encoded record
+[fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
+[fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
+[fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
+```
+
+## Directory Layer
+
+FDBContainer uses FoundationDB's DirectoryLayer for hierarchical namespace management. Directories provide efficient key prefix allocation and logical organization of data.
+
+### Directory Macro
+
+Define storage paths declaratively using the `#Directory` macro in database-kit:
+
+```swift
+@Persistable
+struct User {
+    #Directory<User>("app", "users")
+    #Index<User>([\.email], unique: true)
+
+    var email: String
+    var name: String
+}
+```
+
+### Multi-Tenant Partitioning
+
+Use `Field(\.property)` for dynamic path segments based on record fields:
+
+```swift
+@Persistable
+struct Order {
+    #Directory<Order>("tenants", Field(\.accountID), "orders", layer: .partition)
+    #PrimaryKey<Order>([\.orderID])
+
+    var orderID: Int64
+    var accountID: String  // Partition key
+}
+```
+
+### Multi-level Partitioning
+
+```swift
+@Persistable
+struct Message {
+    #Directory<Message>(
+        "tenants", Field(\.accountID),
+        "channels", Field(\.channelID),
+        "messages",
+        layer: .partition
+    )
+
+    var messageID: Int64
+    var accountID: String  // First partition key
+    var channelID: String  // Second partition key
+}
+```
+
+### Directory Layer Types
+
+| Layer | Description |
+|-------|-------------|
+| `.default` | Default directory |
+| `.partition` | Multi-tenant partition (requires at least one Field in path) |
+
+### Directory Operations (Runtime)
+
+```swift
+// Get or create a directory
+let userSubspace = try await container.getOrOpenDirectory(path: ["app", "users"])
+
+// Create a new directory (fails if exists)
+let logsSubspace = try await container.createDirectory(path: ["app", "logs"])
+
+// Open an existing directory
+let existingSubspace = try await container.openDirectory(path: ["app", "users"])
+
+// Check if directory exists
+let exists = try await container.directoryExists(path: ["app", "users"])
+
+// Move a directory
+let movedSubspace = try await container.moveDirectory(
+    oldPath: ["app", "users"],
+    newPath: ["archive", "users"]
+)
+
+// Remove a directory
+try await container.removeDirectory(path: ["archive", "users"])
+```
+
+### Low-level Multi-Tenant Isolation
+
+For manual control, use custom subspaces:
+
+```swift
+let tenantSubspace = Subspace(prefix: Tuple("tenant", tenantID).pack())
+let container = FDBContainer(
+    database: database,
+    schema: schema,
+    subspace: tenantSubspace
+)
+// Data stored at: tenant/[tenantID]/R/..., tenant/[tenantID]/I/...
 ```
 
 ## Related Packages
 
-- **[DatabaseKit](../database-kit)**: Platform-independent model and index type definitions
+- **[DatabaseKit](https://github.com/1amageek/database-kit)**: Platform-independent model and index type definitions
 
 ## License
 
