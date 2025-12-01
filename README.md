@@ -809,9 +809,296 @@ let container = FDBContainer(
 // Data stored at: tenant/[tenantID]/R/..., tenant/[tenantID]/I/...
 ```
 
+## Distributed Systems Architecture
+
+This framework is designed to work correctly with **Swift Distributed Actors** and other distributed computing patterns. Understanding FoundationDB's architecture is essential for building scalable distributed applications.
+
+### FoundationDB's Client-Direct Model
+
+FoundationDB uses a **client-direct connection model** where clients connect directly to StorageServers:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Your Application Cluster                      │
+│  ┌─────────────┐   ┌─────────────┐   ┌─────────────┐            │
+│  │   Node A    │   │   Node B    │   │   Node C    │            │
+│  │ FDBContainer│   │ FDBContainer│   │ FDBContainer│            │
+│  └──────┬──────┘   └──────┬──────┘   └──────┬──────┘            │
+│         │                 │                 │                    │
+│         └────────┬────────┴────────┬────────┘                    │
+│                  │  Direct Client Connection                     │
+└──────────────────┼───────────────────────────────────────────────┘
+                   ▼
+      ┌────────────────────────────────────────┐
+      │         FoundationDB Cluster           │
+      │  ┌────────┐ ┌────────┐ ┌────────┐      │
+      │  │   SS   │ │   SS   │ │   SS   │      │
+      │  │(shard1)│ │(shard2)│ │(shard3)│      │
+      │  └────────┘ └────────┘ └────────┘      │
+      │       ▲          ▲          ▲          │
+      │       └──────────┴──────────┘          │
+      │         Auto load balancing            │
+      └────────────────────────────────────────┘
+```
+
+**Key insight**: FDB clients automatically discover and connect to the optimal StorageServer for each key range. Adding middleware layers between your application and FDB reduces throughput and defeats FDB's built-in load balancing.
+
+### What FoundationDB Already Provides
+
+| Feature | FDB Implementation | Do NOT re-implement |
+|---------|-------------------|---------------------|
+| **Distributed Transactions** | Commit Proxy + Resolver | ✗ |
+| **Data Sharding** | DataDistributor (automatic) | ✗ |
+| **Replication** | Team-based redundancy | ✗ |
+| **Failure Detection** | ClusterController + SWIM protocol | ✗ |
+| **Read Consistency** | MVCC + Read Version | ✗ |
+| **Load Balancing** | Client locationCache | ✗ |
+
+### ✅ Correct Architecture with Distributed Actors
+
+Use distributed actors for **business logic distribution**, not data access:
+
+```swift
+import DistributedCluster
+import Database
+import Core
+
+// ✅ CORRECT: Each actor has its own FDBContainer
+distributed actor OrderService {
+    typealias ActorSystem = ClusterSystem
+
+    // FDBContainer is lightweight and stateless
+    private let container: FDBContainer
+
+    init(actorSystem: ActorSystem, schema: Schema) throws {
+        self.actorSystem = actorSystem
+        self.container = try FDBContainer(for: schema)
+    }
+
+    // Business logic is distributed across actors
+    distributed func placeOrder(
+        userId: String,
+        items: [OrderItem]
+    ) async throws -> Order {
+        let context = container.newContext()
+
+        // FDB handles distributed transactions automatically
+        let inventory = try await context.fetch(Inventory.self)
+            .where(\.productId, in: items.map(\.productId))
+            .execute()
+
+        guard inventory.allSatisfy({ $0.available }) else {
+            throw OrderError.insufficientInventory
+        }
+
+        let order = Order(userId: userId, items: items)
+        context.insert(order)
+
+        // Inventory updates in same transaction
+        for item in items {
+            if var inv = inventory.first(where: { $0.productId == item.productId }) {
+                inv.quantity -= item.quantity
+                context.insert(inv)
+            }
+        }
+
+        try await context.save()  // FDB ensures ACID across all shards
+        return order
+    }
+}
+
+// ✅ CORRECT: Multiple services, each with own container
+distributed actor InventoryService {
+    typealias ActorSystem = ClusterSystem
+
+    private let container: FDBContainer
+
+    init(actorSystem: ActorSystem, schema: Schema) throws {
+        self.actorSystem = actorSystem
+        self.container = try FDBContainer(for: schema)
+    }
+
+    distributed func checkAvailability(productIds: [String]) async throws -> [String: Int] {
+        let context = container.newContext()
+        let items = try await context.fetch(Inventory.self)
+            .where(\.productId, in: productIds)
+            .execute()
+        return Dictionary(uniqueKeysWithValues: items.map { ($0.productId, $0.quantity) })
+    }
+}
+```
+
+### ❌ Anti-Pattern: Wrapping FDB Access in Distributed Actors
+
+```swift
+// ❌ WRONG: Don't create a "database service" actor
+distributed actor DatabaseService {
+    private let container: FDBContainer
+
+    // This defeats FDB's direct-connection model!
+    distributed func fetch<T: Persistable>(_ type: T.Type) async throws -> [T] {
+        // All requests now go through this single actor = bottleneck
+        let context = container.newContext()
+        return try await context.fetch(Query<T>())
+    }
+}
+
+// ❌ WRONG: Routing all DB access through one point
+let dbService = try await system.singleton.host(name: "database") { actorSystem in
+    DatabaseService(actorSystem: actorSystem)
+}
+// This creates a single point of failure and bottleneck
+```
+
+### Why FDBContainer is Safe for Distributed Use
+
+`FDBContainer` is designed to be instantiated per-actor:
+
+```swift
+public final class FDBContainer: Sendable {
+    // Thread-safe database connection (managed by FDB client library)
+    nonisolated(unsafe) public let database: any DatabaseProtocol
+
+    // Immutable configuration
+    public let schema: Schema
+    public let subspace: Subspace
+    // ...
+}
+```
+
+- **Stateless**: No mutable state that needs synchronization
+- **Connection Pooling**: FDB client library manages connections internally
+- **Location Cache**: Each client maintains its own cache, auto-updated by FDB
+- **Lightweight**: Creating multiple containers has minimal overhead
+
+### Scaling Patterns
+
+#### Pattern 1: Service-per-Domain
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Distributed Actor Cluster                     │
+│                                                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │  OrderService   │  │  UserService    │  │ InventoryService│  │
+│  │  (distributed)  │  │  (distributed)  │  │  (distributed)  │  │
+│  │                 │  │                 │  │                 │  │
+│  │ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐ │  │
+│  │ │FDBContainer │ │  │ │FDBContainer │ │  │ │FDBContainer │ │  │
+│  │ └──────┬──────┘ │  │ └──────┬──────┘ │  │ └──────┬──────┘ │  │
+│  └────────┼────────┘  └────────┼────────┘  └────────┼────────┘  │
+│           │                    │                    │            │
+│           └────────────────────┼────────────────────┘            │
+│                                │                                 │
+└────────────────────────────────┼─────────────────────────────────┘
+                                 ▼
+                    ┌────────────────────────┐
+                    │   FoundationDB Cluster │
+                    │   (handles all the     │
+                    │   distributed magic)   │
+                    └────────────────────────┘
+```
+
+#### Pattern 2: Sharded Actors with Shared Schema
+
+```swift
+// Shard actors by entity ID for locality
+distributed actor UserActor {
+    typealias ActorSystem = ClusterSystem
+
+    private let userId: String
+    private let container: FDBContainer
+
+    init(actorSystem: ActorSystem, userId: String, schema: Schema) throws {
+        self.actorSystem = actorSystem
+        self.userId = userId
+        self.container = try FDBContainer(for: schema)
+    }
+
+    distributed func updateProfile(name: String, email: String) async throws {
+        let context = container.newContext()
+
+        guard var user = try await context.model(for: userId, as: User.self) else {
+            throw UserError.notFound
+        }
+
+        user.name = name
+        user.email = email
+        context.insert(user)
+        try await context.save()
+    }
+}
+
+// Use consistent hashing to route requests to the correct actor
+extension ClusterSystem {
+    func userActor(for userId: String) async throws -> UserActor {
+        // ClusterSingleton or virtual actor pattern
+        // Routes to actor responsible for this user's shard
+    }
+}
+```
+
+#### Pattern 3: Read Replicas with Snapshot Reads
+
+```swift
+distributed actor ReadReplicaService {
+    typealias ActorSystem = ClusterSystem
+
+    private let container: FDBContainer
+
+    distributed func searchProducts(query: String) async throws -> [Product] {
+        let context = container.newContext()
+
+        // Snapshot reads don't conflict with writes
+        // FDB automatically routes to nearest replica
+        return try await context.fetch(Product.self)
+            .where(\.name, contains: query)
+            .execute()
+    }
+}
+```
+
+### Cross-Transaction Considerations
+
+FDB transactions have a **5-second limit**. For long-running operations:
+
+```swift
+distributed actor BatchProcessor {
+    private let container: FDBContainer
+
+    distributed func processLargeDataset(ids: [String]) async throws {
+        // Split into chunks for separate transactions
+        for chunk in ids.chunked(into: 100) {
+            try await processChunk(chunk)
+        }
+    }
+
+    private func processChunk(_ ids: [String]) async throws {
+        let context = container.newContext()
+
+        for id in ids {
+            // Process each item
+        }
+
+        try await context.save()  // Commits within 5s limit
+    }
+}
+```
+
+### Summary: Distribution Responsibilities
+
+| Layer | Responsibility | Technology |
+|-------|---------------|------------|
+| **Business Logic** | Domain operations, orchestration | Swift Distributed Actors |
+| **Data Access** | CRUD, queries, transactions | FDBContainer (this framework) |
+| **Data Distribution** | Sharding, replication, consistency | FoundationDB (automatic) |
+
+**The key principle**: Let FoundationDB handle data distribution. Use distributed actors for scaling business logic, not for wrapping database access.
+
 ## Related Packages
 
 - **[DatabaseKit](https://github.com/1amageek/database-kit)**: Platform-independent model and index type definitions
+- **[swift-distributed-actors](https://github.com/apple/swift-distributed-actors)**: Peer-to-peer cluster implementation for Swift's distributed actor feature
 
 ## License
 

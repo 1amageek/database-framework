@@ -173,10 +173,14 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable {
     }
 
     /// Create a nil comparison
-    public init<V>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
+    ///
+    /// For `isNil`/`isNotNil` checks, the value field stores `Optional<V>.none`
+    /// to preserve the correct type information.
+    public init<V: Sendable>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
         self.keyPath = keyPath
         self.op = op
-        self.value = AnySendable(Optional<Int>.none as Any)
+        // Store the correctly typed nil value
+        self.value = AnySendable(Optional<V>.none as Any)
     }
 
     /// Create an IN comparison
@@ -302,7 +306,7 @@ public func >= <T: Persistable, V: Comparable & Sendable>(
 // MARK: - Optional KeyPath Operators
 
 /// Check if optional field is nil
-public func == <T: Persistable, V>(
+public func == <T: Persistable, V: Sendable>(
     lhs: KeyPath<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
@@ -310,7 +314,7 @@ public func == <T: Persistable, V>(
 }
 
 /// Check if optional field is not nil
-public func != <T: Persistable, V>(
+public func != <T: Persistable, V: Sendable>(
     lhs: KeyPath<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
@@ -416,5 +420,67 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     /// Execute the query and return first result
     public func first() async throws -> T? {
         try await limit(1).execute().first
+    }
+
+    // MARK: - Query Planner Integration
+
+    /// Explain the query plan without executing
+    ///
+    /// Returns a human-readable explanation of how the query would be executed,
+    /// including estimated costs, index usage, and execution tree.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let explanation = try context.fetch(User.self)
+    ///     .where(\.age > 18)
+    ///     .orderBy(\.name)
+    ///     .explain()
+    /// print(explanation)
+    /// ```
+    ///
+    /// - Parameter hints: Optional query hints to influence planning
+    /// - Returns: Human-readable plan explanation
+    public func explain(hints: QueryHints = .default) throws -> PlanExplanation {
+        let planner = QueryPlanner<T>(
+            indexes: T.indexDescriptors,
+            statistics: DefaultStatisticsProvider(),
+            costModel: .default
+        )
+        let plan: QueryPlan<T> = try planner.plan(query: query, hints: hints)
+        return PlanExplanation(plan: plan)
+    }
+
+    /// Explain the query plan with custom statistics
+    ///
+    /// Use this method when you have collected statistics for more accurate cost estimation.
+    ///
+    /// - Parameters:
+    ///   - statistics: Statistics provider with collected data
+    ///   - hints: Optional query hints to influence planning
+    /// - Returns: Human-readable plan explanation
+    public func explain(
+        with statistics: StatisticsProvider,
+        hints: QueryHints = .default
+    ) throws -> PlanExplanation {
+        let planner = QueryPlanner<T>(
+            indexes: T.indexDescriptors,
+            statistics: statistics,
+            costModel: .default
+        )
+        let plan: QueryPlan<T> = try planner.plan(query: query, hints: hints)
+        return PlanExplanation(plan: plan)
+    }
+
+    /// Get the raw query plan for advanced usage
+    ///
+    /// - Parameter hints: Optional query hints to influence planning
+    /// - Returns: The compiled query plan
+    public func plan(hints: QueryHints = .default) throws -> QueryPlan<T> {
+        let planner = QueryPlanner<T>(
+            indexes: T.indexDescriptors,
+            statistics: DefaultStatisticsProvider(),
+            costModel: .default
+        )
+        return try planner.plan(query: query, hints: hints)
     }
 }

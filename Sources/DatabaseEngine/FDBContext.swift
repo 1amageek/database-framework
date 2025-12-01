@@ -1,6 +1,7 @@
 import FoundationDB
 import Core
 import Synchronization
+import Logging
 
 /// FDBContext - Central API for model persistence (like SwiftData's ModelContext)
 ///
@@ -9,9 +10,14 @@ import Synchronization
 /// new models, track and persist changes to those models, and to delete those
 /// models when you no longer need them.
 ///
+/// **Architecture**:
+/// - FDBContext provides SwiftData-like high-level API
+/// - Container resolves directories from Persistable type's `#Directory` declaration
+/// - FDBDataStore performs low-level FDB operations in the resolved directory
+///
 /// **Usage**:
 /// ```swift
-/// let context = container.mainContext
+/// let context = container.newContext()
 ///
 /// // Insert models (type-independent)
 /// context.insert(user)      // User: Persistable
@@ -42,15 +48,11 @@ public final class FDBContext: Sendable {
     /// The container that owns this context
     public let container: FDBContainer
 
-    /// Internal data store for persistence operations
-    ///
-    /// This is typed as `any DataStore` to support different storage backends.
-    /// The default implementation is FDBDataStore, but can be replaced with
-    /// custom implementations for testing or alternative backends.
-    private let dataStore: any DataStore
-
     /// Change tracking state
     private let stateLock: Mutex<ContextState>
+
+    /// Logger
+    private let logger: Logger
 
     // MARK: - Initialization
 
@@ -61,22 +63,8 @@ public final class FDBContext: Sendable {
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
     public init(container: FDBContainer, autosaveEnabled: Bool = false) {
         self.container = container
-        self.dataStore = container.dataStore
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
-    }
-
-    /// Initialize FDBContext with a custom DataStore
-    ///
-    /// This initializer is primarily for testing, allowing injection of mock stores.
-    ///
-    /// - Parameters:
-    ///   - container: The FDBContainer to use for storage
-    ///   - dataStore: Custom DataStore implementation
-    ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
-    internal init(container: FDBContainer, dataStore: any DataStore, autosaveEnabled: Bool = false) {
-        self.container = container
-        self.dataStore = dataStore
-        self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
+        self.logger = Logger(label: "com.fdb.runtime.context")
     }
 
     // MARK: - State
@@ -108,9 +96,6 @@ public final class FDBContext: Sendable {
     }
 
     /// Key for tracking models
-    ///
-    /// Uses Tuple-packed bytes for collision-free, efficient comparison.
-    /// IDs must conform to TupleElement (validated at FDB storage time).
     private struct ModelKey: Hashable, Sendable {
         let persistableType: String
         let idBytes: [UInt8]
@@ -125,9 +110,6 @@ public final class FDBContext: Sendable {
             self.idBytes = Self.packID(id)
         }
 
-        /// Pack ID to bytes using Tuple encoding
-        ///
-        /// This produces a unique, compact byte representation.
         private static func packID(_ id: any Sendable) -> [UInt8] {
             if let tuple = id as? Tuple {
                 return tuple.pack()
@@ -135,7 +117,6 @@ public final class FDBContext: Sendable {
             if let element = id as? any TupleElement {
                 return Tuple([element]).pack()
             }
-            // Fallback for invalid IDs (will fail at save time anyway)
             return Array(String(describing: id).utf8)
         }
     }
@@ -150,9 +131,6 @@ public final class FDBContext: Sendable {
     }
 
     /// Whether to automatically save after insert/delete operations
-    ///
-    /// When enabled, insert() and delete() will automatically call save().
-    /// When disabled (default), you must manually call save().
     public var autosaveEnabled: Bool {
         get {
             stateLock.withLock { state in
@@ -170,19 +148,7 @@ public final class FDBContext: Sendable {
 
     /// Register a model for persistence
     ///
-    /// The model is not persisted until `save()` is called, unless `autosaveEnabled` is true.
-    /// When autosave is enabled, changes are automatically saved after a brief delay to
-    /// batch multiple rapid operations.
-    ///
-    /// Supports any Persistable type - context is type-independent.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let context = container.mainContext
-    /// context.insert(user)      // User: Persistable
-    /// context.insert(product)   // Product: Persistable
-    /// try await context.save()  // Not needed if autosaveEnabled
-    /// ```
+    /// The model is not persisted until `save()` is called.
     ///
     /// - Parameter model: The model to insert
     public func insert<T: Persistable>(_ model: T) {
@@ -192,7 +158,6 @@ public final class FDBContext: Sendable {
             state.insertedModels[key] = model
             state.deletedModels.removeValue(forKey: key)
 
-            // Check if we should schedule autosave
             if state.autosaveEnabled && !state.autosaveScheduled {
                 state.autosaveScheduled = true
                 return true
@@ -209,25 +174,17 @@ public final class FDBContext: Sendable {
 
     /// Mark a model for deletion
     ///
-    /// The model is not removed until `save()` is called, unless `autosaveEnabled` is true.
-    /// When autosave is enabled, changes are automatically saved after a brief delay to
-    /// batch multiple rapid operations.
-    ///
     /// - Parameter model: The model to delete
     public func delete<T: Persistable>(_ model: T) {
         let key = ModelKey(model)
 
         let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            // If model was inserted but not saved, just cancel the insert
             if state.insertedModels.removeValue(forKey: key) != nil {
                 // Model was inserted in this context - just cancel the insert
-                // No need to add to deletedModels since it doesn't exist in DB
             } else {
-                // Model exists in DB - mark for deletion
                 state.deletedModels[key] = model
             }
 
-            // Check if we should schedule autosave
             if state.autosaveEnabled && !state.autosaveScheduled && state.hasChanges {
                 state.autosaveScheduled = true
                 return true
@@ -240,47 +197,19 @@ public final class FDBContext: Sendable {
         }
     }
 
-    /// Delete all models of a type matching a query
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// // Delete inactive users
-    /// try await context.delete(
-    ///     User.self,
-    ///     where: \.isActive == false
-    /// )
-    ///
-    /// // Delete all users
-    /// try await context.deleteAll(User.self)
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The model type
-    ///   - predicate: Optional predicate to filter models
+    /// Delete all models of a type matching a predicate
     public func delete<T: Persistable>(
         _ type: T.Type,
         where predicate: Predicate<T>
     ) async throws {
-        // Build query with predicate
         let query = Query<T>().where(predicate)
-
-        // Fetch models matching the query
         let models = try await fetch(query)
-
-        // Mark each for deletion
         for model in models {
             delete(model)
         }
     }
 
     /// Delete all models of a type
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// try await context.deleteAll(User.self)
-    /// ```
-    ///
-    /// - Parameter type: The model type
     public func deleteAll<T: Persistable>(_ type: T.Type) async throws {
         let models = try await fetch(Query<T>())
         for model in models {
@@ -291,60 +220,22 @@ public final class FDBContext: Sendable {
     // MARK: - Fetch
 
     /// Create a query executor for fetching models with Fluent API
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// // Fetch all users
-    /// let allUsers = try await context.fetch(User.self).execute()
-    ///
-    /// // Fetch with filters and sorting
-    /// let users = try await context.fetch(User.self)
-    ///     .where(\.isActive == true)
-    ///     .where(\.age > 18)
-    ///     .orderBy(\.name)
-    ///     .limit(10)
-    ///     .execute()
-    ///
-    /// // Get first matching result
-    /// let user = try await context.fetch(User.self)
-    ///     .where(\.email == "alice@example.com")
-    ///     .first()
-    ///
-    /// // Get count
-    /// let count = try await context.fetch(User.self)
-    ///     .where(\.isActive == true)
-    ///     .count()
-    /// ```
-    ///
-    /// - Parameter type: The model type
-    /// - Returns: A QueryExecutor for building and executing the query
     public func fetch<T: Persistable>(_ type: T.Type) -> QueryExecutor<T> {
         QueryExecutor(context: self, query: Query<T>())
     }
 
     /// Fetch models matching a query (internal use)
-    ///
-    /// This method considers unsaved changes:
-    /// - Models pending insertion are included if they match the predicate
-    /// - Models pending deletion are excluded from results
-    ///
-    /// - Parameter query: The query
-    /// - Returns: Array of matching models
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
-        // Get pending changes for this type
         let (pendingInserts, pendingDeleteKeys) = stateLock.withLock { state -> ([T], Set<ModelKey>) in
-            // Get inserted models of type T
             let inserts = state.insertedModels.values.compactMap { $0 as? T }
-
-            // Get keys of deleted models of type T
             let deleteKeys = state.deletedModels.keys
                 .filter { $0.persistableType == T.persistableType }
-
             return (inserts, Set(deleteKeys))
         }
 
-        // Fetch from data store
-        var results = try await dataStore.fetch(query)
+        // Get store for this type and fetch
+        let store = try await container.store(for: T.self)
+        var results = try await store.fetch(query)
 
         // Exclude models pending deletion
         if !pendingDeleteKeys.isEmpty {
@@ -353,7 +244,7 @@ public final class FDBContext: Sendable {
             }
         }
 
-        // Include models pending insertion (that aren't already in results)
+        // Include models pending insertion
         if !pendingInserts.isEmpty {
             let existingKeys = Set(results.map { ModelKey($0) })
             for model in pendingInserts {
@@ -367,31 +258,18 @@ public final class FDBContext: Sendable {
     }
 
     /// Fetch count of models matching a query (internal use)
-    ///
-    /// This method considers unsaved changes:
-    /// - Models pending insertion are counted if they match the predicate
-    /// - Models pending deletion are excluded from count
-    ///
-    /// Uses efficient counting when possible:
-    /// - If no pending changes affect the count, uses index-based counting
-    /// - Falls back to full fetch when pending changes exist
-    ///
-    /// - Parameter query: The query
-    /// - Returns: Count of matching models
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
-        // Check if there are pending changes for this type
         let (hasInserts, hasDeletes) = stateLock.withLock { state -> (Bool, Bool) in
             let inserts = state.insertedModels.values.contains { $0 is T }
             let deletes = state.deletedModels.keys.contains { $0.persistableType == T.persistableType }
             return (inserts, deletes)
         }
 
-        // If no pending changes, use efficient data store counting
         if !hasInserts && !hasDeletes {
-            return try await dataStore.fetchCount(query)
+            let store = try await container.store(for: T.self)
+            return try await store.fetchCount(query)
         }
 
-        // With pending changes, we need to fetch to get accurate count
         let results = try await fetch(query)
         return results.count
     }
@@ -399,35 +277,16 @@ public final class FDBContext: Sendable {
     // MARK: - Get by ID
 
     /// Get a single model by its identifier
-    ///
-    /// This method considers unsaved changes:
-    /// - Returns pending insertion if the model exists there
-    /// - Returns nil if the model is pending deletion
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// if let user = try await context.model(for: userId, as: User.self) {
-    ///     print(user.name)
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - id: The model's identifier
-    ///   - type: The model type
-    /// - Returns: The model if found, nil otherwise
     public func model<T: Persistable>(
         for id: any TupleElement,
         as type: T.Type
     ) async throws -> T? {
-        // Check pending changes first
         let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
-            // Check if model is pending insertion
             let insertKey = ModelKey(persistableType: T.persistableType, id: id)
             if let inserted = state.insertedModels[insertKey] as? T {
                 return (inserted, false)
             }
 
-            // Check if model is pending deletion
             let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
             if state.deletedModels[deleteKey] != nil {
                 return (nil, true)
@@ -436,50 +295,41 @@ public final class FDBContext: Sendable {
             return (nil, false)
         }
 
-        // Return pending insertion if found
         if let inserted = pendingResult.inserted {
             return inserted
         }
 
-        // Return nil if pending deletion
         if pendingResult.isDeleted {
             return nil
         }
 
-        // Fetch from data store
-        return try await dataStore.fetch(type, id: id)
+        let store = try await container.store(for: type)
+        return try await store.fetch(type, id: id)
     }
 
     // MARK: - Save
 
     /// Persist all pending changes atomically
     ///
-    /// All inserts and deletes are executed in a single transaction.
-    /// If any operation fails, all changes are rolled back.
-    ///
-    /// - Throws: FDBContextError.concurrentSaveNotAllowed if another save is in progress
-    /// - Throws: Error if save fails
+    /// Groups models by type, resolves each type's directory, and saves all changes
+    /// in a single transaction.
     public func save() async throws {
-        // Result type for atomic check-and-get operation
         enum SaveCheckResult {
             case noChanges
             case alreadySaving
             case proceed(inserts: [any Persistable], deletes: [any Persistable])
         }
 
-        // Get changes snapshot and clear changes atomically
         let checkResult = stateLock.withLock { state -> SaveCheckResult in
             guard !state.isSaving else {
                 return .alreadySaving
             }
 
             guard state.hasChanges else {
-                // Reset autosave flag even if no changes
                 state.autosaveScheduled = false
                 return .noChanges
             }
 
-            // Take snapshot and clear changes atomically
             let inserts = Array(state.insertedModels.values)
             let deletes = Array(state.deletedModels.values)
 
@@ -491,7 +341,6 @@ public final class FDBContext: Sendable {
             return .proceed(inserts: inserts, deletes: deletes)
         }
 
-        // Handle check result
         let insertsSnapshot: [any Persistable]
         let deletesSnapshot: [any Persistable]
 
@@ -505,7 +354,6 @@ public final class FDBContext: Sendable {
             deletesSnapshot = deletes
         }
 
-        // Early return if no changes
         guard !insertsSnapshot.isEmpty || !deletesSnapshot.isEmpty else {
             stateLock.withLock { state in
                 state.isSaving = false
@@ -514,13 +362,44 @@ public final class FDBContext: Sendable {
         }
 
         do {
-            // Execute batch save via data store
-            try await dataStore.executeBatch(
-                inserts: insertsSnapshot,
-                deletes: deletesSnapshot
-            )
+            // Group models by type
+            let insertsByType = groupByType(insertsSnapshot)
+            let deletesByType = groupByType(deletesSnapshot)
 
-            // Reset saving flag after successful save
+            // Get all unique types
+            let allTypes = Set(insertsByType.keys).union(deletesByType.keys)
+
+            // Execute all operations in a single transaction
+            try await container.withTransaction { transaction in
+                for typeName in allTypes {
+                    let typeInserts = insertsByType[typeName] ?? []
+                    let typeDeletes = deletesByType[typeName] ?? []
+
+                    guard let firstModel = typeInserts.first ?? typeDeletes.first else { continue }
+
+                    // Resolve directory for this type
+                    let modelType = type(of: firstModel)
+                    let subspace = try await self.container.resolveDirectory(for: modelType)
+
+                    // Create store for this subspace and execute operations
+                    let store = FDBDataStore(
+                        database: self.container.database,
+                        subspace: subspace,
+                        schema: self.container.schema
+                    )
+
+                    // Save inserts
+                    for model in typeInserts {
+                        try await self.saveModel(model, store: store, transaction: transaction)
+                    }
+
+                    // Delete deletes
+                    for model in typeDeletes {
+                        try await self.deleteModel(model, store: store, transaction: transaction)
+                    }
+                }
+            }
+
             stateLock.withLock { state in
                 state.isSaving = false
             }
@@ -541,11 +420,194 @@ public final class FDBContext: Sendable {
         }
     }
 
+    /// Group models by their persistableType
+    private func groupByType(_ models: [any Persistable]) -> [String: [any Persistable]] {
+        var result: [String: [any Persistable]] = [:]
+        for model in models {
+            let typeName = type(of: model).persistableType
+            result[typeName, default: []].append(model)
+        }
+        return result
+    }
+
+    /// Save a single model using the provided store and transaction
+    private func saveModel(
+        _ model: any Persistable,
+        store: FDBDataStore,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let persistableType = type(of: model).persistableType
+        let validatedID = try validateID(model.id, for: persistableType)
+        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+
+        // Serialize using Protobuf
+        let encoder = ProtobufEncoder()
+        let data = try encoder.encode(model)
+
+        let typeSubspace = store.recordSubspace.subspace(persistableType)
+        let key = typeSubspace.pack(idTuple)
+
+        // Check for existing record (for index updates)
+        let oldData = try await transaction.getValue(for: key, snapshot: false)
+
+        // Save the record
+        transaction.setValue(Array(data), for: key)
+
+        // Update indexes
+        try await updateIndexes(
+            oldData: oldData,
+            newModel: model,
+            id: idTuple,
+            store: store,
+            transaction: transaction
+        )
+    }
+
+    /// Delete a single model using the provided store and transaction
+    private func deleteModel(
+        _ model: any Persistable,
+        store: FDBDataStore,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let persistableType = type(of: model).persistableType
+        let validatedID = try validateID(model.id, for: persistableType)
+        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+
+        let typeSubspace = store.recordSubspace.subspace(persistableType)
+        let key = typeSubspace.pack(idTuple)
+
+        // Remove index entries first
+        try await updateIndexes(
+            oldData: nil,
+            newModel: nil,
+            id: idTuple,
+            store: store,
+            transaction: transaction,
+            deletingModel: model
+        )
+
+        // Delete the record
+        transaction.clear(key: key)
+    }
+
+    /// Validate ID is a TupleElement
+    private func validateID(_ id: any Sendable, for typeName: String) throws -> any TupleElement {
+        if let tupleElement = id as? any TupleElement {
+            return tupleElement
+        }
+        throw FDBRuntimeError.internalError("ID for \(typeName) must conform to TupleElement")
+    }
+
+    /// Update indexes for a model change
+    private func updateIndexes(
+        oldData: [UInt8]?,
+        newModel: (any Persistable)?,
+        id: Tuple,
+        store: FDBDataStore,
+        transaction: any TransactionProtocol,
+        deletingModel: (any Persistable)? = nil
+    ) async throws {
+        let modelType: any Persistable.Type
+        if let newModel = newModel {
+            modelType = type(of: newModel)
+        } else if let deletingModel = deletingModel {
+            modelType = type(of: deletingModel)
+        } else {
+            return
+        }
+
+        let indexDescriptors = modelType.indexDescriptors
+        guard !indexDescriptors.isEmpty else { return }
+
+        for descriptor in indexDescriptors {
+            let indexSubspaceForIndex = store.indexSubspace.subspace(descriptor.name)
+
+            // Clear old index entries if updating
+            if oldData != nil {
+                try await clearIndexEntriesForId(
+                    indexSubspace: indexSubspaceForIndex,
+                    id: id,
+                    transaction: transaction
+                )
+            }
+
+            // Remove old entries for delete
+            if let deletingModel = deletingModel {
+                let oldValues = extractIndexValues(from: deletingModel, keyPaths: descriptor.keyPaths)
+                if !oldValues.isEmpty {
+                    let oldIndexKey = buildIndexKey(
+                        subspace: indexSubspaceForIndex,
+                        values: oldValues,
+                        id: id
+                    )
+                    transaction.clear(key: oldIndexKey)
+                }
+            }
+
+            // Add new index entries
+            if let newModel = newModel {
+                let newValues = extractIndexValues(from: newModel, keyPaths: descriptor.keyPaths)
+                if !newValues.isEmpty {
+                    let newIndexKey = buildIndexKey(
+                        subspace: indexSubspaceForIndex,
+                        values: newValues,
+                        id: id
+                    )
+                    transaction.setValue([], for: newIndexKey)
+                }
+            }
+        }
+    }
+
+    /// Clear all index entries for a given ID
+    private func clearIndexEntriesForId(
+        indexSubspace: Subspace,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let (begin, end) = indexSubspace.range()
+        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+
+        for try await (key, _) in sequence {
+            if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace),
+               extractedId.pack() == id.pack() {
+                transaction.clear(key: key)
+            }
+        }
+    }
+
+    /// Extract ID from an index key
+    private func extractIDFromIndexKey(_ key: [UInt8], subspace: Subspace) -> Tuple? {
+        do {
+            let tuple = try subspace.unpack(key)
+            if tuple.count >= 2, let lastElement = tuple[tuple.count - 1] {
+                return Tuple([lastElement])
+            } else if tuple.count == 1, let element = tuple[0] {
+                return Tuple([element])
+            }
+        } catch {}
+        return nil
+    }
+
+    /// Extract index values from a model
+    private func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
+        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
+    }
+
+    /// Build index key
+    private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
+        var elements: [any TupleElement] = values
+        for i in 0..<id.count {
+            if let element = id[i] {
+                elements.append(element)
+            }
+        }
+        return subspace.pack(Tuple(elements))
+    }
+
     // MARK: - Rollback
 
     /// Discard all pending changes
-    ///
-    /// Clears the inserted and deleted model sets without persisting.
     public func rollback() {
         stateLock.withLock { state in
             state.insertedModels.removeAll()
@@ -557,18 +619,12 @@ public final class FDBContext: Sendable {
 
     // MARK: - Autosave
 
-    /// Schedule an autosave task
-    ///
-    /// This method schedules a save operation to run after a brief delay,
-    /// allowing multiple rapid changes to be batched together.
     private func scheduleAutosave() {
         Task { [weak self] in
-            // Brief delay to batch multiple rapid operations
             try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
 
             guard let self = self else { return }
 
-            // Check if we still need to save
             let shouldSave = self.stateLock.withLock { state in
                 state.hasChanges && state.autosaveEnabled
             }
@@ -577,8 +633,7 @@ public final class FDBContext: Sendable {
                 do {
                     try await self.save()
                 } catch {
-                    // Autosave errors are logged but not propagated
-                    // Users should handle errors in explicit save() calls
+                    self.logger.error("Autosave failed: \(error)")
                 }
             }
         }
@@ -587,25 +642,6 @@ public final class FDBContext: Sendable {
     // MARK: - Perform and Save
 
     /// Execute operations and automatically save changes
-    ///
-    /// This method groups operations and saves them atomically after the block completes.
-    /// All changes made within the block are saved in a single FoundationDB transaction,
-    /// ensuring atomic persistence.
-    ///
-    /// **Note**: This is a convenience method that calls `save()` after the block.
-    /// The underlying FoundationDB transaction is created during the save operation,
-    /// not at the start of the block.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// try await context.performAndSave {
-    ///     context.insert(newUser)
-    ///     context.delete(oldUser)
-    /// }
-    /// // Changes are automatically saved atomically
-    /// ```
-    ///
-    /// - Parameter block: The operations to execute
     public func performAndSave(
         block: () throws -> Void
     ) async throws {
@@ -613,36 +649,15 @@ public final class FDBContext: Sendable {
         try await save()
     }
 
-    /// Execute operations and automatically save changes (legacy name)
-    ///
-    /// - Note: Consider using `performAndSave` for clearer semantics.
-    /// - Parameter block: The operations to execute
-    @available(*, deprecated, renamed: "performAndSave")
-    public func transaction(
-        block: () throws -> Void
-    ) async throws {
-        try await performAndSave(block: block)
-    }
-
     // MARK: - Enumerate
 
     /// Enumerate all models of a type
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// try await context.enumerate(User.self) { user in
-    ///     print(user.name)
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The model type
-    ///   - block: Closure called for each model
     public func enumerate<T: Persistable>(
         _ type: T.Type,
         block: (T) throws -> Void
     ) async throws {
-        let models = try await dataStore.fetchAll(type)
+        let store = try await container.store(for: type)
+        let models = try await store.fetchAll(type)
         for model in models {
             try block(model)
         }
@@ -651,12 +666,8 @@ public final class FDBContext: Sendable {
 
 // MARK: - Errors
 
-/// Errors that can occur during FDBContext operations
 public enum FDBContextError: Error, CustomStringConvertible {
-    /// Attempted to save while another save operation is in progress
     case concurrentSaveNotAllowed
-
-    /// Model not found
     case modelNotFound(String)
 
     public var description: String {
