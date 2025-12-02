@@ -160,11 +160,15 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         // Build query from bounds
         let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
 
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use IndexSearcher for index access
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 
@@ -233,6 +237,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         var results: [T] = []
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
 
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         for keyValues in op.seekValues {
             // Convert seek values to TupleElements
             var seekElements: [any TupleElement] = []
@@ -245,8 +253,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             // Use equality query for point lookup
             let query = ScalarIndexQuery.equals(seekElements)
             let entries = try await searcher.search(
-                indexName: op.index.name,
                 query: query,
+                in: indexSubspace,
                 using: executionContext.storageReader
             )
 
@@ -267,11 +275,15 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         // Build query from bounds
         let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
 
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use IndexSearcher for index access
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 
@@ -374,6 +386,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Full Text Scan
 
     private func executeFullTextScan(_ op: FullTextScanOperator<T>) async throws -> [T] {
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use FullTextIndexSearcher for full-text search
         let searcher = FullTextIndexSearcher()
         let query = FullTextIndexQuery(
@@ -381,8 +397,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             matchMode: op.matchMode
         )
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 
@@ -400,6 +416,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Vector Search
 
     private func executeVectorSearch(_ op: VectorSearchOperator<T>) async throws -> [T] {
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use VectorIndexSearcher for vector similarity search
         let searcher = VectorIndexSearcher(dimensions: op.queryVector.count)
         let query = VectorIndexQuery(
@@ -408,8 +428,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             efSearch: op.efSearch
         )
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 
@@ -427,12 +447,16 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Spatial Scan
 
     private func executeSpatialScan(_ op: SpatialScanOperator<T>) async throws -> [T] {
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use SpatialIndexSearcher for spatial search
         let searcher = SpatialIndexSearcher()
         let query = SpatialIndexQuery(constraint: op.constraint)
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 
@@ -594,11 +618,15 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         // Build query from bounds
         let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
 
+        // Get index subspace via DirectoryLayer based on Persistable type
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
         // Use IndexSearcher for index access
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
         let entries = try await searcher.search(
-            indexName: op.index.name,
             query: query,
+            in: indexSubspace,
             using: executionContext.storageReader
         )
 

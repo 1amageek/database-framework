@@ -7,33 +7,31 @@ import Core
 
 /// Protocol for index-specific search operations
 ///
-/// Each index type implements this protocol to encapsulate its Subspace structure
+/// Each index type implements this protocol to encapsulate its key layout
 /// and search logic. The implementation knows how to:
-/// - Navigate its specific key layout
+/// - Navigate its specific key structure
 /// - Parse index entries
 /// - Execute queries efficiently
 ///
 /// **Design Principle**:
-/// - IndexSearcher knows its own Subspace structure
-/// - Uses StorageReader for raw KV access
+/// - IndexSearcher receives pre-resolved Subspace (via DirectoryLayer)
+/// - Subspace resolution is done by IndexQueryContext based on Persistable type
+/// - IndexSearcher uses StorageReader for raw KV access only
 /// - Returns standardized IndexEntry results
 ///
 /// **Usage**:
 /// ```swift
-/// // ScalarIndex implementation
-/// struct ScalarIndexSearcher: IndexSearcher {
-///     typealias Query = ScalarIndexQuery
+/// // Get subspace via IndexQueryContext (resolves via DirectoryLayer)
+/// let indexSubspace = try await queryContext.indexSubspace(for: Product.self)
+///     .subspace(indexDescriptor.name)
 ///
-///     func search(
-///         indexName: String,
-///         query: ScalarIndexQuery,
-///         using reader: StorageReader
-///     ) async throws -> [IndexEntry] {
-///         let subspace = reader.indexSubspace.subspace(indexName)
-///         // Scan [subspace]/[value]/[id] structure
-///         ...
-///     }
-/// }
+/// // Search using the resolved subspace
+/// let searcher = ScalarIndexSearcher()
+/// let entries = try await searcher.search(
+///     query: ScalarIndexQuery.equals(["electronics"]),
+///     in: indexSubspace,
+///     using: reader
+/// )
 /// ```
 public protocol IndexSearcher: Sendable {
     /// The query type for this index
@@ -42,13 +40,13 @@ public protocol IndexSearcher: Sendable {
     /// Search the index
     ///
     /// - Parameters:
-    ///   - indexName: The name of the index to search
     ///   - query: The search query
+    ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: The storage reader for raw KV access
     /// - Returns: Array of matching index entries
     func search(
-        indexName: String,
         query: Query,
+        in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry]
 }
@@ -206,15 +204,22 @@ public struct AggregationIndexQuery: Sendable {
 ///
 /// **Index Structure**:
 /// ```
-/// Key: [indexSubspace]/[indexName]/[fieldValue1]/[fieldValue2]/.../[primaryKey]
+/// Key: [subspace]/[fieldValue1]/[fieldValue2]/.../[primaryKey]
 /// Value: '' (non-covering) or Tuple(coveringFields...) (covering)
 /// ```
 ///
 /// **Usage**:
 /// ```swift
+/// // Get subspace via IndexQueryContext (resolves via DirectoryLayer)
+/// let indexSubspace = try await queryContext.indexSubspace(for: Product.self)
+///     .subspace(indexDescriptor.name)
+///
 /// let searcher = ScalarIndexSearcher()
-/// let query = ScalarIndexQuery.equals(["electronics"])
-/// let entries = try await searcher.search(indexName: "idx_category", query: query, using: reader)
+/// let entries = try await searcher.search(
+///     query: ScalarIndexQuery.equals(["electronics"]),
+///     in: indexSubspace,
+///     using: reader
+/// )
 /// ```
 public struct ScalarIndexSearcher: IndexSearcher {
     public typealias Query = ScalarIndexQuery
@@ -229,18 +234,29 @@ public struct ScalarIndexSearcher: IndexSearcher {
     /// Search the scalar index
     ///
     /// - Parameters:
-    ///   - indexName: Name of the index
     ///   - query: The search query with bounds
+    ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: Storage reader for raw KV access
     /// - Returns: Matching index entries
     public func search(
-        indexName: String,
         query: ScalarIndexQuery,
+        in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
-        let indexSubspace = reader.indexSubspace.subspace(indexName)
+        // Detect equals query (start == end with both non-nil)
+        // For equals queries, use prefix matching since index keys include the ID suffix
+        if let start = query.start, let end = query.end,
+           Tuple(start).pack() == Tuple(end).pack() {
+            return try await searchWithPrefix(
+                subspace: subspace,
+                prefix: start,
+                limit: query.limit,
+                reverse: query.reverse,
+                using: reader
+            )
+        }
 
-        // Build start/end tuples
+        // Build start/end tuples for range queries
         let startTuple: Tuple?
         if let start = query.start {
             startTuple = Tuple(start)
@@ -258,7 +274,7 @@ public struct ScalarIndexSearcher: IndexSearcher {
         var results: [IndexEntry] = []
 
         for try await (key, value) in reader.scanRange(
-            subspace: indexSubspace,
+            subspace: subspace,
             start: startTuple,
             end: endTuple,
             startInclusive: query.startInclusive,
@@ -269,7 +285,7 @@ public struct ScalarIndexSearcher: IndexSearcher {
             let entry = try parseIndexEntry(
                 key: key,
                 value: value,
-                subspace: indexSubspace
+                subspace: subspace
             )
             results.append(entry)
 
@@ -277,6 +293,44 @@ public struct ScalarIndexSearcher: IndexSearcher {
             if let limit = query.limit, results.count >= limit {
                 break
             }
+        }
+
+        return results
+    }
+
+    /// Search using prefix matching for equals queries
+    ///
+    /// Index keys have the structure: [subspace]/[value1]/[value2]/.../[id]
+    /// For equals([value1, value2]), we need to find all keys that start with
+    /// the prefix [value1, value2], regardless of the ID suffix.
+    private func searchWithPrefix(
+        subspace: Subspace,
+        prefix: [any TupleElement],
+        limit: Int?,
+        reverse: Bool,
+        using reader: StorageReader
+    ) async throws -> [IndexEntry] {
+        // Get the prefix key bytes (subspace prefix + tuple prefix)
+        let prefixTuple = Tuple(prefix)
+        let prefixKey = subspace.pack(prefixTuple)
+
+        var results: [IndexEntry] = []
+
+        // Scan the full subspace and filter by prefix
+        for try await (key, value) in reader.scanSubspace(subspace) {
+            // Check if key starts with prefix
+            guard key.starts(with: prefixKey) else { continue }
+
+            let entry = try parseIndexEntry(key: key, value: value, subspace: subspace)
+            results.append(entry)
+
+            if let limit = limit, results.count >= limit {
+                break
+            }
+        }
+
+        if reverse {
+            results.reverse()
         }
 
         return results
@@ -342,15 +396,22 @@ public struct ScalarIndexSearcher: IndexSearcher {
 ///
 /// **Index Structure**:
 /// ```
-/// Key: [indexSubspace]["terms"][term][primaryKey]
+/// Key: [subspace]["terms"][term][primaryKey]
 /// Value: Tuple(position1, position2, ...) or '' (no positions)
 /// ```
 ///
 /// **Usage**:
 /// ```swift
+/// // Get subspace via IndexQueryContext (resolves via DirectoryLayer)
+/// let indexSubspace = try await queryContext.indexSubspace(for: Article.self)
+///     .subspace(indexDescriptor.name)
+///
 /// let searcher = FullTextIndexSearcher()
-/// let query = FullTextIndexQuery(terms: ["swift", "concurrency"], matchMode: .all)
-/// let entries = try await searcher.search(indexName: "idx_content", query: query, using: reader)
+/// let entries = try await searcher.search(
+///     query: FullTextIndexQuery(terms: ["swift", "concurrency"], matchMode: .all),
+///     in: indexSubspace,
+///     using: reader
+/// )
 /// ```
 public struct FullTextIndexSearcher: IndexSearcher {
     public typealias Query = FullTextIndexQuery
@@ -360,17 +421,16 @@ public struct FullTextIndexSearcher: IndexSearcher {
     /// Search the full-text index
     ///
     /// - Parameters:
-    ///   - indexName: Name of the index
     ///   - query: The search query with terms and match mode
+    ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: Storage reader for raw KV access
     /// - Returns: Matching index entries
     public func search(
-        indexName: String,
         query: FullTextIndexQuery,
+        in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
-        let indexSubspace = reader.indexSubspace.subspace(indexName)
-        let termsSubspace = indexSubspace.subspace("terms")
+        let termsSubspace = subspace.subspace("terms")
 
         guard !query.terms.isEmpty else {
             return []
@@ -464,15 +524,22 @@ public struct FullTextIndexSearcher: IndexSearcher {
 ///
 /// **Index Structure** (Flat):
 /// ```
-/// Key: [indexSubspace]/[primaryKey]
+/// Key: [subspace]/[primaryKey]
 /// Value: Tuple(float1, float2, ..., floatN)  // vector components
 /// ```
 ///
 /// **Usage**:
 /// ```swift
+/// // Get subspace via IndexQueryContext (resolves via DirectoryLayer)
+/// let indexSubspace = try await queryContext.indexSubspace(for: Product.self)
+///     .subspace(indexDescriptor.name)
+///
 /// let searcher = VectorIndexSearcher(dimensions: 128, metric: .cosine)
-/// let query = VectorIndexQuery(queryVector: queryVec, k: 10)
-/// let entries = try await searcher.search(indexName: "idx_embedding", query: query, using: reader)
+/// let entries = try await searcher.search(
+///     query: VectorIndexQuery(queryVector: queryVec, k: 10),
+///     in: indexSubspace,
+///     using: reader
+/// )
 /// ```
 ///
 /// **Note**: This is a brute-force implementation that scans all vectors.
@@ -494,17 +561,15 @@ public struct VectorIndexSearcher: IndexSearcher {
     /// Search the vector index using flat scan
     ///
     /// - Parameters:
-    ///   - indexName: Name of the index
     ///   - query: The search query with query vector and k
+    ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: Storage reader for raw KV access
     /// - Returns: Matching index entries sorted by distance (closest first)
     public func search(
-        indexName: String,
         query: VectorIndexQuery,
+        in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
-        let indexSubspace = reader.indexSubspace.subspace(indexName)
-
         guard query.queryVector.count == dimensions else {
             throw VectorSearchError.dimensionMismatch(
                 expected: dimensions,
@@ -519,9 +584,9 @@ public struct VectorIndexSearcher: IndexSearcher {
         // Use a max-heap to keep track of top k nearest neighbors
         var results: [(entry: IndexEntry, distance: Double)] = []
 
-        for try await (key, value) in reader.scanSubspace(indexSubspace) {
+        for try await (key, value) in reader.scanSubspace(subspace) {
             // Parse primary key from key
-            guard let keyTuple = try? indexSubspace.unpack(key) else {
+            guard let keyTuple = try? subspace.unpack(key) else {
                 continue // Skip corrupt entries
             }
 
@@ -641,15 +706,22 @@ public struct VectorIndexSearcher: IndexSearcher {
 ///
 /// **Index Structure**:
 /// ```
-/// Key: [indexSubspace][spatialCode][primaryKey]
+/// Key: [subspace][spatialCode][primaryKey]
 /// Value: '' (empty)
 /// ```
 ///
 /// **Usage**:
 /// ```swift
+/// // Get subspace via IndexQueryContext (resolves via DirectoryLayer)
+/// let indexSubspace = try await queryContext.indexSubspace(for: Location.self)
+///     .subspace(indexDescriptor.name)
+///
 /// let searcher = SpatialIndexSearcher(level: 15)
-/// let query = SpatialIndexQuery(constraint: .radius(center: (lat, lon), radiusMeters: 1000))
-/// let entries = try await searcher.search(indexName: "idx_location", query: query, using: reader)
+/// let entries = try await searcher.search(
+///     query: SpatialIndexQuery(constraint: .radius(center: (lat, lon), radiusMeters: 1000)),
+///     in: indexSubspace,
+///     using: reader
+/// )
 /// ```
 public struct SpatialIndexSearcher: IndexSearcher {
     public typealias Query = SpatialIndexQuery
@@ -664,17 +736,15 @@ public struct SpatialIndexSearcher: IndexSearcher {
     /// Search the spatial index
     ///
     /// - Parameters:
-    ///   - indexName: Name of the index
     ///   - query: The search query with spatial constraint
+    ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: Storage reader for raw KV access
     /// - Returns: Matching index entries
     public func search(
-        indexName: String,
         query: SpatialIndexQuery,
+        in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
-        let indexSubspace = reader.indexSubspace.subspace(indexName)
-
         // Get covering cells for the constraint
         let coveringCells = getCoveringCells(for: query.constraint.type)
 
@@ -684,7 +754,7 @@ public struct SpatialIndexSearcher: IndexSearcher {
 
         for cellCode in coveringCells {
             // Create subspace for this cell
-            let cellSubspace = indexSubspace.subspace(Int64(bitPattern: cellCode))
+            let cellSubspace = subspace.subspace(Int64(bitPattern: cellCode))
 
             for try await (key, _) in reader.scanSubspace(cellSubspace) {
                 // Extract primary key from key

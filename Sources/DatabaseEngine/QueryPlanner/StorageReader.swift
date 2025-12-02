@@ -7,23 +7,16 @@ import Core
 
 /// Protocol for low-level storage access during query execution
 ///
-/// StorageReader provides basic key-value operations that IndexSearcher implementations
-/// use to read from their specific Subspace structures.
+/// StorageReader provides basic key-value operations for raw storage access.
+/// It is storage-agnostic and knows nothing about index structures.
 ///
 /// **Design Principle**:
-/// - StorageReader knows nothing about index structures
-/// - Each IndexSearcher knows its own Subspace layout and uses StorageReader for raw access
+/// - StorageReader provides raw KV operations only
+/// - Subspace resolution is done via Persistable type + DirectoryLayer
+/// - IndexSearcher receives pre-resolved Subspace, not raw StorageReader
 ///
-/// **Usage**:
-/// ```swift
-/// // IndexSearcher uses StorageReader for raw KV access
-/// func search(query: Query, using reader: StorageReader) async throws -> [IndexEntry] {
-///     let subspace = reader.indexSubspace.subspace(indexName)
-///     for try await (key, value) in reader.scanRange(subspace: subspace, ...) {
-///         // Parse key/value according to this index's structure
-///     }
-/// }
-/// ```
+/// **Note**: Index subspace is NOT exposed here. Use `IndexQueryContext.indexSubspace(for:)`
+/// which resolves subspace via DirectoryLayer based on Persistable type.
 public protocol StorageReader: Sendable {
 
     // MARK: - Item Access
@@ -68,11 +61,6 @@ public protocol StorageReader: Sendable {
     /// - Parameter key: The full key
     /// - Returns: The value if found, nil otherwise
     func getValue(key: [UInt8]) async throws -> [UInt8]?
-
-    /// Get the index subspace for accessing indexes
-    ///
-    /// - Returns: The subspace where indexes are stored (typically `[root]/I/`)
-    var indexSubspace: Subspace { get }
 }
 
 // MARK: - Default Implementations
