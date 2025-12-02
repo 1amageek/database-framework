@@ -26,7 +26,7 @@ extension RankIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return RankIndexMaintainer<Item>(
             index: index,
-            kind: self,
+            bucketSize: bucketSize,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression
         )

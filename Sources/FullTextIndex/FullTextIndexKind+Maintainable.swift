@@ -26,7 +26,10 @@ extension FullTextIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return FullTextIndexMaintainer<Item>(
             index: index,
-            kind: self,
+            tokenizer: tokenizer,
+            storePositions: storePositions,
+            ngramSize: ngramSize,
+            minTermLength: minTermLength,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression
         )

@@ -44,7 +44,6 @@ public let fullTextMaxTermBytes: Int = 8000
 /// ```
 public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
-    public let kind: FullTextIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -59,18 +58,20 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     public init(
         index: Index,
-        kind: FullTextIndexKind,
+        tokenizer: TokenizationStrategy,
+        storePositions: Bool,
+        ngramSize: Int,
+        minTermLength: Int,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
-        self.tokenizer = kind.tokenizer
-        self.storePositions = kind.storePositions
-        self.ngramSize = kind.ngramSize
-        self.minTermLength = kind.minTermLength
+        self.tokenizer = tokenizer
+        self.storePositions = storePositions
+        self.ngramSize = ngramSize
+        self.minTermLength = minTermLength
         self.termsSubspace = subspace.subspace("terms")
         self.docsSubspace = subspace.subspace("docs")
     }

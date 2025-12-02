@@ -152,14 +152,12 @@ public struct HNSWSearchParameters: Sendable {
 /// **⚠️ DO NOT USE INLINE INDEXING FOR HNSW IN PRODUCTION**
 public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
-    public let kind: VectorIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
     // HNSW parameters
     private let parameters: HNSWInternalParameters
 
-    // Extract vector options from kind
     private let dimensions: Int
     private let metric: VectorMetric
 
@@ -172,18 +170,18 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     public init(
         index: Index,
-        kind: VectorIndexKind,
+        dimensions: Int,
+        metric: VectorMetric,
         subspace: Subspace,
         idExpression: KeyExpression,
         parameters: HNSWParameters = .default
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
         self.parameters = HNSWInternalParameters(from: parameters)
-        self.dimensions = kind.dimensions
-        self.metric = kind.metric
+        self.dimensions = dimensions
+        self.metric = metric
 
         // Initialize HNSW subspaces
         self.hnswSubspace = subspace.subspace("hnsw")

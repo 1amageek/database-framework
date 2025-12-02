@@ -87,7 +87,7 @@ private struct TestContext {
 
         let index = Index(
             name: indexName,
-            kind: ScalarIndexKind(),
+            kind: ScalarIndexKind<ScalarTestUser>(fields: [\.email]),
             rootExpression: FieldKeyExpression(fieldName: "email"),
             subspaceKey: indexName,
             itemTypes: Set(["ScalarTestUser"])
@@ -395,7 +395,7 @@ struct ScalarIndexBehaviorTests {
 
         let index = Index(
             name: "ScalarTestUser_city_age",
-            kind: ScalarIndexKind(),
+            kind: ScalarIndexKind<ScalarTestUser>(fields: [\.city, \.age]),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "age")

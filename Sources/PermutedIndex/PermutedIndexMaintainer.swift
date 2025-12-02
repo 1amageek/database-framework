@@ -42,7 +42,6 @@ import FoundationDB
 /// ```
 public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
-    public let kind: PermutedIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -50,15 +49,14 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
     public init(
         index: Index,
-        kind: PermutedIndexKind,
+        permutation: Permutation,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
-        self.permutation = kind.permutation
+        self.permutation = permutation
     }
 
     /// Update index when item changes

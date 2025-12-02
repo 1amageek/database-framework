@@ -26,7 +26,8 @@ extension SpatialIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return SpatialIndexMaintainer<Item>(
             index: index,
-            kind: self,
+            encoding: encoding,
+            level: level,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression
         )

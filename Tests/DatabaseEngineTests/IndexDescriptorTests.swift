@@ -27,7 +27,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor initializes with all parameters")
     func testInitialization() throws {
-        let kind = ScalarIndexKind()
+        let kind = ScalarIndexKind<TestUser>(fields: [\.email])
         let options = CommonIndexOptions(unique: true, sparse: false, metadata: ["key": "value"])
 
         let descriptor = IndexDescriptor(
@@ -47,7 +47,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor initializes with default options")
     func testInitializationWithDefaults() throws {
-        let kind = ScalarIndexKind()
+        let kind = ScalarIndexKind<TestUser>(fields: [\.email])
 
         let descriptor = IndexDescriptor(
             name: "User_email",
@@ -66,7 +66,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor isUnique property")
     func testIsUniqueProperty() throws {
-        let kind = ScalarIndexKind()
+        let kind = ScalarIndexKind<TestUser>(fields: [\.email])
 
         let uniqueDescriptor = IndexDescriptor(
             name: "User_email",
@@ -79,7 +79,7 @@ struct IndexDescriptorTests {
         let nonUniqueDescriptor = IndexDescriptor(
             name: "User_city",
             keyPaths: [\TestUser.city],
-            kind: kind,
+            kind: ScalarIndexKind<TestUser>(fields: [\.city]),
             commonOptions: .init(unique: false)
         )
         #expect(nonUniqueDescriptor.isUnique == false)
@@ -87,12 +87,10 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor isSparse property")
     func testIsSparseProperty() throws {
-        let kind = ScalarIndexKind()
-
         let sparseDescriptor = IndexDescriptor(
             name: "User_nickname",
             keyPaths: [\TestUser.nickname],
-            kind: kind,
+            kind: ScalarIndexKind<TestUser>(fields: [\.nickname]),
             commonOptions: .init(sparse: true)
         )
         #expect(sparseDescriptor.isSparse == true)
@@ -100,7 +98,7 @@ struct IndexDescriptorTests {
         let nonSparseDescriptor = IndexDescriptor(
             name: "User_email",
             keyPaths: [\TestUser.email],
-            kind: kind,
+            kind: ScalarIndexKind<TestUser>(fields: [\.email]),
             commonOptions: .init(sparse: false)
         )
         #expect(nonSparseDescriptor.isSparse == false)
@@ -108,8 +106,8 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor kindIdentifier property")
     func testKindIdentifierProperty() throws {
-        let scalarKind = ScalarIndexKind()
-        let countKind = CountIndexKind()
+        let scalarKind = ScalarIndexKind<TestUser>(fields: [\.email])
+        let countKind = CountIndexKind<TestUser>(groupBy: [\.city])
 
         let scalarDescriptor = IndexDescriptor(
             name: "User_email",
@@ -130,7 +128,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with composite key paths")
     func testCompositeKeyPaths() throws {
-        let kind = ScalarIndexKind()
+        let kind = ScalarIndexKind<TestUser>(fields: [\.category, \.price])
 
         let descriptor = IndexDescriptor(
             name: "Product_category_price",
@@ -145,7 +143,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with CountIndexKind")
     func testCountIndexKind() throws {
-        let kind = CountIndexKind()
+        let kind = CountIndexKind<TestUser>(groupBy: [\.city])
 
         let descriptor = IndexDescriptor(
             name: "User_count_by_city",
@@ -158,7 +156,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with SumIndexKind")
     func testSumIndexKind() throws {
-        let kind = SumIndexKind()
+        let kind = SumIndexKind<TestUser>(groupBy: [\.department], value: \.salary)
 
         let descriptor = IndexDescriptor(
             name: "Employee_salary_by_dept",
@@ -172,7 +170,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MinIndexKind")
     func testMinIndexKind() throws {
-        let kind = MinIndexKind()
+        let kind = MinIndexKind<TestUser>(groupBy: [\.region], value: \.price)
 
         let descriptor = IndexDescriptor(
             name: "Product_min_price_by_region",
@@ -185,7 +183,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MaxIndexKind")
     func testMaxIndexKind() throws {
-        let kind = MaxIndexKind()
+        let kind = MaxIndexKind<TestUser>(groupBy: [\.region], value: \.price)
 
         let descriptor = IndexDescriptor(
             name: "Product_max_price_by_region",
@@ -198,7 +196,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with VersionIndexKind")
     func testVersionIndexKind() throws {
-        let kind = VersionIndexKind()
+        let kind = VersionIndexKind<TestUser>(field: \.email)
 
         // Note: VersionIndexKind typically uses a version field, using email as placeholder
         let descriptor = IndexDescriptor(
@@ -224,7 +222,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor description includes key information")
     func testDescription() throws {
-        let kind = ScalarIndexKind()
+        let kind = ScalarIndexKind<TestUser>(fields: [\.email])
         let descriptor = IndexDescriptor(
             name: "User_email",
             keyPaths: [\TestUser.email],
@@ -247,7 +245,7 @@ struct IndexDescriptorTests {
         let descriptor = IndexDescriptor(
             name: "User_email",
             keyPaths: [\TestUser.email],
-            kind: ScalarIndexKind()
+            kind: ScalarIndexKind<TestUser>(fields: [\.email])
         )
 
         // Test that we can convert keyPath back to string

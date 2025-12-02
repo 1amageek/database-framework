@@ -80,7 +80,6 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     /// Database connection (internally thread-safe)
     nonisolated(unsafe) private let database: any DatabaseProtocol
     private let subspace: Subspace
-    private let kind: AdjacencyIndexKind
 
     /// Cached subspace for outgoing edges (computed once at init)
     private let outgoingSubspace: Subspace
@@ -95,15 +94,12 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     /// - Parameters:
     ///   - database: FDB database connection
     ///   - subspace: Index subspace (same as used by AdjacencyIndexMaintainer)
-    ///   - kind: Adjacency index kind configuration
     public init(
         database: any DatabaseProtocol,
-        subspace: Subspace,
-        kind: AdjacencyIndexKind
+        subspace: Subspace
     ) {
         self.database = database
         self.subspace = subspace
-        self.kind = kind
         // Cache subspaces at initialization
         self.outgoingSubspace = subspace.subspace("adj")
         self.incomingSubspace = subspace.subspace("adj_in")

@@ -52,8 +52,10 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// ID expression for extracting item's unique identifier
     public let idExpression: KeyExpression
 
-    /// Adjacency index kind with configuration
-    public let kind: AdjacencyIndexKind
+    private let sourceField: String
+    private let targetField: String
+    private let labelField: String?
+    private let bidirectional: Bool
 
     /// Cached subspace for outgoing edges (computed once at init)
     private let outgoingSubspace: Subspace
@@ -69,17 +71,26 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - index: Index definition
     ///   - subspace: FDB subspace for this index
     ///   - idExpression: Expression for extracting item's unique identifier
-    ///   - kind: Adjacency index kind configuration
+    ///   - sourceField: Field name for source node
+    ///   - targetField: Field name for target node
+    ///   - labelField: Optional field name for edge label
+    ///   - bidirectional: Whether to maintain incoming edges
     public init(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        kind: AdjacencyIndexKind
+        sourceField: String,
+        targetField: String,
+        labelField: String?,
+        bidirectional: Bool
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.kind = kind
+        self.sourceField = sourceField
+        self.targetField = targetField
+        self.labelField = labelField
+        self.bidirectional = bidirectional
         // Cache subspaces at initialization
         self.outgoingSubspace = subspace.subspace("adj")
         self.incomingSubspace = subspace.subspace("adj_in")
@@ -107,7 +118,7 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let oldItem = oldItem {
             let (outKey, inKey) = try buildIndexKeys(for: oldItem)
             transaction.clear(key: outKey)
-            if kind.bidirectional, let inKey = inKey {
+            if bidirectional, let inKey = inKey {
                 transaction.clear(key: inKey)
             }
         }
@@ -116,7 +127,7 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
         if let newItem = newItem {
             let (outKey, inKey) = try buildIndexKeys(for: newItem)
             transaction.setValue([], for: outKey)
-            if kind.bidirectional, let inKey = inKey {
+            if bidirectional, let inKey = inKey {
                 transaction.setValue([], for: inKey)
             }
         }
@@ -135,7 +146,7 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws {
         let (outKey, inKey) = try buildIndexKeys(for: item)
         transaction.setValue([], for: outKey)
-        if kind.bidirectional, let inKey = inKey {
+        if bidirectional, let inKey = inKey {
             transaction.setValue([], for: inKey)
         }
     }
@@ -149,7 +160,7 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [FDB.Bytes] {
         let (outKey, inKey) = try buildIndexKeys(for: item)
         var keys: [FDB.Bytes] = [outKey]
-        if kind.bidirectional, let inKey = inKey {
+        if bidirectional, let inKey = inKey {
             keys.append(inKey)
         }
         return keys
@@ -163,12 +174,12 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// **Incoming key structure**: [subspace]/adj_in/[label]/[target]/[source]
     private func buildIndexKeys(for item: Item) throws -> (outgoing: FDB.Bytes, incoming: FDB.Bytes?) {
         // Extract field values using dynamicMember subscript
-        let sourceValue = try extractField(from: item, fieldName: kind.sourceField)
-        let targetValue = try extractField(from: item, fieldName: kind.targetField)
+        let sourceValue = try extractField(from: item, fieldName: sourceField)
+        let targetValue = try extractField(from: item, fieldName: targetField)
 
         // Extract label value if specified
         var labelValue: (any TupleElement)?
-        if let labelField = kind.labelField {
+        if let labelField = labelField {
             labelValue = try extractField(from: item, fieldName: labelField)
         }
 
@@ -184,7 +195,7 @@ public struct AdjacencyIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Build incoming key: [adj_in]/[label]/[target]/[source]
         var inKey: FDB.Bytes?
-        if kind.bidirectional {
+        if bidirectional {
             var inElements: [any TupleElement] = []
             if let label = labelValue {
                 inElements.append(label)

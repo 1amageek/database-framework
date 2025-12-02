@@ -78,7 +78,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: VersionIndexMaintainer<TestDocument>
-    let kind: VersionIndexKind
+    let kind: VersionIndexKind<TestDocument>
 
     init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "TestDocument_version") throws {
         self.database = try FDBClient.openDatabase()
@@ -86,7 +86,7 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "version", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = VersionIndexKind(strategy: strategy)
+        self.kind = VersionIndexKind<TestDocument>(field: \.id, strategy: strategy)
 
         let index = Index(
             name: indexName,
@@ -98,7 +98,7 @@ private struct TestContext {
 
         self.maintainer = VersionIndexMaintainer<TestDocument>(
             index: index,
-            kind: kind,
+            strategy: kind.strategy,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

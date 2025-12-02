@@ -84,7 +84,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: AdjacencyIndexMaintainer<TestEdge>
-    let kind: AdjacencyIndexKind
+    let kind: AdjacencyIndexKind<TestEdge>
 
     init(bidirectional: Bool = true, indexName: String = "TestEdge_adjacency") throws {
         self.database = try FDBClient.openDatabase()
@@ -92,10 +92,10 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = AdjacencyIndexKind(
-            sourceField: "source",
-            targetField: "target",
-            labelField: "label",
+        self.kind = AdjacencyIndexKind<TestEdge>(
+            source: \.source,
+            target: \.target,
+            label: \.label,
             bidirectional: bidirectional
         )
 
@@ -115,7 +115,10 @@ private struct TestContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            kind: kind
+            sourceField: kind.sourceField,
+            targetField: kind.targetField,
+            labelField: kind.labelField,
+            bidirectional: kind.bidirectional
         )
     }
 

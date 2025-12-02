@@ -47,7 +47,10 @@ extension AdjacencyIndexKind: IndexKindMaintainable {
             index: index,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression,
-            kind: self
+            sourceField: sourceField,
+            targetField: targetField,
+            labelField: labelField,
+            bidirectional: bidirectional
         )
     }
 }

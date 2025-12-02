@@ -26,7 +26,10 @@ public struct TripleIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
-    public let kind: TripleIndexKind
+
+    private let subjectField: String
+    private let predicateField: String
+    private let objectField: String
 
     // Cached subspaces (computed once at init)
     private let spoSubspace: Subspace
@@ -37,12 +40,16 @@ public struct TripleIndexMaintainer<Item: Persistable>: IndexMaintainer {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        kind: TripleIndexKind
+        subjectField: String,
+        predicateField: String,
+        objectField: String
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.kind = kind
+        self.subjectField = subjectField
+        self.predicateField = predicateField
+        self.objectField = objectField
         // Cache subspaces at initialization
         self.spoSubspace = subspace.subspace("spo")
         self.posSubspace = subspace.subspace("pos")
@@ -92,9 +99,9 @@ public struct TripleIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private
 
     private func buildAllIndexKeys(for item: Item, id: Tuple? = nil) throws -> [FDB.Bytes] {
-        let subject = try extractField(from: item, fieldName: kind.subjectField)
-        let predicate = try extractField(from: item, fieldName: kind.predicateField)
-        let object = try extractField(from: item, fieldName: kind.objectField)
+        let subject = try extractField(from: item, fieldName: subjectField)
+        let predicate = try extractField(from: item, fieldName: predicateField)
+        let object = try extractField(from: item, fieldName: objectField)
         let itemId = try id ?? DataAccess.extractId(from: item, using: idExpression)
 
         // Pre-extract ID elements once (avoid repeated extraction in loop)

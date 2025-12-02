@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: category + amount (grouping + sum value)
         let index = Index(
             name: indexName,
-            kind: SumIndexKind(),
+            kind: SumIndexKind<SumTestSale>(groupBy: [\.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "amount")
@@ -467,7 +467,7 @@ struct SumIndexBehaviorTests {
         // Expression: region + category + amount
         let index = Index(
             name: "SumTestSale_region_category_amount",
-            kind: SumIndexKind(),
+            kind: SumIndexKind<SumTestSale>(groupBy: [\.region, \.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),

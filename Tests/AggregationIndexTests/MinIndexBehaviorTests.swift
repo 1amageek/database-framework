@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: category + price (grouping + min value)
         let index = Index(
             name: indexName,
-            kind: MinIndexKind(),
+            kind: MinIndexKind<MinTestProduct>(groupBy: [\.category], value: \.price),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "price")

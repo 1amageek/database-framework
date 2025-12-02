@@ -74,7 +74,7 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Default configuration returns FlatVectorIndexMaintainer")
     func testDefaultReturnsFlatMaintainer() async throws {
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -100,7 +100,7 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("HNSW configuration returns HNSWIndexMaintainer")
     func testHNSWConfigurationReturnsHNSWMaintainer() async throws {
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -131,7 +131,7 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Explicit flat configuration returns FlatVectorIndexMaintainer")
     func testExplicitFlatConfigurationReturnsFlatMaintainer() async throws {
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -161,7 +161,7 @@ struct VectorIndexConfigurationSelectionTests {
 
     @Test("Non-matching configuration returns FlatVectorIndexMaintainer")
     func testNonMatchingConfigurationReturnsFlatMaintainer() async throws {
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let subspace = Subspace(prefix: Tuple("test").pack())
 
         // Configure HNSW for a different index name
@@ -254,7 +254,7 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
 
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -265,7 +265,8 @@ struct HNSWBasicBehaviorTests {
 
         let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
             index: index,
-            kind: kind,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: HNSWParameters(m: 16, efConstruction: 200)
@@ -275,7 +276,7 @@ struct HNSWBasicBehaviorTests {
 
         try await database.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as HNSWTestDocument?,
                 newItem: doc,
                 transaction: transaction
             )
@@ -304,7 +305,7 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
 
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -315,7 +316,8 @@ struct HNSWBasicBehaviorTests {
 
         let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
             index: index,
-            kind: kind,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: HNSWParameters(m: 16, efConstruction: 200)
@@ -388,7 +390,7 @@ struct HNSWBasicBehaviorTests {
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
 
-        let kind = VectorIndexKind(dimensions: 4, metric: .cosine)
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
         let index = Index(
             name: "HNSWTestDocument_embedding",
             kind: kind,
@@ -399,7 +401,8 @@ struct HNSWBasicBehaviorTests {
 
         let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
             index: index,
-            kind: kind,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
             parameters: HNSWParameters(m: 16, efConstruction: 200)
@@ -410,7 +413,7 @@ struct HNSWBasicBehaviorTests {
         // Insert
         try await database.withTransaction { transaction in
             try await maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as HNSWTestDocument?,
                 newItem: doc,
                 transaction: transaction
             )

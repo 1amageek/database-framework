@@ -23,6 +23,9 @@ import Vector
 public protocol _VectorIndexConfiguration: IndexConfiguration {
     /// Vector search algorithm selection
     var algorithm: VectorAlgorithm { get }
+
+    /// Subspace key for data isolation (inherited from IndexConfiguration)
+    var subspaceKey: String? { get }
 }
 
 // MARK: - Vector Index Configuration
@@ -88,6 +91,12 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// Vector search algorithm selection
     public let algorithm: VectorAlgorithm
 
+    /// Optional subspace key for data isolation
+    ///
+    /// When specified, creates a separate subspace for this configuration's data.
+    /// Useful for maintaining multiple algorithm variants (e.g., "hnsw", "flat").
+    public let subspaceKey: String?
+
     // MARK: - Initialization
 
     /// Create vector index configuration
@@ -95,12 +104,15 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// - Parameters:
     ///   - keyPath: KeyPath to the vector field
     ///   - algorithm: Search algorithm to use (default: .flat)
+    ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         keyPath: KeyPath<Model, [Float]>,
-        algorithm: VectorAlgorithm = .flat
+        algorithm: VectorAlgorithm = .flat,
+        subspaceKey: String? = nil
     ) {
         self._keyPath = keyPath
         self.algorithm = algorithm
+        self.subspaceKey = subspaceKey
     }
 
     /// Create configuration with HNSW algorithm
@@ -108,12 +120,15 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// - Parameters:
     ///   - keyPath: KeyPath to the vector field
     ///   - hnswParameters: HNSW algorithm parameters
+    ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         keyPath: KeyPath<Model, [Float]>,
-        hnsw hnswParameters: VectorHNSWParameters
+        hnsw hnswParameters: VectorHNSWParameters,
+        subspaceKey: String? = nil
     ) {
         self._keyPath = keyPath
         self.algorithm = .hnsw(hnswParameters)
+        self.subspaceKey = subspaceKey
     }
 }
 

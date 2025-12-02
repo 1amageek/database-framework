@@ -79,7 +79,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: PermutedIndexMaintainer<TestLocation>
-    let kind: PermutedIndexKind
+    let kind: PermutedIndexKind<TestLocation>
 
     /// Creates a test context with a permutation that reorders (country, city, name) to (city, country, name)
     init(permutation: Permutation? = nil, indexName: String = "TestLocation_compound") throws {
@@ -90,7 +90,10 @@ private struct TestContext {
 
         // Default permutation: [1, 0, 2] - (city, country, name)
         let perm = permutation ?? (try! Permutation(indices: [1, 0, 2]))
-        self.kind = PermutedIndexKind(permutation: perm)
+        self.kind = PermutedIndexKind<TestLocation>(
+            fields: [\TestLocation.country, \TestLocation.city, \TestLocation.name],
+            permutation: perm
+        )
 
         // Expression: country + city + name (compound fields)
         let index = Index(
@@ -107,7 +110,7 @@ private struct TestContext {
 
         self.maintainer = PermutedIndexMaintainer<TestLocation>(
             index: index,
-            kind: kind,
+            permutation: perm,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

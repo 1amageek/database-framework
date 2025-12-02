@@ -34,7 +34,6 @@ import FoundationDB
 /// ```
 public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
-    public let kind: VectorIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -43,16 +42,16 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     public init(
         index: Index,
-        kind: VectorIndexKind,
+        dimensions: Int,
+        metric: VectorMetric,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
-        self.dimensions = kind.dimensions
-        self.metric = kind.metric
+        self.dimensions = dimensions
+        self.metric = metric
     }
 
     public func updateIndex(

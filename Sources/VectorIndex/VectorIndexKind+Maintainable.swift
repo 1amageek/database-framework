@@ -23,6 +23,10 @@ extension VectorIndexKind: IndexKindMaintainable {
     /// 2. If found with `.hnsw` algorithm: use `HNSWIndexMaintainer`
     /// 3. Otherwise: use `FlatVectorIndexMaintainer` (safe default)
     ///
+    /// **Subspace Structure**:
+    /// - Without subspaceKey: `[subspace]/[indexName]/...`
+    /// - With subspaceKey: `[subspace]/[indexName]/[subspaceKey]/...`
+    ///
     /// **Performance Characteristics**:
     /// - **Flat**: O(n) search, 100% recall, no setup required
     /// - **HNSW**: O(log n) search, ~95-99% recall, limited to ~500 nodes inline
@@ -46,6 +50,14 @@ extension VectorIndexKind: IndexKindMaintainable {
             config.indexName == index.name
         } as? _VectorIndexConfiguration
 
+        // Build subspace with optional subspaceKey
+        let indexSubspace: Subspace
+        if let subspaceKey = matchingConfig?.subspaceKey {
+            indexSubspace = subspace.subspace(index.name).subspace(subspaceKey)
+        } else {
+            indexSubspace = subspace.subspace(index.name)
+        }
+
         // Check if HNSW algorithm is requested
         if let vectorConfig = matchingConfig {
             switch vectorConfig.algorithm {
@@ -62,8 +74,9 @@ extension VectorIndexKind: IndexKindMaintainable {
                 )
                 return HNSWIndexMaintainer<Item>(
                     index: index,
-                    kind: self,
-                    subspace: subspace.subspace(index.name),
+                    dimensions: dimensions,
+                    metric: metric,
+                    subspace: indexSubspace,
                     idExpression: idExpression,
                     parameters: params
                 )
@@ -73,8 +86,9 @@ extension VectorIndexKind: IndexKindMaintainable {
         // Default: flat scan (safe, exact, no memory requirements)
         return FlatVectorIndexMaintainer<Item>(
             index: index,
-            kind: self,
-            subspace: subspace.subspace(index.name),
+            dimensions: dimensions,
+            metric: metric,
+            subspace: indexSubspace,
             idExpression: idExpression
         )
     }

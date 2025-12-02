@@ -238,6 +238,8 @@ struct MockConfigurableIndexKind: IndexKind {
     static let subspaceStructure = SubspaceStructure.hierarchical
 
     let dimensions: Int
+    var fieldNames: [String] = []
+    var indexName: String { "MockConfigurableIndex" }
 
     init(dimensions: Int = 0) {
         self.dimensions = dimensions
@@ -275,6 +277,9 @@ extension MockConfigurableIndexKind: IndexKindMaintainable {
 struct MockMultiConfigIndexKind: IndexKind {
     static let identifier = "mock-multi-config"
     static let subspaceStructure = SubspaceStructure.flat
+
+    var fieldNames: [String] = []
+    var indexName: String { "MockMultiConfigIndex" }
 
     static func validateTypes(_ types: [Any.Type]) throws {
         // Accept any types for testing

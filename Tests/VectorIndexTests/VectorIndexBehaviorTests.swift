@@ -83,7 +83,11 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "vector", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        let kind = VectorIndexKind(dimensions: dimensions, metric: metric)
+        let kind = VectorIndexKind<TestDocument>(
+            embedding: \.embedding,
+            dimensions: dimensions,
+            metric: metric
+        )
 
         let index = Index(
             name: indexName,
@@ -95,7 +99,8 @@ private struct TestContext {
 
         self.maintainer = FlatVectorIndexMaintainer<TestDocument>(
             index: index,
-            kind: kind,
+            dimensions: dimensions,
+            metric: metric,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

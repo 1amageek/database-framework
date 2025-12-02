@@ -32,7 +32,7 @@ struct IndexedUser: Persistable {
             IndexDescriptor(
                 name: "IndexedUser_email",
                 keyPaths: [\IndexedUser.email],
-                kind: ScalarIndexKind(),
+                kind: ScalarIndexKind<IndexedUser>(fields: [\.email]),
                 commonOptions: CommonIndexOptions(unique: true)
             )
         ]

@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: subject + score (grouping + max value)
         let index = Index(
             name: indexName,
-            kind: MaxIndexKind(),
+            kind: MaxIndexKind<MaxTestScore>(groupBy: [\.subject], value: \.score),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "score")

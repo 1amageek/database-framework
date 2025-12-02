@@ -79,7 +79,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: TripleIndexMaintainer<TestStatement>
-    let kind: TripleIndexKind
+    let kind: TripleIndexKind<TestStatement>
 
     init(indexName: String = "TestStatement_triple") throws {
         self.database = try FDBClient.openDatabase()
@@ -87,10 +87,10 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "triple", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = TripleIndexKind(
-            subjectField: "subject",
-            predicateField: "predicate",
-            objectField: "object"
+        self.kind = TripleIndexKind<TestStatement>(
+            subject: \.subject,
+            predicate: \.predicate,
+            object: \.object
         )
 
         let index = Index(
@@ -109,7 +109,9 @@ private struct TestContext {
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            kind: kind
+            subjectField: kind.subjectField,
+            predicateField: kind.predicateField,
+            objectField: kind.objectField
         )
     }
 
@@ -180,9 +182,10 @@ private struct TestContext {
         let context = try TestContext()
         defer { Task { try? await context.cleanup() } }
 
-        #expect(context.maintainer.kind.subjectField == "subject")
-        #expect(context.maintainer.kind.predicateField == "predicate")
-        #expect(context.maintainer.kind.objectField == "object")
+        // Maintainer created successfully - configuration is stored internally
+        #expect(context.kind.subjectField == "subject")
+        #expect(context.kind.predicateField == "predicate")
+        #expect(context.kind.objectField == "object")
     }
 
     @Test func testTripleIndexKeyGeneration() async throws {

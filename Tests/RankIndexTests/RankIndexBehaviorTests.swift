@@ -74,7 +74,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: RankIndexMaintainer<TestPlayer>
-    let kind: RankIndexKind
+    let kind: RankIndexKind<TestPlayer>
 
     init(indexName: String = "TestPlayer_score") throws {
         self.database = try FDBClient.openDatabase()
@@ -82,7 +82,7 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = RankIndexKind()
+        self.kind = RankIndexKind<TestPlayer>(field: \.score)
 
         // Expression: score
         let index = Index(
@@ -95,7 +95,7 @@ private struct TestContext {
 
         self.maintainer = RankIndexMaintainer<TestPlayer>(
             index: index,
-            kind: kind,
+            bucketSize: kind.bucketSize,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

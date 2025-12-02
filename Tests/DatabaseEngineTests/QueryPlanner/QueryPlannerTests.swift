@@ -49,13 +49,12 @@ struct QPTestUser: Persistable {
     }
 
     static var indexDescriptors: [IndexDescriptor] {
-        let scalarKind = ScalarIndexKind()
         return [
-            IndexDescriptor(name: "idx_email", keyPaths: [\QPTestUser.email], kind: scalarKind),
-            IndexDescriptor(name: "idx_age", keyPaths: [\QPTestUser.age], kind: scalarKind),
-            IndexDescriptor(name: "idx_name_age", keyPaths: [\QPTestUser.name, \QPTestUser.age], kind: scalarKind),
-            IndexDescriptor(name: "idx_department", keyPaths: [\QPTestUser.department], kind: scalarKind),
-            IndexDescriptor(name: "idx_isActive", keyPaths: [\QPTestUser.isActive], kind: scalarKind)
+            IndexDescriptor(name: "idx_email", keyPaths: [\QPTestUser.email], kind: ScalarIndexKind<QPTestUser>(fields: [\.email])),
+            IndexDescriptor(name: "idx_age", keyPaths: [\QPTestUser.age], kind: ScalarIndexKind<QPTestUser>(fields: [\.age])),
+            IndexDescriptor(name: "idx_name_age", keyPaths: [\QPTestUser.name, \QPTestUser.age], kind: ScalarIndexKind<QPTestUser>(fields: [\.name, \.age])),
+            IndexDescriptor(name: "idx_department", keyPaths: [\QPTestUser.department], kind: ScalarIndexKind<QPTestUser>(fields: [\.department])),
+            IndexDescriptor(name: "idx_isActive", keyPaths: [\QPTestUser.isActive], kind: ScalarIndexKind<QPTestUser>(fields: [\.isActive]))
         ]
     }
 

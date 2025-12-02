@@ -26,7 +26,7 @@ extension PermutedIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return PermutedIndexMaintainer<Item>(
             index: index,
-            kind: self,
+            permutation: permutation,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression
         )

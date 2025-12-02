@@ -79,7 +79,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<TestLocation>
-    let kind: SpatialIndexKind
+    let kind: SpatialIndexKind<TestLocation>
     let level: Int
 
     /// Create test context
@@ -93,7 +93,12 @@ private struct TestContext {
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.level = level
 
-        self.kind = SpatialIndexKind(encoding: encoding, level: level)
+        self.kind = SpatialIndexKind<TestLocation>(
+            latitude: \.latitude,
+            longitude: \.longitude,
+            encoding: encoding,
+            level: level
+        )
 
         // Expression: latitude + longitude
         let index = Index(
@@ -109,7 +114,8 @@ private struct TestContext {
 
         self.maintainer = SpatialIndexMaintainer<TestLocation>(
             index: index,
-            kind: kind,
+            encoding: kind.encoding,
+            level: kind.level,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

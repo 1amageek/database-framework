@@ -18,7 +18,9 @@ extension TripleIndexKind: IndexKindMaintainable {
             index: index,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression,
-            kind: self
+            subjectField: subjectField,
+            predicateField: predicateField,
+            objectField: objectField
         )
     }
 }

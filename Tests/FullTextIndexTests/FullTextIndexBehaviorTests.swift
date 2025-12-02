@@ -74,7 +74,7 @@ private struct TestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<TestArticle>
-    let kind: FullTextIndexKind
+    let kind: FullTextIndexKind<TestArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "TestArticle_content") throws {
         self.database = try FDBClient.openDatabase()
@@ -82,7 +82,11 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = FullTextIndexKind(tokenizer: tokenizer, storePositions: storePositions)
+        self.kind = FullTextIndexKind<TestArticle>(
+            fields: [\.content],
+            tokenizer: tokenizer,
+            storePositions: storePositions
+        )
 
         // Expression: content
         let index = Index(
@@ -95,7 +99,10 @@ private struct TestContext {
 
         self.maintainer = FullTextIndexMaintainer<TestArticle>(
             index: index,
-            kind: kind,
+            tokenizer: tokenizer,
+            storePositions: storePositions,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
         )

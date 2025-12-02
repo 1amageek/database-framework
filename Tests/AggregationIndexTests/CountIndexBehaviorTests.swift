@@ -87,7 +87,7 @@ private struct TestContext {
 
         let index = Index(
             name: indexName,
-            kind: CountIndexKind(),
+            kind: CountIndexKind<CountTestUser>(groupBy: [\.city]),
             rootExpression: FieldKeyExpression(fieldName: "city"),
             subspaceKey: indexName,
             itemTypes: Set(["CountTestUser"])
@@ -443,7 +443,7 @@ struct CountIndexBehaviorTests {
 
         let index = Index(
             name: "CountTestUser_city_department",
-            kind: CountIndexKind(),
+            kind: CountIndexKind<CountTestUser>(groupBy: [\.city, \.department]),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "city"),
                 FieldKeyExpression(fieldName: "department")

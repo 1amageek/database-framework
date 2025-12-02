@@ -32,7 +32,6 @@ import FoundationDB
 /// ```
 public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
-    public let kind: SpatialIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
@@ -41,16 +40,16 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
     public init(
         index: Index,
-        kind: SpatialIndexKind,
+        encoding: SpatialEncoding,
+        level: Int,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
-        self.encoding = kind.encoding
-        self.level = kind.level
+        self.encoding = encoding
+        self.level = level
     }
 
     public func updateIndex(

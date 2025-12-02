@@ -42,9 +42,10 @@ import FoundationDB
 /// ```
 public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public let index: Index
-    public let kind: RankIndexKind
     public let subspace: Subspace
     public let idExpression: KeyExpression
+
+    private let bucketSize: Int
 
     // Subspace for score entries
     private let scoresSubspace: Subspace
@@ -54,14 +55,14 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     public init(
         index: Index,
-        kind: RankIndexKind,
+        bucketSize: Int,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
+        self.bucketSize = bucketSize
         self.scoresSubspace = subspace.subspace("scores")
         self.countKey = subspace.pack(Tuple("_count"))
     }

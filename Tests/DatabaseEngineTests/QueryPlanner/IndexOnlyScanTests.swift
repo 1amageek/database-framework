@@ -84,11 +84,10 @@ struct CoveringIndexMetadataTests {
         // Create an index that covers ALL fields of IOSTestUser
         // Fields: id, name, email, age
         // Index keys: name, email, age (+ id is always included)
-        let scalarKind = ScalarIndexKind()
         let coveringIndex = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         let metadata = CoveringIndexMetadata.build(for: coveringIndex, type: IOSTestUser.self)
@@ -104,11 +103,10 @@ struct CoveringIndexMetadataTests {
     @Test("Build metadata for partial covering index")
     func testBuildMetadataPartialCovering() {
         // Create an index that only covers some fields
-        let scalarKind = ScalarIndexKind()
         let partialIndex = IndexDescriptor(
             name: "idx_partial",
             keyPaths: [\IOSTestUser.email],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.email])
         )
 
         let metadata = CoveringIndexMetadata.build(for: partialIndex, type: IOSTestUser.self)
@@ -123,11 +121,10 @@ struct CoveringIndexMetadataTests {
 
     @Test("All fields includes id automatically")
     func testAllFieldsIncludesId() {
-        let scalarKind = ScalarIndexKind()
         let index = IndexDescriptor(
             name: "idx_test",
             keyPaths: [\IOSTestUser.name],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name])
         )
 
         let metadata = CoveringIndexMetadata.build(for: index, type: IOSTestUser.self)
@@ -228,11 +225,10 @@ struct IndexOnlyScanAnalyzerTests {
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
         // Create a covering index (all fields in key)
-        let scalarKind = ScalarIndexKind()
         let coveringIndex = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         var query = Query<IOSTestUser>()
@@ -256,11 +252,10 @@ struct IndexOnlyScanAnalyzerTests {
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
         // Create a partial index (only some fields)
-        let scalarKind = ScalarIndexKind()
         let partialIndex = IndexDescriptor(
             name: "idx_email_only",
             keyPaths: [\IOSTestUser.email],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.email])
         )
 
         var query = Query<IOSTestUser>()
@@ -284,11 +279,10 @@ struct IndexOnlyScanAnalyzerTests {
         let analyzer = IndexOnlyScanAnalyzer<IOSTestUser>()
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
-        let scalarKind = ScalarIndexKind()
         let coveringIndex = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         let query = Query<IOSTestUser>()
@@ -318,11 +312,10 @@ struct IndexOnlyScanOperatorTests {
             isFullyCovering: true
         )
 
-        let scalarKind = ScalarIndexKind()
         let index = IndexDescriptor(
             name: "idx_test",
             keyPaths: [\IOSTestUser.name],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name])
         )
 
         let bounds = IndexScanBounds(
@@ -357,11 +350,10 @@ struct CoveringIndexSuggesterTests {
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
         // Create a covering index
-        let scalarKind = ScalarIndexKind()
         let coveringIndex = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         var query = Query<IOSTestUser>()
@@ -383,11 +375,10 @@ struct CoveringIndexSuggesterTests {
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
         // Create a partial index
-        let scalarKind = ScalarIndexKind()
         let partialIndex = IndexDescriptor(
             name: "idx_email",
             keyPaths: [\IOSTestUser.email],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.email])
         )
 
         var query = Query<IOSTestUser>()
@@ -445,11 +436,10 @@ struct CostEstimatorIndexOnlyTests {
             isFullyCovering: true
         )
 
-        let scalarKind = ScalarIndexKind()
         let index = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         let bounds = IndexScanBounds(
@@ -486,11 +476,10 @@ struct CostEstimatorIndexOnlyTests {
         let costEstimator = CostEstimator<IOSTestUser>(statistics: statistics)
         let queryAnalyzer = QueryAnalyzer<IOSTestUser>()
 
-        let scalarKind = ScalarIndexKind()
         let index = IndexDescriptor(
             name: "idx_test",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         let metadata = CoveringIndexMetadata(
@@ -549,11 +538,10 @@ struct PlanEnumeratorIndexOnlyTests {
         let statistics = MockStatisticsProvider(rowCount: 10000)
 
         // Create a covering index (all fields)
-        let scalarKind = ScalarIndexKind()
         let coveringIndex = IndexDescriptor(
             name: "idx_covering",
             keyPaths: [\IOSTestUser.name, \IOSTestUser.email, \IOSTestUser.age],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.name, \.email, \.age])
         )
 
         let enumerator = PlanEnumerator<IOSTestUser>(
@@ -587,11 +575,10 @@ struct PlanEnumeratorIndexOnlyTests {
         let statistics = MockStatisticsProvider(rowCount: 10000)
 
         // Create a partial index (only one field)
-        let scalarKind = ScalarIndexKind()
         let partialIndex = IndexDescriptor(
             name: "idx_email",
             keyPaths: [\IOSTestUser.email],
-            kind: scalarKind
+            kind: ScalarIndexKind<IOSTestUser>(fields: [\.email])
         )
 
         let enumerator = PlanEnumerator<IOSTestUser>(

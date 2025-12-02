@@ -39,30 +39,27 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Index definition
     public let index: Index
 
-    /// Index kind with retention strategy
-    public let kind: VersionIndexKind
-
     /// Subspace for index storage
     public let subspace: Subspace
 
     /// ID expression for extracting item's unique identifier
     public let idExpression: KeyExpression
 
+    /// Version history retention strategy
     private let strategy: VersionHistoryStrategy
 
     // MARK: - Initialization
 
     public init(
         index: Index,
-        kind: VersionIndexKind,
+        strategy: VersionHistoryStrategy,
         subspace: Subspace,
         idExpression: KeyExpression
     ) {
         self.index = index
-        self.kind = kind
         self.subspace = subspace
         self.idExpression = idExpression
-        self.strategy = kind.strategy
+        self.strategy = strategy
     }
 
     // MARK: - IndexMaintainer
