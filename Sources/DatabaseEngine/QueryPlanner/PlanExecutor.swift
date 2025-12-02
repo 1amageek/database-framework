@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Errors that can occur during query plan execution
 public enum PlanExecutionError: Error, Sendable {
@@ -27,14 +28,27 @@ extension PlanExecutionError: CustomStringConvertible {
 }
 
 /// Executes a query plan and returns results
+///
+/// PlanExecutor takes a `QueryPlan` and executes it against a data store,
+/// returning the matching records.
+///
+/// **Usage**:
+/// ```swift
+/// let executor = PlanExecutor<User>(context: context, executionContext: context)
+/// let results = try await executor.execute(plan: queryPlan)
+/// ```
+///
+/// **Architecture**:
+/// - Record access via `QueryExecutionContext.scanRecords/fetchItem`
+/// - Index access via `IndexSearcher` + `context.storageReader`
 public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
     private let context: FDBContext
-    private let dataStore: any DataStore
+    private let executionContext: any QueryExecutionContext
 
-    public init(context: FDBContext, dataStore: any DataStore) {
+    public init(context: FDBContext, executionContext: any QueryExecutionContext) {
         self.context = context
-        self.dataStore = dataStore
+        self.executionContext = executionContext
     }
 
     /// Execute a plan and return results
@@ -79,6 +93,9 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         case .indexSeek(let seekOp):
             return try await executeIndexSeek(seekOp)
+
+        case .indexOnlyScan(let scanOp):
+            return try await executeIndexOnlyScan(scanOp)
 
         case .union(let unionOp):
             return try await executeUnion(unionOp)
@@ -127,7 +144,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
     private func executeTableScan(_ op: TableScanOperator<T>) async throws -> [T] {
         // Scan all records of type T
-        let results = try await dataStore.scanRecords(type: T.self)
+        let results = try await executionContext.scanRecords(type: T.self)
 
         // Apply filter if present
         if let filterPredicate = op.filterPredicate {
@@ -140,84 +157,155 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Index Scan
 
     private func executeIndexScan(_ op: IndexScanOperator<T>) async throws -> [T] {
-        // Build scan range from bounds
-        let range = buildScanRange(index: op.index, bounds: op.bounds)
+        // Build query from bounds
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
 
-        // Scan index entries
-        let entries = try await dataStore.scanIndex(
-            name: op.index.name,
-            range: range,
-            reverse: op.reverse
+        // Use IndexSearcher for index access
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let entries = try await searcher.search(
+            indexName: op.index.name,
+            query: query,
+            using: executionContext.storageReader
         )
 
-        // Fetch records by ID
+        // Fetch items by ID
         var results: [T] = []
         for entry in entries {
-            if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
-                results.append(record)
+            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                results.append(item)
             }
         }
 
         return results
     }
 
-    /// Build FDB key range from scan bounds
+    /// Build ScalarIndexQuery from IndexScanBounds
     ///
-    /// Returns an `IndexScanRange` that includes both values and inclusive/exclusive flags.
-    /// The `inclusive` flags determine boundary behavior:
-    /// - `startInclusive: true` → `>=` (include the start value)
-    /// - `startInclusive: false` → `>` (exclude the start value)
-    /// - `endInclusive: true` → `<=` (include the end value)
-    /// - `endInclusive: false` → `<` (exclude the end value)
-    private func buildScanRange(index: IndexDescriptor, bounds: IndexScanBounds) -> IndexScanRange {
-        var startKey: [Any] = []
-        var endKey: [Any] = []
-
-        // Determine inclusiveness from the last component (or default to inclusive)
+    /// Converts query planner bounds to IndexSearcher query format.
+    private func buildScalarQuery(bounds: IndexScanBounds, reverse: Bool = false, limit: Int? = nil) -> ScalarIndexQuery {
+        var startValues: [any TupleElement] = []
+        var endValues: [any TupleElement] = []
         var startInclusive = true
         var endInclusive = true
 
         for component in bounds.start {
-            if let value = component.value?.value {
-                startKey.append(value)
+            if let value = component.value?.value, let element = anyToTupleElement(value) {
+                startValues.append(element)
                 startInclusive = component.inclusive
             }
         }
 
         for component in bounds.end {
-            if let value = component.value?.value {
-                endKey.append(value)
+            if let value = component.value?.value, let element = anyToTupleElement(value) {
+                endValues.append(element)
                 endInclusive = component.inclusive
             }
         }
 
-        return IndexScanRange(
-            start: startKey,
+        return ScalarIndexQuery(
+            start: startValues.isEmpty ? nil : startValues,
             startInclusive: startInclusive,
-            end: endKey,
-            endInclusive: endInclusive
+            end: endValues.isEmpty ? nil : endValues,
+            endInclusive: endInclusive,
+            reverse: reverse,
+            limit: limit
         )
+    }
+
+    /// Convert Any to TupleElement
+    private func anyToTupleElement(_ value: Any) -> (any TupleElement)? {
+        switch value {
+        case let s as String: return s
+        case let i as Int: return i
+        case let i64 as Int64: return i64
+        case let d as Double: return d
+        case let f as Float: return Double(f)
+        case let b as Bool: return b
+        case let data as Data: return [UInt8](data)
+        case let bytes as [UInt8]: return bytes
+        default: return nil
+        }
     }
 
     // MARK: - Index Seek
 
     private func executeIndexSeek(_ op: IndexSeekOperator<T>) async throws -> [T] {
         var results: [T] = []
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
 
         for keyValues in op.seekValues {
-            // Build the seek key
-            let key = keyValues.map { $0.value }
+            // Convert seek values to TupleElements
+            var seekElements: [any TupleElement] = []
+            for anySendable in keyValues {
+                if let element = anyToTupleElement(anySendable.value) {
+                    seekElements.append(element)
+                }
+            }
 
-            // Look up the index entry
-            if let entry = try await dataStore.seekIndex(name: op.index.name, key: key) {
-                // Fetch the record
-                if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
-                    results.append(record)
+            // Use equality query for point lookup
+            let query = ScalarIndexQuery.equals(seekElements)
+            let entries = try await searcher.search(
+                indexName: op.index.name,
+                query: query,
+                using: executionContext.storageReader
+            )
+
+            // Fetch items
+            for entry in entries {
+                if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                    results.append(item)
                 }
             }
         }
 
         return results
+    }
+
+    // MARK: - Index-Only Scan
+
+    private func executeIndexOnlyScan(_ op: IndexOnlyScanOperator<T>) async throws -> [T] {
+        // Build query from bounds
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
+
+        // Use IndexSearcher for index access
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let entries = try await searcher.search(
+            indexName: op.index.name,
+            query: query,
+            using: executionContext.storageReader
+        )
+
+        // Check if we can use true index-only scan (no item fetch)
+        if op.metadata.isFullyCovering {
+            // True Index-Only Scan: Reconstruct items from index data
+            let decoder = IndexEntryDecoder<T>(metadata: op.metadata)
+            var results: [T] = []
+
+            for entry in entries {
+                do {
+                    let item = try decoder.decode(from: entry)
+                    results.append(item)
+                } catch {
+                    // Decoding failed - fall back to item fetch for this entry
+                    if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                        results.append(item)
+                    }
+                }
+            }
+
+            return results
+        } else {
+            // Partial coverage - must fetch items from storage
+            // This path should not normally be reached if PlanEnumerator is correct,
+            // as it should only generate index-only plans for fully covering indexes
+            var results: [T] = []
+            for entry in entries {
+                if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                    results.append(item)
+                }
+            }
+            return results
+        }
     }
 
     // MARK: - Union
@@ -286,18 +374,23 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Full Text Scan
 
     private func executeFullTextScan(_ op: FullTextScanOperator<T>) async throws -> [T] {
-        // Execute full-text search
-        let entries = try await dataStore.searchFullText(
-            indexName: op.index.name,
+        // Use FullTextIndexSearcher for full-text search
+        let searcher = FullTextIndexSearcher()
+        let query = FullTextIndexQuery(
             terms: op.searchTerms,
             matchMode: op.matchMode
         )
+        let entries = try await searcher.search(
+            indexName: op.index.name,
+            query: query,
+            using: executionContext.storageReader
+        )
 
-        // Fetch records
+        // Fetch items
         var results: [T] = []
         for entry in entries {
-            if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
-                results.append(record)
+            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                results.append(item)
             }
         }
 
@@ -307,19 +400,24 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Vector Search
 
     private func executeVectorSearch(_ op: VectorSearchOperator<T>) async throws -> [T] {
-        // Execute vector similarity search
-        let entries = try await dataStore.searchVector(
-            indexName: op.index.name,
+        // Use VectorIndexSearcher for vector similarity search
+        let searcher = VectorIndexSearcher(dimensions: op.queryVector.count)
+        let query = VectorIndexQuery(
             queryVector: op.queryVector,
             k: op.k,
             efSearch: op.efSearch
         )
+        let entries = try await searcher.search(
+            indexName: op.index.name,
+            query: query,
+            using: executionContext.storageReader
+        )
 
-        // Fetch records
+        // Fetch items
         var results: [T] = []
         for entry in entries {
-            if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
-                results.append(record)
+            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                results.append(item)
             }
         }
 
@@ -329,17 +427,20 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Spatial Scan
 
     private func executeSpatialScan(_ op: SpatialScanOperator<T>) async throws -> [T] {
-        // Execute spatial search
-        let entries = try await dataStore.searchSpatial(
+        // Use SpatialIndexSearcher for spatial search
+        let searcher = SpatialIndexSearcher()
+        let query = SpatialIndexQuery(constraint: op.constraint)
+        let entries = try await searcher.search(
             indexName: op.index.name,
-            constraint: op.constraint
+            query: query,
+            using: executionContext.storageReader
         )
 
-        // Fetch records
+        // Fetch items
         var results: [T] = []
         for entry in entries {
-            if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
-                results.append(record)
+            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
+                results.append(item)
             }
         }
 
@@ -372,7 +473,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     /// func executeAggregation(_ op: AggregationOperator<T>) async throws -> [AggregationResult] {
     ///     switch op.aggregationType {
     ///     case .count:
-    ///         let count = try await dataStore.countIndex(name: op.index.name)
+    ///         let count = try await executionReader.countIndex(name: op.index.name)
     ///         return [AggregationResult(aggregationType: .count, value: count, groupKey: nil)]
     ///     case .sum(let field):
     ///         // Read from pre-computed aggregation index or scan and compute
@@ -472,7 +573,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         postFilter: Predicate<T>? = nil
     ) async throws {
         // Stream records
-        for try await record in dataStore.streamRecords(type: T.self) {
+        for try await record in executionContext.streamRecords(type: T.self) {
             // Apply operator's filter first
             if let filter = op.filterPredicate {
                 guard evaluatePredicate(filter, on: record) else { continue }
@@ -490,16 +591,25 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         to continuation: AsyncThrowingStream<T, Error>.Continuation,
         postFilter: Predicate<T>? = nil
     ) async throws {
-        let range = buildScanRange(index: op.index, bounds: op.bounds)
+        // Build query from bounds
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
 
-        // Stream index entries
-        for try await entry in dataStore.streamIndex(name: op.index.name, range: range, reverse: op.reverse) {
-            if let record: T = try await dataStore.fetchRecord(id: entry.recordId, type: T.self) {
+        // Use IndexSearcher for index access
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let entries = try await searcher.search(
+            indexName: op.index.name,
+            query: query,
+            using: executionContext.storageReader
+        )
+
+        // Fetch items for each entry
+        for entry in entries {
+            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
                 // Apply post-filter if present
                 if let postFilter = postFilter {
-                    guard evaluatePredicate(postFilter, on: record) else { continue }
+                    guard evaluatePredicate(postFilter, on: item) else { continue }
                 }
-                continuation.yield(record)
+                continuation.yield(item)
             }
         }
     }
@@ -845,84 +955,55 @@ public struct IndexScanRange: @unchecked Sendable {
     }
 }
 
-// MARK: - DataStore Extensions for Query Planning
+// MARK: - Query Execution Context Protocol
 
-extension DataStore {
+/// Protocol for query execution context
+///
+/// Provides access to records and raw storage for `PlanExecutor` and `IndexSearcher`.
+///
+/// **Architecture**:
+/// - Record access: `scanRecords`, `fetchItem` (high-level)
+/// - Index access: via `storageReader` + `IndexSearcher` (low-level)
+///
+/// **Usage**:
+/// ```swift
+/// // Record access
+/// let records = try await context.scanRecords(type: User.self)
+///
+/// // Index search via IndexSearcher
+/// let searcher = ScalarIndexSearcher(keyFieldCount: 1)
+/// let entries = try await searcher.search(
+///     indexName: "idx_email",
+///     query: .equals(["test@example.com"]),
+///     using: context.storageReader
+/// )
+/// ```
+public protocol QueryExecutionContext: Sendable {
+
     /// Scan all records of a type
-    func scanRecords<T: Persistable & Codable>(type: T.Type) async throws -> [T] {
-        // Implementation would use FDB range scan
-        []
-    }
+    func scanRecords<T: Persistable & Codable>(type: T.Type) async throws -> [T]
 
     /// Stream records of a type
-    func streamRecords<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error> {
-        AsyncThrowingStream { _ in }
-    }
+    func streamRecords<T: Persistable & Codable>(type: T.Type) -> AsyncThrowingStream<T, Error>
 
-    /// Scan index entries with proper inclusive/exclusive bounds
-    ///
-    /// - Parameters:
-    ///   - name: Index name
-    ///   - range: Scan range with inclusive/exclusive flags
-    ///   - reverse: Whether to scan in reverse order
-    /// - Returns: Matching index entries
-    ///
-    /// **Implementation Note**: The actual FDB implementation should use:
-    /// - `startInclusive: true` → start key included in range
-    /// - `startInclusive: false` → start key excluded (use `strinc(startKey)`)
-    /// - `endInclusive: true` → use `strinc(endKey)` as end
-    /// - `endInclusive: false` → use `endKey` as end (excluded by default in FDB)
-    func scanIndex(name: String, range: IndexScanRange, reverse: Bool) async throws -> [IndexEntry] {
-        []
-    }
+    /// Fetch an item by ID
+    func fetchItem<T: Persistable & Codable>(id: Tuple, type: T.Type) async throws -> T?
 
-    /// Stream index entries with proper inclusive/exclusive bounds
-    func streamIndex(name: String, range: IndexScanRange, reverse: Bool) -> AsyncThrowingStream<IndexEntry, Error> {
-        AsyncThrowingStream { _ in }
-    }
+    /// Low-level storage reader for IndexSearcher implementations
+    var storageReader: StorageReader { get }
+}
 
-    /// Seek a specific key in an index
-    func seekIndex(name: String, key: [Any]) async throws -> IndexEntry? {
-        nil
-    }
+/// Errors for DataStore operations
+public enum DataStoreError: Error, CustomStringConvertible {
+    case notImplemented(String)
 
-    /// Fetch a record by ID
-    func fetchRecord<T: Persistable & Codable>(id: AnySendable, type: T.Type) async throws -> T? {
-        nil
-    }
-
-    /// Search full-text index
-    func searchFullText(indexName: String, terms: [String], matchMode: TextMatchMode) async throws -> [IndexEntry] {
-        []
-    }
-
-    /// Search vector index
-    func searchVector(indexName: String, queryVector: [Float], k: Int, efSearch: Int?) async throws -> [IndexEntry] {
-        []
-    }
-
-    /// Search spatial index
-    func searchSpatial(indexName: String, constraint: SpatialConstraint) async throws -> [IndexEntry] {
-        []
+    public var description: String {
+        switch self {
+        case .notImplemented(let method):
+            return "DataStore method not implemented: \(method)"
+        }
     }
 }
 
-/// Represents an index entry
-public struct IndexEntry: @unchecked Sendable {
-    /// The record ID (type-erased but expected to be Sendable)
-    public let recordId: AnySendable
-
-    /// The indexed values
-    public let indexedValues: [AnySendable]
-
-    public init(recordId: AnySendable, indexedValues: [AnySendable]) {
-        self.recordId = recordId
-        self.indexedValues = indexedValues
-    }
-
-    /// Convenience initializer with Any types
-    public init(recordIdAny: Any, indexedValuesAny: [Any]) {
-        self.recordId = AnySendable(recordIdAny)
-        self.indexedValues = indexedValuesAny.map { AnySendable($0) }
-    }
-}
+// ExecutionIndexEntry has been unified with IndexEntry (see StorageReader.swift)
+// Use IndexEntry for all index entry operations

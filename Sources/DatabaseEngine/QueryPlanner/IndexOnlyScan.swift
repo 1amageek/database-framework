@@ -1,116 +1,350 @@
 // IndexOnlyScan.swift
 // QueryPlanner - Index-only scan (covering index) optimization
+//
+// A true Index-Only Scan reconstructs records entirely from index data,
+// eliminating the need for record fetches. This is only possible when
+// the index contains ALL fields of the record type T.
 
 import Foundation
 import Core
 
-/// Analyzer for index-only scan opportunities
+// MARK: - Covering Index Metadata
+
+/// Metadata describing a covering index's field layout
 ///
-/// **Index-Only Scan (Covering Index)**:
-/// When an index contains all fields needed by a query, we can satisfy
-/// the query entirely from the index without fetching the actual records.
+/// A covering index contains all fields needed to fully reconstruct a record.
+/// This struct maps index positions to field names for decoding.
+public struct CoveringIndexMetadata: Sendable {
+    /// Field names in the index key (in order)
+    public let keyFields: [String]
+
+    /// Field names stored in the index value (in order)
+    public let storedFields: [String]
+
+    /// Whether this index can fully reconstruct records of type T
+    public let isFullyCovering: Bool
+
+    /// All fields available in the index
+    public var allFields: Set<String> {
+        var fields = Set(keyFields)
+        fields.formUnion(storedFields)
+        fields.insert("id") // ID is always in the key
+        return fields
+    }
+
+    public init(keyFields: [String], storedFields: [String], isFullyCovering: Bool) {
+        self.keyFields = keyFields
+        self.storedFields = storedFields
+        self.isFullyCovering = isFullyCovering
+    }
+
+    /// Build metadata for an index against a Persistable type
+    public static func build<T: Persistable>(for index: IndexDescriptor, type: T.Type) -> CoveringIndexMetadata {
+        // Extract key field names
+        let keyFields = index.keyPaths.map { T.fieldName(for: $0) }
+
+        // Extract stored field names (from extension)
+        let storedFields = index.storedKeyPaths.map { T.fieldName(for: $0) }
+
+        // Check if all fields of T are covered
+        let allIndexFields = Set(keyFields + storedFields + ["id"])
+        let allModelFields = Set(T.allFields)
+
+        let isFullyCovering = allModelFields.isSubset(of: allIndexFields)
+
+        return CoveringIndexMetadata(
+            keyFields: keyFields,
+            storedFields: storedFields,
+            isFullyCovering: isFullyCovering
+        )
+    }
+}
+
+// MARK: - Index Entry Decoder
+
+/// Decodes a Persistable item from index entry data using Protobuf wire format
 ///
-/// **Benefits**:
-/// - Eliminates record fetch I/O (often the most expensive operation)
-/// - Reduces data transfer
-/// - Better cache utilization
+/// This decoder enables true Index-Only Scan by reconstructing
+/// items entirely from IndexEntry values without fetching from storage.
+///
+/// **Flow**:
+/// ```
+/// IndexEntry (Tuple) → Protobuf bytes → ProtobufDecoder → Persistable
+/// ```
 ///
 /// **Requirements**:
-/// - All projected fields must be in the index
-/// - All filter fields must be in the index
-/// - All sort fields must be in the index (if sorting is required)
+/// - Index must be fully covering (contains ALL fields of T)
+/// - IndexEntry must contain values in the expected order
+///
+/// **Usage**:
+/// ```swift
+/// let decoder = IndexEntryDecoder<User>(metadata: coveringMetadata)
+/// let user = try decoder.decode(from: indexEntry)
+/// ```
+public struct IndexEntryDecoder<T: Persistable & Codable>: Sendable {
+    private let metadata: CoveringIndexMetadata
+
+    /// Field name to field number mapping (built from T.allFields order)
+    private let fieldNumberMap: [String: Int]
+
+    public init(metadata: CoveringIndexMetadata) {
+        self.metadata = metadata
+
+        // Build field number map based on T.allFields order
+        // This matches ProtobufEncoder/Decoder's field number assignment
+        var map: [String: Int] = [:]
+        for (index, fieldName) in T.allFields.enumerated() {
+            // ProtobufEncoder uses 1-based field numbers
+            map[fieldName] = index + 1
+        }
+        self.fieldNumberMap = map
+    }
+
+    /// Decode an item from an index entry
+    ///
+    /// - Parameter entry: The index entry containing field values
+    /// - Returns: The reconstructed item
+    /// - Throws: DecodingError if reconstruction fails
+    ///
+    /// **Decoding process**:
+    /// 1. Build Protobuf bytes from IndexEntry values
+    /// 2. Use ProtobufDecoder to decode into T
+    public func decode(from entry: IndexEntry) throws -> T {
+        // Build Protobuf wire format bytes from index entry
+        let protobufData = try buildProtobufData(from: entry)
+
+        // Decode using ProtobufDecoder
+        let decoder = ProtobufDecoder()
+        return try decoder.decode(T.self, from: protobufData)
+    }
+
+    /// Check if this decoder can fully decode records
+    public var canFullyDecode: Bool {
+        metadata.isFullyCovering
+    }
+
+    // MARK: - Protobuf Encoding
+
+    /// Build Protobuf wire format data from IndexEntry
+    private func buildProtobufData(from entry: IndexEntry) throws -> Data {
+        var data = Data()
+
+        // 1. Encode ID field
+        if let fieldNumber = fieldNumberMap["id"], let idValue = entry.itemID[0] {
+            data.append(contentsOf: encodeField(fieldNumber: fieldNumber, value: idValue))
+        }
+
+        // 2. Encode key field values
+        for (index, fieldName) in metadata.keyFields.enumerated() {
+            if let fieldNumber = fieldNumberMap[fieldName], let value = entry.keyValues[index] {
+                data.append(contentsOf: encodeField(fieldNumber: fieldNumber, value: value))
+            }
+        }
+
+        // 3. Encode stored field values
+        for (index, fieldName) in metadata.storedFields.enumerated() {
+            if let fieldNumber = fieldNumberMap[fieldName], let value = entry.storedValues[index] {
+                data.append(contentsOf: encodeField(fieldNumber: fieldNumber, value: value))
+            }
+        }
+
+        return data
+    }
+
+    /// Encode a single field to Protobuf wire format
+    private func encodeField(fieldNumber: Int, value: Any) -> [UInt8] {
+        switch value {
+        case let s as String:
+            return encodeString(fieldNumber: fieldNumber, value: s)
+        case let i as Int64:
+            return encodeVarint(fieldNumber: fieldNumber, value: UInt64(bitPattern: i))
+        case let i as Int:
+            return encodeVarint(fieldNumber: fieldNumber, value: UInt64(bitPattern: Int64(i)))
+        case let i as Int32:
+            return encodeVarint(fieldNumber: fieldNumber, value: UInt64(bitPattern: Int64(i)))
+        case let u as UInt64:
+            return encodeVarint(fieldNumber: fieldNumber, value: u)
+        case let u as UInt:
+            return encodeVarint(fieldNumber: fieldNumber, value: UInt64(u))
+        case let d as Double:
+            return encodeDouble(fieldNumber: fieldNumber, value: d)
+        case let f as Float:
+            return encodeFloat(fieldNumber: fieldNumber, value: f)
+        case let b as Bool:
+            return encodeVarint(fieldNumber: fieldNumber, value: b ? 1 : 0)
+        case let bytes as Data:
+            return encodeBytes(fieldNumber: fieldNumber, value: bytes)
+        case let bytes as [UInt8]:
+            return encodeBytes(fieldNumber: fieldNumber, value: Data(bytes))
+        default:
+            // Unknown type - skip
+            return []
+        }
+    }
+
+    // MARK: - Wire Format Encoders
+
+    /// Encode a string field (wire type 2: length-delimited)
+    private func encodeString(fieldNumber: Int, value: String) -> [UInt8] {
+        let tag = (fieldNumber << 3) | 2  // Length-delimited
+        var bytes = encodeVarintValue(UInt64(tag))
+        let stringData = value.data(using: .utf8) ?? Data()
+        bytes.append(contentsOf: encodeVarintValue(UInt64(stringData.count)))
+        bytes.append(contentsOf: stringData)
+        return bytes
+    }
+
+    /// Encode a varint field (wire type 0)
+    private func encodeVarint(fieldNumber: Int, value: UInt64) -> [UInt8] {
+        let tag = (fieldNumber << 3) | 0  // Varint
+        var bytes = encodeVarintValue(UInt64(tag))
+        bytes.append(contentsOf: encodeVarintValue(value))
+        return bytes
+    }
+
+    /// Encode a double field (wire type 1: 64-bit)
+    private func encodeDouble(fieldNumber: Int, value: Double) -> [UInt8] {
+        let tag = (fieldNumber << 3) | 1  // 64-bit
+        var bytes = encodeVarintValue(UInt64(tag))
+        let bits = value.bitPattern
+        bytes.append(UInt8(truncatingIfNeeded: bits))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 8))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 16))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 24))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 32))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 40))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 48))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 56))
+        return bytes
+    }
+
+    /// Encode a float field (wire type 5: 32-bit)
+    private func encodeFloat(fieldNumber: Int, value: Float) -> [UInt8] {
+        let tag = (fieldNumber << 3) | 5  // 32-bit
+        var bytes = encodeVarintValue(UInt64(tag))
+        let bits = value.bitPattern
+        bytes.append(UInt8(truncatingIfNeeded: bits))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 8))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 16))
+        bytes.append(UInt8(truncatingIfNeeded: bits >> 24))
+        return bytes
+    }
+
+    /// Encode a bytes field (wire type 2: length-delimited)
+    private func encodeBytes(fieldNumber: Int, value: Data) -> [UInt8] {
+        let tag = (fieldNumber << 3) | 2  // Length-delimited
+        var bytes = encodeVarintValue(UInt64(tag))
+        bytes.append(contentsOf: encodeVarintValue(UInt64(value.count)))
+        bytes.append(contentsOf: value)
+        return bytes
+    }
+
+    /// Encode a UInt64 as varint
+    private func encodeVarintValue(_ value: UInt64) -> [UInt8] {
+        var result: [UInt8] = []
+        var n = value
+        while n >= 0x80 {
+            result.append(UInt8(n & 0x7F) | 0x80)
+            n >>= 7
+        }
+        result.append(UInt8(n))
+        return result
+    }
+}
+
+// MARK: - Index-Only Scan Analyzer
+
+/// Analyzer for index-only scan opportunities
+///
+/// **True Index-Only Scan**:
+/// Only possible when an index contains ALL fields of the record type T,
+/// allowing complete record reconstruction without fetching from storage.
+///
+/// **Requirements for True Index-Only**:
+/// - Index key fields + stored fields must cover all fields in T.allFields
+/// - ID is always available (it's part of the index key)
 ///
 /// **Example**:
 /// ```swift
-/// // Index on (status, createdAt) storing (name)
-/// // Query: SELECT name WHERE status = 'active' ORDER BY createdAt
-/// // → Can be satisfied entirely from index (no record fetch)
+/// // Model with fields: id, email, name, createdAt
+/// // Index on (email, name, createdAt) with id in key
+/// // → Can use true index-only scan
+///
+/// // Index on (email) only
+/// // → Cannot use index-only (missing name, createdAt)
+/// // → Falls back to index scan + record fetch
 /// ```
+///
+/// ## Current Limitation: Full Model Coverage Required
+///
+/// The current implementation requires the index to cover ALL fields of T,
+/// because the API returns complete records `[T]`. This means even if a query
+/// only uses certain fields (e.g., `SELECT email, name FROM users`), we still
+/// need all fields to construct the full `T` instance.
+///
+/// ## Future Enhancement: Partial Coverage with Projection
+///
+/// To support partial coverage + projection (where only query-referenced fields
+/// need to be covered), the following changes would be needed:
+///
+/// 1. **Query Projection API**: Add `select(_:)` method to Query
+///    ```swift
+///    query.select(\.email, \.name)  // Only need these fields
+///    ```
+///
+/// 2. **Analyzer Check**: Check only projected fields instead of all fields
+///    ```swift
+///    let requiredFields = query.projectedFields ?? T.allFields
+///    let canUseIndexOnly = requiredFields.isSubset(of: indexFields)
+///    ```
+///
+/// 3. **Return Type**: Change to `PartialResult<T>` or dictionary
+///    ```swift
+///    func execute(plan: QueryPlan<T>) async throws -> [PartialResult<T>]
+///    ```
+///
+/// This enhancement would enable index-only scans for a wider range of queries,
+/// improving performance when the full record isn't needed.
 public struct IndexOnlyScanAnalyzer<T: Persistable> {
 
     public init() {}
 
-    /// Analyze if a query can use index-only scan
+    /// Analyze if a query can use true index-only scan
+    ///
+    /// Returns analysis result indicating whether the index fully covers
+    /// the record type T, enabling record reconstruction from index data.
     public func analyze(
         query: Query<T>,
         analysis: QueryAnalysis<T>,
         index: IndexDescriptor
     ) -> IndexOnlyScanResult {
-        // Get fields in the index
-        let indexFields = getIndexFields(index)
+        let metadata = CoveringIndexMetadata.build(for: index, type: T.self)
 
-        // Get all required fields
-        let requiredFields = getRequiredFields(query: query, analysis: analysis)
+        // For true index-only, we need ALL fields of T, not just query fields
+        let allModelFields = Set(T.allFields)
+        let indexFields = metadata.allFields
 
-        // Check if all required fields are covered
-        let coveredFields = requiredFields.intersection(indexFields)
-        let uncoveredFields = requiredFields.subtracting(indexFields)
+        let coveredFields = allModelFields.intersection(indexFields)
+        let uncoveredFields = allModelFields.subtracting(indexFields)
 
-        let canUseIndexOnlyScan = uncoveredFields.isEmpty
+        // True index-only scan is only possible when all fields are covered
+        let canUseIndexOnlyScan = metadata.isFullyCovering
 
         return IndexOnlyScanResult(
             canUseIndexOnlyScan: canUseIndexOnlyScan,
             index: index,
+            metadata: metadata,
             coveredFields: coveredFields,
             uncoveredFields: uncoveredFields,
             estimatedSavings: canUseIndexOnlyScan ? estimateSavings(analysis: analysis) : 0
         )
     }
 
-    /// Get all field names in an index
-    private func getIndexFields(_ index: IndexDescriptor) -> Set<String> {
-        var fields: Set<String> = []
-
-        // Key fields
-        for keyPath in index.keyPaths {
-            fields.insert(T.fieldName(for: keyPath))
-        }
-
-        // Stored fields (if any)
-        for storedPath in index.storedKeyPaths {
-            fields.insert(T.fieldName(for: storedPath))
-        }
-
-        // Primary key is always available (for unique indexes)
-        if index.isUnique {
-            fields.insert("id")
-        }
-
-        return fields
-    }
-
-    /// Get all fields required by the query
-    private func getRequiredFields(query: Query<T>, analysis: QueryAnalysis<T>) -> Set<String> {
-        var required: Set<String> = []
-
-        // Fields from projections (if any)
-        if let projection = query.projectedFields {
-            required.formUnion(projection)
-        } else {
-            // If no projection, assume all fields are needed
-            // In practice, this should come from schema metadata
-            required = analysis.referencedFields
-            required.insert("id") // Primary key always needed
-        }
-
-        // Fields from conditions (for post-filtering)
-        for condition in analysis.fieldConditions {
-            required.insert(condition.field.fieldName)
-        }
-
-        // Fields from sorting
-        for sortDesc in analysis.sortRequirements {
-            required.insert(sortDesc.fieldName)
-        }
-
-        return required
-    }
-
     /// Estimate cost savings from index-only scan
     private func estimateSavings(analysis: QueryAnalysis<T>) -> Double {
-        // Savings = number of record fetches avoided * record fetch cost
-        // Typically 80-90% reduction in I/O
-        0.85
+        // True index-only eliminates all record fetches
+        // Savings are significant: typically 80-95% I/O reduction
+        0.90
     }
 }
 
@@ -118,16 +352,19 @@ public struct IndexOnlyScanAnalyzer<T: Persistable> {
 
 /// Result of index-only scan analysis
 public struct IndexOnlyScanResult: Sendable {
-    /// Whether index-only scan is possible
+    /// Whether true index-only scan is possible (no record fetch needed)
     public let canUseIndexOnlyScan: Bool
 
     /// The index being analyzed
     public let index: IndexDescriptor
 
+    /// Covering index metadata for decoding
+    public let metadata: CoveringIndexMetadata
+
     /// Fields covered by the index
     public let coveredFields: Set<String>
 
-    /// Fields not covered (prevents index-only scan)
+    /// Fields not covered (prevents true index-only scan)
     public let uncoveredFields: Set<String>
 
     /// Estimated cost savings (0.0 - 1.0)
@@ -137,9 +374,15 @@ public struct IndexOnlyScanResult: Sendable {
 // MARK: - Index-Only Scan Operator
 
 /// Operator for index-only scan execution
+///
+/// When executed, this operator scans the index and reconstructs
+/// records directly from index data without fetching from storage.
 public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
     /// The index to scan
     public let index: IndexDescriptor
+
+    /// Covering index metadata for decoding
+    public let metadata: CoveringIndexMetadata
 
     /// Scan bounds
     public let bounds: IndexScanBounds
@@ -158,6 +401,7 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
 
     public init(
         index: IndexDescriptor,
+        metadata: CoveringIndexMetadata,
         bounds: IndexScanBounds,
         reverse: Bool = false,
         projectedFields: Set<String>,
@@ -165,6 +409,7 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
         estimatedEntries: Int
     ) {
         self.index = index
+        self.metadata = metadata
         self.bounds = bounds
         self.reverse = reverse
         self.projectedFields = projectedFields
@@ -172,23 +417,6 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
         self.estimatedEntries = estimatedEntries
     }
 }
-
-// MARK: - Index-Only Scan Plan Creation
-//
-// Note: Index-only scan plan creation should be integrated into PlanEnumerator directly
-// rather than via extension, as it requires access to private members (strategyRegistry, statistics).
-//
-// Example integration in PlanEnumerator.enumerate():
-//
-// ```swift
-// for index in indexes {
-//     let analyzer = IndexOnlyScanAnalyzer<T>()
-//     let result = analyzer.analyze(query: query, analysis: analysis, index: index)
-//     if result.canUseIndexOnlyScan {
-//         // Create IndexOnlyScanOperator with reduced fetch cost
-//     }
-// }
-// ```
 
 // MARK: - Covering Index Suggestion
 
@@ -203,20 +431,13 @@ public struct CoveringIndexSuggester<T: Persistable> {
         analysis: QueryAnalysis<T>,
         existingIndexes: [IndexDescriptor]
     ) -> CoveringIndexSuggestion? {
-        // Get required fields
-        var requiredFields: Set<String> = analysis.referencedFields
-
-        // Add sort fields
-        for sortDesc in analysis.sortRequirements {
-            requiredFields.insert(sortDesc.fieldName)
-        }
+        let allModelFields = Set(T.allFields)
 
         // Check if any existing index covers all fields
         for index in existingIndexes {
-            let indexFields = getIndexFields(index)
-            if indexFields.isSuperset(of: requiredFields) {
-                // Already have a covering index
-                return nil
+            let metadata = CoveringIndexMetadata.build(for: index, type: T.self)
+            if metadata.isFullyCovering {
+                return nil // Already have a covering index
             }
         }
 
@@ -224,12 +445,12 @@ public struct CoveringIndexSuggester<T: Persistable> {
         var bestCandidate: (index: IndexDescriptor, missingFields: Set<String>)?
 
         for index in existingIndexes {
-            let indexFields = getIndexFields(index)
-            let missing = requiredFields.subtracting(indexFields)
+            let metadata = CoveringIndexMetadata.build(for: index, type: T.self)
+            let missing = allModelFields.subtracting(metadata.allFields)
 
             // Check if this index is usable for the query conditions
             let conditionFields = Set(analysis.fieldConditions.map { $0.field.fieldName })
-            let indexKeyFields = Set(index.keyPaths.map { T.fieldName(for: $0) })
+            let indexKeyFields = Set(metadata.keyFields)
 
             // Index must have at least one condition field as key
             guard !conditionFields.isDisjoint(with: indexKeyFields) else { continue }
@@ -240,38 +461,27 @@ public struct CoveringIndexSuggester<T: Persistable> {
         }
 
         guard let candidate = bestCandidate else {
-            // Suggest a new index
+            // Suggest a new index with all fields
             return CoveringIndexSuggestion(
                 type: .newIndex,
                 indexName: nil,
                 keyFields: Array(Set(analysis.fieldConditions.map { $0.field.fieldName })),
-                storedFields: Array(requiredFields),
-                reason: "No existing index can be extended to cover query"
+                storedFields: Array(allModelFields),
+                reason: "Create new covering index with all fields"
             )
         }
 
         if candidate.missingFields.isEmpty {
-            return nil // Already covered
+            return nil
         }
 
         return CoveringIndexSuggestion(
             type: .extendExisting,
             indexName: candidate.index.name,
-            keyFields: candidate.index.keyPaths.map { T.fieldName(for: $0) },
+            keyFields: CoveringIndexMetadata.build(for: candidate.index, type: T.self).keyFields,
             storedFields: Array(candidate.missingFields),
-            reason: "Add stored fields to make index covering: \(candidate.missingFields.joined(separator: ", "))"
+            reason: "Add stored fields: \(candidate.missingFields.sorted().joined(separator: ", "))"
         )
-    }
-
-    private func getIndexFields(_ index: IndexDescriptor) -> Set<String> {
-        var fields: Set<String> = []
-        for keyPath in index.keyPaths {
-            fields.insert(T.fieldName(for: keyPath))
-        }
-        for storedPath in index.storedKeyPaths {
-            fields.insert(T.fieldName(for: storedPath))
-        }
-        return fields
     }
 }
 
@@ -292,20 +502,34 @@ public struct CoveringIndexSuggestion: Sendable {
 // MARK: - IndexDescriptor Extension
 
 extension IndexDescriptor {
-    /// Fields stored in the index (for covering index support)
+    /// Fields stored in the index value (for covering index support)
+    ///
+    /// Currently, index values only contain the record ID. To support
+    /// true covering indexes with additional stored fields, the index
+    /// kind would need to be extended to include field values in the
+    /// index entry's value portion.
+    ///
+    /// For now, this returns an empty array. Future enhancement:
+    /// - Add `storedKeyPaths` property to `IndexKind` protocol
+    /// - Store field values in index entries
+    /// - Enable covering indexes with partial key + stored fields
+    ///
+    /// Default: empty (no stored fields beyond key fields)
     public var storedKeyPaths: [AnyKeyPath] {
-        // Default implementation: no stored fields
-        // This would need to be extended in actual IndexDescriptor
-        []
+        // Currently not implemented - indexes only store IDs in values
+        // To enable: extend IndexKind to specify stored fields
+        return []
     }
 }
 
 // MARK: - Cost Model Extension
 
 extension CostModel {
-    /// Calculate cost savings from index-only scan
+    /// Calculate cost savings from true index-only scan
+    ///
+    /// True index-only eliminates ALL record fetches, providing
+    /// maximum I/O savings.
     public func indexOnlySavings(records: Double) -> Double {
-        // Savings = avoided record fetches
         records * recordFetchWeight
     }
 }
@@ -315,8 +539,6 @@ extension CostModel {
 extension Query {
     /// Projected fields (nil means all fields)
     var projectedFields: Set<String>? {
-        // Default: nil (all fields)
-        // This would need to be added to Query type
         nil
     }
 }

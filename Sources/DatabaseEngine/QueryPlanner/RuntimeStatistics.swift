@@ -62,7 +62,7 @@ public final class RuntimeStatisticsTracker: Sendable {
         indexScansPerformed: Int = 0,
         recordFetches: Int = 0
     ) {
-        let record = ExecutionRecord(
+        let entry = ExecutionRecord(
             planId: plan.id,
             typeName: String(describing: T.self),
             timestamp: Date(),
@@ -75,8 +75,8 @@ public final class RuntimeStatisticsTracker: Sendable {
         )
 
         state.withLock { state in
-            // Add record
-            state.executionHistory.append(record)
+            // Add entry
+            state.executionHistory.append(entry)
 
             // Trim if needed
             if state.executionHistory.count > state.maxHistorySize {
@@ -84,10 +84,10 @@ public final class RuntimeStatisticsTracker: Sendable {
             }
 
             // Update index usage stats
-            for indexName in record.usedIndexes {
+            for indexName in entry.usedIndexes {
                 var stats = state.indexUsageStats[indexName] ?? IndexUsageStats(indexName: indexName)
                 stats.usageCount += 1
-                stats.lastUsed = record.timestamp
+                stats.lastUsed = entry.timestamp
                 stats.totalRowsReturned += actualRowCount
                 state.indexUsageStats[indexName] = stats
             }
@@ -190,18 +190,18 @@ public final class RuntimeStatisticsTracker: Sendable {
 
         // Calculate estimation errors
         var errors: [Double] = []
-        var worstCases: [(record: ExecutionRecord, error: Double)] = []
+        var worstCases: [(entry: ExecutionRecord, error: Double)] = []
 
-        for record in history {
-            let estimated = Double(record.estimatedRowCount)
-            let actual = Double(record.actualRowCount)
+        for executionEntry in history {
+            let estimated = Double(executionEntry.estimatedRowCount)
+            let actual = Double(executionEntry.actualRowCount)
 
             // Relative error: |estimated - actual| / max(1, actual)
             let error = abs(estimated - actual) / max(1.0, actual)
             errors.append(error)
 
             if error > 1.0 { // More than 100% error
-                worstCases.append((record, error))
+                worstCases.append((executionEntry, error))
             }
         }
 
@@ -213,7 +213,7 @@ public final class RuntimeStatisticsTracker: Sendable {
         let topWorstCases = worstCases
             .sorted { $0.error > $1.error }
             .prefix(10)
-            .map { WorstCaseRecord(planId: $0.record.planId, error: $0.error, record: $0.record) }
+            .map { WorstCaseRecord(planId: $0.entry.planId, error: $0.error, entry: $0.entry) }
 
         return EstimationAccuracyReport(
             totalExecutions: history.count,
@@ -393,11 +393,11 @@ public struct EstimationAccuracyReport: Sendable {
     }
 }
 
-/// A record of a poorly estimated query
+/// A log entry for a poorly estimated query
 public struct WorstCaseRecord: Sendable {
     public let planId: UUID
     public let error: Double
-    public let record: ExecutionRecord
+    public let entry: ExecutionRecord
 }
 
 /// Index recommendation

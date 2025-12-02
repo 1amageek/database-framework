@@ -1,6 +1,7 @@
 // DNFConverter.swift
 // QueryPlanner - Disjunctive Normal Form conversion with explosion protection
 
+import Foundation
 import Core
 
 /// Converts predicates to Disjunctive Normal Form (DNF)
@@ -39,13 +40,14 @@ internal struct DNFConverter<T: Persistable>: Sendable {
             self.simplifyResult = simplifyResult
         }
 
-        internal static let `default` = Config()
+        /// Default configuration
+        internal static var `default`: Config { Config() }
 
         /// Strict configuration for complex queries
-        internal static let strict = Config(maxTerms: 20, maxDepth: 20)
+        internal static var strict: Config { Config(maxTerms: 20, maxDepth: 20) }
 
         /// Relaxed configuration for simple queries
-        internal static let relaxed = Config(maxTerms: 500, maxDepth: 100)
+        internal static var relaxed: Config { Config(maxTerms: 500, maxDepth: 100) }
     }
 
     // MARK: - Properties
@@ -130,8 +132,13 @@ internal struct DNFConverter<T: Persistable>: Sendable {
             return .and(children.map { pushNotDown(.not($0)) })
 
         case .comparison(let comp):
-            // Negate the comparison
-            return .comparison(negateComparison(comp))
+            // Negate the comparison, or wrap in NOT if it can't be directly negated
+            if let negated = negateComparison(comp) {
+                return .comparison(negated)
+            } else {
+                // Complex operators (in, contains, etc.) remain wrapped in NOT
+                return .not(.comparison(comp))
+            }
 
         case .true:
             return .false
@@ -142,7 +149,10 @@ internal struct DNFConverter<T: Persistable>: Sendable {
     }
 
     /// Negate a field comparison
-    private func negateComparison(_ comparison: FieldComparison<T>) -> FieldComparison<T> {
+    ///
+    /// Returns the negated comparison, or nil if the operator cannot be directly negated
+    /// (in which case the caller should wrap the original in NOT).
+    private func negateComparison(_ comparison: FieldComparison<T>) -> FieldComparison<T>? {
         let newOp: ComparisonOperator
         switch comparison.op {
         case .equal:
@@ -162,8 +172,9 @@ internal struct DNFConverter<T: Persistable>: Sendable {
         case .isNotNil:
             newOp = .isNil
         default:
-            // For complex operators, wrap in NOT
-            newOp = comparison.op
+            // Complex operators (in, contains, etc.) cannot be directly negated
+            // Return nil to signal that the caller should wrap in NOT
+            return nil
         }
 
         return FieldComparison(

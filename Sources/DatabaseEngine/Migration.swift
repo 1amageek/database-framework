@@ -471,12 +471,12 @@ public struct MigrationContext: Sendable {
 
     /// Update a single record during migration
     ///
-    /// Updates the record in a single transaction. For bulk updates,
+    /// Updates the item in a single transaction. For bulk updates,
     /// consider using `batchUpdate()` instead.
     ///
-    /// - Parameter record: The record to update
+    /// - Parameter item: The item to update
     /// - Throws: Error if update fails
-    public func update<T: Persistable>(_ record: T) async throws {
+    public func update<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
 
         guard let info = storeRegistry[itemType] else {
@@ -486,23 +486,23 @@ public struct MigrationContext: Sendable {
         }
 
         let encoder = ProtobufEncoder()
-        let data = try encoder.encode(record)
-        let validatedID = try record.validateIDForStorage()
-        let recordKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
+        let data = try encoder.encode(item)
+        let validatedID = try item.validateIDForStorage()
+        let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
 
         try await database.withTransaction { transaction in
-            transaction.setValue(Array(data), for: recordKey)
+            transaction.setValue(Array(data), for: itemKey)
         }
     }
 
-    /// Delete a single record during migration
+    /// Delete a single item during migration
     ///
-    /// Deletes the record in a single transaction. For bulk deletes,
+    /// Deletes the item in a single transaction. For bulk deletes,
     /// consider using `batchDelete()` instead.
     ///
-    /// - Parameter record: The record to delete
+    /// - Parameter item: The item to delete
     /// - Throws: Error if delete fails
-    public func delete<T: Persistable>(_ record: T) async throws {
+    public func delete<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
 
         guard let info = storeRegistry[itemType] else {
@@ -511,24 +511,24 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let validatedID = try record.validateIDForStorage()
-        let recordKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
+        let validatedID = try item.validateIDForStorage()
+        let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
 
         try await database.withTransaction { transaction in
-            transaction.clear(key: recordKey)
+            transaction.clear(key: itemKey)
         }
     }
 
-    /// Batch update multiple records
+    /// Batch update multiple items
     ///
-    /// Updates records in batches, with each batch processed in a separate
+    /// Updates items in batches, with each batch processed in a separate
     /// transaction to respect FDB's transaction limits.
     ///
     /// - Parameters:
-    ///   - records: Records to update
-    ///   - batchSize: Number of records per transaction (default: 100)
+    ///   - items: Items to update
+    ///   - batchSize: Number of items per transaction (default: 100)
     /// - Throws: Error if any batch fails
-    public func batchUpdate<T: Persistable>(_ records: [T], batchSize: Int = 100) async throws {
+    public func batchUpdate<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
 
         guard let info = storeRegistry[itemType] else {
@@ -538,34 +538,34 @@ public struct MigrationContext: Sendable {
         }
 
         let encoder = ProtobufEncoder()
-        let recordSubspace = info.subspace.subspace("R").subspace(itemType)
+        let itemSubspace = info.subspace.subspace("R").subspace(itemType)
 
         // Process in batches
-        for batchStart in stride(from: 0, to: records.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, records.count)
-            let batch = records[batchStart..<batchEnd]
+        for batchStart in stride(from: 0, to: items.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, items.count)
+            let batch = items[batchStart..<batchEnd]
 
             try await database.withTransaction { transaction in
-                for record in batch {
-                    let data = try encoder.encode(record)
-                    let validatedID = try record.validateIDForStorage()
-                    let recordKey = recordSubspace.pack(Tuple(validatedID))
-                    transaction.setValue(Array(data), for: recordKey)
+                for item in batch {
+                    let data = try encoder.encode(item)
+                    let validatedID = try item.validateIDForStorage()
+                    let itemKey = itemSubspace.pack(Tuple(validatedID))
+                    transaction.setValue(Array(data), for: itemKey)
                 }
             }
         }
     }
 
-    /// Batch delete multiple records
+    /// Batch delete multiple items
     ///
-    /// Deletes records in batches, with each batch processed in a separate
+    /// Deletes items in batches, with each batch processed in a separate
     /// transaction to respect FDB's transaction limits.
     ///
     /// - Parameters:
-    ///   - records: Records to delete
-    ///   - batchSize: Number of records per transaction (default: 100)
+    ///   - items: Items to delete
+    ///   - batchSize: Number of items per transaction (default: 100)
     /// - Throws: Error if any batch fails
-    public func batchDelete<T: Persistable>(_ records: [T], batchSize: Int = 100) async throws {
+    public func batchDelete<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
 
         guard let info = storeRegistry[itemType] else {
@@ -574,18 +574,18 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let recordSubspace = info.subspace.subspace("R").subspace(itemType)
+        let itemSubspace = info.subspace.subspace("R").subspace(itemType)
 
         // Process in batches
-        for batchStart in stride(from: 0, to: records.count, by: batchSize) {
-            let batchEnd = min(batchStart + batchSize, records.count)
-            let batch = records[batchStart..<batchEnd]
+        for batchStart in stride(from: 0, to: items.count, by: batchSize) {
+            let batchEnd = min(batchStart + batchSize, items.count)
+            let batch = items[batchStart..<batchEnd]
 
             try await database.withTransaction { transaction in
-                for record in batch {
-                    let validatedID = try record.validateIDForStorage()
-                    let recordKey = recordSubspace.pack(Tuple(validatedID))
-                    transaction.clear(key: recordKey)
+                for item in batch {
+                    let validatedID = try item.validateIDForStorage()
+                    let itemKey = itemSubspace.pack(Tuple(validatedID))
+                    transaction.clear(key: itemKey)
                 }
             }
         }
@@ -853,22 +853,22 @@ private struct RecordEnumerator<T: Persistable>: Sendable {
                             return results
                         }
 
-                        // Process batch and yield records
+                        // Process batch and yield items
                         for (key, value) in batch {
                             do {
-                                let record = try decoder.decode(T.self, from: Data(value))
-                                continuation.yield(record)
+                                let item = try decoder.decode(T.self, from: Data(value))
+                                continuation.yield(item)
                             } catch {
                                 // Log decode error but continue processing
                                 continuation.finish(throwing: FDBRuntimeError.internalError(
-                                    "Failed to decode \(itemType) record: \(error)"
+                                    "Failed to decode \(itemType) item: \(error)"
                                 ))
                                 return
                             }
                             lastKey = key
                         }
 
-                        // Check if we've processed all records
+                        // Check if we've processed all items
                         if batch.count < batchSize {
                             break
                         }

@@ -182,6 +182,8 @@ extension PlanOperator: CustomStringConvertible {
             return "IndexScan(\(op.index.name), entries: \(op.estimatedEntries))"
         case .indexSeek(let op):
             return "IndexSeek(\(op.index.name), keys: \(op.seekValues.count))"
+        case .indexOnlyScan(let op):
+            return "IndexOnlyScan(\(op.index.name), entries: \(op.estimatedEntries))"
         case .union(let op):
             return "Union(\(op.children.count) children, dedup: \(op.deduplicate))"
         case .intersection(let op):

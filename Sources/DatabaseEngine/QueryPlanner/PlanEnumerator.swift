@@ -443,6 +443,9 @@ public struct PlanEnumerator<T: Persistable> {
         case .indexSeek(let op):
             return op.seekValues.count <= 1 // Single seek preserves order
 
+        case .indexOnlyScan(let op):
+            return checkIndexProvidesOrdering(op.index, reverse: op.reverse, sortRequirements: sortRequirements)
+
         case .vectorSearch:
             return true // Vector search results are ordered by similarity
 
@@ -549,6 +552,7 @@ public struct PlanEnumerator<T: Persistable> {
 
             let indexOnlyOp: PlanOperator<T> = .indexOnlyScan(IndexOnlyScanOperator(
                 index: index,
+                metadata: coveringResult.metadata,
                 bounds: bounds,
                 reverse: shouldScanReverse(index: index, analysis: analysis),
                 projectedFields: coveringResult.coveredFields,

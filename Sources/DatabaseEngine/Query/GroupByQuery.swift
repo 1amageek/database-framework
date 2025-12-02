@@ -1,12 +1,13 @@
 // GroupByQuery.swift
 // Query DSL - GROUP BY aggregation queries
 
+import Foundation
 import Core
 
 // MARK: - Aggregation Types
 
 /// Represents an aggregation function
-public enum Aggregation<T: Persistable, V: Sendable>: Sendable {
+public enum Aggregation<T: Persistable, V: Sendable> {
     /// Count of records
     case count
 
@@ -22,6 +23,9 @@ public enum Aggregation<T: Persistable, V: Sendable>: Sendable {
     /// Maximum field value
     case max(KeyPath<T, V>)
 }
+
+// KeyPath is immutable and thread-safe, but not formally Sendable
+extension Aggregation: @unchecked Sendable {}
 
 /// Type-erased aggregation for storage
 public struct AnyAggregation<T: Persistable>: Sendable {
@@ -78,11 +82,11 @@ public struct AggregateResult<T: Persistable>: Sendable {
 // MARK: - GROUP BY Query
 
 /// A query with GROUP BY aggregation
-public struct GroupByQuery<T: Persistable>: Sendable {
+public struct GroupByQuery<T: Persistable>: @unchecked Sendable {
     /// Base query with filters
     public let baseQuery: Query<T>
 
-    /// Fields to group by
+    /// Fields to group by (AnyKeyPath is immutable and thread-safe)
     public let groupByFields: [AnyKeyPath]
 
     /// Aggregations to compute
@@ -118,7 +122,7 @@ public struct GroupByQuery<T: Persistable>: Sendable {
 // MARK: - GROUP BY Builder
 
 /// Builder for GROUP BY queries
-public struct GroupByBuilder<T: Persistable>: Sendable {
+public struct GroupByBuilder<T: Persistable>: @unchecked Sendable {
     private let baseQuery: Query<T>
     private var groupByFields: [AnyKeyPath] = []
     private var aggregations: [AnyAggregation<T>] = []

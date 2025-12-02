@@ -156,6 +156,14 @@ public struct CostEstimator<T: Persistable> {
     // MARK: - Index-Only Scan (Covering Index)
 
     /// Estimate cost for index-only scan (no record fetches needed)
+    ///
+    /// **Assumption**: This operator is only generated when `CoveringIndexMetadata.isFullyCovering`
+    /// is true, meaning the index contains ALL fields of type T. PlanEnumerator enforces this
+    /// via `IndexOnlyScanAnalyzer.analyze()` check before creating the operator.
+    ///
+    /// If the index is not truly covering (e.g., storedFields not available in IndexEntry),
+    /// the PlanExecutor will fall back to record fetches at runtime, but this is an exceptional
+    /// case that should not occur if PlanEnumerator works correctly.
     private func estimateIndexOnlyScan(
         _ op: IndexOnlyScanOperator<T>,
         analysis: QueryAnalysis<T>
@@ -176,10 +184,10 @@ public struct CostEstimator<T: Persistable> {
         let rangeInitCost = costModel.rangeInitiationWeight
 
         // KEY DIFFERENCE: No record fetches for index-only scan!
-        // All required data comes from the index
+        // All required data comes from the index (key fields + stored fields)
         return PlanCost(
             indexReads: indexEntries,
-            recordFetches: 0,  // This is the main cost saving
+            recordFetches: 0,  // True index-only: all data from index
             postFilterCount: indexEntries * postFilterRatio,
             requiresSort: !orderingSatisfied && !analysis.sortRequirements.isEmpty,
             additionalCost: rangeInitCost,

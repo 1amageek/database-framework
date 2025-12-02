@@ -331,7 +331,7 @@ struct CollectedStatisticsProviderTests {
         let provider = CollectedStatisticsProvider()
         provider.updateTableStats(for: QPTestUser.self, rowCount: 10000, sampleSize: 1000)
 
-        let tracker = RuntimeStatisticsTracker(
+        _ = RuntimeStatisticsTracker(
             statisticsProvider: provider,
             autoUpdateStatistics: true,
             updateThreshold: 1 // Update after every execution

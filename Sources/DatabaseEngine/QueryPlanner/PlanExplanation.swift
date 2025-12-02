@@ -119,6 +119,12 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
                 lines.append("\(prefix)   satisfies: \(fields.joined(separator: ", "))")
             }
 
+        case .indexOnlyScan(let scanOp):
+            lines.append("\(prefix)-> IndexOnlyScan[\(scanOp.index.name)]")
+            lines.append("\(prefix)   covering: true (no record fetch needed)")
+            lines.append("\(prefix)   fields: \(scanOp.projectedFields.joined(separator: ", "))")
+            lines.append("\(prefix)   est. entries: \(scanOp.estimatedEntries)")
+
         case .union(let unionOp):
             lines.append("\(prefix)-> Union")
             lines.append("\(prefix)   deduplicate: \(unionOp.deduplicate)")

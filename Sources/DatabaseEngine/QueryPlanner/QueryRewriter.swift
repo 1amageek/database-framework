@@ -1,6 +1,7 @@
 // QueryRewriter.swift
 // QueryPlanner - Predicate optimization and rewriting
 
+import Foundation
 import Core
 
 /// Optimizes and rewrites predicates for better query performance
@@ -60,20 +61,23 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
             self.dnfConfig = dnfConfig
         }
 
-        internal static let `default` = Config()
+        /// Default configuration
+        internal static var `default`: Config { Config() }
 
         /// Full optimization with DNF conversion
-        internal static let full = Config(enableDNFConversion: true)
+        internal static var full: Config { Config(enableDNFConversion: true) }
 
         /// Minimal optimization (only flatten and dedupe)
-        internal static let minimal = Config(
-            enableFlatten: true,
-            enableDeduplication: true,
-            enableConstantFolding: false,
-            enableContradictionElimination: false,
-            enableRangeMerging: false,
-            enableDNFConversion: false
-        )
+        internal static var minimal: Config {
+            Config(
+                enableFlatten: true,
+                enableDeduplication: true,
+                enableConstantFolding: false,
+                enableContradictionElimination: false,
+                enableRangeMerging: false,
+                enableDNFConversion: false
+            )
+        }
     }
 
     // MARK: - Properties
@@ -267,6 +271,10 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     }
 
     /// Merge comparisons on the same field
+    ///
+    /// Keeps the strictest bounds:
+    /// - For lower bounds: higher value is stricter, exclusive is stricter than inclusive at same value
+    /// - For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
     private func mergeFieldComparisons(_ comparisons: [FieldComparison<T>]) -> [FieldComparison<T>] {
         var result: [FieldComparison<T>] = []
         var lowerBound: (value: AnySendable, inclusive: Bool)?
@@ -277,45 +285,16 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
         for comp in comparisons {
             switch comp.op {
             case .greaterThan:
-                if let existing = lowerBound {
-                    // Keep the stricter bound
-                    if compareValues(comp.value, existing.value) == .orderedDescending {
-                        lowerBound = (comp.value, false)
-                    }
-                } else {
-                    lowerBound = (comp.value, false)
-                }
+                lowerBound = updateLowerBound(existing: lowerBound, new: (comp.value, false))
 
             case .greaterThanOrEqual:
-                if let existing = lowerBound {
-                    if compareValues(comp.value, existing.value) == .orderedDescending {
-                        lowerBound = (comp.value, true)
-                    } else if compareValues(comp.value, existing.value) == .orderedSame && existing.inclusive {
-                        // Keep inclusive if values are equal
-                    }
-                } else {
-                    lowerBound = (comp.value, true)
-                }
+                lowerBound = updateLowerBound(existing: lowerBound, new: (comp.value, true))
 
             case .lessThan:
-                if let existing = upperBound {
-                    if compareValues(comp.value, existing.value) == .orderedAscending {
-                        upperBound = (comp.value, false)
-                    }
-                } else {
-                    upperBound = (comp.value, false)
-                }
+                upperBound = updateUpperBound(existing: upperBound, new: (comp.value, false))
 
             case .lessThanOrEqual:
-                if let existing = upperBound {
-                    if compareValues(comp.value, existing.value) == .orderedAscending {
-                        upperBound = (comp.value, true)
-                    } else if compareValues(comp.value, existing.value) == .orderedSame && existing.inclusive {
-                        // Keep inclusive if values are equal
-                    }
-                } else {
-                    upperBound = (comp.value, true)
-                }
+                upperBound = updateUpperBound(existing: upperBound, new: (comp.value, true))
 
             case .equal:
                 equalities.append(comp)
@@ -349,6 +328,52 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
         result.append(contentsOf: others)
 
         return result
+    }
+
+    /// Update lower bound, keeping the stricter one
+    /// For lower bounds: higher value is stricter, exclusive is stricter than inclusive at same value
+    private func updateLowerBound(
+        existing: (value: AnySendable, inclusive: Bool)?,
+        new: (value: AnySendable, inclusive: Bool)
+    ) -> (value: AnySendable, inclusive: Bool) {
+        guard let existing = existing else { return new }
+
+        let cmp = compareValues(new.value, existing.value)
+        switch cmp {
+        case .orderedDescending:
+            // New value is higher → stricter
+            return new
+        case .orderedAscending:
+            // Existing value is higher → keep existing
+            return existing
+        case .orderedSame:
+            // Same value: exclusive (false) is stricter than inclusive (true)
+            // a > 5 is stricter than a >= 5
+            return existing.inclusive ? new : existing
+        }
+    }
+
+    /// Update upper bound, keeping the stricter one
+    /// For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
+    private func updateUpperBound(
+        existing: (value: AnySendable, inclusive: Bool)?,
+        new: (value: AnySendable, inclusive: Bool)
+    ) -> (value: AnySendable, inclusive: Bool) {
+        guard let existing = existing else { return new }
+
+        let cmp = compareValues(new.value, existing.value)
+        switch cmp {
+        case .orderedAscending:
+            // New value is lower → stricter
+            return new
+        case .orderedDescending:
+            // Existing value is lower → keep existing
+            return existing
+        case .orderedSame:
+            // Same value: exclusive (false) is stricter than inclusive (true)
+            // a < 5 is stricter than a <= 5
+            return existing.inclusive ? new : existing
+        }
     }
 
     /// Compare two AnySendable values
@@ -504,47 +529,78 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Check if comparisons on a single field are contradictory
     private func fieldHasContradiction(_ comparisons: [FieldComparison<T>]) -> Bool {
         var equalityValues: Set<String> = []
-        var lowerBound: AnySendable?
-        var upperBound: AnySendable?
+        var lowerBound: (value: AnySendable, inclusive: Bool)?
+        var upperBound: (value: AnySendable, inclusive: Bool)?
 
         for comp in comparisons {
             switch comp.op {
             case .equal:
                 let valueStr = "\(comp.value.value)"
                 if !equalityValues.isEmpty && !equalityValues.contains(valueStr) {
-                    // Multiple different equality values
+                    // Multiple different equality values: a == 1 AND a == 2
                     return true
                 }
                 equalityValues.insert(valueStr)
 
                 // Check against range bounds
+                // For lower bound: equality value must be > lower (if exclusive) or >= lower (if inclusive)
                 if let lower = lowerBound {
-                    if compareValues(comp.value, lower) != .orderedDescending {
+                    let cmp = compareValues(comp.value, lower.value)
+                    if cmp == .orderedAscending {
+                        // Equality value is less than lower bound
+                        return true
+                    }
+                    if cmp == .orderedSame && !lower.inclusive {
+                        // a > 5 AND a == 5 is a contradiction
                         return true
                     }
                 }
+                // For upper bound: equality value must be < upper (if exclusive) or <= upper (if inclusive)
                 if let upper = upperBound {
-                    if compareValues(comp.value, upper) != .orderedAscending {
+                    let cmp = compareValues(comp.value, upper.value)
+                    if cmp == .orderedDescending {
+                        // Equality value is greater than upper bound
+                        return true
+                    }
+                    if cmp == .orderedSame && !upper.inclusive {
+                        // a < 5 AND a == 5 is a contradiction
                         return true
                     }
                 }
 
-            case .greaterThan, .greaterThanOrEqual:
-                lowerBound = comp.value
+            case .greaterThan:
+                lowerBound = (comp.value, false)
 
-            case .lessThan, .lessThanOrEqual:
-                upperBound = comp.value
+            case .greaterThanOrEqual:
+                lowerBound = (comp.value, true)
+
+            case .lessThan:
+                upperBound = (comp.value, false)
+
+            case .lessThanOrEqual:
+                upperBound = (comp.value, true)
 
             default:
                 break
             }
         }
 
-        // Check if range is impossible (lower >= upper)
+        // Check if range is impossible
         if let lower = lowerBound, let upper = upperBound {
-            let cmp = compareValues(lower, upper)
-            if cmp == .orderedDescending || cmp == .orderedSame {
+            let cmp = compareValues(lower.value, upper.value)
+            if cmp == .orderedDescending {
+                // Lower bound > upper bound: always contradiction
                 return true
+            }
+            if cmp == .orderedSame {
+                // Lower == upper: contradiction unless both are inclusive
+                // a >= 5 AND a <= 5 is NOT a contradiction (a == 5)
+                // a > 5 AND a <= 5 IS a contradiction
+                // a >= 5 AND a < 5 IS a contradiction
+                // a > 5 AND a < 5 IS a contradiction
+                if !lower.inclusive || !upper.inclusive {
+                    return true
+                }
             }
         }
 
