@@ -3,6 +3,8 @@
 
 import Foundation
 import Core
+import FoundationDB
+import Synchronization
 
 /// Provides statistics about tables and indexes for cost estimation
 public protocol StatisticsProvider: Sendable {
@@ -391,5 +393,509 @@ public final class CollectedStatisticsProvider: StatisticsProvider, @unchecked S
         }
 
         return Double(matchingCount) / Double(totalCount)
+    }
+}
+
+// MARK: - Search Index Statistics
+
+/// Statistics for vector indexes
+public struct VectorIndexStatistics: Sendable {
+    /// Index name
+    public let indexName: String
+
+    /// Total vector count
+    public let vectorCount: Int
+
+    /// Vector dimensions
+    public let dimensions: Int
+
+    /// Average L2 norm of vectors
+    public let avgL2Norm: Double
+
+    /// Standard deviation of L2 norms
+    public let stdDevL2Norm: Double
+
+    /// Norm distribution buckets for filtering optimization
+    public let normBuckets: [NormBucket]?
+
+    public init(
+        indexName: String,
+        vectorCount: Int,
+        dimensions: Int,
+        avgL2Norm: Double = 1.0,
+        stdDevL2Norm: Double = 0.1,
+        normBuckets: [NormBucket]? = nil
+    ) {
+        self.indexName = indexName
+        self.vectorCount = vectorCount
+        self.dimensions = dimensions
+        self.avgL2Norm = avgL2Norm
+        self.stdDevL2Norm = stdDevL2Norm
+        self.normBuckets = normBuckets
+    }
+}
+
+/// Bucket for L2 norm distribution
+public struct NormBucket: Sendable {
+    public let minNorm: Double
+    public let maxNorm: Double
+    public let count: Int
+
+    public init(minNorm: Double, maxNorm: Double, count: Int) {
+        self.minNorm = minNorm
+        self.maxNorm = maxNorm
+        self.count = count
+    }
+}
+
+/// Statistics for full-text indexes
+public struct FullTextIndexStatistics: Sendable {
+    /// Index name
+    public let indexName: String
+
+    /// Total document count
+    public let totalDocs: Int
+
+    /// Average document length (in terms)
+    public let avgDocLength: Double
+
+    /// Total unique terms
+    public let uniqueTerms: Int
+
+    /// Term frequency distribution
+    public let termFrequencies: [String: Int]?
+
+    /// Most frequent terms (for optimization hints)
+    public let topTerms: [(term: String, docFreq: Int)]?
+
+    public init(
+        indexName: String,
+        totalDocs: Int,
+        avgDocLength: Double,
+        uniqueTerms: Int,
+        termFrequencies: [String: Int]? = nil,
+        topTerms: [(term: String, docFreq: Int)]? = nil
+    ) {
+        self.indexName = indexName
+        self.totalDocs = totalDocs
+        self.avgDocLength = avgDocLength
+        self.uniqueTerms = uniqueTerms
+        self.termFrequencies = termFrequencies
+        self.topTerms = topTerms
+    }
+}
+
+/// Statistics for spatial indexes
+public struct SpatialIndexStatistics: Sendable {
+    /// Index name
+    public let indexName: String
+
+    /// Total entry count
+    public let entryCount: Int
+
+    /// Bounding box of all entries
+    public let boundingBox: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double)?
+
+    /// Cell density distribution (cellCode -> count)
+    public let cellDensity: [UInt64: Int]?
+
+    /// Hot cells (cells with high density)
+    public let hotCells: [UInt64]?
+
+    public init(
+        indexName: String,
+        entryCount: Int,
+        boundingBox: (minLat: Double, minLon: Double, maxLat: Double, maxLon: Double)? = nil,
+        cellDensity: [UInt64: Int]? = nil,
+        hotCells: [UInt64]? = nil
+    ) {
+        self.indexName = indexName
+        self.entryCount = entryCount
+        self.boundingBox = boundingBox
+        self.cellDensity = cellDensity
+        self.hotCells = hotCells
+    }
+}
+
+// MARK: - Search Statistics Storage
+
+/// Thread-safe storage for search index statistics
+///
+/// Using a separate final class with Mutex for Sendable conformance.
+public final class SearchStatisticsStorage: Sendable {
+
+    /// Internal state protected by Mutex
+    private struct State: Sendable {
+        var vectorStats: [String: VectorIndexStatistics] = [:]
+        var fullTextStats: [String: FullTextIndexStatistics] = [:]
+        var spatialStats: [String: SpatialIndexStatistics] = [:]
+    }
+
+    private let state: Mutex<State>
+
+    /// Shared instance for global access
+    public static let shared = SearchStatisticsStorage()
+
+    public init() {
+        self.state = Mutex(State())
+    }
+
+    // MARK: - Vector Statistics
+
+    /// Get vector index statistics
+    public func vectorIndexStats(indexName: String) -> VectorIndexStatistics? {
+        state.withLock { $0.vectorStats[indexName] }
+    }
+
+    /// Update vector index statistics
+    public func updateVectorStats(_ stats: VectorIndexStatistics) {
+        state.withLock { $0.vectorStats[stats.indexName] = stats }
+    }
+
+    /// Estimate vectors within distance threshold based on norm distribution
+    public func estimateVectorsWithinDistance(
+        indexName: String,
+        queryNorm: Double,
+        maxDistance: Double
+    ) -> Int {
+        guard let stats = vectorIndexStats(indexName: indexName) else {
+            return 100 // Default estimate
+        }
+
+        guard let buckets = stats.normBuckets else {
+            return stats.vectorCount / 10
+        }
+
+        var potentialCount = 0
+        for bucket in buckets {
+            if abs(queryNorm - bucket.minNorm) <= maxDistance * 2 ||
+               abs(queryNorm - bucket.maxNorm) <= maxDistance * 2 {
+                potentialCount += bucket.count
+            }
+        }
+
+        return max(1, potentialCount)
+    }
+
+    // MARK: - Full-Text Statistics
+
+    /// Get full-text index statistics
+    public func fullTextIndexStats(indexName: String) -> FullTextIndexStatistics? {
+        state.withLock { $0.fullTextStats[indexName] }
+    }
+
+    /// Update full-text index statistics
+    public func updateFullTextStats(_ stats: FullTextIndexStatistics) {
+        state.withLock { $0.fullTextStats[stats.indexName] = stats }
+    }
+
+    /// Estimate documents for a term
+    public func estimateDocFrequency(indexName: String, term: String) -> Int {
+        guard let stats = fullTextIndexStats(indexName: indexName) else {
+            return 100
+        }
+
+        if let freq = stats.termFrequencies?[term.lowercased()] {
+            return freq
+        }
+
+        return max(1, stats.totalDocs / 100)
+    }
+
+    /// Calculate IDF for a term
+    public func calculateIDF(indexName: String, term: String) -> Double {
+        guard let stats = fullTextIndexStats(indexName: indexName) else {
+            return 1.0
+        }
+
+        let docFreq = estimateDocFrequency(indexName: indexName, term: term)
+        let n = Double(stats.totalDocs)
+        let df = Double(max(docFreq, 1))
+
+        return log((n - df + 0.5) / (df + 0.5) + 1)
+    }
+
+    // MARK: - Spatial Statistics
+
+    /// Get spatial index statistics
+    public func spatialIndexStats(indexName: String) -> SpatialIndexStatistics? {
+        state.withLock { $0.spatialStats[indexName] }
+    }
+
+    /// Update spatial index statistics
+    public func updateSpatialStats(_ stats: SpatialIndexStatistics) {
+        state.withLock { $0.spatialStats[stats.indexName] = stats }
+    }
+
+    /// Estimate entries in a cell
+    public func estimateCellDensity(indexName: String, cellCode: UInt64) -> Int {
+        guard let stats = spatialIndexStats(indexName: indexName) else {
+            return 10
+        }
+
+        if let density = stats.cellDensity?[cellCode] {
+            return density
+        }
+
+        let avgDensity = stats.entryCount / max(1, stats.cellDensity?.count ?? 100)
+        return max(1, avgDensity)
+    }
+
+    /// Check if a cell is a hot cell (high density)
+    public func isHotCell(indexName: String, cellCode: UInt64) -> Bool {
+        guard let stats = spatialIndexStats(indexName: indexName) else {
+            return false
+        }
+        return stats.hotCells?.contains(cellCode) ?? false
+    }
+}
+
+// MARK: - Statistics Collector
+
+/// Collector for gathering search index statistics from the database
+///
+/// **Usage**:
+/// ```swift
+/// let collector = SearchStatisticsCollector(database: database, subspace: subspace)
+///
+/// // Collect vector statistics
+/// let vectorStats = try await collector.collectVectorStats(
+///     indexName: "idx_embedding",
+///     dimensions: 128
+/// )
+/// statisticsProvider.updateVectorStats(vectorStats)
+///
+/// // Collect full-text statistics
+/// let ftStats = try await collector.collectFullTextStats(indexName: "idx_content")
+/// statisticsProvider.updateFullTextStats(ftStats)
+/// ```
+public struct SearchStatisticsCollector: Sendable {
+
+    private let reader: StorageReader
+    private let indexSubspace: Subspace
+
+    public init(reader: StorageReader, indexSubspace: Subspace) {
+        self.reader = reader
+        self.indexSubspace = indexSubspace
+    }
+
+    /// Collect vector index statistics
+    public func collectVectorStats(
+        indexName: String,
+        dimensions: Int,
+        sampleSize: Int = 1000
+    ) async throws -> VectorIndexStatistics {
+        let subspace = indexSubspace.subspace(indexName)
+
+        var vectorCount = 0
+        var sumNorm: Double = 0
+        var sumNormSquared: Double = 0
+        var normValues: [Double] = []
+
+        for try await (_, value) in reader.scanSubspace(subspace) {
+            vectorCount += 1
+
+            // Parse vector and compute norm (sample only)
+            if normValues.count < sampleSize {
+                if let vector = try? parseVectorForStats(from: value, dimensions: dimensions) {
+                    let norm = computeL2Norm(vector)
+                    normValues.append(norm)
+                    sumNorm += norm
+                    let normSquared = norm * norm
+                    sumNormSquared += normSquared
+                }
+            }
+        }
+
+        // Compute statistics
+        let sampleCount = Double(normValues.count)
+        let avgNorm = sampleCount > 0 ? sumNorm / sampleCount : 1.0
+        let variance = sampleCount > 1
+            ? (sumNormSquared - sumNorm * sumNorm / sampleCount) / (sampleCount - 1)
+            : 0.0
+        let stdDev = sqrt(max(0, variance))
+
+        // Build norm buckets
+        let buckets = buildNormBuckets(norms: normValues, bucketCount: 10)
+
+        return VectorIndexStatistics(
+            indexName: indexName,
+            vectorCount: vectorCount,
+            dimensions: dimensions,
+            avgL2Norm: avgNorm,
+            stdDevL2Norm: stdDev,
+            normBuckets: buckets
+        )
+    }
+
+    /// Collect full-text index statistics
+    public func collectFullTextStats(
+        indexName: String,
+        topTermCount: Int = 100
+    ) async throws -> FullTextIndexStatistics {
+        let subspace = indexSubspace.subspace(indexName)
+        let termsSubspace = subspace.subspace("terms")
+
+        var totalDocs: Set<[UInt8]> = []
+        var termFrequencies: [String: Int] = [:]
+        var totalTermOccurrences = 0
+
+        // Scan terms subspace
+        for try await (key, _) in reader.scanSubspace(termsSubspace) {
+            // Key structure: [termsSubspace][term][docID]
+            guard let keyTuple = try? termsSubspace.unpack(key) else { continue }
+            guard keyTuple.count >= 2 else { continue }
+
+            if let term = keyTuple[0] as? String {
+                termFrequencies[term, default: 0] += 1
+                totalTermOccurrences += 1
+            }
+
+            // Extract docID (remaining elements)
+            var idElements: [any TupleElement] = []
+            for i in 1..<keyTuple.count {
+                if let element = keyTuple[i] {
+                    idElements.append(element)
+                }
+            }
+            let docID = Tuple(idElements).pack()
+            totalDocs.insert(docID)
+        }
+
+        // Calculate average document length
+        let avgDocLength = totalDocs.count > 0
+            ? Double(totalTermOccurrences) / Double(totalDocs.count)
+            : 0.0
+
+        // Get top terms
+        let sortedTerms = termFrequencies.sorted { $0.value > $1.value }
+        let topTerms = Array(sortedTerms.prefix(topTermCount).map { ($0.key, $0.value) })
+
+        return FullTextIndexStatistics(
+            indexName: indexName,
+            totalDocs: totalDocs.count,
+            avgDocLength: avgDocLength,
+            uniqueTerms: termFrequencies.count,
+            termFrequencies: termFrequencies,
+            topTerms: topTerms
+        )
+    }
+
+    /// Collect spatial index statistics
+    public func collectSpatialStats(indexName: String) async throws -> SpatialIndexStatistics {
+        let subspace = indexSubspace.subspace(indexName)
+
+        var entryCount = 0
+        var cellDensity: [UInt64: Int] = [:]
+        var minLat = Double.infinity
+        var minLon = Double.infinity
+        var maxLat = -Double.infinity
+        var maxLon = -Double.infinity
+
+        for try await (key, _) in reader.scanSubspace(subspace) {
+            guard let keyTuple = try? subspace.unpack(key) else { continue }
+            guard keyTuple.count >= 1 else { continue }
+
+            entryCount += 1
+
+            // Extract cell code
+            if let cellCode = keyTuple[0] as? Int64 {
+                let code = UInt64(bitPattern: cellCode)
+                cellDensity[code, default: 0] += 1
+
+                // Decode cell to update bounding box
+                let (lat, lon) = decodeMortonForStats(code, level: 15)
+                minLat = min(minLat, lat)
+                maxLat = max(maxLat, lat)
+                minLon = min(minLon, lon)
+                maxLon = max(maxLon, lon)
+            }
+        }
+
+        // Find hot cells (top 10% by density)
+        let sortedCells = cellDensity.sorted { $0.value > $1.value }
+        let hotCellCount = max(1, sortedCells.count / 10)
+        let hotCells = Array(sortedCells.prefix(hotCellCount).map { $0.key })
+
+        let boundingBox = entryCount > 0
+            ? (minLat, minLon, maxLat, maxLon)
+            : nil
+
+        return SpatialIndexStatistics(
+            indexName: indexName,
+            entryCount: entryCount,
+            boundingBox: boundingBox,
+            cellDensity: cellDensity,
+            hotCells: hotCells
+        )
+    }
+
+    // MARK: - Helper Methods
+
+    private func parseVectorForStats(from bytes: [UInt8], dimensions: Int) throws -> [Float] {
+        let elements = try Tuple.unpack(from: bytes)
+        var vector: [Float] = []
+        vector.reserveCapacity(dimensions)
+
+        for i in 0..<min(dimensions, elements.count) {
+            let element = elements[i]
+            if let f = element as? Float {
+                vector.append(f)
+            } else if let d = element as? Double {
+                vector.append(Float(d))
+            } else if let i64 = element as? Int64 {
+                vector.append(Float(i64))
+            }
+        }
+        return vector
+    }
+
+    private func computeL2Norm(_ vector: [Float]) -> Double {
+        var sum: Float = 0
+        for v in vector {
+            sum += v * v
+        }
+        return Double(sqrtf(sum))
+    }
+
+    private func buildNormBuckets(norms: [Double], bucketCount: Int) -> [NormBucket] {
+        guard !norms.isEmpty else { return [] }
+
+        let sorted = norms.sorted()
+        let minNorm = sorted.first!
+        let maxNorm = sorted.last!
+        let range = maxNorm - minNorm
+
+        guard range > 0 else {
+            return [NormBucket(minNorm: minNorm, maxNorm: maxNorm, count: norms.count)]
+        }
+
+        let bucketSize = range / Double(bucketCount)
+        var buckets: [NormBucket] = []
+
+        for i in 0..<bucketCount {
+            let lower = minNorm + Double(i) * bucketSize
+            let upper = i == bucketCount - 1 ? maxNorm : minNorm + Double(i + 1) * bucketSize
+            let count = sorted.filter { $0 >= lower && $0 < upper }.count
+            buckets.append(NormBucket(minNorm: lower, maxNorm: upper, count: count))
+        }
+
+        return buckets
+    }
+
+    private func decodeMortonForStats(_ code: UInt64, level: Int) -> (lat: Double, lon: Double) {
+        var x: UInt32 = 0
+        var y: UInt32 = 0
+
+        for i in 0..<level {
+            x |= UInt32((code >> (2 * i)) & 1) << i
+            y |= UInt32((code >> (2 * i + 1)) & 1) << i
+        }
+
+        let maxVal = Double(1 << level)
+        let lon = (Double(x) / maxVal) * 360.0 - 180.0
+        let lat = (Double(y) / maxVal) * 180.0 - 90.0
+
+        return (lat, lon)
     }
 }

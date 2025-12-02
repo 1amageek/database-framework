@@ -4,6 +4,7 @@
 import Foundation
 import FoundationDB
 import Core
+import Accelerate
 
 /// Protocol for index-specific search operations
 ///
@@ -392,13 +393,28 @@ public struct ScalarIndexSearcher: IndexSearcher {
 
 // MARK: - Full-Text Index Searcher
 
-/// Searcher for full-text indexes
+/// Searcher for full-text indexes with BM25 scoring
 ///
 /// **Index Structure**:
 /// ```
 /// Key: [subspace]["terms"][term][primaryKey]
-/// Value: Tuple(position1, position2, ...) or '' (no positions)
+/// Value: Tuple(termFreq, positions...) or Tuple(termFreq) or '' (legacy)
+///
+/// Key: [subspace]["meta"]["docLength"][primaryKey]
+/// Value: Tuple(docLength)
+///
+/// Key: [subspace]["meta"]["totalDocs"]
+/// Value: Tuple(count)
+///
+/// Key: [subspace]["meta"]["avgDocLength"]
+/// Value: Tuple(avgLength)
 /// ```
+///
+/// **Optimizations**:
+/// - Posting list intersection starts with shortest list
+/// - BM25 scoring for relevance ranking
+/// - Early termination with limit
+/// - Position-based phrase matching
 ///
 /// **Usage**:
 /// ```swift
@@ -416,21 +432,26 @@ public struct ScalarIndexSearcher: IndexSearcher {
 public struct FullTextIndexSearcher: IndexSearcher {
     public typealias Query = FullTextIndexQuery
 
+    /// BM25 parameters
+    private let k1: Double = 1.2  // Term frequency saturation parameter
+    private let b: Double = 0.75  // Length normalization parameter
+
     public init() {}
 
-    /// Search the full-text index
+    /// Search the full-text index with BM25 scoring
     ///
     /// - Parameters:
     ///   - query: The search query with terms and match mode
     ///   - subspace: The index subspace (resolved via DirectoryLayer)
     ///   - reader: Storage reader for raw KV access
-    /// - Returns: Matching index entries
+    /// - Returns: Matching index entries sorted by BM25 score
     public func search(
         query: FullTextIndexQuery,
         in subspace: Subspace,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
         let termsSubspace = subspace.subspace("terms")
+        let metaSubspace = subspace.subspace("meta")
 
         guard !query.terms.isEmpty else {
             return []
@@ -439,65 +460,88 @@ public struct FullTextIndexSearcher: IndexSearcher {
         // Normalize search terms
         let normalizedTerms = query.terms.map { $0.lowercased() }
 
-        // Find documents for each term
-        // Use [UInt8] (packed Tuple) as Set element for Hashable compatibility
-        var termDocumentSets: [Set<[UInt8]>] = []
+        // Load corpus statistics for BM25
+        let stats = try await loadCorpusStatistics(from: metaSubspace, using: reader)
+
+        // Find postings for each term with term frequencies
+        // PostingEntry: (packedID, termFreq, positions)
+        var termPostings: [(term: String, postings: [PostingEntry])] = []
 
         for term in normalizedTerms {
             let termSubspace = termsSubspace.subspace(term)
-            var documentsForTerm: Set<[UInt8]> = []
+            var postings: [PostingEntry] = []
 
-            for try await (key, _) in reader.scanSubspace(termSubspace) {
-                // Extract primary key from key
+            for try await (key, value) in reader.scanSubspace(termSubspace) {
                 guard let keyTuple = try? termSubspace.unpack(key) else {
                     continue
                 }
 
-                // Build primary key tuple and pack to bytes for Set storage
+                // Build primary key
                 var idElements: [any TupleElement] = []
                 for i in 0..<keyTuple.count {
                     if let element = keyTuple[i] {
                         idElements.append(element)
                     }
                 }
-                let itemID = Tuple(idElements)
-                documentsForTerm.insert(itemID.pack())
+                let packedID = Tuple(idElements).pack()
+
+                // Parse term frequency and positions from value
+                let (termFreq, positions) = parsePostingValue(value)
+
+                postings.append(PostingEntry(
+                    packedID: packedID,
+                    termFreq: termFreq,
+                    positions: positions
+                ))
             }
 
-            termDocumentSets.append(documentsForTerm)
+            termPostings.append((term: term, postings: postings))
         }
 
         // Combine results based on match mode
-        let matchingPackedIDs: Set<[UInt8]>
+        let matchingDocs: [ScoredDocument]
+
         switch query.matchMode {
         case .all:
-            // All terms must be present
-            matchingPackedIDs = intersectSets(termDocumentSets)
+            matchingDocs = try await intersectPostingsWithScoring(
+                termPostings: termPostings,
+                stats: stats,
+                metaSubspace: metaSubspace,
+                reader: reader
+            )
         case .any:
-            // Any term can be present
-            matchingPackedIDs = unionSets(termDocumentSets)
+            matchingDocs = try await unionPostingsWithScoring(
+                termPostings: termPostings,
+                stats: stats,
+                metaSubspace: metaSubspace,
+                reader: reader
+            )
         case .phrase:
-            // For phrase matching, we'd need position data - for now treat as .all
-            matchingPackedIDs = intersectSets(termDocumentSets)
+            matchingDocs = try await phraseMatchWithScoring(
+                termPostings: termPostings,
+                stats: stats,
+                metaSubspace: metaSubspace,
+                reader: reader
+            )
         }
 
-        // Build result entries
+        // Sort by score descending
+        let sortedDocs = matchingDocs.sorted { $0.score > $1.score }
+
+        // Build result entries with limit
         var results: [IndexEntry] = []
-        for packedID in matchingPackedIDs {
-            // Unpack the ID back to Tuple
-            let idElements = try Tuple.unpack(from: packedID)
+        for doc in sortedDocs {
+            let idElements = try Tuple.unpack(from: doc.packedID)
             let itemID = Tuple(idElements)
 
-            // keyValues contains the matched terms
-            let keyValues = Tuple(normalizedTerms.map { $0 as any TupleElement })
             let entry = IndexEntry(
                 itemID: itemID,
-                keyValues: keyValues,
-                storedValues: Tuple()
+                keyValues: Tuple(normalizedTerms.map { $0 as any TupleElement }),
+                storedValues: Tuple(),
+                score: doc.score
             )
             results.append(entry)
 
-            // Apply limit if specified
             if let limit = query.limit, results.count >= limit {
                 break
             }
@@ -506,27 +550,340 @@ public struct FullTextIndexSearcher: IndexSearcher {
         return results
     }
 
-    /// Intersect multiple sets (AND operation)
-    private func intersectSets(_ sets: [Set<[UInt8]>]) -> Set<[UInt8]> {
-        guard let first = sets.first else { return [] }
-        return sets.dropFirst().reduce(first) { $0.intersection($1) }
+    // MARK: - Posting List Operations
+
+    /// Posting entry with term frequency and positions
+    private struct PostingEntry {
+        let packedID: [UInt8]
+        let termFreq: Int
+        let positions: [Int]
     }
 
-    /// Union multiple sets (OR operation)
-    private func unionSets(_ sets: [Set<[UInt8]>]) -> Set<[UInt8]> {
-        return sets.reduce(Set<[UInt8]>()) { $0.union($1) }
+    /// Document with BM25 score
+    private struct ScoredDocument {
+        let packedID: [UInt8]
+        var score: Double
+    }
+
+    /// Corpus statistics for BM25
+    private struct CorpusStatistics {
+        var totalDocs: Int = 0
+        var avgDocLength: Double = 0
+    }
+
+    /// Load corpus statistics from metadata subspace
+    private func loadCorpusStatistics(
+        from metaSubspace: Subspace,
+        using reader: StorageReader
+    ) async throws -> CorpusStatistics {
+        var stats = CorpusStatistics()
+
+        // Try to load totalDocs
+        let totalDocsKey = metaSubspace.pack(Tuple(["totalDocs"]))
+        if let value = try await reader.getValue(key: totalDocsKey) {
+            let elements = try Tuple.unpack(from: value)
+            if let count = elements.first as? Int64 {
+                stats.totalDocs = Int(count)
+            } else if let count = elements.first as? Int {
+                stats.totalDocs = count
+            }
+        }
+
+        // Try to load avgDocLength
+        let avgLengthKey = metaSubspace.pack(Tuple(["avgDocLength"]))
+        if let value = try await reader.getValue(key: avgLengthKey) {
+            let elements = try Tuple.unpack(from: value)
+            if let avg = elements.first as? Double {
+                stats.avgDocLength = avg
+            } else if let avg = elements.first as? Int64 {
+                stats.avgDocLength = Double(avg)
+            }
+        }
+
+        // Default values if metadata not found
+        if stats.totalDocs == 0 { stats.totalDocs = 1 }
+        if stats.avgDocLength == 0 { stats.avgDocLength = 100 }
+
+        return stats
+    }
+
+    /// Load document length for a specific document
+    private func loadDocLength(
+        packedID: [UInt8],
+        from metaSubspace: Subspace,
+        using reader: StorageReader
+    ) async throws -> Int {
+        let docLengthSubspace = metaSubspace.subspace("docLength")
+        let key = docLengthSubspace.prefix + packedID
+
+        if let value = try await reader.getValue(key: key) {
+            let elements = try Tuple.unpack(from: value)
+            if let length = elements.first as? Int64 {
+                return Int(length)
+            } else if let length = elements.first as? Int {
+                return length
+            }
+        }
+
+        // Default document length
+        return 100
+    }
+
+    /// Parse posting value to extract term frequency and positions
+    private func parsePostingValue(_ value: [UInt8]) -> (termFreq: Int, positions: [Int]) {
+        guard !value.isEmpty else {
+            return (1, []) // Legacy: no value means tf=1
+        }
+
+        do {
+            let elements = try Tuple.unpack(from: value)
+            guard !elements.isEmpty else {
+                return (1, [])
+            }
+
+            // First element is term frequency
+            var termFreq = 1
+            if let tf = elements.first as? Int64 {
+                termFreq = Int(tf)
+            } else if let tf = elements.first as? Int {
+                termFreq = tf
+            }
+
+            // Remaining elements are positions
+            var positions: [Int] = []
+            for i in 1..<elements.count {
+                if let pos = elements[i] as? Int64 {
+                    positions.append(Int(pos))
+                } else if let pos = elements[i] as? Int {
+                    positions.append(pos)
+                }
+            }
+
+            return (termFreq, positions)
+        } catch {
+            return (1, [])
+        }
+    }
+
+    /// Intersect posting lists with BM25 scoring (shortest-first optimization)
+    private func intersectPostingsWithScoring(
+        termPostings: [(term: String, postings: [PostingEntry])],
+        stats: CorpusStatistics,
+        metaSubspace: Subspace,
+        reader: StorageReader
+    ) async throws -> [ScoredDocument] {
+        guard !termPostings.isEmpty else { return [] }
+
+        // Sort by posting list length (shortest first)
+        let sorted = termPostings.sorted { $0.postings.count < $1.postings.count }
+
+        // Start with shortest posting list
+        guard let first = sorted.first else { return [] }
+
+        // Build initial candidate set from shortest list
+        var candidates: [ArraySlice<UInt8>: ScoredDocument] = [:]
+        let idf = calculateIDF(docFreq: first.postings.count, totalDocs: stats.totalDocs)
+
+        for posting in first.postings {
+            let docLength = try await loadDocLength(
+                packedID: posting.packedID,
+                from: metaSubspace,
+                using: reader
+            )
+            let score = calculateBM25TermScore(
+                termFreq: posting.termFreq,
+                docLength: docLength,
+                avgDocLength: stats.avgDocLength,
+                idf: idf
+            )
+            candidates[posting.packedID[...]] = ScoredDocument(packedID: posting.packedID, score: score)
+        }
+
+        // Intersect with remaining lists
+        for termPosting in sorted.dropFirst() {
+            let postingSet = Set(termPosting.postings.map { $0.packedID[...] })
+            let idf = calculateIDF(docFreq: termPosting.postings.count, totalDocs: stats.totalDocs)
+
+            // Remove candidates not in this posting list
+            candidates = candidates.filter { postingSet.contains($0.key) }
+
+            // Add scores for matched documents
+            for posting in termPosting.postings {
+                if var doc = candidates[posting.packedID[...]] {
+                    let docLength = try await loadDocLength(
+                        packedID: posting.packedID,
+                        from: metaSubspace,
+                        using: reader
+                    )
+                    let score = calculateBM25TermScore(
+                        termFreq: posting.termFreq,
+                        docLength: docLength,
+                        avgDocLength: stats.avgDocLength,
+                        idf: idf
+                    )
+                    doc.score += score
+                    candidates[posting.packedID[...]] = doc
+                }
+            }
+
+            // Early termination if no candidates left
+            if candidates.isEmpty { break }
+        }
+
+        return Array(candidates.values)
+    }
+
+    /// Union posting lists with BM25 scoring
+    private func unionPostingsWithScoring(
+        termPostings: [(term: String, postings: [PostingEntry])],
+        stats: CorpusStatistics,
+        metaSubspace: Subspace,
+        reader: StorageReader
+    ) async throws -> [ScoredDocument] {
+        var documents: [ArraySlice<UInt8>: ScoredDocument] = [:]
+
+        for termPosting in termPostings {
+            let idf = calculateIDF(docFreq: termPosting.postings.count, totalDocs: stats.totalDocs)
+
+            for posting in termPosting.postings {
+                let docLength = try await loadDocLength(
+                    packedID: posting.packedID,
+                    from: metaSubspace,
+                    using: reader
+                )
+                let score = calculateBM25TermScore(
+                    termFreq: posting.termFreq,
+                    docLength: docLength,
+                    avgDocLength: stats.avgDocLength,
+                    idf: idf
+                )
+
+                if var doc = documents[posting.packedID[...]] {
+                    doc.score += score
+                    documents[posting.packedID[...]] = doc
+                } else {
+                    documents[posting.packedID[...]] = ScoredDocument(packedID: posting.packedID, score: score)
+                }
+            }
+        }
+
+        return Array(documents.values)
+    }
+
+    /// Phrase match using position information
+    private func phraseMatchWithScoring(
+        termPostings: [(term: String, postings: [PostingEntry])],
+        stats: CorpusStatistics,
+        metaSubspace: Subspace,
+        reader: StorageReader
+    ) async throws -> [ScoredDocument] {
+        guard termPostings.count >= 2 else {
+            // Single term or empty: fall back to intersection
+            return try await intersectPostingsWithScoring(
+                termPostings: termPostings,
+                stats: stats,
+                metaSubspace: metaSubspace,
+                reader: reader
+            )
+        }
+
+        // First, get intersection candidates
+        let intersected = try await intersectPostingsWithScoring(
+            termPostings: termPostings,
+            stats: stats,
+            metaSubspace: metaSubspace,
+            reader: reader
+        )
+
+        // Build position map for phrase checking
+        var positionsByDoc: [ArraySlice<UInt8>: [[Int]]] = [:]
+        for (termIndex, termPosting) in termPostings.enumerated() {
+            for posting in termPosting.postings {
+                if positionsByDoc[posting.packedID[...]] == nil {
+                    positionsByDoc[posting.packedID[...]] = Array(repeating: [], count: termPostings.count)
+                }
+                positionsByDoc[posting.packedID[...]]![termIndex] = posting.positions
+            }
+        }
+
+        // Filter to documents with consecutive positions
+        var results: [ScoredDocument] = []
+        for doc in intersected {
+            guard let positions = positionsByDoc[doc.packedID[...]] else { continue }
+
+            // Check if positions form a phrase (consecutive)
+            if hasConsecutivePositions(positions) {
+                results.append(doc)
+            }
+        }
+
+        return results
+    }
+
+    /// Check if term positions form a consecutive phrase
+    private func hasConsecutivePositions(_ positionLists: [[Int]]) -> Bool {
+        guard let firstList = positionLists.first, !firstList.isEmpty else {
+            return false
+        }
+
+        // For each starting position in first term, check if phrase exists
+        for startPos in firstList {
+            var matches = true
+            for (offset, positions) in positionLists.enumerated() {
+                if offset == 0 { continue }
+                let expectedPos = startPos + offset
+                if !positions.contains(expectedPos) {
+                    matches = false
+                    break
+                }
+            }
+            if matches { return true }
+        }
+
+        return false
+    }
+
+    // MARK: - BM25 Scoring
+
+    /// Calculate IDF (Inverse Document Frequency)
+    private func calculateIDF(docFreq: Int, totalDocs: Int) -> Double {
+        let n = Double(totalDocs)
+        let df = Double(max(docFreq, 1))
+        return log((n - df + 0.5) / (df + 0.5) + 1)
+    }
+
+    /// Calculate BM25 term score
+    private func calculateBM25TermScore(
+        termFreq: Int,
+        docLength: Int,
+        avgDocLength: Double,
+        idf: Double
+    ) -> Double {
+        let tf = Double(termFreq)
+        let dl = Double(docLength)
+        let avgdl = max(avgDocLength, 1.0)
+
+        let numerator = tf * (k1 + 1)
+        let denominator = tf + k1 * (1 - b + b * (dl / avgdl))
+
+        return idf * (numerator / denominator)
     }
 }
 
 // MARK: - Vector Index Searcher
 
-/// Searcher for vector similarity indexes (flat scan / brute force version)
+/// Searcher for vector similarity indexes (flat scan with SIMD optimization)
 ///
 /// **Index Structure** (Flat):
 /// ```
 /// Key: [subspace]/[primaryKey]
 /// Value: Tuple(float1, float2, ..., floatN)  // vector components
 /// ```
+///
+/// **Optimizations**:
+/// - SIMD distance calculation using Accelerate/vDSP
+/// - Max-heap for top-K maintenance (O(n log k) instead of O(n log n))
+/// - Early termination when sufficient candidates found
 ///
 /// **Usage**:
 /// ```swift
@@ -542,7 +899,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
 /// )
 /// ```
 ///
-/// **Note**: This is a brute-force implementation that scans all vectors.
+/// **Note**: This is a brute-force implementation with SIMD optimization.
 /// For large-scale production use, consider HNSW-based search via `HNSWIndexMaintainer`.
 public struct VectorIndexSearcher: IndexSearcher {
     public typealias Query = VectorIndexQuery
@@ -558,7 +915,7 @@ public struct VectorIndexSearcher: IndexSearcher {
         self.metric = metric
     }
 
-    /// Search the vector index using flat scan
+    /// Search the vector index using flat scan with SIMD optimization
     ///
     /// - Parameters:
     ///   - query: The search query with query vector and k
@@ -581,8 +938,8 @@ public struct VectorIndexSearcher: IndexSearcher {
             throw VectorSearchError.invalidArgument("k must be positive")
         }
 
-        // Use a max-heap to keep track of top k nearest neighbors
-        var results: [(entry: IndexEntry, distance: Double)] = []
+        // Use max-heap for top-K maintenance
+        var topK = MaxHeap<HeapEntry>(capacity: query.k)
 
         for try await (key, value) in reader.scanSubspace(subspace) {
             // Parse primary key from key
@@ -595,8 +952,13 @@ public struct VectorIndexSearcher: IndexSearcher {
                 continue // Skip corrupt entries
             }
 
-            // Calculate distance
-            let distance = calculateDistance(query.queryVector, vector)
+            // Calculate distance using SIMD
+            let distance = calculateDistanceSIMD(query.queryVector, vector)
+
+            // Early skip: if heap is full and this distance is worse than max, skip
+            if topK.isFull, let maxDist = topK.peek()?.distance, distance >= maxDist {
+                continue
+            }
 
             // Build entry
             var idElements: [any TupleElement] = []
@@ -614,13 +976,12 @@ public struct VectorIndexSearcher: IndexSearcher {
                 score: distance
             )
 
-            // Add to results and maintain heap property
-            results.append((entry: entry, distance: distance))
+            // Add to max-heap (automatically maintains top-K)
+            topK.insert(HeapEntry(entry: entry, distance: distance))
         }
 
-        // Sort by distance and return top k
-        results.sort { $0.distance < $1.distance }
-        return Array(results.prefix(query.k).map { $0.entry })
+        // Extract results sorted by distance (ascending)
+        return topK.extractSorted().map { $0.entry }
     }
 
     /// Parse a vector from stored bytes
@@ -652,51 +1013,162 @@ public struct VectorIndexSearcher: IndexSearcher {
         return vector
     }
 
-    /// Calculate distance between two vectors
-    private func calculateDistance(_ a: [Float], _ b: [Float]) -> Double {
+    /// Calculate distance between two vectors using SIMD (Accelerate framework)
+    private func calculateDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
         switch metric {
         case .euclidean:
-            return euclideanDistance(a, b)
+            return euclideanDistanceSIMD(a, b)
         case .cosine:
-            return cosineDistance(a, b)
+            return cosineDistanceSIMD(a, b)
         case .dotProduct:
-            return 1.0 - dotProduct(a, b)
+            return 1.0 - dotProductSIMD(a, b)
         }
     }
 
-    private func euclideanDistance(_ a: [Float], _ b: [Float]) -> Double {
-        var sum: Float = 0
-        for i in 0..<min(a.count, b.count) {
-            let diff = a[i] - b[i]
-            sum += diff * diff
-        }
-        return Double(sqrtf(sum))
+    /// SIMD-optimized Euclidean distance using vDSP
+    private func euclideanDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
+        let count = vDSP_Length(min(a.count, b.count))
+        guard count > 0 else { return 0 }
+
+        // Compute difference: diff = a - b
+        var diff = [Float](repeating: 0, count: Int(count))
+        vDSP_vsub(b, 1, a, 1, &diff, 1, count)
+
+        // Compute sum of squares
+        var sumOfSquares: Float = 0
+        vDSP_svesq(diff, 1, &sumOfSquares, count)
+
+        return Double(sqrtf(sumOfSquares))
     }
 
-    private func cosineDistance(_ a: [Float], _ b: [Float]) -> Double {
+    /// SIMD-optimized Cosine distance using vDSP
+    private func cosineDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
+        let count = vDSP_Length(min(a.count, b.count))
+        guard count > 0 else { return 1.0 }
+
+        // Compute dot product: a · b
         var dotProd: Float = 0
-        var normA: Float = 0
-        var normB: Float = 0
+        vDSP_dotpr(a, 1, b, 1, &dotProd, count)
 
-        for i in 0..<min(a.count, b.count) {
-            dotProd += a[i] * b[i]
-            normA += a[i] * a[i]
-            normB += b[i] * b[i]
-        }
+        // Compute squared norms
+        var normASquared: Float = 0
+        var normBSquared: Float = 0
+        vDSP_svesq(a, 1, &normASquared, count)
+        vDSP_svesq(b, 1, &normBSquared, count)
 
-        let denom = sqrtf(normA) * sqrtf(normB)
+        let denom = sqrtf(normASquared) * sqrtf(normBSquared)
         if denom == 0 { return 1.0 }
 
         let similarity = dotProd / denom
         return Double(1.0 - similarity)
     }
 
-    private func dotProduct(_ a: [Float], _ b: [Float]) -> Double {
-        var sum: Float = 0
-        for i in 0..<min(a.count, b.count) {
-            sum += a[i] * b[i]
+    /// SIMD-optimized dot product using vDSP
+    private func dotProductSIMD(_ a: [Float], _ b: [Float]) -> Double {
+        let count = vDSP_Length(min(a.count, b.count))
+        guard count > 0 else { return 0 }
+
+        var result: Float = 0
+        vDSP_dotpr(a, 1, b, 1, &result, count)
+
+        return Double(result)
+    }
+
+    /// Entry for max-heap storage
+    ///
+    /// For a max-heap maintaining top-K smallest distances:
+    /// - Root should have the largest distance among K elements
+    /// - We replace root when finding a smaller distance
+    /// - Standard < comparison: smaller distance is "less than"
+    private struct HeapEntry: Comparable {
+        let entry: IndexEntry
+        let distance: Double
+
+        static func < (lhs: HeapEntry, rhs: HeapEntry) -> Bool {
+            // Standard comparison: smaller distance is less
+            // Max-heap will put larger distances at root
+            lhs.distance < rhs.distance
         }
-        return Double(sum)
+
+        static func == (lhs: HeapEntry, rhs: HeapEntry) -> Bool {
+            lhs.distance == rhs.distance
+        }
+    }
+}
+
+// MARK: - Max-Heap for Top-K
+
+/// Fixed-capacity max-heap for maintaining top-K smallest elements
+///
+/// Inserts are O(log k), maintains only k elements at any time.
+private struct MaxHeap<Element: Comparable> {
+    private var elements: [Element] = []
+    private let capacity: Int
+
+    var isFull: Bool { elements.count >= capacity }
+    var count: Int { elements.count }
+
+    init(capacity: Int) {
+        self.capacity = capacity
+        elements.reserveCapacity(capacity + 1)
+    }
+
+    /// Peek at the maximum element (worst in top-K)
+    func peek() -> Element? {
+        elements.first
+    }
+
+    /// Insert an element, maintaining capacity
+    mutating func insert(_ element: Element) {
+        if elements.count < capacity {
+            // Heap not full, just add
+            elements.append(element)
+            siftUp(elements.count - 1)
+        } else if element < elements[0] {
+            // New element is better than worst, replace
+            elements[0] = element
+            siftDown(0)
+        }
+        // Otherwise, skip (new element is worse than all in heap)
+    }
+
+    /// Extract all elements sorted (ascending for top-K smallest)
+    func extractSorted() -> [Element] {
+        elements.sorted()
+    }
+
+    private mutating func siftUp(_ index: Int) {
+        var child = index
+        var parent = (child - 1) / 2
+
+        while child > 0 && elements[child] > elements[parent] {
+            elements.swapAt(child, parent)
+            child = parent
+            parent = (child - 1) / 2
+        }
+    }
+
+    private mutating func siftDown(_ index: Int) {
+        var parent = index
+        let count = elements.count
+
+        while true {
+            let left = 2 * parent + 1
+            let right = 2 * parent + 2
+            var largest = parent
+
+            if left < count && elements[left] > elements[largest] {
+                largest = left
+            }
+            if right < count && elements[right] > elements[largest] {
+                largest = right
+            }
+
+            if largest == parent { break }
+
+            elements.swapAt(parent, largest)
+            parent = largest
+        }
     }
 }
 

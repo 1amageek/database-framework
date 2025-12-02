@@ -186,3 +186,76 @@ public final class ClassName: Sendable {
 4. ✅ ロックスコープは最小限（I/O を含めない）
 5. ❌ `NSLock` は使用しない（async context で問題が発生する）
 6. ❌ `@unchecked Sendable` は避ける（Mutex で適切に保護）
+
+## 実装品質ガイドライン
+
+### 基本方針
+
+**実装コストは考慮しない。最適化と完成度が最優先。**
+
+### 必須要件
+
+1. **学術的根拠**: アルゴリズムは論文・教科書に基づく。独自手法は禁止
+2. **参照実装の調査**: PostgreSQL, FoundationDB Record Layer, CockroachDB 等を必ず参照
+3. **TODO/FIXME の扱い**: 作業継続のマーカーとして使用可。ただし放置せず完了まで実装を続ける
+4. **包括的テスト**: 新機能には必ずユニットテストを追加
+5. **エッジケース網羅**: 境界値、空入力、大規模データを全てカバー
+
+### 実装プロセス
+
+```
+1. 調査フェーズ（省略禁止）
+   ├── 学術論文を検索（Google Scholar, ACM DL）
+   ├── 成熟したOSS実装を分析
+   ├── 計算量・空間量を確認
+   └── 既知の限界を把握
+
+2. 設計フェーズ
+   ├── 複数アプローチの比較表を作成
+   ├── 最適なアルゴリズムを選定
+   ├── データ構造を決定
+   └── API設計
+
+3. 実装フェーズ
+   ├── テストを先に書く（TDD）
+   ├── 参照論文・実装をコメントで明記
+   ├── 定数には根拠をコメント
+   └── 性能特性をドキュメント化
+
+4. 検証フェーズ
+   ├── 全テスト通過
+   ├── ベンチマーク測定（必要に応じて）
+   └── コードレビュー
+```
+
+### コーディング規約
+
+```swift
+// ✅ 良い例: 根拠を明記
+/// Reservoir Sampling (Algorithm R)
+/// Reference: Vitter, J.S. "Random Sampling with a Reservoir", ACM TOMS 1985
+/// Time: O(n), Space: O(k) where k = reservoir size
+public struct ReservoirSampling<T> { ... }
+
+// ✅ 良い例: 定数に根拠
+/// HyperLogLog precision parameter
+/// - p=14 gives 16384 registers, ~0.8% standard error
+/// - Memory: 2^p bytes = 16KB
+/// Reference: Flajolet et al., "HyperLogLog: the analysis of a near-optimal cardinality estimation algorithm"
+private let precision: Int = 14
+
+// ❌ 悪い例: 根拠不明のマジックナンバー
+let base = 256.0  // なぜ256？
+let threshold = 0.5  // なぜ0.5？
+```
+
+### 参照すべきリソース
+
+| 分野 | 参照先 |
+|------|--------|
+| クエリ最適化 | PostgreSQL src/backend/optimizer/ |
+| 統計・ヒストグラム | PostgreSQL src/backend/utils/adt/selfuncs.c |
+| インデックス設計 | FoundationDB Record Layer |
+| 分散システム | CockroachDB, TiDB |
+| アルゴリズム全般 | CLRS "Introduction to Algorithms" |
+| データベース理論 | "Database System Concepts" (Silberschatz) |
