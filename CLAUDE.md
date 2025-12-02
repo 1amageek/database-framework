@@ -259,3 +259,43 @@ let threshold = 0.5  // なぜ0.5？
 | 分散システム | CockroachDB, TiDB |
 | アルゴリズム全般 | CLRS "Introduction to Algorithms" |
 | データベース理論 | "Database System Concepts" (Silberschatz) |
+
+## 開発方針
+
+### プロジェクト状態
+
+**このプロジェクトは開発中であり、後方互換性を考慮する必要はない。**
+
+### コード管理原則
+
+1. **不要なコードは削除**: 混乱を避けるため、使用されていないコード・互換性レイヤー・デッドコードは即座に削除
+2. **破壊的変更を恐れない**: 本番データがないため、API・データフォーマットの変更は自由に行う
+3. **最適な設計を優先**: 後方互換性のためのワークアラウンドよりも、正しい設計を選択
+4. **マイグレーションコード不要**: 旧フォーマットから新フォーマットへの変換コードは書かない
+
+### 具体例
+
+```swift
+// ❌ 不要: 互換性のための両方サポート
+func readKey() -> Value {
+    if let newFormat = tryNewFormat() { return newFormat }
+    return tryOldFormat()  // ← 削除すべき
+}
+
+// ✅ 正しい: 新しい設計のみ
+func readKey() -> Value {
+    return readNewFormat()
+}
+```
+
+### Subspace キー設計
+
+文字列キーよりも整数キーを使用し、効率性を優先：
+
+```swift
+// ❌ 避ける: 文字列キー（デバッグ可読性のため等）
+subspace.subspace("nodes")
+
+// ✅ 推奨: 整数キー（効率的）
+subspace.subspace(SubspaceKey.nodes.rawValue)  // enum SubspaceKey: Int64
+```

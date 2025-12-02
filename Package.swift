@@ -158,6 +158,7 @@ let package = Package(
             name: "DatabaseEngineTests",
             dependencies: [
                 "DatabaseEngine",
+                "ScalarIndex",
                 "TestSupport",
             ],
             exclude: ["IndexTestDesign.md"],
