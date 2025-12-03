@@ -155,51 +155,71 @@ public indirect enum Predicate<T: Persistable>: Sendable {
 // MARK: - FieldComparison
 
 /// Represents a comparison of a field value
-public struct FieldComparison<T: Persistable>: @unchecked Sendable {
+///
+/// Uses `FieldValue` from Core for type-safe value representation that maps directly
+/// to FoundationDB's TupleElement types.
+public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
     /// The field's KeyPath (type-erased)
     public let keyPath: AnyKeyPath
 
     /// The comparison operator
     public let op: ComparisonOperator
 
-    /// The value to compare against (type-erased)
-    public let value: any Sendable
+    /// The value to compare against (type-safe)
+    public let value: FieldValue
 
-    /// Create a field comparison
-    public init<V: Sendable>(keyPath: KeyPath<T, V>, op: ComparisonOperator, value: V) {
+    /// Create a field comparison with FieldValue
+    public init(keyPath: AnyKeyPath, op: ComparisonOperator, value: FieldValue) {
         self.keyPath = keyPath
         self.op = op
         self.value = value
     }
 
-    /// Create a nil comparison
-    ///
-    /// For `isNil`/`isNotNil` checks, the value field stores `NullValue.shared`
-    /// as a sentinel indicating null check operation.
-    public init<V: Sendable>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
+    /// Create a field comparison from FieldValueConvertible
+    public init<V: FieldValueConvertible>(keyPath: KeyPath<T, V>, op: ComparisonOperator, value: V) {
         self.keyPath = keyPath
         self.op = op
-        // Store NullValue sentinel for nil checks
-        self.value = NullValue.instance
+        self.value = value.toFieldValue()
+    }
+
+    /// Create a nil comparison (isNil/isNotNil)
+    public init<V>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
+        self.keyPath = keyPath
+        self.op = op
+        self.value = .null
     }
 
     /// Create an IN comparison
-    public init<V: Sendable>(keyPath: KeyPath<T, V>, values: [V]) {
+    public init<V: FieldValueConvertible>(keyPath: KeyPath<T, V>, values: [V]) {
         self.keyPath = keyPath
         self.op = .in
-        self.value = values
+        self.value = .array(values.map { $0.toFieldValue() })
     }
 
     /// Get the field name using Persistable's fieldName method
     public var fieldName: String {
         T.fieldName(for: keyPath)
     }
+
+    // MARK: - Hashable
+
+    public func hash(into hasher: inout Hasher) {
+        // Use keyPath directly (AnyKeyPath is Hashable)
+        // This ensures different properties produce different hashes
+        hasher.combine(keyPath)
+        hasher.combine(op)
+        hasher.combine(value)
+    }
+
+    public static func == (lhs: FieldComparison<T>, rhs: FieldComparison<T>) -> Bool {
+        lhs.keyPath == rhs.keyPath && lhs.op == rhs.op && lhs.value == rhs.value
+    }
 }
 
 // MARK: - ComparisonOperator
 
 /// Comparison operators for predicates
-public enum ComparisonOperator: String, Sendable {
+public enum ComparisonOperator: String, Sendable, Hashable {
     case equal = "=="
     case notEqual = "!="
     case lessThan = "<"
@@ -243,10 +263,10 @@ public enum SortOrder: String, Sendable {
     case descending
 }
 
-// MARK: - KeyPath Operators
+// MARK: - KeyPath Operators (FieldValueConvertible)
 
 /// Equal comparison
-public func == <T: Persistable, V: Equatable & Sendable>(
+public func == <T: Persistable, V: Equatable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -254,7 +274,7 @@ public func == <T: Persistable, V: Equatable & Sendable>(
 }
 
 /// Not equal comparison
-public func != <T: Persistable, V: Equatable & Sendable>(
+public func != <T: Persistable, V: Equatable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -262,7 +282,7 @@ public func != <T: Persistable, V: Equatable & Sendable>(
 }
 
 /// Less than comparison
-public func < <T: Persistable, V: Comparable & Sendable>(
+public func < <T: Persistable, V: Comparable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -270,7 +290,7 @@ public func < <T: Persistable, V: Comparable & Sendable>(
 }
 
 /// Less than or equal comparison
-public func <= <T: Persistable, V: Comparable & Sendable>(
+public func <= <T: Persistable, V: Comparable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -278,7 +298,7 @@ public func <= <T: Persistable, V: Comparable & Sendable>(
 }
 
 /// Greater than comparison
-public func > <T: Persistable, V: Comparable & Sendable>(
+public func > <T: Persistable, V: Comparable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -286,7 +306,7 @@ public func > <T: Persistable, V: Comparable & Sendable>(
 }
 
 /// Greater than or equal comparison
-public func >= <T: Persistable, V: Comparable & Sendable>(
+public func >= <T: Persistable, V: Comparable & FieldValueConvertible>(
     lhs: KeyPath<T, V>,
     rhs: V
 ) -> Predicate<T> {
@@ -296,7 +316,7 @@ public func >= <T: Persistable, V: Comparable & Sendable>(
 // MARK: - Optional KeyPath Operators
 
 /// Check if optional field is nil
-public func == <T: Persistable, V: Sendable>(
+public func == <T: Persistable, V>(
     lhs: KeyPath<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
@@ -304,7 +324,7 @@ public func == <T: Persistable, V: Sendable>(
 }
 
 /// Check if optional field is not nil
-public func != <T: Persistable, V: Sendable>(
+public func != <T: Persistable, V>(
     lhs: KeyPath<T, V?>,
     rhs: V?.Type
 ) -> Predicate<T> where V? == Optional<V> {
@@ -330,9 +350,28 @@ extension KeyPath where Root: Persistable, Value == String {
     }
 }
 
+// MARK: - Optional String Predicate Extensions
+
+extension KeyPath where Root: Persistable, Value == String? {
+    /// Check if optional string contains substring
+    public func contains(_ substring: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self as AnyKeyPath, op: .contains, value: .string(substring)))
+    }
+
+    /// Check if optional string starts with prefix
+    public func hasPrefix(_ prefix: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self as AnyKeyPath, op: .hasPrefix, value: .string(prefix)))
+    }
+
+    /// Check if optional string ends with suffix
+    public func hasSuffix(_ suffix: String) -> Predicate<Root> {
+        .comparison(FieldComparison(keyPath: self as AnyKeyPath, op: .hasSuffix, value: .string(suffix)))
+    }
+}
+
 // MARK: - IN Predicate Extension
 
-extension KeyPath where Root: Persistable, Value: Equatable & Sendable {
+extension KeyPath where Root: Persistable, Value: Equatable & FieldValueConvertible {
     /// Check if value is in array
     public func `in`(_ values: [Value]) -> Predicate<Root> {
         .comparison(FieldComparison(keyPath: self, values: values))

@@ -38,7 +38,7 @@ public struct MostCommonValues: Sendable, Codable {
     /// MCV entry: value and its frequency
     public struct Entry: Sendable, Codable {
         /// The value
-        public let value: ComparableValue
+        public let value: FieldValue
 
         /// Frequency (fraction of total rows)
         public let frequency: Double
@@ -70,7 +70,7 @@ public struct MostCommonValues: Sendable, Codable {
             var stringValue: String { rawValue }
         }
 
-        public init(value: ComparableValue, frequency: Double, count: Int64) {
+        public init(value: FieldValue, frequency: Double, count: Int64) {
             self.value = value
             self.frequency = frequency
             self.count = count
@@ -130,7 +130,7 @@ public struct MostCommonValues: Sendable, Codable {
     ///
     /// - Parameter value: The value to match
     /// - Returns: Selectivity if value is in MCV, nil otherwise
-    public func selectivity(for value: ComparableValue) -> Double? {
+    public func selectivity(for value: FieldValue) -> Double? {
         entries.first { $0.value == value }?.frequency
     }
 
@@ -138,7 +138,7 @@ public struct MostCommonValues: Sendable, Codable {
     ///
     /// - Parameter values: Values to match
     /// - Returns: Combined selectivity for values in MCV (partial result)
-    public func selectivity(forIn values: [ComparableValue]) -> Double {
+    public func selectivity(forIn values: [FieldValue]) -> Double {
         let valueSet = Set(values)
         return entries
             .filter { valueSet.contains($0.value) }
@@ -146,7 +146,7 @@ public struct MostCommonValues: Sendable, Codable {
     }
 
     /// Check if value is in MCV list
-    public func contains(_ value: ComparableValue) -> Bool {
+    public func contains(_ value: FieldValue) -> Bool {
         entries.contains { $0.value == value }
     }
 
@@ -171,8 +171,8 @@ public struct MostCommonValues: Sendable, Codable {
     ///   - maxInclusive: Whether max is inclusive
     /// - Returns: Selectivity from MCV values in range
     public func rangeSelectivity(
-        min: ComparableValue?,
-        max: ComparableValue?,
+        min: FieldValue?,
+        max: FieldValue?,
         minInclusive: Bool = true,
         maxInclusive: Bool = true
     ) -> Double {
@@ -231,7 +231,7 @@ public struct MCVBuilder: Sendable {
     private let minFrequency: Double
 
     /// Value counts during sampling
-    private var counts: [ComparableValue: Int]
+    private var counts: [FieldValue: Int]
 
     /// Total samples seen
     public private(set) var totalSamples: Int
@@ -249,14 +249,9 @@ public struct MCVBuilder: Sendable {
     }
 
     /// Add a value to the frequency count
-    public mutating func add(_ value: ComparableValue) {
+    public mutating func add(_ value: FieldValue) {
         totalSamples += 1
         counts[value, default: 0] += 1
-    }
-
-    /// Add a FieldValue
-    public mutating func add(_ value: FieldValue) {
-        add(ComparableValue(fieldValue: value))
     }
 
     /// Build the MCV list
@@ -273,7 +268,7 @@ public struct MCVBuilder: Sendable {
         let effectiveSampleCount = sampleCount ?? totalSamples
 
         // Calculate frequencies and filter
-        var entries: [(value: ComparableValue, frequency: Double, count: Int64)] = []
+        var entries: [(value: FieldValue, frequency: Double, count: Int64)] = []
 
         for (value, count) in counts {
             // Estimate population frequency from sample
@@ -305,7 +300,7 @@ public struct MCVBuilder: Sendable {
     ///
     /// Returns the set of values in MCV (these should not be included
     /// in histogram buckets to avoid double-counting)
-    public func mcvValues() -> Set<ComparableValue> {
+    public func mcvValues() -> Set<FieldValue> {
         let built = build(totalCount: Int64(totalSamples))
         return Set(built.entries.map { $0.value })
     }
@@ -356,7 +351,7 @@ public struct CombinedSelectivityEstimator: Sendable {
     /// We do NOT multiply by histogramFraction since histogram only contains
     /// non-MCV values and its selectivity already represents the fraction of
     /// total data that is both in the bucket range AND not in MCV.
-    public func equalitySelectivity(value: ComparableValue) -> Double {
+    public func equalitySelectivity(value: FieldValue) -> Double {
         // Check MCV first
         if let mcvSel = mcv.selectivity(for: value) {
             return mcvSel
@@ -384,8 +379,8 @@ public struct CombinedSelectivityEstimator: Sendable {
     /// our histogram selectivity is already relative to total population
     /// (not relative to the histogram-only portion), so we add directly.
     public func rangeSelectivity(
-        min: ComparableValue?,
-        max: ComparableValue?,
+        min: FieldValue?,
+        max: FieldValue?,
         minInclusive: Bool = true,
         maxInclusive: Bool = true
     ) -> Double {
@@ -413,7 +408,7 @@ public struct CombinedSelectivityEstimator: Sendable {
     ///
     /// - Parameter values: List of values
     /// - Returns: Estimated selectivity
-    public func inSelectivity(values: [ComparableValue]) -> Double {
+    public func inSelectivity(values: [FieldValue]) -> Double {
         var total = 0.0
 
         for value in values {

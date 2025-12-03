@@ -405,13 +405,3 @@ internal enum DNFConversionError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - FieldComparison Extension
-
-extension FieldComparison {
-    /// Create a FieldComparison with explicit values
-    internal init(keyPath: AnyKeyPath, op: ComparisonOperator, value: any Sendable) {
-        self.keyPath = keyPath
-        self.op = op
-        self.value = value
-    }
-}

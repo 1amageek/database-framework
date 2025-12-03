@@ -624,60 +624,70 @@ public struct PredicateEvaluator<T: Persistable> {
         guard let modelValue = modelValue else { return false }
         let expectedValue = comparison.value
 
+        // Convert model value to FieldValue for type-safe comparison
+        let modelFieldValue = toFieldValue(modelValue)
+
         switch comparison.op {
         case .equal:
-            return compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isEqual(to: expectedValue)
         case .notEqual:
-            return !compareEqual(modelValue, expectedValue)
+            return !modelFieldValue.isEqual(to: expectedValue)
         case .lessThan:
-            return compareLess(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue)
         case .lessThanOrEqual:
-            return compareLess(modelValue, expectedValue) || compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
         case .greaterThan:
-            return compareLess(expectedValue, modelValue)
+            return expectedValue.isLessThan(modelFieldValue)
         case .greaterThanOrEqual:
-            return compareLess(expectedValue, modelValue) || compareEqual(modelValue, expectedValue)
+            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
         case .contains:
-            if let str = modelValue as? String, let substr = expectedValue as? String {
+            if let str = modelValue as? String, let substr = expectedValue.stringValue {
                 return str.contains(substr)
             }
             return false
         case .hasPrefix:
-            if let str = modelValue as? String, let prefix = expectedValue as? String {
+            if let str = modelValue as? String, let prefix = expectedValue.stringValue {
                 return str.hasPrefix(prefix)
             }
             return false
         case .hasSuffix:
-            if let str = modelValue as? String, let suffix = expectedValue as? String {
+            if let str = modelValue as? String, let suffix = expectedValue.stringValue {
                 return str.hasSuffix(suffix)
             }
             return false
         case .in:
-            // Handle arrays of common types
-            if let array = expectedValue as? [String], let val = modelValue as? String {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Int], let val = modelValue as? Int {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Int64], let val = modelValue as? Int64 {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Double], let val = modelValue as? Double {
-                return array.contains(val)
-            }
-            // Fallback: try to compare using array reflection
-            let mirror = Mirror(reflecting: expectedValue)
-            if mirror.displayStyle == .collection {
-                for child in mirror.children {
-                    if compareEqual(modelValue, child.value) {
-                        return true
-                    }
-                }
+            // Check if model value is in the expected array
+            if let arrayValues = expectedValue.arrayValue {
+                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
             }
             return false
         case .isNil, .isNotNil:
             return false
+        }
+    }
+
+    /// Convert Any value to FieldValue
+    private func toFieldValue(_ value: Any) -> FieldValue {
+        switch value {
+        case let v as Bool: return .bool(v)
+        case let v as Int: return .int64(Int64(v))
+        case let v as Int8: return .int64(Int64(v))
+        case let v as Int16: return .int64(Int64(v))
+        case let v as Int32: return .int64(Int64(v))
+        case let v as Int64: return .int64(v)
+        case let v as UInt: return .int64(Int64(v))
+        case let v as UInt8: return .int64(Int64(v))
+        case let v as UInt16: return .int64(Int64(v))
+        case let v as UInt32: return .int64(Int64(v))
+        case let v as UInt64: return .int64(Int64(bitPattern: v))
+        case let v as Float: return .double(Double(v))
+        case let v as Double: return .double(v)
+        case let v as String: return .string(v)
+        case let v as Data: return .data(v)
+        case let v as UUID: return .string(v.uuidString)
+        case let v as Date: return .double(v.timeIntervalSince1970)
+        default:
+            return .string(String(describing: value))
         }
     }
 
@@ -701,23 +711,6 @@ public struct PredicateEvaluator<T: Persistable> {
         }
 
         return current
-    }
-
-    private func compareEqual(_ lhs: Any, _ rhs: Any) -> Bool {
-        if let l = lhs as? String, let r = rhs as? String { return l == r }
-        if let l = lhs as? Int, let r = rhs as? Int { return l == r }
-        if let l = lhs as? Int64, let r = rhs as? Int64 { return l == r }
-        if let l = lhs as? Double, let r = rhs as? Double { return l == r }
-        if let l = lhs as? Bool, let r = rhs as? Bool { return l == r }
-        return "\(lhs)" == "\(rhs)"
-    }
-
-    private func compareLess(_ lhs: Any, _ rhs: Any) -> Bool {
-        if let l = lhs as? String, let r = rhs as? String { return l < r }
-        if let l = lhs as? Int, let r = rhs as? Int { return l < r }
-        if let l = lhs as? Int64, let r = rhs as? Int64 { return l < r }
-        if let l = lhs as? Double, let r = rhs as? Double { return l < r }
-        return false
     }
 }
 

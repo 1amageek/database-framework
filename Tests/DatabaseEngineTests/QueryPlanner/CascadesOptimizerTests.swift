@@ -171,9 +171,9 @@ struct ExpressionTests {
 
     @Test("PredicateExpr equality")
     func testPredicateExprEquality() {
-        let pred1 = PredicateExpr.comparison(field: "age", op: .gt, value: .int(18))
-        let pred2 = PredicateExpr.comparison(field: "age", op: .gt, value: .int(18))
-        let pred3 = PredicateExpr.comparison(field: "age", op: .lt, value: .int(18))
+        let pred1 = PredicateExpr.comparison(field: "age", op: .gt, value: .int64(18))
+        let pred2 = PredicateExpr.comparison(field: "age", op: .gt, value: .int64(18))
+        let pred3 = PredicateExpr.comparison(field: "age", op: .lt, value: .int64(18))
 
         #expect(pred1 == pred2)
         #expect(pred1 != pred3)
@@ -193,7 +193,7 @@ struct ExpressionTests {
         #expect(pointBounds.upperInclusive)
 
         let rangeBounds = IndexBoundsExpr(
-            lowerBound: [.int(18)],
+            lowerBound: [.int64(18)],
             lowerInclusive: false,
             upperBound: nil,
             upperInclusive: true
@@ -352,7 +352,7 @@ struct ImplementationRuleTests {
 
         let filter = LogicalOperator.filter(
             input: scanGroup,
-            predicate: .comparison(field: "age", op: .eq, value: .int(25))
+            predicate: .comparison(field: "age", op: .eq, value: .int64(25))
         )
         let filterGroup = memo.addLogicalExpression(filter)
         let filterExpr = memo.getLogicalExpressions(filterGroup).first!
@@ -369,7 +369,7 @@ struct ImplementationRuleTests {
         #expect(results.count == 1)
         if let (physical, cost) = results.first {
             if case .filter(_, let predicate) = physical {
-                #expect(predicate == .comparison(field: "age", op: .eq, value: .int(25)))
+                #expect(predicate == .comparison(field: "age", op: .eq, value: .int64(25)))
                 #expect(cost > 0)
             } else {
                 Issue.record("Expected filter physical operator")

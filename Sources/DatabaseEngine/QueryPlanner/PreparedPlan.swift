@@ -412,18 +412,10 @@ extension QueryPlanner {
         position: inout Int
     ) {
         switch predicate {
-        case .comparison(let comparison):
-            // Check if value is a parameter placeholder
-            if let paramName = comparison.value as? ParameterPlaceholder {
-                let binding = ParameterBinding(
-                    name: paramName.name,
-                    fieldName: comparison.fieldName,
-                    expectedType: inferType(from: comparison),
-                    position: position
-                )
-                bindings.append(binding)
-                position += 1
-            }
+        case .comparison:
+            // NOTE: Parameter placeholder support requires adding a .placeholder case to FieldValue
+            // For now, prepared plans work with constant values only
+            break
 
         case .and(let inner), .or(let inner):
             for pred in inner {

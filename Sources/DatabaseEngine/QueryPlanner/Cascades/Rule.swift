@@ -147,16 +147,16 @@ public struct CascadesColumnStatistics: Sendable {
     public let nullFraction: Double
 
     /// Histogram buckets for range estimation
-    public let histogram: [CascadesValue]?
+    public let histogram: [FieldValue]?
 
     /// Most common values and their frequencies
-    public let mostCommonValues: [(CascadesValue, Double)]?
+    public let mostCommonValues: [(FieldValue, Double)]?
 
     public init(
         distinctCount: Int = 100,
         nullFraction: Double = 0.0,
-        histogram: [CascadesValue]? = nil,
-        mostCommonValues: [(CascadesValue, Double)]? = nil
+        histogram: [FieldValue]? = nil,
+        mostCommonValues: [(FieldValue, Double)]? = nil
     ) {
         self.distinctCount = distinctCount
         self.nullFraction = nullFraction

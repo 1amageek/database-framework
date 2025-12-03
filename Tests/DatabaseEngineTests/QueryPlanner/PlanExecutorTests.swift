@@ -292,30 +292,26 @@ struct PredicateEvaluationTests {
         guard let modelValue = modelValue else { return false }
         let expectedValue = comparison.value
 
+        // Convert model value to FieldValue for comparison
+        let modelFieldValue = toFieldValue(modelValue)
+
         switch comparison.op {
         case .equal:
-            return compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isEqual(to: expectedValue)
         case .notEqual:
-            return !compareEqual(modelValue, expectedValue)
+            return !modelFieldValue.isEqual(to: expectedValue)
         case .lessThan:
-            return compareLess(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue)
         case .lessThanOrEqual:
-            return compareLess(modelValue, expectedValue) || compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
         case .greaterThan:
-            return compareLess(expectedValue, modelValue)
+            return expectedValue.isLessThan(modelFieldValue)
         case .greaterThanOrEqual:
-            return compareLess(expectedValue, modelValue) || compareEqual(modelValue, expectedValue)
+            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
         case .in:
-            // Handle typed arrays
-            if let arr = expectedValue as? [String], let val = modelValue as? String {
-                return arr.contains(val)
-            }
-            if let arr = expectedValue as? [Int], let val = modelValue as? Int {
-                return arr.contains(val)
-            }
-            // Fallback to reflection
-            if let arr = extractArray(from: expectedValue) {
-                return arr.contains { compareEqual(modelValue, $0) }
+            // Check if model value is in the expected array
+            if let arrayValues = expectedValue.arrayValue {
+                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
             }
             return false
         default:
@@ -328,24 +324,15 @@ struct PredicateEvaluationTests {
         return mirror.displayStyle == .optional && mirror.children.isEmpty
     }
 
-    private func compareEqual(_ lhs: Any, _ rhs: Any) -> Bool {
-        if let l = lhs as? String, let r = rhs as? String { return l == r }
-        if let l = lhs as? Int, let r = rhs as? Int { return l == r }
-        if let l = lhs as? Bool, let r = rhs as? Bool { return l == r }
-        return "\(lhs)" == "\(rhs)"
-    }
-
-    private func compareLess(_ lhs: Any, _ rhs: Any) -> Bool {
-        if let l = lhs as? Int, let r = rhs as? Int { return l < r }
-        if let l = lhs as? String, let r = rhs as? String { return l < r }
-        return false
-    }
-
-    private func extractArray(from value: Any) -> [Any]? {
-        let mirror = Mirror(reflecting: value)
-        if mirror.displayStyle == .collection {
-            return mirror.children.map { $0.value }
+    private func toFieldValue(_ value: Any) -> FieldValue {
+        switch value {
+        case let v as Bool: return .bool(v)
+        case let v as Int: return .int64(Int64(v))
+        case let v as Int64: return .int64(v)
+        case let v as Double: return .double(v)
+        case let v as String: return .string(v)
+        default:
+            return .string(String(describing: value))
         }
-        return nil
     }
 }

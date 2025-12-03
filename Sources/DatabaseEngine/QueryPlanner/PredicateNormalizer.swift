@@ -112,7 +112,7 @@ public struct PredicateNormalizer<T: Persistable> {
         case .equal:
             return ScalarFieldCondition<T>.equals(
                 field: fieldRef,
-                value: toTupleElement(comparison.value),
+                value: comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -120,7 +120,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>(
                 field: fieldRef,
                 constraintType: .notEquals,
-                values: [toTupleElement(comparison.value)],
+                values: [comparison.value.toTupleElement()],
                 sourcePredicate: source
             )
 
@@ -128,7 +128,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .lessThan,
-                value: toTupleElement(comparison.value),
+                value: comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -136,7 +136,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .lessThanOrEqual,
-                value: toTupleElement(comparison.value),
+                value: comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -144,7 +144,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .greaterThan,
-                value: toTupleElement(comparison.value),
+                value: comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -152,7 +152,7 @@ public struct PredicateNormalizer<T: Persistable> {
             return ScalarFieldCondition<T>.range(
                 field: fieldRef,
                 type: .greaterThanOrEqual,
-                value: toTupleElement(comparison.value),
+                value: comparison.value.toTupleElement(),
                 predicate: source
             )
 
@@ -161,7 +161,7 @@ public struct PredicateNormalizer<T: Persistable> {
                 field: fieldRef,
                 constraint: StringPatternConstraint(
                     type: .contains,
-                    pattern: stringValue(from: comparison.value) ?? ""
+                    pattern: comparison.value.stringValue ?? ""
                 ),
                 sourcePredicate: source
             )
@@ -171,7 +171,7 @@ public struct PredicateNormalizer<T: Persistable> {
                 field: fieldRef,
                 constraint: StringPatternConstraint(
                     type: .prefix,
-                    pattern: stringValue(from: comparison.value) ?? ""
+                    pattern: comparison.value.stringValue ?? ""
                 ),
                 sourcePredicate: source
             )
@@ -181,17 +181,17 @@ public struct PredicateNormalizer<T: Persistable> {
                 field: fieldRef,
                 constraint: StringPatternConstraint(
                     type: .suffix,
-                    pattern: stringValue(from: comparison.value) ?? ""
+                    pattern: comparison.value.stringValue ?? ""
                 ),
                 sourcePredicate: source
             )
 
         case .in:
             let values: [any TupleElement]
-            if let arrayValue = comparison.value as? [Any] {
-                values = arrayValue.map { toTupleElementFromAny($0) }
+            if let arrayValues = comparison.value.arrayValue {
+                values = arrayValues.map { $0.toTupleElement() }
             } else {
-                values = [toTupleElement(comparison.value)]
+                values = [comparison.value.toTupleElement()]
             }
             return ScalarFieldCondition<T>.in(
                 field: fieldRef,
@@ -210,46 +210,6 @@ public struct PredicateNormalizer<T: Persistable> {
                 sourcePredicate: source
             )
         }
-    }
-
-    /// Convert any value to TupleElement
-    private func toTupleElement(_ value: any Sendable) -> any TupleElement {
-        toTupleElementFromAny(value)
-    }
-
-    /// Convert Any to TupleElement
-    private func toTupleElementFromAny(_ value: Any) -> any TupleElement {
-        // Handle common types that are TupleElementConvertible
-        switch value {
-        case let v as Int: return v
-        case let v as Int64: return v
-        case let v as Int32: return Int64(v)
-        case let v as Int16: return Int64(v)
-        case let v as Int8: return Int64(v)
-        case let v as UInt: return Int64(v)
-        case let v as UInt64: return Int64(bitPattern: v)
-        case let v as UInt32: return Int64(v)
-        case let v as UInt16: return Int64(v)
-        case let v as UInt8: return Int64(v)
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        case let v as String: return v
-        case let v as Bool: return v
-        case let v as Data: return [UInt8](v)
-        case let v as UUID: return v.uuidString
-        case let v as Date: return v.timeIntervalSince1970
-        default:
-            // Fallback: convert to string representation
-            return String(describing: value)
-        }
-    }
-
-    /// Extract string value from comparison value
-    private func stringValue(from value: any Sendable) -> String? {
-        if let str = value as? String {
-            return str
-        }
-        return nil
     }
 
     /// Negate a condition (NOT)

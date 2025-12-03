@@ -176,14 +176,15 @@ struct HistogramTests {
 
         @Test("Date range selectivity works correctly")
         func dateRangeSelectivity() {
-            let startDate = Date(timeIntervalSince1970: 0)
-            let endDate = Date(timeIntervalSince1970: 86400 * 100)  // 100 days
+            // Store dates as Double (timestamp)
+            let startTimestamp: Double = 0
+            let endTimestamp: Double = 86400 * 100  // 100 days
 
             let histogram = Histogram(
                 buckets: [
                     Histogram.Bucket(
-                        lowerBound: .date(startDate),
-                        upperBound: .date(endDate),
+                        lowerBound: .double(startTimestamp),
+                        upperBound: .double(endTimestamp),
                         count: 100,
                         distinctCount: 100
                     )
@@ -193,10 +194,10 @@ struct HistogramTests {
             )
 
             // Query for first 50 days
-            let midDate = Date(timeIntervalSince1970: 86400 * 50)
+            let midTimestamp: Double = 86400 * 50
             let selectivity = histogram.estimateRangeSelectivity(
-                min: .date(startDate),
-                max: .date(midDate),
+                min: .double(startTimestamp),
+                max: .double(midTimestamp),
                 minInclusive: true,
                 maxInclusive: true
             )

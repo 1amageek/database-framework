@@ -7,7 +7,7 @@ import Foundation
 import Core
 
 // Use type aliases to disambiguate from Core types
-typealias CV = DatabaseEngine.ComparableValue
+typealias CV = Core.FieldValue
 
 @Suite("MCV Tests")
 struct MCVTests {

@@ -191,7 +191,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
             return defaults.equalitySelectivity(field: field, type: type)
         }
 
-        let comparableValue = ComparableValue(fieldValue: FieldValue.from(value))
+        let comparableValue = FieldValue(value) ?? .null
 
         // Use combined estimator for accurate selectivity
         if let estimator = stats.combinedEstimator {
@@ -214,7 +214,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
             return defaults.rangeSelectivity(field: field, range: range, type: type)
         }
 
-        // Convert RangeBound to ComparableValue bounds
+        // Convert RangeBound to FieldValue bounds
         let (minValue, maxValue, minInclusive, maxInclusive) = convertRangeBound(range)
 
         // Use combined MCV + Histogram estimation (PostgreSQL pattern)
@@ -260,7 +260,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
             return min(1.0, Double(values.count) / Double(distinctCount))
         }
 
-        let comparableValues = values.map { ComparableValue(fieldValue: FieldValue.from($0)) }
+        let comparableValues = values.map { FieldValue($0) ?? .null }
 
         // Use combined estimator for accurate selectivity
         if let estimator = stats.combinedEstimator {
@@ -360,7 +360,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
             // Collect field-level statistics
             for field in fieldsToCollect {
                 if let value = item[dynamicMember: field] {
-                    let fieldValue = FieldValue.from(value)
+                    let fieldValue = FieldValue(value) ?? .null
 
                     // Always update HyperLogLog for cardinality estimation
                     fieldHLLs[field]?.add(fieldValue)
@@ -444,7 +444,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
     }
 
     /// Compute minimum value from histogram and MCV
-    private func computeMinValue(histogram: Histogram, mcv: MostCommonValues) -> ComparableValue? {
+    private func computeMinValue(histogram: Histogram, mcv: MostCommonValues) -> FieldValue? {
         let histMin = histogram.buckets.first?.lowerBound
         let mcvMin = mcv.entries.min(by: { $0.value < $1.value })?.value
 
@@ -461,7 +461,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
     }
 
     /// Compute maximum value from histogram and MCV
-    private func computeMaxValue(histogram: Histogram, mcv: MostCommonValues) -> ComparableValue? {
+    private func computeMaxValue(histogram: Histogram, mcv: MostCommonValues) -> FieldValue? {
         let histMax = histogram.buckets.last?.upperBound
         let mcvMax = mcv.entries.max(by: { $0.value < $1.value })?.value
 
@@ -500,7 +500,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
                 if let keyTuple = try? indexSubspace.unpack(key) {
                     for i in 0..<keyTuple.count {
                         if let element = keyTuple[i] {
-                            hll.add(FieldValue.from(element))
+                            hll.add(FieldValue(element) ?? .null)
                         }
                     }
                 }
@@ -568,64 +568,29 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
 
     // MARK: - Helper Methods
 
-    /// Convert RangeBound to ComparableValue bounds
+    /// Convert RangeBound to FieldValue bounds
     private func convertRangeBound(_ range: RangeBound) -> (
-        min: ComparableValue?,
-        max: ComparableValue?,
+        min: FieldValue?,
+        max: FieldValue?,
         minInclusive: Bool,
         maxInclusive: Bool
     ) {
-        var minValue: ComparableValue?
-        var maxValue: ComparableValue?
+        var minValue: FieldValue?
+        var maxValue: FieldValue?
         var minInclusive = true
         var maxInclusive = true
 
         if let lower = range.lower {
-            minValue = ComparableValue(fieldValue: FieldValue.from(lower.value))
+            minValue = FieldValue(lower.value) ?? .null
             minInclusive = lower.inclusive
         }
 
         if let upper = range.upper {
-            maxValue = ComparableValue(fieldValue: FieldValue.from(upper.value))
+            maxValue = FieldValue(upper.value) ?? .null
             maxInclusive = upper.inclusive
         }
 
         return (minValue, maxValue, minInclusive, maxInclusive)
-    }
-}
-
-// MARK: - FieldValue Extension
-
-extension FieldValue {
-    /// Create FieldValue from any Sendable value
-    static func from(_ value: Any) -> FieldValue {
-        switch value {
-        case let v as Bool:
-            return .bool(v)
-        case let v as Int:
-            return .int64(Int64(v))
-        case let v as Int64:
-            return .int64(v)
-        case let v as UInt64:
-            return .int64(Int64(bitPattern: v))
-        case let v as Int32:
-            return .int64(Int64(v))
-        case let v as Int16:
-            return .int64(Int64(v))
-        case let v as Int8:
-            return .int64(Int64(v))
-        case let v as Float:
-            return .double(Double(v))
-        case let v as Double:
-            return .double(v)
-        case let v as String:
-            return .string(v)
-        case let v as Data:
-            return .data(v)
-        default:
-            // Convert unknown types to string representation
-            return .string(String(describing: value))
-        }
     }
 }
 

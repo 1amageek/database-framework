@@ -277,8 +277,8 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// - For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
     private func mergeFieldComparisons(_ comparisons: [FieldComparison<T>]) -> [FieldComparison<T>] {
         var result: [FieldComparison<T>] = []
-        var lowerBound: (value: any Sendable, inclusive: Bool)?
-        var upperBound: (value: any Sendable, inclusive: Bool)?
+        var lowerBound: (value: FieldValue, inclusive: Bool)?
+        var upperBound: (value: FieldValue, inclusive: Bool)?
         var equalities: [FieldComparison<T>] = []
         var others: [FieldComparison<T>] = []
 
@@ -333,12 +333,12 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Update lower bound, keeping the stricter one
     /// For lower bounds: higher value is stricter, exclusive is stricter than inclusive at same value
     private func updateLowerBound(
-        existing: (value: any Sendable, inclusive: Bool)?,
-        new: (value: any Sendable, inclusive: Bool)
-    ) -> (value: any Sendable, inclusive: Bool) {
+        existing: (value: FieldValue, inclusive: Bool)?,
+        new: (value: FieldValue, inclusive: Bool)
+    ) -> (value: FieldValue, inclusive: Bool) {
         guard let existing = existing else { return new }
 
-        let cmp = compareValues(new.value, existing.value)
+        let cmp = new.value.compare(to: existing.value) ?? .orderedSame
         switch cmp {
         case .orderedDescending:
             // New value is higher → stricter
@@ -356,12 +356,12 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Update upper bound, keeping the stricter one
     /// For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
     private func updateUpperBound(
-        existing: (value: any Sendable, inclusive: Bool)?,
-        new: (value: any Sendable, inclusive: Bool)
-    ) -> (value: any Sendable, inclusive: Bool) {
+        existing: (value: FieldValue, inclusive: Bool)?,
+        new: (value: FieldValue, inclusive: Bool)
+    ) -> (value: FieldValue, inclusive: Bool) {
         guard let existing = existing else { return new }
 
-        let cmp = compareValues(new.value, existing.value)
+        let cmp = new.value.compare(to: existing.value) ?? .orderedSame
         switch cmp {
         case .orderedAscending:
             // New value is lower → stricter
@@ -374,22 +374,6 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
             // a < 5 is stricter than a <= 5
             return existing.inclusive ? new : existing
         }
-    }
-
-    /// Compare two type-erased Sendable values
-    private func compareValues(_ lhs: any Sendable, _ rhs: any Sendable) -> ComparisonResult {
-        // Try different comparable types
-        if let l = lhs as? Int, let r = rhs as? Int {
-            return l < r ? .orderedAscending : (l > r ? .orderedDescending : .orderedSame)
-        }
-        if let l = lhs as? Double, let r = rhs as? Double {
-            return l < r ? .orderedAscending : (l > r ? .orderedDescending : .orderedSame)
-        }
-        if let l = lhs as? String, let r = rhs as? String {
-            return l.compare(r)
-        }
-        // Default to same (can't compare)
-        return .orderedSame
     }
 
     // MARK: - Constant Folding
@@ -529,8 +513,8 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Check if comparisons on a single field are contradictory
     private func fieldHasContradiction(_ comparisons: [FieldComparison<T>]) -> Bool {
         var equalityValues: Set<String> = []
-        var lowerBound: (value: any Sendable, inclusive: Bool)?
-        var upperBound: (value: any Sendable, inclusive: Bool)?
+        var lowerBound: (value: FieldValue, inclusive: Bool)?
+        var upperBound: (value: FieldValue, inclusive: Bool)?
 
         for comp in comparisons {
             switch comp.op {
@@ -545,7 +529,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
                 // Check against range bounds
                 // For lower bound: equality value must be > lower (if exclusive) or >= lower (if inclusive)
                 if let lower = lowerBound {
-                    let cmp = compareValues(comp.value, lower.value)
+                    let cmp = comp.value.compare(to: lower.value) ?? .orderedSame
                     if cmp == .orderedAscending {
                         // Equality value is less than lower bound
                         return true
@@ -557,7 +541,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
                 }
                 // For upper bound: equality value must be < upper (if exclusive) or <= upper (if inclusive)
                 if let upper = upperBound {
-                    let cmp = compareValues(comp.value, upper.value)
+                    let cmp = comp.value.compare(to: upper.value) ?? .orderedSame
                     if cmp == .orderedDescending {
                         // Equality value is greater than upper bound
                         return true
@@ -587,7 +571,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
 
         // Check if range is impossible
         if let lower = lowerBound, let upper = upperBound {
-            let cmp = compareValues(lower.value, upper.value)
+            let cmp = lower.value.compare(to: upper.value) ?? .orderedSame
             if cmp == .orderedDescending {
                 // Lower bound > upper bound: always contradiction
                 return true

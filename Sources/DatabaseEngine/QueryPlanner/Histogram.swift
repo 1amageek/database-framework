@@ -96,10 +96,10 @@ public struct Histogram: Sendable, Codable {
     /// A histogram bucket representing a range of values
     public struct Bucket: Sendable, Codable {
         /// Lower bound (inclusive)
-        public let lowerBound: ComparableValue
+        public let lowerBound: FieldValue
 
         /// Upper bound (inclusive for last bucket, exclusive otherwise)
-        public let upperBound: ComparableValue
+        public let upperBound: FieldValue
 
         /// Number of values in this bucket
         public let count: Int64
@@ -135,8 +135,8 @@ public struct Histogram: Sendable, Codable {
         }
 
         public init(
-            lowerBound: ComparableValue,
-            upperBound: ComparableValue,
+            lowerBound: FieldValue,
+            upperBound: FieldValue,
             count: Int64,
             distinctCount: Int64
         ) {
@@ -153,7 +153,7 @@ public struct Histogram: Sendable, Codable {
     ///
     /// - Parameter value: The value to match
     /// - Returns: Estimated selectivity (0.0 - 1.0)
-    public func estimateEqualsSelectivity(value: ComparableValue) -> Double {
+    public func estimateEqualsSelectivity(value: FieldValue) -> Double {
         guard totalCount > 0 else { return 0.0 }
 
         // Find the bucket containing this value
@@ -178,8 +178,8 @@ public struct Histogram: Sendable, Codable {
     ///   - maxInclusive: Whether max is inclusive
     /// - Returns: Estimated selectivity (0.0 - 1.0)
     public func estimateRangeSelectivity(
-        min: ComparableValue?,
-        max: ComparableValue?,
+        min: FieldValue?,
+        max: FieldValue?,
         minInclusive: Bool = true,
         maxInclusive: Bool = true
     ) -> Double {
@@ -203,12 +203,12 @@ public struct Histogram: Sendable, Codable {
     }
 
     /// Estimate selectivity for less-than query: P(field < value)
-    public func estimateLessThanSelectivity(value: ComparableValue, inclusive: Bool = false) -> Double {
+    public func estimateLessThanSelectivity(value: FieldValue, inclusive: Bool = false) -> Double {
         return estimateRangeSelectivity(min: nil, max: value, minInclusive: true, maxInclusive: inclusive)
     }
 
     /// Estimate selectivity for greater-than query: P(field > value)
-    public func estimateGreaterThanSelectivity(value: ComparableValue, inclusive: Bool = false) -> Double {
+    public func estimateGreaterThanSelectivity(value: FieldValue, inclusive: Bool = false) -> Double {
         return estimateRangeSelectivity(min: value, max: nil, minInclusive: inclusive, maxInclusive: true)
     }
 
@@ -230,7 +230,7 @@ public struct Histogram: Sendable, Codable {
     // MARK: - Private Methods
 
     /// Find the bucket containing a value
-    private func findBucket(containing value: ComparableValue) -> Bucket? {
+    private func findBucket(containing value: FieldValue) -> Bucket? {
         for bucket in buckets {
             if value >= bucket.lowerBound && value <= bucket.upperBound {
                 return bucket
@@ -244,8 +244,8 @@ public struct Histogram: Sendable, Codable {
     /// Returns a value between 0.0 (no overlap) and 1.0 (full overlap)
     private func calculateBucketOverlap(
         bucket: Bucket,
-        rangeMin: ComparableValue?,
-        rangeMax: ComparableValue?,
+        rangeMin: FieldValue?,
+        rangeMax: FieldValue?,
         minInclusive: Bool,
         maxInclusive: Bool
     ) -> Double {
@@ -296,10 +296,10 @@ public struct Histogram: Sendable, Codable {
     ///
     /// For other types (bool, data, null): Falls back to 0.5 (conservative estimate).
     private func interpolateOverlap(
-        bucketLower: ComparableValue,
-        bucketUpper: ComparableValue,
-        rangeMin: ComparableValue?,
-        rangeMax: ComparableValue?
+        bucketLower: FieldValue,
+        bucketUpper: FieldValue,
+        rangeMin: FieldValue?,
+        rangeMax: FieldValue?
     ) -> Double {
         // Try numeric interpolation (int64, double, date)
         if let bucketWidth = bucketUpper.numericDifference(from: bucketLower), bucketWidth > 0 {
@@ -349,8 +349,8 @@ public struct Histogram: Sendable, Codable {
     private func interpolateStringOverlap(
         bucketLower: String,
         bucketUpper: String,
-        rangeMin: ComparableValue?,
-        rangeMax: ComparableValue?
+        rangeMin: FieldValue?,
+        rangeMax: FieldValue?
     ) -> Double {
         // Find common prefix length to strip (PostgreSQL optimization)
         let commonPrefixLen = Self.commonPrefixLength(bucketLower, bucketUpper)
@@ -481,273 +481,6 @@ public struct Histogram: Sendable, Codable {
     }
 }
 
-// MARK: - ComparableValue
-
-/// Type-safe comparable value for histogram bounds
-///
-/// Supports comparison across different types with defined ordering:
-/// null < bool < int64 < double < string
-public enum ComparableValue: Sendable, Codable, Hashable, Comparable {
-    case null
-    case bool(Bool)
-    case int64(Int64)
-    case double(Double)
-    case string(String)
-    case date(Date)
-    case data(Data)
-
-    /// Protobuf field numbers for custom encoding
-    private enum CodingKeys: String, CodingKey {
-        case type, boolValue, int64Value, doubleValue, stringValue, dateValue, dataValue
-
-        var intValue: Int? {
-            switch self {
-            case .type: return 1
-            case .boolValue: return 2
-            case .int64Value: return 3
-            case .doubleValue: return 4
-            case .stringValue: return 5
-            case .dateValue: return 6
-            case .dataValue: return 7
-            }
-        }
-
-        init?(intValue: Int) {
-            switch intValue {
-            case 1: self = .type
-            case 2: self = .boolValue
-            case 3: self = .int64Value
-            case 4: self = .doubleValue
-            case 5: self = .stringValue
-            case 6: self = .dateValue
-            case 7: self = .dataValue
-            default: return nil
-            }
-        }
-
-        init?(stringValue: String) { self.init(rawValue: stringValue) }
-        var stringValue: String { rawValue }
-    }
-
-    /// Type tags for encoding
-    private enum TypeTag: Int, Codable {
-        case null = 0
-        case bool = 1
-        case int64 = 2
-        case double = 3
-        case string = 4
-        case date = 5
-        case data = 6
-    }
-
-    public init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let typeTag = try container.decode(TypeTag.self, forKey: .type)
-
-        switch typeTag {
-        case .null:
-            self = .null
-        case .bool:
-            self = .bool(try container.decode(Bool.self, forKey: .boolValue))
-        case .int64:
-            self = .int64(try container.decode(Int64.self, forKey: .int64Value))
-        case .double:
-            self = .double(try container.decode(Double.self, forKey: .doubleValue))
-        case .string:
-            self = .string(try container.decode(String.self, forKey: .stringValue))
-        case .date:
-            self = .date(try container.decode(Date.self, forKey: .dateValue))
-        case .data:
-            self = .data(try container.decode(Data.self, forKey: .dataValue))
-        }
-    }
-
-    public func encode(to encoder: Encoder) throws {
-        var container = encoder.container(keyedBy: CodingKeys.self)
-
-        switch self {
-        case .null:
-            try container.encode(TypeTag.null, forKey: .type)
-        case .bool(let v):
-            try container.encode(TypeTag.bool, forKey: .type)
-            try container.encode(v, forKey: .boolValue)
-        case .int64(let v):
-            try container.encode(TypeTag.int64, forKey: .type)
-            try container.encode(v, forKey: .int64Value)
-        case .double(let v):
-            try container.encode(TypeTag.double, forKey: .type)
-            try container.encode(v, forKey: .doubleValue)
-        case .string(let v):
-            try container.encode(TypeTag.string, forKey: .type)
-            try container.encode(v, forKey: .stringValue)
-        case .date(let v):
-            try container.encode(TypeTag.date, forKey: .type)
-            try container.encode(v, forKey: .dateValue)
-        case .data(let v):
-            try container.encode(TypeTag.data, forKey: .type)
-            try container.encode(v, forKey: .dataValue)
-        }
-    }
-
-    // MARK: - Comparable
-
-    public static func < (lhs: ComparableValue, rhs: ComparableValue) -> Bool {
-        switch (lhs, rhs) {
-        case (.null, .null):
-            return false
-        case (.null, _):
-            return true
-        case (_, .null):
-            return false
-        case (.bool(let a), .bool(let b)):
-            return !a && b  // false < true
-        case (.bool, _):
-            return true
-        case (_, .bool):
-            return false
-        case (.int64(let a), .int64(let b)):
-            return a < b
-        case (.int64(let a), .double(let b)):
-            return Double(a) < b
-        case (.double(let a), .int64(let b)):
-            return a < Double(b)
-        case (.double(let a), .double(let b)):
-            return a < b
-        case (.int64, _), (.double, _):
-            return true
-        case (_, .int64), (_, .double):
-            return false
-        case (.string(let a), .string(let b)):
-            return a < b
-        case (.string, _):
-            return true
-        case (_, .string):
-            return false
-        case (.date(let a), .date(let b)):
-            return a < b
-        case (.date, _):
-            return true
-        case (_, .date):
-            return false
-        case (.data(let a), .data(let b)):
-            return a.lexicographicallyPrecedes(b)
-        }
-    }
-
-    // MARK: - Numeric Operations
-
-    /// Calculate numeric difference (rhs - lhs) if both are numeric
-    public func numericDifference(from other: ComparableValue) -> Double? {
-        switch (self, other) {
-        case (.int64(let a), .int64(let b)):
-            return Double(a - b)
-        case (.double(let a), .double(let b)):
-            return a - b
-        case (.int64(let a), .double(let b)):
-            return Double(a) - b
-        case (.double(let a), .int64(let b)):
-            return a - Double(b)
-        case (.date(let a), .date(let b)):
-            return a.timeIntervalSince(b)
-        default:
-            return nil
-        }
-    }
-
-    /// Check if value is numeric
-    public var isNumeric: Bool {
-        switch self {
-        case .int64, .double:
-            return true
-        default:
-            return false
-        }
-    }
-
-    // MARK: - Conversion from FieldValue
-
-    /// Create from FieldValue
-    public init(fieldValue: FieldValue) {
-        switch fieldValue {
-        case .null:
-            self = .null
-        case .bool(let v):
-            self = .bool(v)
-        case .int64(let v):
-            self = .int64(v)
-        case .double(let v):
-            self = .double(v)
-        case .string(let v):
-            self = .string(v)
-        case .data(let v):
-            self = .data(v)
-        }
-    }
-
-    /// Create from TupleElement
-    public init(tupleElement: any TupleElement) {
-        switch tupleElement {
-        case let v as Bool:
-            self = .bool(v)
-        case let v as Int:
-            self = .int64(Int64(v))
-        case let v as Int64:
-            self = .int64(v)
-        case let v as Double:
-            self = .double(v)
-        case let v as String:
-            self = .string(v)
-        case let v as [UInt8]:
-            self = .data(Data(v))
-        default:
-            // Fallback: convert to string
-            self = .string(String(describing: tupleElement))
-        }
-    }
-
-    /// Convert to FieldValue
-    public var fieldValue: FieldValue {
-        switch self {
-        case .null:
-            return .null
-        case .bool(let v):
-            return .bool(v)
-        case .int64(let v):
-            return .int64(v)
-        case .double(let v):
-            return .double(v)
-        case .string(let v):
-            return .string(v)
-        case .date:
-            // Date stored as double (timeIntervalSince1970)
-            return .null
-        case .data(let v):
-            return .data(v)
-        }
-    }
-
-    /// Convert to TupleElement for FDB storage
-    public func toTupleElement() -> any TupleElement {
-        switch self {
-        case .null:
-            // Return empty string as placeholder since FDB Tuple doesn't have null
-            return ""
-        case .bool(let v):
-            return v
-        case .int64(let v):
-            return v
-        case .double(let v):
-            return v
-        case .string(let v):
-            return v
-        case .date(let v):
-            return v.timeIntervalSince1970
-        case .data(let v):
-            return [UInt8](v)
-        }
-    }
-}
-
 // MARK: - Histogram Builder
 
 /// Builder for constructing histograms from data
@@ -784,15 +517,14 @@ public struct HistogramBuilder: Sendable {
         nullCount: Int64 = 0,
         bucketCount: Int = 100,
         hll: HyperLogLog? = nil,
-        excludeValues: Set<ComparableValue> = []
+        excludeValues: Set<FieldValue> = []
     ) -> Histogram {
-        // Filter out nulls, convert to ComparableValue, and exclude MCV values
-        let values = samples.compactMap { fieldValue -> ComparableValue? in
+        // Filter out nulls and exclude MCV values
+        let values = samples.compactMap { fieldValue -> FieldValue? in
             if case .null = fieldValue { return nil }
-            let value = ComparableValue(fieldValue: fieldValue)
             // Exclude MCV values from histogram to avoid double-counting
-            if excludeValues.contains(value) { return nil }
-            return value
+            if excludeValues.contains(fieldValue) { return nil }
+            return fieldValue
         }
 
         guard !values.isEmpty else {
@@ -835,7 +567,7 @@ public struct HistogramBuilder: Sendable {
     ///
     /// **Reference**: PostgreSQL src/backend/commands/analyze.c, compute_scalar_stats()
     private static func buildEquiHeightBuckets(
-        sorted: [ComparableValue],
+        sorted: [FieldValue],
         totalCount: Int64,
         sampleCount: Int64,
         bucketCount: Int,

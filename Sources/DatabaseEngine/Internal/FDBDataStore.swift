@@ -440,6 +440,11 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Convert a value to a Tuple for index key construction
     private func valueToTuple(_ value: Any) -> Tuple {
+        // Handle FieldValue first (most common case after refactoring)
+        if let fieldValue = value as? FieldValue {
+            return Tuple([fieldValue.toTupleElement()])
+        }
+
         if let tupleElement = value as? any TupleElement {
             return Tuple([tupleElement])
         }
@@ -1443,12 +1448,14 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Evaluate a field comparison with type-safe comparisons
+    ///
+    /// Uses FieldValue-based comparison for consistency with PlanExecutor
     private func evaluateFieldComparison<T: Persistable>(
         model: T,
         comparison: FieldComparison<T>
     ) -> Bool {
         let fieldName = comparison.fieldName
-        let value = comparison.value
+        let expectedValue = comparison.value
 
         // Handle nil checks separately
         switch comparison.op {
@@ -1463,41 +1470,45 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         guard let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName),
-              let fieldValue = fieldValues.first else {
+              let rawFieldValue = fieldValues.first else {
             return false
         }
 
+        // Convert model field value to FieldValue for type-safe comparison
+        let modelFieldValue = FieldValue(rawFieldValue) ?? .null
+
         switch comparison.op {
         case .equal:
-            return compareValues(fieldValue, value) == .orderedSame
+            return modelFieldValue.isEqual(to: expectedValue)
         case .notEqual:
-            return compareValues(fieldValue, value) != .orderedSame
+            return !modelFieldValue.isEqual(to: expectedValue)
         case .lessThan:
-            return compareValues(fieldValue, value) == .orderedAscending
+            return modelFieldValue.isLessThan(expectedValue)
         case .lessThanOrEqual:
-            let result = compareValues(fieldValue, value)
-            return result == .orderedAscending || result == .orderedSame
+            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
         case .greaterThan:
-            return compareValues(fieldValue, value) == .orderedDescending
+            return expectedValue.isLessThan(modelFieldValue)
         case .greaterThanOrEqual:
-            let result = compareValues(fieldValue, value)
-            return result == .orderedDescending || result == .orderedSame
+            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
         case .contains:
-            let fieldString = String(describing: fieldValue)
-            let valueString = String(describing: value)
-            return fieldString.contains(valueString)
+            if let fieldStr = rawFieldValue as? String, let substr = expectedValue.stringValue {
+                return fieldStr.contains(substr)
+            }
+            return false
         case .hasPrefix:
-            let fieldString = String(describing: fieldValue)
-            let valueString = String(describing: value)
-            return fieldString.hasPrefix(valueString)
+            if let fieldStr = rawFieldValue as? String, let prefix = expectedValue.stringValue {
+                return fieldStr.hasPrefix(prefix)
+            }
+            return false
         case .hasSuffix:
-            let fieldString = String(describing: fieldValue)
-            let valueString = String(describing: value)
-            return fieldString.hasSuffix(valueString)
+            if let fieldStr = rawFieldValue as? String, let suffix = expectedValue.stringValue {
+                return fieldStr.hasSuffix(suffix)
+            }
+            return false
         case .in:
-            // Handle array containment
-            if let array = value as? [any Sendable] {
-                return array.contains { compareValues(fieldValue, $0) == .orderedSame }
+            // Check if model value is in the expected array
+            if let arrayValues = expectedValue.arrayValue {
+                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
             }
             return false
         case .isNil, .isNotNil:
@@ -1511,109 +1522,16 @@ internal final class FDBDataStore: DataStore, Sendable {
         let lhsValues = try? DataAccess.extractField(from: lhs, keyPath: fieldName)
         let rhsValues = try? DataAccess.extractField(from: rhs, keyPath: fieldName)
 
-        guard let lhsValue = lhsValues?.first,
-              let rhsValue = rhsValues?.first else {
+        guard let lhsRaw = lhsValues?.first,
+              let rhsRaw = rhsValues?.first else {
             return .orderedSame
         }
 
-        return compareValues(lhsValue, rhsValue)
-    }
+        // Use FieldValue for consistent comparison
+        let lhsField = FieldValue(lhsRaw) ?? .null
+        let rhsField = FieldValue(rhsRaw) ?? .null
 
-    /// Type-safe comparison of two values
-    ///
-    /// Compares values with proper numeric/date ordering instead of string comparison.
-    /// Falls back to string comparison for non-comparable types.
-    private func compareValues(_ lhs: Any, _ rhs: Any) -> ComparisonResult {
-        // Try numeric comparison first
-        if let result = compareNumericValues(lhs, rhs) {
-            return result
-        }
-
-        // Try string comparison
-        if let lhsString = lhs as? String, let rhsString = rhs as? String {
-            if lhsString < rhsString { return .orderedAscending }
-            if lhsString > rhsString { return .orderedDescending }
-            return .orderedSame
-        }
-
-        // Try boolean comparison
-        if let lhsBool = lhs as? Bool, let rhsBool = rhs as? Bool {
-            if lhsBool == rhsBool { return .orderedSame }
-            return lhsBool ? .orderedDescending : .orderedAscending  // true > false
-        }
-
-        // Try Date comparison (stored as Double timestamp)
-        if let lhsDate = lhs as? Date, let rhsDate = rhs as? Date {
-            if lhsDate < rhsDate { return .orderedAscending }
-            if lhsDate > rhsDate { return .orderedDescending }
-            return .orderedSame
-        }
-
-        // Try UUID comparison (lexicographic)
-        if let lhsUUID = lhs as? UUID, let rhsUUID = rhs as? UUID {
-            let lhsStr = lhsUUID.uuidString
-            let rhsStr = rhsUUID.uuidString
-            if lhsStr < rhsStr { return .orderedAscending }
-            if lhsStr > rhsStr { return .orderedDescending }
-            return .orderedSame
-        }
-
-        // Fall back to string comparison for unknown types
-        let lhsString = String(describing: lhs)
-        let rhsString = String(describing: rhs)
-        if lhsString < rhsString { return .orderedAscending }
-        if lhsString > rhsString { return .orderedDescending }
-        return .orderedSame
-    }
-
-    /// Compare numeric values with type coercion
-    private func compareNumericValues(_ lhs: Any, _ rhs: Any) -> ComparisonResult? {
-        // Convert both values to Double for comparison if they're numeric
-        let lhsDouble: Double?
-        let rhsDouble: Double?
-
-        // Extract Double value from lhs
-        switch lhs {
-        case let v as Int: lhsDouble = Double(v)
-        case let v as Int64: lhsDouble = Double(v)
-        case let v as Int32: lhsDouble = Double(v)
-        case let v as Int16: lhsDouble = Double(v)
-        case let v as Int8: lhsDouble = Double(v)
-        case let v as UInt: lhsDouble = Double(v)
-        case let v as UInt64: lhsDouble = Double(v)
-        case let v as UInt32: lhsDouble = Double(v)
-        case let v as UInt16: lhsDouble = Double(v)
-        case let v as UInt8: lhsDouble = Double(v)
-        case let v as Double: lhsDouble = v
-        case let v as Float: lhsDouble = Double(v)
-        default: lhsDouble = nil
-        }
-
-        // Extract Double value from rhs
-        switch rhs {
-        case let v as Int: rhsDouble = Double(v)
-        case let v as Int64: rhsDouble = Double(v)
-        case let v as Int32: rhsDouble = Double(v)
-        case let v as Int16: rhsDouble = Double(v)
-        case let v as Int8: rhsDouble = Double(v)
-        case let v as UInt: rhsDouble = Double(v)
-        case let v as UInt64: rhsDouble = Double(v)
-        case let v as UInt32: rhsDouble = Double(v)
-        case let v as UInt16: rhsDouble = Double(v)
-        case let v as UInt8: rhsDouble = Double(v)
-        case let v as Double: rhsDouble = v
-        case let v as Float: rhsDouble = Double(v)
-        default: rhsDouble = nil
-        }
-
-        // If both are numeric, compare as doubles
-        if let l = lhsDouble, let r = rhsDouble {
-            if l < r { return .orderedAscending }
-            if l > r { return .orderedDescending }
-            return .orderedSame
-        }
-
-        return nil  // Not both numeric
+        return lhsField.compare(to: rhsField) ?? .orderedSame
     }
 
     // MARK: - Clear Operations

@@ -352,8 +352,8 @@ public struct FieldStatisticsData: Codable, Sendable {
     public let distinctCount: Int64
     public let nullCount: Int64
     public let totalCount: Int64
-    public let minValue: ComparableValue?
-    public let maxValue: ComparableValue?
+    public let minValue: FieldValue?
+    public let maxValue: FieldValue?
 
     /// Most Common Values list (for skewed distributions)
     public let mcv: MostCommonValues?
@@ -416,8 +416,8 @@ public struct FieldStatisticsData: Codable, Sendable {
         distinctCount: Int64,
         nullCount: Int64 = 0,
         totalCount: Int64,
-        minValue: ComparableValue? = nil,
-        maxValue: ComparableValue? = nil,
+        minValue: FieldValue? = nil,
+        maxValue: FieldValue? = nil,
         mcv: MostCommonValues? = nil,
         histogram: Histogram? = nil,
         timestamp: Date = Date()

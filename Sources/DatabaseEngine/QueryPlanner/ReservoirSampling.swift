@@ -212,7 +212,7 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let scaledCount = Int(Double(count) * scaleFactor)
             cumulativeCount += scaledCount
 
-            let comparableValue = ComparableValue(tupleElement: value)
+            guard let comparableValue = FieldValue(tupleElement: value) else { continue }
             buckets.append(HistogramBucket(
                 lowerBound: comparableValue,
                 upperBound: comparableValue,
@@ -235,8 +235,11 @@ extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
             let startIndex = i
             let endIndex = min(i + valuesPerBucket, sorted.count)
 
-            let lowerBound = ComparableValue(tupleElement: sorted[startIndex])
-            let upperBound = ComparableValue(tupleElement: sorted[endIndex - 1])
+            guard let lowerBound = FieldValue(tupleElement: sorted[startIndex]),
+                  let upperBound = FieldValue(tupleElement: sorted[endIndex - 1]) else {
+                i = endIndex
+                continue
+            }
             let count = endIndex - startIndex
 
             let scaledCount = Int(Double(count) * scaleFactor)
@@ -267,16 +270,15 @@ extension ReservoirSampling where T == FieldValue {
     public func buildFieldValueHistogram(bucketCount: Int = 100) -> [HistogramBucket] {
         guard !reservoir.isEmpty else { return [] }
 
-        // Convert to ComparableValue for sorting
-        let comparableValues = reservoir.map { ComparableValue(fieldValue: $0) }
-        let sorted = comparableValues.sorted()
+        // Sort the FieldValue reservoir
+        let sorted = reservoir.sorted()
         let totalSampled = sorted.count
 
         let scaleFactor = elementsSeen > 0 ? Double(elementsSeen) / Double(totalSampled) : 1.0
 
         // Group by unique values
-        var valueGroups: [(value: ComparableValue, count: Int)] = []
-        var currentValue: ComparableValue? = nil
+        var valueGroups: [(value: FieldValue, count: Int)] = []
+        var currentValue: FieldValue? = nil
         var currentCount = 0
 
         for value in sorted {
@@ -302,7 +304,7 @@ extension ReservoirSampling where T == FieldValue {
         return buildEquiHeightFieldValueBuckets(groups: valueGroups, bucketCount: bucketCount, scaleFactor: scaleFactor)
     }
 
-    private func buildValueGroupBuckets(groups: [(value: ComparableValue, count: Int)], scaleFactor: Double) -> [HistogramBucket] {
+    private func buildValueGroupBuckets(groups: [(value: FieldValue, count: Int)], scaleFactor: Double) -> [HistogramBucket] {
         var buckets: [HistogramBucket] = []
         var cumulativeCount = 0
 
@@ -322,7 +324,7 @@ extension ReservoirSampling where T == FieldValue {
     }
 
     private func buildEquiHeightFieldValueBuckets(
-        groups: [(value: ComparableValue, count: Int)],
+        groups: [(value: FieldValue, count: Int)],
         bucketCount: Int,
         scaleFactor: Double
     ) -> [HistogramBucket] {
@@ -331,8 +333,8 @@ extension ReservoirSampling where T == FieldValue {
 
         var buckets: [HistogramBucket] = []
         var cumulativeCount = 0
-        var currentBucketStart: ComparableValue? = nil
-        var currentBucketEnd: ComparableValue? = nil
+        var currentBucketStart: FieldValue? = nil
+        var currentBucketEnd: FieldValue? = nil
         var currentBucketCount = 0
 
         for (value, count) in groups {

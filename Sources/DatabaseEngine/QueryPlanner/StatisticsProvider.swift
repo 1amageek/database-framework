@@ -290,15 +290,15 @@ public struct FieldStatistics: @unchecked Sendable {
 
 /// A histogram bucket for value distribution
 ///
-/// Note: Uses ComparableValue instead of TupleElement because:
+/// Note: Uses FieldValue instead of TupleElement because:
 /// 1. Histogram buckets need to be comparable for range selectivity estimation
 /// 2. Histograms are stored as JSON, not in FDB tuples
 public struct HistogramBucket: Sendable {
     /// Lower bound of the bucket
-    public let lowerBound: ComparableValue
+    public let lowerBound: FieldValue
 
     /// Upper bound of the bucket
-    public let upperBound: ComparableValue
+    public let upperBound: FieldValue
 
     /// Number of values in this bucket
     public let count: Int
@@ -307,8 +307,8 @@ public struct HistogramBucket: Sendable {
     public let cumulativeCount: Int
 
     public init(
-        lowerBound: ComparableValue,
-        upperBound: ComparableValue,
+        lowerBound: FieldValue,
+        upperBound: FieldValue,
         count: Int,
         cumulativeCount: Int
     ) {

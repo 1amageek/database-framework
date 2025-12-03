@@ -360,6 +360,13 @@ public struct HyperLogLog: Sendable, Codable, Equatable {
             return murmurHash64(v)
         case .data(let v):
             return murmurHash64(v)
+        case .array(let values):
+            // Hash array by combining element hashes
+            var hash: UInt64 = 0
+            for element in values {
+                hash ^= hashFieldValue(element)
+            }
+            return hash
         }
     }
 }

@@ -120,7 +120,7 @@ public enum AggregateFunction: Sendable, Equatable, Hashable {
 
 /// Predicate expression (simplified)
 public indirect enum PredicateExpr: Sendable, Equatable, Hashable {
-    case comparison(field: String, op: ComparisonOp, value: CascadesValue)
+    case comparison(field: String, op: ComparisonOp, value: FieldValue)
     case and([PredicateExpr])
     case or([PredicateExpr])
     case not(PredicateExpr)
@@ -139,15 +139,15 @@ public enum ComparisonOp: Sendable, Equatable, Hashable {
 
 /// Index bounds expression
 public struct IndexBoundsExpr: Sendable, Equatable, Hashable {
-    public let lowerBound: [CascadesValue]?
+    public let lowerBound: [FieldValue]?
     public let lowerInclusive: Bool
-    public let upperBound: [CascadesValue]?
+    public let upperBound: [FieldValue]?
     public let upperInclusive: Bool
 
     public init(
-        lowerBound: [CascadesValue]? = nil,
+        lowerBound: [FieldValue]? = nil,
         lowerInclusive: Bool = true,
-        upperBound: [CascadesValue]? = nil,
+        upperBound: [FieldValue]? = nil,
         upperInclusive: Bool = true
     ) {
         self.lowerBound = lowerBound
@@ -155,17 +155,6 @@ public struct IndexBoundsExpr: Sendable, Equatable, Hashable {
         self.upperBound = upperBound
         self.upperInclusive = upperInclusive
     }
-}
-
-/// Type-erased value for use in expressions
-public enum CascadesValue: Sendable, Equatable, Hashable {
-    case null
-    case bool(Bool)
-    case int(Int64)
-    case double(Double)
-    case string(String)
-    case data(Data)
-    case array([CascadesValue])
 }
 
 // MARK: - Physical Operators
@@ -185,7 +174,7 @@ public enum PhysicalOperator: Sendable, Equatable {
     case indexOnlyScan(typeName: String, indexName: String, bounds: IndexBoundsExpr?, fields: [String])
 
     /// Bitmap index scan
-    case bitmapScan(typeName: String, indexName: String, values: [CascadesValue])
+    case bitmapScan(typeName: String, indexName: String, values: [FieldValue])
 
     /// Nested loop join
     case nestedLoopJoin(outer: GroupID, inner: GroupID, condition: PredicateExpr?, type: JoinType)

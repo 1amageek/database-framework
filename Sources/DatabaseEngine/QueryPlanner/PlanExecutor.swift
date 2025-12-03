@@ -1224,23 +1224,23 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     /// Evaluate a comparison against a model
     private func evaluateComparison(_ comparison: FieldComparison<T>, on model: T) -> Bool {
         // Get the field value from the model using the KeyPath
-        let modelValue = getFieldValue(from: model, keyPath: comparison.keyPath, fieldName: comparison.fieldName)
+        let modelRaw = getFieldValue(from: model, keyPath: comparison.keyPath, fieldName: comparison.fieldName)
+        let modelFieldValue = modelRaw.flatMap { FieldValue($0) } ?? .null
 
         // Handle nil check operators first
         switch comparison.op {
         case .isNil:
-            return modelValue == nil || isNilValue(modelValue!)
+            return modelFieldValue.isNull
 
         case .isNotNil:
-            guard let value = modelValue else { return false }
-            return !isNilValue(value)
+            return !modelFieldValue.isNull
 
         default:
             break
         }
 
-        // For other operators, we need a non-nil value
-        guard let modelValue = modelValue else {
+        // For other operators with null model value, comparison fails
+        if modelFieldValue.isNull {
             return false
         }
 
@@ -1248,58 +1248,45 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         switch comparison.op {
         case .equal:
-            return compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isEqual(to: expectedValue)
 
         case .notEqual:
-            return !compareEqual(modelValue, expectedValue)
+            return !modelFieldValue.isEqual(to: expectedValue)
 
         case .lessThan:
-            return compareLess(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue)
 
         case .lessThanOrEqual:
-            return compareLess(modelValue, expectedValue) || compareEqual(modelValue, expectedValue)
+            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
 
         case .greaterThan:
-            return compareLess(expectedValue, modelValue)
+            return expectedValue.isLessThan(modelFieldValue)
 
         case .greaterThanOrEqual:
-            return compareLess(expectedValue, modelValue) || compareEqual(modelValue, expectedValue)
+            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
 
         case .contains:
-            if let str = modelValue as? String, let substr = expectedValue as? String {
+            if let str = modelRaw as? String, let substr = expectedValue.stringValue {
                 return str.contains(substr)
             }
             return false
 
         case .hasPrefix:
-            if let str = modelValue as? String, let prefix = expectedValue as? String {
+            if let str = modelRaw as? String, let prefix = expectedValue.stringValue {
                 return str.hasPrefix(prefix)
             }
             return false
 
         case .hasSuffix:
-            if let str = modelValue as? String, let suffix = expectedValue as? String {
+            if let str = modelRaw as? String, let suffix = expectedValue.stringValue {
                 return str.hasSuffix(suffix)
             }
             return false
 
         case .in:
-            // Handle arrays of common types
-            if let array = expectedValue as? [String], let val = modelValue as? String {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Int], let val = modelValue as? Int {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Int64], let val = modelValue as? Int64 {
-                return array.contains(val)
-            }
-            if let array = expectedValue as? [Double], let val = modelValue as? Double {
-                return array.contains(val)
-            }
-            // Fallback: extract array using reflection
-            if let innerArray = extractArrayFromValue(expectedValue) {
-                return innerArray.contains { compareEqual(modelValue, $0) }
+            // Check if model value is in the expected array
+            if let arrayValues = expectedValue.arrayValue {
+                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
             }
             return false
 
@@ -1336,130 +1323,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         return current
     }
 
-    /// Compare two values for equality
-    private func compareEqual(_ lhs: Any, _ rhs: Any) -> Bool {
-        // String types
-        if let l = lhs as? String, let r = rhs as? String { return l == r }
-
-        // Integer types
-        if let l = lhs as? Int, let r = rhs as? Int { return l == r }
-        if let l = lhs as? Int64, let r = rhs as? Int64 { return l == r }
-        if let l = lhs as? Int32, let r = rhs as? Int32 { return l == r }
-        if let l = lhs as? Int16, let r = rhs as? Int16 { return l == r }
-        if let l = lhs as? Int8, let r = rhs as? Int8 { return l == r }
-        if let l = lhs as? UInt, let r = rhs as? UInt { return l == r }
-        if let l = lhs as? UInt64, let r = rhs as? UInt64 { return l == r }
-        if let l = lhs as? UInt32, let r = rhs as? UInt32 { return l == r }
-        if let l = lhs as? UInt16, let r = rhs as? UInt16 { return l == r }
-        if let l = lhs as? UInt8, let r = rhs as? UInt8 { return l == r }
-
-        // Floating point types
-        if let l = lhs as? Double, let r = rhs as? Double { return l == r }
-        if let l = lhs as? Float, let r = rhs as? Float { return l == r }
-
-        // Cross-type numeric comparisons (Int vs Int64, etc.)
-        if let l = toDouble(lhs), let r = toDouble(rhs) { return l == r }
-
-        // Boolean
-        if let l = lhs as? Bool, let r = rhs as? Bool { return l == r }
-
-        // Date
-        if let l = lhs as? Date, let r = rhs as? Date { return l == r }
-
-        // UUID
-        if let l = lhs as? UUID, let r = rhs as? UUID { return l == r }
-
-        // Data
-        if let l = lhs as? Data, let r = rhs as? Data { return l == r }
-
-        // Fall back to string comparison for other types
-        return "\(lhs)" == "\(rhs)"
-    }
-
-    /// Compare if lhs < rhs
-    private func compareLess(_ lhs: Any, _ rhs: Any) -> Bool {
-        // String types
-        if let l = lhs as? String, let r = rhs as? String { return l < r }
-
-        // Integer types
-        if let l = lhs as? Int, let r = rhs as? Int { return l < r }
-        if let l = lhs as? Int64, let r = rhs as? Int64 { return l < r }
-        if let l = lhs as? Int32, let r = rhs as? Int32 { return l < r }
-        if let l = lhs as? Int16, let r = rhs as? Int16 { return l < r }
-        if let l = lhs as? Int8, let r = rhs as? Int8 { return l < r }
-        if let l = lhs as? UInt, let r = rhs as? UInt { return l < r }
-        if let l = lhs as? UInt64, let r = rhs as? UInt64 { return l < r }
-        if let l = lhs as? UInt32, let r = rhs as? UInt32 { return l < r }
-        if let l = lhs as? UInt16, let r = rhs as? UInt16 { return l < r }
-        if let l = lhs as? UInt8, let r = rhs as? UInt8 { return l < r }
-
-        // Floating point types
-        if let l = lhs as? Double, let r = rhs as? Double { return l < r }
-        if let l = lhs as? Float, let r = rhs as? Float { return l < r }
-
-        // Cross-type numeric comparisons
-        if let l = toDouble(lhs), let r = toDouble(rhs) { return l < r }
-
-        // Date
-        if let l = lhs as? Date, let r = rhs as? Date { return l < r }
-
-        // UUID (lexicographic comparison via string)
-        if let l = lhs as? UUID, let r = rhs as? UUID { return l.uuidString < r.uuidString }
-
-        // Data (lexicographic comparison)
-        if let l = lhs as? Data, let r = rhs as? Data {
-            return l.lexicographicallyPrecedes(r)
-        }
-
-        return false
-    }
-
-    /// Convert numeric types to Double for cross-type comparison
-    private func toDouble(_ value: Any) -> Double? {
-        switch value {
-        case let v as Int: return Double(v)
-        case let v as Int64: return Double(v)
-        case let v as Int32: return Double(v)
-        case let v as Int16: return Double(v)
-        case let v as Int8: return Double(v)
-        case let v as UInt: return Double(v)
-        case let v as UInt64: return Double(v)
-        case let v as UInt32: return Double(v)
-        case let v as UInt16: return Double(v)
-        case let v as UInt8: return Double(v)
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        default: return nil
-        }
-    }
-
-    /// Check if a value is nil
-    private func isNilValue(_ value: Any) -> Bool {
-        if case Optional<Any>.none = value { return true }
-        if "\(value)" == "nil" { return true }
-        return false
-    }
-
-    /// Extract array elements from a value that might be an array
-    ///
-    /// Handles various array representations:
-    /// - Direct `[Any]` arrays
-    /// - Arrays accessed via Mirror reflection
-    private func extractArrayFromValue(_ value: Any) -> [Any]? {
-        // Direct array cast
-        if let array = value as? [Any] {
-            return array
-        }
-
-        // Use Mirror to check if value is a collection
-        let mirror = Mirror(reflecting: value)
-        if mirror.displayStyle == .collection {
-            return mirror.children.map { $0.value }
-        }
-
-        return nil
-    }
-
     // MARK: - Sorting
 
     /// Sort results by sort descriptors
@@ -1468,44 +1331,30 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         return results.sorted { lhs, rhs in
             for descriptor in sortDescriptors {
-                let lhsValue = getFieldValue(from: lhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
-                let rhsValue = getFieldValue(from: rhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
+                let lhsRaw = getFieldValue(from: lhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
+                let rhsRaw = getFieldValue(from: rhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
 
-                // Handle nil values
-                let lhsIsNil = lhsValue == nil || isNilValue(lhsValue!)
-                let rhsIsNil = rhsValue == nil || isNilValue(rhsValue!)
+                let lhsField = lhsRaw.flatMap { FieldValue($0) } ?? .null
+                let rhsField = rhsRaw.flatMap { FieldValue($0) } ?? .null
 
-                if lhsIsNil && rhsIsNil { continue }
-                if lhsIsNil { return descriptor.order == .ascending }
-                if rhsIsNil { return descriptor.order == .descending }
+                // null sorts first in ascending, last in descending
+                if case .null = lhsField, case .null = rhsField { continue }
+                if case .null = lhsField { return descriptor.order == .ascending }
+                if case .null = rhsField { return descriptor.order == .descending }
 
-                let comparison = compareValues(lhsValue!, rhsValue!)
-                if comparison != 0 {
-                    return descriptor.order == .ascending ? (comparison < 0) : (comparison > 0)
+                if let comparison = lhsField.compare(to: rhsField) {
+                    switch comparison {
+                    case .orderedAscending:
+                        return descriptor.order == .ascending
+                    case .orderedDescending:
+                        return descriptor.order == .descending
+                    case .orderedSame:
+                        continue
+                    }
                 }
             }
             return false
         }
-    }
-
-    /// Compare two values, returning -1, 0, or 1
-    private func compareValues(_ lhs: Any, _ rhs: Any) -> Int {
-        if let l = lhs as? String, let r = rhs as? String {
-            return l < r ? -1 : (l > r ? 1 : 0)
-        }
-        if let l = lhs as? Int, let r = rhs as? Int {
-            return l < r ? -1 : (l > r ? 1 : 0)
-        }
-        if let l = lhs as? Int64, let r = rhs as? Int64 {
-            return l < r ? -1 : (l > r ? 1 : 0)
-        }
-        if let l = lhs as? Double, let r = rhs as? Double {
-            return l < r ? -1 : (l > r ? 1 : 0)
-        }
-        if let l = lhs as? Date, let r = rhs as? Date {
-            return l < r ? -1 : (l > r ? 1 : 0)
-        }
-        return 0
     }
 }
 
