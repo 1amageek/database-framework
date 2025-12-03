@@ -52,8 +52,11 @@ public struct FormatVersion: Sendable, Equatable, Comparable, Hashable, CustomSt
     /// Added compression support
     public static let v1_2_0 = FormatVersion(major: 1, minor: 2, patch: 0)
 
+    /// Added instrumentation, remote fetch, synchronized sessions, preload cache
+    public static let v1_3_0 = FormatVersion(major: 1, minor: 3, patch: 0)
+
     /// Current format version
-    public static let current = v1_2_0
+    public static let current = v1_3_0
 
     /// Minimum supported version for reading
     public static let minimumSupported = v1_0_0
@@ -275,6 +278,12 @@ public struct FormatVersionManager: Sendable {
             current = FormatVersion.v1_2_0
         }
 
+        // v1.2.0 -> v1.3.0: Added instrumentation, remote fetch, synchronized sessions, preload cache
+        // No data migration needed - these are runtime features
+        if current < FormatVersion.v1_3_0 {
+            current = FormatVersion.v1_3_0
+        }
+
         // Save new version
         saveVersion(FormatVersion.current, transaction: transaction)
 
@@ -356,6 +365,21 @@ public enum FormatFeature: Int, Sendable, CaseIterable, Hashable {
     /// Weak read semantics (cached read versions)
     case weakReadSemantics = 4
 
+    /// Detailed instrumentation (StoreTimer)
+    case instrumentation = 5
+
+    /// Remote fetch optimization
+    case remoteFetch = 6
+
+    /// Synchronized sessions
+    case synchronizedSessions = 7
+
+    /// Record preload caching
+    case preloadCache = 8
+
+    /// Transaction listener support
+    case transactionListeners = 9
+
     /// Minimum version required for this feature
     public var minimumVersion: FormatVersion {
         switch self {
@@ -369,6 +393,16 @@ public enum FormatFeature: Int, Sendable, CaseIterable, Hashable {
             return .v1_0_0
         case .weakReadSemantics:
             return .v1_0_0
+        case .instrumentation:
+            return .v1_3_0
+        case .remoteFetch:
+            return .v1_3_0
+        case .synchronizedSessions:
+            return .v1_3_0
+        case .preloadCache:
+            return .v1_3_0
+        case .transactionListeners:
+            return .v1_3_0
         }
     }
 
@@ -385,6 +419,16 @@ public enum FormatFeature: Int, Sendable, CaseIterable, Hashable {
             return "Index-Only Scans"
         case .weakReadSemantics:
             return "Weak Read Semantics"
+        case .instrumentation:
+            return "Instrumentation"
+        case .remoteFetch:
+            return "Remote Fetch"
+        case .synchronizedSessions:
+            return "Synchronized Sessions"
+        case .preloadCache:
+            return "Preload Cache"
+        case .transactionListeners:
+            return "Transaction Listeners"
         }
     }
 }

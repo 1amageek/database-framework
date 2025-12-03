@@ -30,11 +30,12 @@ struct FormatVersionTests {
         #expect(FormatVersion.v1_0_0 == FormatVersion(major: 1, minor: 0, patch: 0))
         #expect(FormatVersion.v1_1_0 == FormatVersion(major: 1, minor: 1, patch: 0))
         #expect(FormatVersion.v1_2_0 == FormatVersion(major: 1, minor: 2, patch: 0))
+        #expect(FormatVersion.v1_3_0 == FormatVersion(major: 1, minor: 3, patch: 0))
     }
 
     @Test func currentVersion() {
-        // Current should be v1.2.0
-        #expect(FormatVersion.current == FormatVersion.v1_2_0)
+        // Current should be v1.3.0
+        #expect(FormatVersion.current == FormatVersion.v1_3_0)
     }
 
     @Test func minimumSupportedVersion() {
@@ -126,6 +127,12 @@ struct FormatVersionTests {
         #expect(FormatFeature.encryption.minimumVersion == FormatVersion.v1_2_0)
         #expect(FormatFeature.indexOnlyScans.minimumVersion == FormatVersion.v1_0_0)
         #expect(FormatFeature.weakReadSemantics.minimumVersion == FormatVersion.v1_0_0)
+        // v1.3.0 features
+        #expect(FormatFeature.instrumentation.minimumVersion == FormatVersion.v1_3_0)
+        #expect(FormatFeature.remoteFetch.minimumVersion == FormatVersion.v1_3_0)
+        #expect(FormatFeature.synchronizedSessions.minimumVersion == FormatVersion.v1_3_0)
+        #expect(FormatFeature.preloadCache.minimumVersion == FormatVersion.v1_3_0)
+        #expect(FormatFeature.transactionListeners.minimumVersion == FormatVersion.v1_3_0)
     }
 
     @Test func featureDescriptions() {
@@ -134,11 +141,17 @@ struct FormatVersionTests {
         #expect(FormatFeature.encryption.description == "Encryption")
         #expect(FormatFeature.indexOnlyScans.description == "Index-Only Scans")
         #expect(FormatFeature.weakReadSemantics.description == "Weak Read Semantics")
+        // v1.3.0 feature descriptions
+        #expect(FormatFeature.instrumentation.description == "Instrumentation")
+        #expect(FormatFeature.remoteFetch.description == "Remote Fetch")
+        #expect(FormatFeature.synchronizedSessions.description == "Synchronized Sessions")
+        #expect(FormatFeature.preloadCache.description == "Preload Cache")
+        #expect(FormatFeature.transactionListeners.description == "Transaction Listeners")
     }
 
     @Test func allFeaturesCovered() {
-        // Ensure all cases are covered
-        #expect(FormatFeature.allCases.count == 5)
+        // Ensure all cases are covered (5 original + 5 from v1.3.0)
+        #expect(FormatFeature.allCases.count == 10)
     }
 
     // MARK: - FormatVersionError Tests

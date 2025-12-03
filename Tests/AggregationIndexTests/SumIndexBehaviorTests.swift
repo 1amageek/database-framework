@@ -129,7 +129,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("SumIndex Behavior Tests", .tags(.fdb))
+@Suite("SumIndex Behavior Tests", .tags(.fdb), .serialized)
 struct SumIndexBehaviorTests {
 
     // MARK: - Insert Tests

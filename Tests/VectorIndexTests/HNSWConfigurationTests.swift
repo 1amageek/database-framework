@@ -242,7 +242,7 @@ struct VectorIndexConfigurationTests {
 
 // MARK: - HNSW Basic Behavior Tests
 
-@Suite("HNSW Basic Behavior Tests", .tags(.fdb))
+@Suite("HNSW Basic Behavior Tests", .tags(.fdb), .serialized)
 struct HNSWBasicBehaviorTests {
 
     @Test("HNSW insert stores vector and creates graph entry")

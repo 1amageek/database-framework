@@ -211,14 +211,20 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
             let batchStartTime = DispatchTime.now()
 
             do {
+                // Capture current rangeSet state before transaction
+                let currentRangeSet = rangeSet
+
+                // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
+                    // Use .iterator for adaptive batching that respects transaction limits
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(bounds.begin),
-                        endSelector: .firstGreaterOrEqual(bounds.end),
-                        snapshot: false
+                        from: .firstGreaterOrEqual(bounds.begin),
+                        to: .firstGreaterOrEqual(bounds.end),
+                        snapshot: false,
+                        streamingMode: .iterator
                     )
 
                     // Process up to batchSize items, then break
@@ -246,12 +252,26 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                         }
                     }
 
+                    // Save progress atomically with work
+                    // Create updated rangeSet copy inside transaction for saving
+                    var updatedRangeSet = currentRangeSet
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < self.batchSize
+                        updatedRangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
+                    try self.saveProgress(updatedRangeSet, transaction)
+
                     return (itemsInBatch, lastProcessedKey)
                 }
 
-                // Record progress outside transaction
+                // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
-                    // If we got fewer items than batchSize, the range is complete
                     let isComplete = itemsInBatch < self.batchSize
                     rangeSet.recordProgress(
                         rangeIndex: bounds.rangeIndex,
@@ -259,14 +279,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                         isComplete: isComplete
                     )
                 } else {
-                    // No items in range - mark as complete
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                }
-
-                // Save progress in separate transaction
-                let rangeSetCopy = rangeSet
-                try await database.withTransaction(configuration: .batch) { transaction in
-                    try self.saveProgress(rangeSetCopy, transaction)
                 }
 
                 // Record metrics

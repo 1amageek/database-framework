@@ -132,7 +132,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("ScalarIndex Behavior Tests", .tags(.fdb))
+@Suite("ScalarIndex Behavior Tests", .tags(.fdb), .serialized)
 struct ScalarIndexBehaviorTests {
 
     // MARK: - Insert Tests

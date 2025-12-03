@@ -190,7 +190,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("GraphIndex Behavior Tests", .tags(.fdb))
+@Suite("GraphIndex Behavior Tests", .tags(.fdb), .serialized)
 struct GraphIndexBehaviorTests {
 
     // MARK: - Insert Tests (Bidirectional)

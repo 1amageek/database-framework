@@ -17,9 +17,10 @@ struct FDBContextTests {
     // MARK: - Helper Types
 
     /// Test model conforming to Persistable with #Directory
+    /// Uses unique path "test/fdbcontext" to avoid conflicts with other test suites
     @Persistable
     struct TestUser {
-        #Directory<TestUser>("test", "context", "users")
+        #Directory<TestUser>("test", "fdbcontext", "users")
         var id: String = ULID().ulidString
         var name: String
         var email: String
@@ -29,7 +30,7 @@ struct FDBContextTests {
 
     @Persistable
     struct TestProduct {
-        #Directory<TestProduct>("test", "context", "products")
+        #Directory<TestProduct>("test", "fdbcontext", "products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double

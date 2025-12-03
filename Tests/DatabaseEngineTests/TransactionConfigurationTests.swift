@@ -27,10 +27,20 @@ struct TransactionConfigurationTests {
         #expect(config.tags.isEmpty)
     }
 
-    @Test("ReadOnly configuration uses GRV cache")
+    @Test("ReadOnly configuration does not use GRV cache")
     func readOnlyConfiguration() {
         let config = TransactionConfiguration.readOnly
 
+        // readOnly does NOT use GRV cache to avoid stale version issues
+        #expect(config.useGrvCache == false)
+        #expect(config.priority == nil)
+    }
+
+    @Test("ReadOnlyCached configuration uses GRV cache")
+    func readOnlyCachedConfiguration() {
+        let config = TransactionConfiguration.readOnlyCached
+
+        // readOnlyCached uses GRV cache for latency optimization
         #expect(config.useGrvCache == true)
         #expect(config.priority == nil)
     }

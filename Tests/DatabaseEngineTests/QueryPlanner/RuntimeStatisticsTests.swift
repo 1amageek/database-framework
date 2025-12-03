@@ -341,18 +341,58 @@ struct CollectedStatisticsProviderTests {
         #expect(provider.estimatedRowCount(for: QPTestUser.self) == 10000)
     }
 
-    @Test("Provider stores index statistics")
+    @Test("Provider stores and retrieves index statistics")
     func testProviderIndexStatistics() {
         let provider = CollectedStatisticsProvider()
 
         let stats1 = IndexStatistics(indexName: "idx_email", entryCount: 10000, avgEntriesPerKey: 1.0)
-        let stats2 = IndexStatistics(indexName: "idx_age", entryCount: 10000, avgEntriesPerKey: 100.0)
+        let stats2 = IndexStatistics(indexName: "idx_age", entryCount: 5000, avgEntriesPerKey: 100.0)
 
         provider.updateIndexStats(stats1)
         provider.updateIndexStats(stats2)
 
-        // CollectedStatisticsProvider stores index stats internally but doesn't expose indexStatistics getter
-        // We verify that the update succeeded by checking it doesn't throw
-        #expect(true)
+        // Create IndexDescriptors to query the stored stats
+        let emailKind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let emailDescriptor = IndexDescriptor(
+            name: "idx_email",
+            keyPaths: [\QPTestUser.email],
+            kind: emailKind
+        )
+
+        let ageKind = ScalarIndexKind<QPTestUser>(fields: [\.age])
+        let ageDescriptor = IndexDescriptor(
+            name: "idx_age",
+            keyPaths: [\QPTestUser.age],
+            kind: ageKind
+        )
+
+        // Verify stats are stored and retrievable
+        #expect(provider.estimatedIndexEntries(index: emailDescriptor) == 10000)
+        #expect(provider.estimatedIndexEntries(index: ageDescriptor) == 5000)
+    }
+
+    @Test("Provider updates index statistics when called multiple times")
+    func testProviderUpdateIndexStatistics() {
+        let provider = CollectedStatisticsProvider()
+
+        // Initial stats
+        let initialStats = IndexStatistics(indexName: "idx_email", entryCount: 1000, avgEntriesPerKey: 1.0)
+        provider.updateIndexStats(initialStats)
+
+        let kind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let descriptor = IndexDescriptor(
+            name: "idx_email",
+            keyPaths: [\QPTestUser.email],
+            kind: kind
+        )
+
+        #expect(provider.estimatedIndexEntries(index: descriptor) == 1000)
+
+        // Update with new stats
+        let updatedStats = IndexStatistics(indexName: "idx_email", entryCount: 5000, avgEntriesPerKey: 1.0)
+        provider.updateIndexStats(updatedStats)
+
+        // Should reflect updated value
+        #expect(provider.estimatedIndexEntries(index: descriptor) == 5000)
     }
 }

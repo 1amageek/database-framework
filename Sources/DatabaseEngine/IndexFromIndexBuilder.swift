@@ -277,14 +277,20 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             let batchStart = DispatchTime.now()
 
             do {
+                // Capture current rangeSet state before transaction
+                let currentRangeSet = rangeSet
+
+                // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
+                    // Use .iterator for adaptive batching that respects transaction limits
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(bounds.begin),
-                        endSelector: .firstGreaterOrEqual(bounds.end),
-                        snapshot: false
+                        from: .firstGreaterOrEqual(bounds.begin),
+                        to: .firstGreaterOrEqual(bounds.end),
+                        snapshot: false,
+                        streamingMode: .iterator
                     )
 
                     for try await (key, value) in sequence {
@@ -308,10 +314,24 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         }
                     }
 
+                    // Save progress atomically with work
+                    var updatedRangeSet = currentRangeSet
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < batchSize
+                        updatedRangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
+                    try self.saveProgress(updatedRangeSet, transaction: transaction)
+
                     return (itemsInBatch, lastProcessedKey)
                 }
 
-                // Record progress outside transaction
+                // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < batchSize
                     rangeSet.recordProgress(
@@ -321,12 +341,6 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     )
                 } else {
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                }
-
-                // Save progress in separate transaction
-                let rangeSetCopy = rangeSet
-                try await database.withTransaction(configuration: .batch) { transaction in
-                    try self.saveProgress(rangeSetCopy, transaction: transaction)
                 }
 
                 let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
@@ -370,15 +384,21 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             let batchStart = DispatchTime.now()
 
             do {
-                let (itemsInBatch, lastProcessedKey, dataFetches) = try await database.withTransaction(configuration: .batch) { transaction in
+                // Capture current rangeSet state before transaction
+                let currentRangeSet = rangeSet
+
+                // Process batch and save progress atomically in same transaction
+                let (itemsInBatch, dataFetches, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
                     var dataFetches = 0
 
+                    // Use .iterator for adaptive batching that respects transaction limits
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(bounds.begin),
-                        endSelector: .firstGreaterOrEqual(bounds.end),
-                        snapshot: false
+                        from: .firstGreaterOrEqual(bounds.begin),
+                        to: .firstGreaterOrEqual(bounds.end),
+                        snapshot: false,
+                        streamingMode: .iterator
                     )
 
                     for try await (key, _) in sequence {
@@ -410,13 +430,24 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         }
                     }
 
-                    return (itemsInBatch, lastProcessedKey, dataFetches)
+                    // Save progress atomically with work
+                    var updatedRangeSet = currentRangeSet
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < batchSize
+                        updatedRangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
+                    try self.saveProgress(updatedRangeSet, transaction: transaction)
+
+                    return (itemsInBatch, dataFetches, lastProcessedKey)
                 }
 
-                // Update metrics outside transaction
-                self.dataFetchesCounter.increment(by: dataFetches)
-
-                // Record progress outside transaction
+                // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < batchSize
                     rangeSet.recordProgress(
@@ -428,11 +459,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
-                // Save progress in separate transaction
-                let rangeSetCopy = rangeSet
-                try await database.withTransaction(configuration: .batch) { transaction in
-                    try self.saveProgress(rangeSetCopy, transaction: transaction)
-                }
+                // Update metrics outside transaction
+                self.dataFetchesCounter.increment(by: dataFetches)
 
                 let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
                 throttler.recordSuccess(itemCount: itemsInBatch, durationNs: batchDuration)

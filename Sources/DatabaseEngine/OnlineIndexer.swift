@@ -236,17 +236,23 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             let batchStartTime = DispatchTime.now()
 
             do {
+                // Capture current rangeSet state before transaction
+                let currentRangeSet = rangeSet
+
                 // Process batch in transaction with batch priority
+                // Progress is saved atomically in the same transaction
                 let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
-                    // Use wantAll streaming mode for batch builds
+                    // Use .iterator for adaptive batching that respects transaction limits
+                    // Avoids .wantAll which prefetches entire range before limit check
+                    // Reference: FDB streaming mode documentation
                     let sequence = transaction.getRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
                         snapshot: false,
-                        streamingMode: .wantAll
+                        streamingMode: .iterator
                     )
 
                     for try await (key, value) in sequence {
@@ -272,10 +278,27 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         }
                     }
 
+                    // Save progress atomically with work
+                    // Create updated rangeSet copy inside transaction for saving
+                    var updatedRangeSet = currentRangeSet
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < self.batchSize
+                        updatedRangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
+
+                    // Save progress in same transaction for atomicity
+                    try self.saveProgress(updatedRangeSet, transaction)
+
                     return (itemsInBatch, lastProcessedKey)
                 }
 
-                // Record progress outside transaction
+                // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
                     let isComplete = itemsInBatch < self.batchSize
                     rangeSet.recordProgress(
@@ -285,12 +308,6 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     )
                 } else {
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                }
-
-                // Save progress in separate transaction
-                let rangeSetCopy = rangeSet
-                try await database.withTransaction(configuration: .batch) { transaction in
-                    try self.saveProgress(rangeSetCopy, transaction)
                 }
 
                 // Record metrics

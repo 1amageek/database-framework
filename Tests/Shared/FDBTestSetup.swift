@@ -1,74 +1,135 @@
 // FDBTestSetup.swift
-// Shared FDB initialization for all test targets
+// Shared FDB initialization and serialization for all test targets
 
 import Foundation
 import FoundationDB
+@testable import DatabaseEngine
 
-/// Shared FDB initialization singleton for all tests
+/// Shared FDB initialization and test serialization singleton
 ///
-/// This actor ensures FDBClient.initialize() is called only once
-/// across all test suites, preventing "API version may be set only once" errors.
+/// This actor ensures:
+/// 1. FDBClient.initialize() is called only once across all test suites
+/// 2. FDB tests run serially to prevent version conflicts
 ///
-/// The initialization uses a continuation to ensure only one call to
-/// FDBClient.initialize() is made even with concurrent callers.
+/// **Usage**:
+/// ```swift
+/// @Test func myFDBTest() async throws {
+///     try await FDBTestSetup.shared.withSerializedAccess {
+///         // Your FDB test code here
+///     }
+/// }
+/// ```
 public actor FDBTestSetup {
     public static let shared = FDBTestSetup()
 
-    private enum State {
+    private enum InitState {
         case uninitialized
         case initializing([CheckedContinuation<Void, Error>])
         case initialized
         case failed(Error)
     }
 
-    private var state: State = .uninitialized
+    private var initState: InitState = .uninitialized
+
+    /// Queue of waiting test continuations for serialization
+    private var waitingTests: [CheckedContinuation<Void, Never>] = []
+
+    /// Whether a test is currently running
+    private var isTestRunning: Bool = false
 
     private init() {}
 
+    /// Initialize FDB client (called automatically by withSerializedAccess)
     public func initialize() async throws {
-        switch state {
+        switch initState {
         case .initialized:
-            // Already initialized, nothing to do
             return
 
         case .failed(let error):
-            // Previous initialization failed, rethrow the error
             throw error
 
         case .initializing(var continuations):
-            // Another task is initializing, wait for it
             return try await withCheckedThrowingContinuation { continuation in
                 continuations.append(continuation)
-                state = .initializing(continuations)
+                initState = .initializing(continuations)
             }
 
         case .uninitialized:
-            // We are the first, start initialization
-            state = .initializing([])
+            initState = .initializing([])
 
             do {
                 try await FDBClient.initialize()
-                // Resume all waiting continuations
-                if case .initializing(let continuations) = state {
-                    state = .initialized
+                if case .initializing(let continuations) = initState {
+                    initState = .initialized
                     for continuation in continuations {
                         continuation.resume(returning: ())
                     }
                 } else {
-                    state = .initialized
+                    initState = .initialized
                 }
             } catch {
-                // Resume all waiting continuations with error
-                if case .initializing(let continuations) = state {
-                    state = .failed(error)
+                if case .initializing(let continuations) = initState {
+                    initState = .failed(error)
                     for continuation in continuations {
                         continuation.resume(throwing: error)
                     }
                 } else {
-                    state = .failed(error)
+                    initState = .failed(error)
                 }
                 throw error
             }
+        }
+    }
+
+    /// Execute a test with serialized FDB access
+    ///
+    /// This ensures only one FDB test runs at a time across all test suites,
+    /// preventing "Version not valid" errors from parallel execution.
+    ///
+    /// - Parameter operation: The test operation to execute
+    /// - Returns: The result of the operation
+    public func withSerializedAccess<T: Sendable>(
+        _ operation: @Sendable () async throws -> T
+    ) async throws -> T {
+        // Ensure FDB is initialized
+        try await initialize()
+
+        // Wait for our turn (acquires lock)
+        await acquireAccess()
+
+        do {
+            let result = try await operation()
+            releaseAccess()
+            return result
+        } catch {
+            releaseAccess()
+            throw error
+        }
+    }
+
+    /// Acquire exclusive access for a test
+    private func acquireAccess() async {
+        // If a test is already running, wait in queue
+        while isTestRunning {
+            await withCheckedContinuation { continuation in
+                waitingTests.append(continuation)
+            }
+        }
+        isTestRunning = true
+
+        // Invalidate application-level GRV cache at start to ensure fresh read versions
+        SharedReadVersionCache.shared.invalidate()
+    }
+
+    /// Release access and wake next waiting test
+    private func releaseAccess() {
+        // Invalidate GRV cache to prevent "Version not valid" errors in next test
+        SharedReadVersionCache.shared.invalidate()
+
+        isTestRunning = false
+        if !waitingTests.isEmpty {
+            let next = waitingTests.removeFirst()
+            next.resume()
         }
     }
 }

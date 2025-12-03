@@ -170,6 +170,7 @@ let package = Package(
             name: "TestSupport",
             dependencies: [
                 "DatabaseEngine",
+                "ScalarIndex",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],

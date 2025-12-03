@@ -167,7 +167,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("SpatialIndex Behavior Tests", .tags(.fdb))
+@Suite("SpatialIndex Behavior Tests", .tags(.fdb), .serialized)
 struct SpatialIndexBehaviorTests {
 
     // MARK: - Insert Tests

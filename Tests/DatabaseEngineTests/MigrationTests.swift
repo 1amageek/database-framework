@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import FoundationDB
 import Core
+import TestSupport
 @testable import DatabaseEngine
 
 /// Tests for Migration functionality
@@ -95,197 +96,208 @@ struct MigrationTests {
 
     @Test("getCurrentSchemaVersion returns nil for new database")
     func getCurrentSchemaVersionReturnsNilForNewDatabase() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let version = try await container.getCurrentSchemaVersion()
-        #expect(version == nil)
+            let version = try await container.getCurrentSchemaVersion()
+            #expect(version == nil)
+        }
     }
 
     @Test("setCurrentSchemaVersion and getCurrentSchemaVersion roundtrip")
     func schemaVersionRoundtrip() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let testVersion = Schema.Version(1, 2, 3)
-        try await container.setCurrentSchemaVersion(testVersion)
+            let testVersion = Schema.Version(1, 2, 3)
+            try await container.setCurrentSchemaVersion(testVersion)
 
-        let retrievedVersion = try await container.getCurrentSchemaVersion()
-        #expect(retrievedVersion == testVersion)
+            let retrievedVersion = try await container.getCurrentSchemaVersion()
+            #expect(retrievedVersion == testVersion)
+        }
     }
 
     @Test("Schema version persists across container instances")
     func schemaVersionPersistsAcrossContainers() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try FDBClient.openDatabase()
 
-        let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
+            let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
 
-        // Clean up first
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["_metadata"])
+            // Clean up first
+            let directoryLayer = DirectoryLayer(database: database)
+            try? await directoryLayer.remove(path: ["_metadata"])
 
-        // Create first container and set version
-        let container1 = FDBContainer(database: database, schema: schema)
-        try await container1.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
+            // Create first container and set version
+            let container1 = FDBContainer(database: database, schema: schema)
+            try await container1.setCurrentSchemaVersion(Schema.Version(2, 0, 0))
 
-        // Create second container and read version
-        let container2 = FDBContainer(database: database, schema: schema)
-        let version = try await container2.getCurrentSchemaVersion()
+            // Create second container and read version
+            let container2 = FDBContainer(database: database, schema: schema)
+            let version = try await container2.getCurrentSchemaVersion()
 
-        #expect(version == Schema.Version(2, 0, 0))
+            #expect(version == Schema.Version(2, 0, 0))
 
-        // Cleanup
-        try? await directoryLayer.remove(path: ["_metadata"])
+            // Cleanup
+            try? await directoryLayer.remove(path: ["_metadata"])
+        }
     }
 
     // MARK: - Batch Data Operations Tests
 
     @Test("MigrationContext batch update works correctly")
     func migrationContextBatchUpdate() async throws {
-        let container = try await setupBatchTestContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupBatchTestContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        // Create test records with known IDs
-        let records = (1...5).map { BatchTestRecord(name: "User \($0)", status: "active") }
-        try await insertTestRecords(container: container, records: records)
+            // Create test records with known IDs
+            let records = (1...5).map { BatchTestRecord(name: "User \($0)", status: "active") }
+            try await insertTestRecords(container: container, records: records)
 
-        // Setup MigrationContext
-        let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
-        let storeInfo = MigrationStoreInfo(
-            subspace: subspace,
-            indexSubspace: subspace.subspace("I")
-        )
-        let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            // Setup MigrationContext
+            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let storeInfo = MigrationStoreInfo(
+                subspace: subspace,
+                indexSubspace: subspace.subspace("I")
+            )
+            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let directoryLayer = DirectoryLayer(database: container.database)
+            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
-        let context = MigrationContext(
-            database: container.database,
-            schema: container.schema,
-            metadataSubspace: metadataSubspace.subspace,
-            storeRegistry: storeRegistry
-        )
+            let context = MigrationContext(
+                database: container.database,
+                schema: container.schema,
+                metadataSubspace: metadataSubspace.subspace,
+                storeRegistry: storeRegistry
+            )
 
-        // Batch update records
-        let updatedRecords = records.map {
-            BatchTestRecord(id: $0.id, name: $0.name, status: "migrated")
-        }
-        try await context.batchUpdate(updatedRecords, batchSize: 2)
-
-        // Verify updates
-        let decoder = ProtobufDecoder()
-        let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
-
-        for record in records {
-            let validatedID = try record.validateIDForStorage()
-            let key = recordSubspace.pack(Tuple(validatedID))
-            let data: FDB.Bytes? = try await container.database.withTransaction { tx in
-                try await tx.getValue(for: key, snapshot: false)
+            // Batch update records
+            let updatedRecords = records.map {
+                BatchTestRecord(id: $0.id, name: $0.name, status: "migrated")
             }
-            guard let data = data else {
-                Issue.record("Record with id \(record.id) not found after batchUpdate")
-                continue
+            try await context.batchUpdate(updatedRecords, batchSize: 2)
+
+            // Verify updates
+            let decoder = ProtobufDecoder()
+            let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
+
+            for record in records {
+                let validatedID = try record.validateIDForStorage()
+                let key = recordSubspace.pack(Tuple(validatedID))
+                let data: FDB.Bytes? = try await container.database.withTransaction { tx in
+                    try await tx.getValue(for: key, snapshot: false)
+                }
+                guard let data = data else {
+                    Issue.record("Record with id \(record.id) not found after batchUpdate")
+                    continue
+                }
+                let decoded = try decoder.decode(BatchTestRecord.self, from: Data(data))
+                #expect(decoded.status == "migrated", "Expected status 'migrated' but got '\(decoded.status)'")
             }
-            let decoded = try decoder.decode(BatchTestRecord.self, from: Data(data))
-            #expect(decoded.status == "migrated", "Expected status 'migrated' but got '\(decoded.status)'")
         }
     }
 
     @Test("MigrationContext count works correctly")
     func migrationContextCount() async throws {
-        let container = try await setupBatchTestContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupBatchTestContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        // Insert test records
-        let records = (1...7).map { BatchTestRecord(name: "User \($0)") }
-        try await insertTestRecords(container: container, records: records)
+            // Insert test records
+            let records = (1...7).map { BatchTestRecord(name: "User \($0)") }
+            try await insertTestRecords(container: container, records: records)
 
-        // Setup MigrationContext
-        let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
-        let storeInfo = MigrationStoreInfo(
-            subspace: subspace,
-            indexSubspace: subspace.subspace("I")
-        )
-        let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            // Setup MigrationContext
+            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let storeInfo = MigrationStoreInfo(
+                subspace: subspace,
+                indexSubspace: subspace.subspace("I")
+            )
+            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let directoryLayer = DirectoryLayer(database: container.database)
+            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
-        let context = MigrationContext(
-            database: container.database,
-            schema: container.schema,
-            metadataSubspace: metadataSubspace.subspace,
-            storeRegistry: storeRegistry
-        )
+            let context = MigrationContext(
+                database: container.database,
+                schema: container.schema,
+                metadataSubspace: metadataSubspace.subspace,
+                storeRegistry: storeRegistry
+            )
 
-        let count = try await context.count(BatchTestRecord.self)
-        #expect(count == 7)
+            let count = try await context.count(BatchTestRecord.self)
+            #expect(count == 7)
+        }
     }
 
     @Test("MigrationContext single update and delete work correctly")
     func migrationContextSingleOperations() async throws {
-        let container = try await setupBatchTestContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupBatchTestContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        // Create test records
-        let updateRecord = BatchTestRecord(name: "ToUpdate", status: "active")
-        let deleteRecord = BatchTestRecord(name: "ToDelete", status: "active")
-        try await insertTestRecords(container: container, records: [updateRecord, deleteRecord])
+            // Create test records
+            let updateRecord = BatchTestRecord(name: "ToUpdate", status: "active")
+            let deleteRecord = BatchTestRecord(name: "ToDelete", status: "active")
+            try await insertTestRecords(container: container, records: [updateRecord, deleteRecord])
 
-        // Setup MigrationContext
-        let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
-        let storeInfo = MigrationStoreInfo(
-            subspace: subspace,
-            indexSubspace: subspace.subspace("I")
-        )
-        let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
+            // Setup MigrationContext
+            let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
+            let storeInfo = MigrationStoreInfo(
+                subspace: subspace,
+                indexSubspace: subspace.subspace("I")
+            )
+            let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let directoryLayer = DirectoryLayer(database: container.database)
+            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
-        let context = MigrationContext(
-            database: container.database,
-            schema: container.schema,
-            metadataSubspace: metadataSubspace.subspace,
-            storeRegistry: storeRegistry
-        )
+            let context = MigrationContext(
+                database: container.database,
+                schema: container.schema,
+                metadataSubspace: metadataSubspace.subspace,
+                storeRegistry: storeRegistry
+            )
 
-        // Single update
-        let updated = BatchTestRecord(id: updateRecord.id, name: "ToUpdate", status: "updated")
-        try await context.update(updated)
+            // Single update
+            let updated = BatchTestRecord(id: updateRecord.id, name: "ToUpdate", status: "updated")
+            try await context.update(updated)
 
-        // Single delete
-        try await context.delete(deleteRecord)
+            // Single delete
+            try await context.delete(deleteRecord)
 
-        // Verify
-        let decoder = ProtobufDecoder()
-        let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
+            // Verify
+            let decoder = ProtobufDecoder()
+            let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
 
-        // Check update
-        let updateValidatedID = try updateRecord.validateIDForStorage()
-        let updateKey = recordSubspace.pack(Tuple(updateValidatedID))
-        let updateData: FDB.Bytes? = try await container.database.withTransaction { tx in
-            try await tx.getValue(for: updateKey, snapshot: false)
+            // Check update
+            let updateValidatedID = try updateRecord.validateIDForStorage()
+            let updateKey = recordSubspace.pack(Tuple(updateValidatedID))
+            let updateData: FDB.Bytes? = try await container.database.withTransaction { tx in
+                try await tx.getValue(for: updateKey, snapshot: false)
+            }
+            #expect(updateData != nil, "Updated record not found")
+            if let updateData = updateData {
+                let decoded = try decoder.decode(BatchTestRecord.self, from: Data(updateData))
+                #expect(decoded.status == "updated", "Expected status 'updated' but got '\(decoded.status)'")
+            }
+
+            // Check delete
+            let deleteValidatedID = try deleteRecord.validateIDForStorage()
+            let deleteKey = recordSubspace.pack(Tuple(deleteValidatedID))
+            let deleteData: FDB.Bytes? = try await container.database.withTransaction { tx in
+                try await tx.getValue(for: deleteKey, snapshot: false)
+            }
+            #expect(deleteData == nil)
         }
-        #expect(updateData != nil, "Updated record not found")
-        if let updateData = updateData {
-            let decoded = try decoder.decode(BatchTestRecord.self, from: Data(updateData))
-            #expect(decoded.status == "updated", "Expected status 'updated' but got '\(decoded.status)'")
-        }
-
-        // Check delete
-        let deleteValidatedID = try deleteRecord.validateIDForStorage()
-        let deleteKey = recordSubspace.pack(Tuple(deleteValidatedID))
-        let deleteData: FDB.Bytes? = try await container.database.withTransaction { tx in
-            try await tx.getValue(for: deleteKey, snapshot: false)
-        }
-        #expect(deleteData == nil)
     }
 }

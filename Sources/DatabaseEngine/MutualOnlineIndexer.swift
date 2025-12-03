@@ -242,15 +242,21 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             let batchStartTime = DispatchTime.now()
 
             do {
+                // Capture current rangeSet state before transaction
+                let currentRangeSet = rangeSet
+
+                // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
+                    // Use .iterator for adaptive batching that respects transaction limits
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(bounds.begin),
-                        endSelector: .firstGreaterOrEqual(bounds.end),
-                        snapshot: false
+                        from: .firstGreaterOrEqual(bounds.begin),
+                        to: .firstGreaterOrEqual(bounds.end),
+                        snapshot: false,
+                        streamingMode: .iterator
                     )
 
                     // Process up to batchSize items, then break
@@ -284,12 +290,25 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         }
                     }
 
+                    // Save progress atomically with work
+                    var updatedRangeSet = currentRangeSet
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < self.batchSize
+                        updatedRangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        updatedRangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
+                    try self.saveProgress(updatedRangeSet, key: self.forwardProgressKey, transaction)
+
                     return (itemsInBatch, pairsInBatch, lastProcessedKey)
                 }
 
-                // Record progress outside transaction
+                // Update in-memory rangeSet after successful commit
                 if let lastKey = lastProcessedKey {
-                    // If we got fewer items than batchSize, the range is complete
                     let isComplete = itemsInBatch < self.batchSize
                     rangeSet.recordProgress(
                         rangeIndex: bounds.rangeIndex,
@@ -297,14 +316,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         isComplete: isComplete
                     )
                 } else {
-                    // No items in range - mark as complete
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                }
-
-                // Save progress in separate transaction
-                let rangeSetCopy = rangeSet
-                try await database.withTransaction(configuration: .batch) { transaction in
-                    try self.saveProgress(rangeSetCopy, key: self.forwardProgressKey, transaction)
                 }
 
                 // Record metrics

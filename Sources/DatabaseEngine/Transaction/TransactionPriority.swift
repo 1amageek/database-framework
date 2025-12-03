@@ -112,9 +112,23 @@ public struct TransactionConfiguration: Sendable, Equatable {
     /// Read-only query configuration
     ///
     /// Optimized for read operations:
-    /// - Uses GRV cache to reduce latency
     /// - Normal read priority
-    public static let readOnly = TransactionConfiguration(
+    /// - No GRV cache (avoids stale version issues in high-frequency scenarios)
+    ///
+    /// **Note**: For latency-sensitive production workloads that can tolerate
+    /// bounded staleness, use `readOnlyCached` instead.
+    public static let readOnly = TransactionConfiguration()
+
+    /// Read-only query configuration with GRV caching
+    ///
+    /// Optimized for latency-sensitive read operations:
+    /// - Uses FDB's internal GRV cache to reduce latency
+    /// - Accepts bounded staleness (configurable via FDB network options)
+    ///
+    /// **Warning**: In high-frequency scenarios (like test suites), cached versions
+    /// may become stale and cause "Version not valid" errors. Use `readOnly` instead
+    /// for such scenarios.
+    public static let readOnlyCached = TransactionConfiguration(
         useGrvCache: true
     )
 

@@ -134,7 +134,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("MinIndex Behavior Tests", .tags(.fdb))
+@Suite("MinIndex Behavior Tests", .tags(.fdb), .serialized)
 struct MinIndexBehaviorTests {
 
     // MARK: - Insert Tests

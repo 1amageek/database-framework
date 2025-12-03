@@ -219,8 +219,15 @@ struct MultiTargetIndexerConcurrencyTests {
         let state = IndexState.readable
 
         // If this compiles, IndexState is Sendable
-        let _: any Sendable = state
-        #expect(Bool(true))
+        let sendable: any Sendable = state
+
+        // Verify the state is correctly created
+        #expect(state == .readable)
+
+        // Cast back to verify type identity
+        if let castBack = sendable as? IndexState {
+            #expect(castBack == .readable)
+        }
     }
 
     @Test("Progress tracking is atomic")

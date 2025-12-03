@@ -168,7 +168,7 @@ struct StatisticsProviderTests {
         #expect(rowCount == 5000)
     }
 
-    @Test("CollectedStatisticsProvider stores index statistics")
+    @Test("CollectedStatisticsProvider stores and retrieves index statistics")
     func testCollectedStatisticsIndexStats() {
         let provider = CollectedStatisticsProvider()
 
@@ -179,8 +179,33 @@ struct StatisticsProviderTests {
         )
         provider.updateIndexStats(indexStats)
 
-        // CollectedStatisticsProvider stores index stats internally but doesn't expose indexStatistics getter
-        // We verify that the update succeeded by checking it doesn't throw
-        #expect(true)
+        // Create an IndexDescriptor to query the stats
+        let kind = ScalarIndexKind<QPTestUser>(fields: [\.email])
+        let descriptor = IndexDescriptor(
+            name: "idx_email",
+            keyPaths: [\QPTestUser.email],
+            kind: kind
+        )
+
+        // Verify the stored stats can be retrieved
+        let entryCount = provider.estimatedIndexEntries(index: descriptor)
+        #expect(entryCount == 10000)
+    }
+
+    @Test("CollectedStatisticsProvider uses fallback for unknown index")
+    func testCollectedStatisticsIndexFallback() {
+        let provider = CollectedStatisticsProvider(fallbackRowCount: 5000)
+
+        // Query an index that hasn't been registered
+        let kind = ScalarIndexKind<QPTestUser>(fields: [\.name])
+        let descriptor = IndexDescriptor(
+            name: "idx_unknown",
+            keyPaths: [\QPTestUser.name],
+            kind: kind
+        )
+
+        // Should return fallback value
+        let entryCount = provider.estimatedIndexEntries(index: descriptor)
+        #expect(entryCount == 5000)
     }
 }

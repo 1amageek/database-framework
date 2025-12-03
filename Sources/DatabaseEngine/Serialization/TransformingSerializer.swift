@@ -125,7 +125,9 @@ public protocol EncryptionKeyProvider: Sendable {
     func getKey(for keyId: String) async throws -> Data
 
     /// Get the current key ID to use for encryption
-    func currentKeyId() -> String
+    ///
+    /// - Throws: `KeyProviderError.notConfigured` if no current key is set
+    func currentKeyId() throws -> String
 }
 
 // MARK: - TransformingSerializer
@@ -432,7 +434,7 @@ public struct TransformingSerializer: Sendable {
     /// - Returns: Encrypted data with nonce and authentication tag
     /// - Throws: `TransformError.encryptionFailed` if encryption fails
     private func encrypt(_ data: Data, keyProvider: any EncryptionKeyProvider) async throws -> Data {
-        let keyId = keyProvider.currentKeyId()
+        let keyId = try keyProvider.currentKeyId()
 
         // Validate key ID length (max 255 bytes)
         guard let keyIdData = keyId.data(using: .utf8), keyIdData.count <= 255 else {
