@@ -304,6 +304,12 @@ public struct ScalarIndexSearcher: IndexSearcher {
     /// Index keys have the structure: [subspace]/[value1]/[value2]/.../[id]
     /// For equals([value1, value2]), we need to find all keys that start with
     /// the prefix [value1, value2], regardless of the ID suffix.
+    ///
+    /// **Optimization**: Uses Subspace.subspace(Tuple) to create a nested subspace
+    /// for the prefix, then scans only that range. This converts O(N) full index
+    /// scan to O(log N + k) range scan where k = matching entries.
+    ///
+    /// Reference: FoundationDB's Subspace.range() for efficient prefix scanning
     private func searchWithPrefix(
         subspace: Subspace,
         prefix: [any TupleElement],
@@ -311,27 +317,42 @@ public struct ScalarIndexSearcher: IndexSearcher {
         reverse: Bool,
         using reader: StorageReader
     ) async throws -> [IndexEntry] {
-        // Get the prefix key bytes (subspace prefix + tuple prefix)
         let prefixTuple = Tuple(prefix)
-        let prefixKey = subspace.pack(prefixTuple)
+
+        // Create a subspace for the prefix by directly appending the packed bytes.
+        // We cannot use subspace.subspace(prefixTuple) because that treats Tuple as a
+        // nested tuple element (with special type code), which doesn't match the actual
+        // index key structure where elements are packed directly.
+        //
+        // Index key structure: [subspace.prefix][value1][value2]...[id]
+        // prefixSubspace.prefix = subspace.prefix + Tuple(prefix).pack()
+        let prefixSubspace = Subspace(prefix: subspace.prefix + prefixTuple.pack())
 
         var results: [IndexEntry] = []
 
-        // Scan the full subspace and filter by prefix
-        for try await (key, value) in reader.scanSubspace(subspace) {
-            // Check if key starts with prefix
-            guard key.starts(with: prefixKey) else { continue }
-
-            let entry = try parseIndexEntry(key: key, value: value, subspace: subspace)
+        // Scan only the prefix range using the nested subspace
+        // nil start/end means "all keys within this subspace"
+        for try await (key, value) in reader.scanRange(
+            subspace: prefixSubspace,
+            start: nil,
+            end: nil,
+            startInclusive: true,
+            endInclusive: false,
+            reverse: reverse
+        ) {
+            // key is the full key (including prefixSubspace.prefix)
+            // Since prefixSubspace.prefix starts with subspace.prefix,
+            // we can use the original subspace to parse the entry
+            let entry = try parseIndexEntry(
+                key: key,
+                value: value,
+                subspace: subspace
+            )
             results.append(entry)
 
             if let limit = limit, results.count >= limit {
                 break
             }
-        }
-
-        if reverse {
-            results.reverse()
         }
 
         return results

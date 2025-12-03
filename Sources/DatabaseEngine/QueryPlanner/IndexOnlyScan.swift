@@ -399,6 +399,10 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
     /// Estimated matching entries
     public let estimatedEntries: Int
 
+    /// Maximum number of entries to return (pushed down from LIMIT)
+    /// When set, the scan will stop early after fetching this many entries.
+    public let limit: Int?
+
     public init(
         index: IndexDescriptor,
         metadata: CoveringIndexMetadata,
@@ -406,7 +410,8 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
         reverse: Bool = false,
         projectedFields: Set<String>,
         satisfiedConditions: [FieldCondition<T>] = [],
-        estimatedEntries: Int
+        estimatedEntries: Int,
+        limit: Int? = nil
     ) {
         self.index = index
         self.metadata = metadata
@@ -415,6 +420,7 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
         self.projectedFields = projectedFields
         self.satisfiedConditions = satisfiedConditions
         self.estimatedEntries = estimatedEntries
+        self.limit = limit
     }
 }
 

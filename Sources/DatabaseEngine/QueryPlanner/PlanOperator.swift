@@ -92,18 +92,24 @@ public struct IndexScanOperator<T: Persistable>: @unchecked Sendable {
     /// Estimated matching entries
     public let estimatedEntries: Int
 
+    /// Maximum number of entries to return (pushed down from LIMIT)
+    /// When set, the scan will stop early after fetching this many entries.
+    public let limit: Int?
+
     public init(
         index: IndexDescriptor,
         bounds: IndexScanBounds,
         reverse: Bool = false,
         satisfiedConditions: [FieldCondition<T>] = [],
-        estimatedEntries: Int
+        estimatedEntries: Int,
+        limit: Int? = nil
     ) {
         self.index = index
         self.bounds = bounds
         self.reverse = reverse
         self.satisfiedConditions = satisfiedConditions
         self.estimatedEntries = estimatedEntries
+        self.limit = limit
     }
 }
 

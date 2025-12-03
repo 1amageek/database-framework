@@ -490,18 +490,107 @@ public struct PlanEnumerator<T: Persistable> {
         return true
     }
 
-    /// Wrap plan with limit if needed
+    /// Wrap plan with limit, pushing down to scan operators when possible
+    ///
+    /// **Optimization**: For simple scan plans, push limit directly into the scan
+    /// operator to avoid fetching unnecessary records. This is particularly
+    /// effective for pagination queries (LIMIT + OFFSET).
+    ///
+    /// When offset is present, we request `limit + offset` entries from the scan
+    /// and apply offset at the executor level via LimitOperator.
     private func wrapWithLimit(
         plan: PlanOperator<T>,
         analysis: QueryAnalysis<T>
     ) -> PlanOperator<T> {
         guard analysis.limit != nil || analysis.offset != nil else { return plan }
 
+        // Try to push limit down to scan operators
+        if let pushedPlan = tryPushLimitToScan(plan: plan, analysis: analysis) {
+            return pushedPlan
+        }
+
+        // Fall back to wrapping with LimitOperator
         return .limit(LimitOperator(
             input: plan,
             limit: analysis.limit,
             offset: analysis.offset
         ))
+    }
+
+    /// Try to push limit into scan operators for early termination
+    ///
+    /// Returns the modified plan if push-down was successful, nil otherwise.
+    private func tryPushLimitToScan(
+        plan: PlanOperator<T>,
+        analysis: QueryAnalysis<T>
+    ) -> PlanOperator<T>? {
+        // Calculate effective limit to request from scan
+        // If offset is present, we need to fetch limit + offset entries
+        let effectiveLimit: Int?
+        if let limit = analysis.limit {
+            effectiveLimit = limit + (analysis.offset ?? 0)
+        } else {
+            effectiveLimit = nil
+        }
+
+        switch plan {
+        case .indexScan(let op):
+            // Push limit into index scan
+            let pushedOp = IndexScanOperator(
+                index: op.index,
+                bounds: op.bounds,
+                reverse: op.reverse,
+                satisfiedConditions: op.satisfiedConditions,
+                estimatedEntries: op.estimatedEntries,
+                limit: effectiveLimit
+            )
+            // If offset is present, wrap with LimitOperator to skip first N
+            if analysis.offset != nil {
+                return .limit(LimitOperator(
+                    input: .indexScan(pushedOp),
+                    limit: analysis.limit,
+                    offset: analysis.offset
+                ))
+            }
+            return .indexScan(pushedOp)
+
+        case .indexOnlyScan(let op):
+            // Push limit into index-only scan
+            let pushedOp = IndexOnlyScanOperator(
+                index: op.index,
+                metadata: op.metadata,
+                bounds: op.bounds,
+                reverse: op.reverse,
+                projectedFields: op.projectedFields,
+                satisfiedConditions: op.satisfiedConditions,
+                estimatedEntries: op.estimatedEntries,
+                limit: effectiveLimit
+            )
+            if analysis.offset != nil {
+                return .limit(LimitOperator(
+                    input: .indexOnlyScan(pushedOp),
+                    limit: analysis.limit,
+                    offset: analysis.offset
+                ))
+            }
+            return .indexOnlyScan(pushedOp)
+
+        case .filter(let filterOp):
+            // Try to push through filter to underlying scan
+            // Note: This is safe because filter doesn't change row count bounds
+            if let pushedInput = tryPushLimitToScan(plan: filterOp.input, analysis: analysis) {
+                return .filter(FilterOperator(
+                    input: pushedInput,
+                    predicate: filterOp.predicate,
+                    selectivity: filterOp.selectivity
+                ))
+            }
+            return nil
+
+        default:
+            // Cannot push limit for other operators (union, intersection, etc.)
+            return nil
+        }
     }
 
     /// Estimate output size of a plan

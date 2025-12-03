@@ -10,7 +10,7 @@ Database provides:
 - **FDBContext**: Change tracking and batch operations
 - **Index Maintainers**: Concrete implementations for all index types
 - **Migration System**: Schema versioning and online index building
-- **OnlineIndexer**: Background index building for schema migrations
+- **Infrastructure**: Query optimization, transaction management, serialization, batch operations
 
 ## Two-Package Architecture
 
@@ -147,6 +147,18 @@ dependencies: [
 | `AggregationIndex` | COUNT, SUM, MIN, MAX, AVG |
 | `VersionIndex` | Version history with versionstamps |
 | `Database` | All-in-one re-export |
+
+## Infrastructure Components
+
+Cross-cutting functionality used by all index types:
+
+| Category | Components | Purpose |
+|----------|------------|---------|
+| **Query Planner** | QueryPlannerConfiguration, InPredicateOptimizer | Plan complexity limits, IN predicate optimization |
+| **Transaction** | TransactionPriority, ReadVersionCache, AsyncCommitHook | Priority levels, weak reads, commit hooks |
+| **Serialization** | LargeValueSplitter, TransformingSerializer | Large value chunking, compression |
+| **Batch Operations** | AdaptiveThrottler, BatchFetcher, IndexFromIndexBuilder | Adaptive throttling, prefetching |
+| **Storage** | FormatVersion, FormatVersionManager | Format versioning and migration |
 
 ## Build and Test
 

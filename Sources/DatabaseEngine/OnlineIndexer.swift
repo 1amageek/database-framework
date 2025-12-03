@@ -231,21 +231,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             rangeSet = RangeSet(initialRange: totalRange)
         }
 
-        // Process batches until complete
-        while !rangeSet.isEmpty {
-            guard let batchRange = rangeSet.nextBatch(size: batchSize) else {
-                break
-            }
-
+        // Process batches - each batch in a separate transaction
+        while let bounds = rangeSet.nextBatchBounds() {
             let batchStartTime = DispatchTime.now()
             var itemsInBatch = 0
+            var lastProcessedKey: FDB.Bytes? = nil
 
             do {
                 // Process batch in transaction
                 try await database.withTransaction { transaction in
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(batchRange.begin),
-                        endSelector: .firstGreaterOrEqual(batchRange.end),
+                        beginSelector: .firstGreaterOrEqual(bounds.begin),
+                        endSelector: .firstGreaterOrEqual(bounds.end),
                         snapshot: false
                     )
 
@@ -263,11 +260,26 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                             transaction: transaction
                         )
 
+                        lastProcessedKey = Array(key)
                         itemsInBatch += 1
+
+                        // Break after batchSize items to limit transaction size
+                        if itemsInBatch >= self.batchSize {
+                            break
+                        }
                     }
 
-                    // Mark batch as completed
-                    rangeSet.markCompleted(batchRange)
+                    // Record progress with continuation
+                    if let lastKey = lastProcessedKey {
+                        let isComplete = itemsInBatch < self.batchSize
+                        rangeSet.recordProgress(
+                            rangeIndex: bounds.rangeIndex,
+                            lastProcessedKey: lastKey,
+                            isComplete: isComplete
+                        )
+                    } else {
+                        rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                    }
 
                     // Save progress
                     try saveProgress(rangeSet, transaction)

@@ -140,13 +140,126 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         }
     }
 
+    // MARK: - ID-Only Operator Execution
+
+    /// Execute an operator returning only IDs (no record fetch)
+    ///
+    /// This is used for optimized set operations (UNION/INTERSECTION) where
+    /// we first collect IDs, perform set operations, then batch fetch only
+    /// the final needed records. This avoids fetching records that will be
+    /// eliminated by the set operation.
+    ///
+    /// Reference: FDB Record Layer "remote fetch" optimization pattern
+    private func executeOperatorIdsOnly(_ op: PlanOperator<T>) async throws -> Set<Tuple> {
+        switch op {
+        case .tableScan(let scanOp):
+            return try await executeTableScanIdsOnly(scanOp)
+
+        case .indexScan(let scanOp):
+            return try await executeIndexScanIdsOnly(scanOp)
+
+        case .indexSeek(let seekOp):
+            return try await executeIndexSeekIdsOnly(seekOp)
+
+        case .indexOnlyScan(let scanOp):
+            return try await executeIndexOnlyScanIdsOnly(scanOp)
+
+        case .union(let unionOp):
+            // Union: combine IDs from all children
+            var allIds: Set<Tuple> = []
+            for child in unionOp.children {
+                let childIds = try await executeOperatorIdsOnly(child)
+                allIds.formUnion(childIds)
+            }
+            return allIds
+
+        case .intersection(let intersectionOp):
+            // Intersection: find common IDs across all children
+            guard let firstChild = intersectionOp.children.first else { return [] }
+            var resultIds = try await executeOperatorIdsOnly(firstChild)
+            for child in intersectionOp.children.dropFirst() {
+                let childIds = try await executeOperatorIdsOnly(child)
+                resultIds = resultIds.intersection(childIds)
+                // Early exit if no intersection possible
+                if resultIds.isEmpty { return [] }
+            }
+            return resultIds
+
+        case .filter(let filterOp):
+            // For filter, we need to fetch records to apply the predicate
+            // Then extract IDs from filtered results
+            let input = try await executeOperator(filterOp.input)
+            let filtered = input.filter { evaluatePredicate(filterOp.predicate, on: $0) }
+            return Set(filtered.map { extractItemId($0) })
+
+        case .sort(let sortOp):
+            // Sort doesn't change which IDs are present
+            return try await executeOperatorIdsOnly(sortOp.input)
+
+        case .limit(let limitOp):
+            // For limit, we need to materialize to apply limit properly
+            let input = try await executeOperator(limitOp.input)
+            var result = input
+            if let offset = limitOp.offset {
+                result = Array(result.dropFirst(offset))
+            }
+            if let limit = limitOp.limit {
+                result = Array(result.prefix(limit))
+            }
+            return Set(result.map { extractItemId($0) })
+
+        case .project(let projectOp):
+            return try await executeOperatorIdsOnly(projectOp.input)
+
+        case .fullTextScan(let ftOp):
+            return try await executeFullTextScanIdsOnly(ftOp)
+
+        case .vectorSearch(let vectorOp):
+            return try await executeVectorSearchIdsOnly(vectorOp)
+
+        case .spatialScan(let spatialOp):
+            return try await executeSpatialScanIdsOnly(spatialOp)
+
+        case .aggregation:
+            // Aggregations don't return IDs
+            return []
+        }
+    }
+
+    /// Extract item ID as Tuple from a Persistable item
+    private func extractItemId(_ item: T) -> Tuple {
+        // Create a Tuple from the item's ID
+        // Persistable.ID must be convertible to TupleElement
+        if let element = item.id as? any TupleElement {
+            return Tuple(element)
+        }
+        // Fallback: use string representation (less efficient but always works)
+        return Tuple("\(item.id)")
+    }
+
     // MARK: - Table Scan
 
+    /// Execute a full table scan
+    ///
+    /// **Current Limitation**: Table scan fetches all records into memory before
+    /// applying the filter predicate. This is because the underlying StorageReader
+    /// does not support predicate push-down for arbitrary conditions.
+    ///
+    /// **Future Enhancement**: If the storage layer gains support for conditional
+    /// scanning (e.g., server-side filtering in FoundationDB 7.x or via computed
+    /// indexes), the filter could be pushed down to reduce I/O and memory usage.
+    ///
+    /// **Mitigation**: For filtered queries, the query planner should prefer
+    /// index scans over table scans whenever a suitable index exists. Table scan
+    /// with filter is only used as a fallback when no index can satisfy the query.
+    ///
+    /// **Memory Impact**: O(N) where N = total records of type T
     private func executeTableScan(_ op: TableScanOperator<T>) async throws -> [T] {
         // Scan all records of type T
+        // NOTE: This fetches all records before filtering - see doc comment above
         let results = try await executionContext.scanRecords(type: T.self)
 
-        // Apply filter if present
+        // Apply filter in memory if present
         if let filterPredicate = op.filterPredicate {
             return results.filter { evaluatePredicate(filterPredicate, on: $0) }
         }
@@ -157,8 +270,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Index Scan
 
     private func executeIndexScan(_ op: IndexScanOperator<T>) async throws -> [T] {
-        // Build query from bounds
-        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
+        // Build query from bounds, with limit pushed down for early termination
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
 
         // Get index subspace via DirectoryLayer based on Persistable type
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
@@ -172,15 +285,14 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             using: executionContext.storageReader
         )
 
-        // Fetch items by ID
-        var results: [T] = []
-        for entry in entries {
-            if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
-                results.append(item)
-            }
-        }
-
-        return results
+        // Batch fetch items by ID for improved throughput
+        // Collect all IDs first, then fetch in optimized batches
+        let ids = entries.map { $0.itemID }
+        return try await context.indexQueryContext.batchFetchItems(
+            ids: ids,
+            type: T.self,
+            configuration: .default
+        )
     }
 
     /// Build ScalarIndexQuery from IndexScanBounds
@@ -234,12 +346,14 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     // MARK: - Index Seek
 
     private func executeIndexSeek(_ op: IndexSeekOperator<T>) async throws -> [T] {
-        var results: [T] = []
         let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
 
         // Get index subspace via DirectoryLayer based on Persistable type
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        // Collect all IDs from all seek operations first (ID-first approach)
+        var allIds: [Tuple] = []
 
         for keyValues in op.seekValues {
             // Convert seek values to TupleElements
@@ -258,22 +372,25 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
                 using: executionContext.storageReader
             )
 
-            // Fetch items
+            // Collect IDs only - no record fetch yet
             for entry in entries {
-                if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
-                    results.append(item)
-                }
+                allIds.append(entry.itemID)
             }
         }
 
-        return results
+        // Batch fetch all items at once for improved throughput
+        return try await context.indexQueryContext.batchFetchItems(
+            ids: allIds,
+            type: T.self,
+            configuration: .default
+        )
     }
 
     // MARK: - Index-Only Scan
 
     private func executeIndexOnlyScan(_ op: IndexOnlyScanOperator<T>) async throws -> [T] {
-        // Build query from bounds
-        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse)
+        // Build query from bounds, with limit pushed down for early termination
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
 
         // Get index subspace via DirectoryLayer based on Persistable type
         let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
@@ -292,95 +409,301 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             // True Index-Only Scan: Reconstruct items from index data
             let decoder = IndexEntryDecoder<T>(metadata: op.metadata)
             var results: [T] = []
+            var failedIds: [Tuple] = []
 
             for entry in entries {
                 do {
                     let item = try decoder.decode(from: entry)
                     results.append(item)
                 } catch {
-                    // Decoding failed - fall back to item fetch for this entry
-                    if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
-                        results.append(item)
-                    }
+                    // Decoding failed - collect for batch fallback fetch
+                    failedIds.append(entry.itemID)
                 }
+            }
+
+            // Batch fetch any entries that failed to decode
+            if !failedIds.isEmpty {
+                let fallbackItems = try await context.indexQueryContext.batchFetchItems(
+                    ids: failedIds,
+                    type: T.self,
+                    configuration: .default
+                )
+                results.append(contentsOf: fallbackItems)
             }
 
             return results
         } else {
-            // Partial coverage - must fetch items from storage
+            // Partial coverage - must fetch items from storage using batch fetch
             // This path should not normally be reached if PlanEnumerator is correct,
             // as it should only generate index-only plans for fully covering indexes
-            var results: [T] = []
-            for entry in entries {
-                if let item: T = try await executionContext.fetchItem(id: entry.itemID, type: T.self) {
-                    results.append(item)
-                }
-            }
-            return results
+            let ids = entries.map { $0.itemID }
+            return try await context.indexQueryContext.batchFetchItems(
+                ids: ids,
+                type: T.self,
+                configuration: .default
+            )
         }
     }
 
     // MARK: - Union
 
+    /// Execute union using ID-first approach for improved efficiency
+    ///
+    /// **Optimization**: Instead of fetching full records from each child and then
+    /// deduplicating, we first collect only IDs from all children, deduplicate the
+    /// IDs, then batch fetch only the unique records once. This avoids fetching
+    /// records that will be eliminated by deduplication.
+    ///
+    /// Reference: FDB Record Layer "remote fetch" optimization pattern
     private func executeUnion(_ op: UnionOperator<T>) async throws -> [T] {
-        // Execute children sequentially to avoid Sendable issues with ID type
-        var allResults: [[T]] = []
+        // ID-first approach: collect IDs first, then batch fetch
+        var allIds: Set<Tuple> = []
+
         for child in op.children {
-            let result = try await executeOperator(child)
-            allResults.append(result)
+            let childIds = try await executeOperatorIdsOnly(child)
+            if op.deduplicate {
+                allIds.formUnion(childIds)
+            } else {
+                // For non-deduplicated union, we can't use ID-first optimization
+                // because we need to preserve duplicates - fall back to legacy approach
+                return try await executeLegacyUnion(op)
+            }
         }
 
-        // Flatten and deduplicate using Persistable.ID
-        // This works because Persistable.ID: Hashable (defined in protocol)
-        if op.deduplicate {
-            // Use string representation for deduplication to avoid Sendable issues
-            var seenIds: Set<String> = []
-            var results: [T] = []
+        // Batch fetch only the unique records
+        return try await context.indexQueryContext.batchFetchItems(
+            ids: Array(allIds),
+            type: T.self,
+            configuration: .default
+        )
+    }
 
-            for childResult in allResults {
-                for item in childResult {
-                    let idString = "\(item.id)"
-                    if !seenIds.contains(idString) {
-                        seenIds.insert(idString)
-                        results.append(item)
-                    }
-                }
+    /// Optimized union implementation for non-deduplicated case (UNION ALL)
+    ///
+    /// For non-deduplicated unions, we need to preserve exact order and duplicates
+    /// from each child. The optimization here is to use ID-first execution for
+    /// simple scan children (which don't require full record fetch for ordering),
+    /// and fall back to full execution only for complex children.
+    ///
+    /// **Note**: For scan-only children, this fetches each unique record once.
+    /// For complex children (with filters, sorts, limits), we must execute fully
+    /// to preserve correct ordering.
+    private func executeLegacyUnion(_ op: UnionOperator<T>) async throws -> [T] {
+        // Check if all children are simple scans (can use ID-first approach)
+        let allSimpleScans = op.children.allSatisfy { isSimpleScanOperator($0) }
+
+        if allSimpleScans {
+            // Optimized path: collect all IDs preserving order, batch fetch unique
+            var allIds: [Tuple] = []
+
+            for child in op.children {
+                let childIds = try await executeOperatorIdsOnly(child)
+                // Convert Set to Array (order within child doesn't matter for scans)
+                allIds.append(contentsOf: childIds)
             }
 
-            return results
+            // Batch fetch all (some IDs may be duplicated across children)
+            return try await context.indexQueryContext.batchFetchItems(
+                ids: allIds,
+                type: T.self,
+                configuration: .default
+            )
         } else {
-            return allResults.flatMap { $0 }
+            // Fall back: execute children fully and concatenate
+            var allResults: [T] = []
+            for child in op.children {
+                let result = try await executeOperator(child)
+                allResults.append(contentsOf: result)
+            }
+            return allResults
+        }
+    }
+
+    /// Check if an operator is a simple scan (no ordering dependencies)
+    private func isSimpleScanOperator(_ op: PlanOperator<T>) -> Bool {
+        switch op {
+        case .tableScan, .indexScan, .indexSeek, .indexOnlyScan,
+             .fullTextScan, .vectorSearch, .spatialScan:
+            return true
+        case .union(let unionOp):
+            return unionOp.children.allSatisfy { isSimpleScanOperator($0) }
+        case .intersection(let intersectionOp):
+            return intersectionOp.children.allSatisfy { isSimpleScanOperator($0) }
+        default:
+            return false
         }
     }
 
     // MARK: - Intersection
 
+    /// Execute intersection using ID-first approach for improved efficiency
+    ///
+    /// **Optimization**: Instead of fetching full records from all children and then
+    /// intersecting, we first collect only IDs from each child, compute the
+    /// intersection of IDs, then batch fetch only the final intersected records.
+    /// This avoids fetching records that will be eliminated by the intersection.
+    ///
+    /// **Early Exit**: If any child returns empty or the intersection becomes empty,
+    /// we can short-circuit without fetching remaining children.
+    ///
+    /// Reference: FDB Record Layer "remote fetch" optimization pattern
     private func executeIntersection(_ op: IntersectionOperator<T>) async throws -> [T] {
         guard !op.children.isEmpty else { return [] }
 
-        // Execute all children sequentially and collect ID sets
-        var idSets: [Set<String>] = []
-        var recordsByChild: [[T]] = []
+        // ID-first approach: collect IDs, intersect, then batch fetch
+        guard let firstChild = op.children.first else { return [] }
 
-        for child in op.children {
-            let results = try await executeOperator(child)
-            let idSet = Set(results.map { "\($0.id)" })
-            idSets.append(idSet)
-            recordsByChild.append(results)
+        // Get IDs from first child
+        var resultIds = try await executeOperatorIdsOnly(firstChild)
+        if resultIds.isEmpty { return [] }
+
+        // Intersect with remaining children (with early exit optimization)
+        for child in op.children.dropFirst() {
+            let childIds = try await executeOperatorIdsOnly(child)
+            resultIds = resultIds.intersection(childIds)
+
+            // Early exit if no intersection possible
+            if resultIds.isEmpty { return [] }
         }
 
-        // Intersect all ID sets
-        guard var resultIds = idSets.first else { return [] }
-        for otherSet in idSets.dropFirst() {
-            resultIds = resultIds.intersection(otherSet)
+        // Batch fetch only the intersected records
+        return try await context.indexQueryContext.batchFetchItems(
+            ids: Array(resultIds),
+            type: T.self,
+            configuration: .default
+        )
+    }
+
+    // MARK: - ID-Only Scan Implementations
+
+    /// Execute table scan returning only IDs
+    private func executeTableScanIdsOnly(_ op: TableScanOperator<T>) async throws -> Set<Tuple> {
+        // For table scan, we need to fetch records to get IDs
+        // (unless we have a separate ID-only scan API)
+        let results = try await executeTableScan(op)
+        return Set(results.map { extractItemId($0) })
+    }
+
+    /// Execute index scan returning only IDs (no record fetch)
+    private func executeIndexScanIdsOnly(_ op: IndexScanOperator<T>) async throws -> Set<Tuple> {
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
+
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        // Return only IDs - no record fetch!
+        return Set(entries.map { $0.itemID })
+    }
+
+    /// Execute index seek returning only IDs (no record fetch)
+    private func executeIndexSeekIdsOnly(_ op: IndexSeekOperator<T>) async throws -> Set<Tuple> {
+        var ids: Set<Tuple> = []
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        for keyValues in op.seekValues {
+            var seekElements: [any TupleElement] = []
+            for anySendable in keyValues {
+                if let element = anyToTupleElement(anySendable.value) {
+                    seekElements.append(element)
+                }
+            }
+
+            let query = ScalarIndexQuery.equals(seekElements)
+            let entries = try await searcher.search(
+                query: query,
+                in: indexSubspace,
+                using: executionContext.storageReader
+            )
+
+            // Collect IDs only
+            for entry in entries {
+                ids.insert(entry.itemID)
+            }
         }
 
-        // Use first child's records (already fetched)
-        if let firstRecords = recordsByChild.first {
-            return firstRecords.filter { resultIds.contains("\($0.id)") }
-        }
+        return ids
+    }
 
-        return []
+    /// Execute index-only scan returning only IDs (no record fetch or decode)
+    private func executeIndexOnlyScanIdsOnly(_ op: IndexOnlyScanOperator<T>) async throws -> Set<Tuple> {
+        let query = buildScalarQuery(bounds: op.bounds, reverse: op.reverse, limit: op.limit)
+
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        // Return only IDs - no record decode or fetch!
+        return Set(entries.map { $0.itemID })
+    }
+
+    /// Execute full-text scan returning only IDs
+    private func executeFullTextScanIdsOnly(_ op: FullTextScanOperator<T>) async throws -> Set<Tuple> {
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = FullTextIndexSearcher()
+        let query = FullTextIndexQuery(
+            terms: op.searchTerms,
+            matchMode: op.matchMode
+        )
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        return Set(entries.map { $0.itemID })
+    }
+
+    /// Execute vector search returning only IDs
+    private func executeVectorSearchIdsOnly(_ op: VectorSearchOperator<T>) async throws -> Set<Tuple> {
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let dimensions = op.queryVector.count
+        let searcher = VectorIndexSearcher(dimensions: dimensions, metric: op.distanceMetric)
+        let query = VectorIndexQuery(queryVector: op.queryVector, k: op.k)
+
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        return Set(entries.map { $0.itemID })
+    }
+
+    /// Execute spatial scan returning only IDs
+    private func executeSpatialScanIdsOnly(_ op: SpatialScanOperator<T>) async throws -> Set<Tuple> {
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = SpatialIndexSearcher()
+        let query = SpatialIndexQuery(constraint: op.constraint)
+
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        return Set(entries.map { $0.itemID })
     }
 
     // MARK: - Full Text Scan

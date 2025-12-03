@@ -272,20 +272,18 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         var totalDanglingDetected = 0
         var totalDanglingRepaired = 0
 
-        // Process batches until complete
-        while !rangeSet.isEmpty {
-            guard let batchRange = rangeSet.nextBatch(size: configuration.entriesScanLimit) else {
-                break
-            }
-
+        // Process batches - each batch in a separate transaction
+        while let bounds = rangeSet.nextBatchBounds() {
             var retryCount = 0
             var batchSuccess = false
 
             while !batchSuccess && retryCount < configuration.maxRetries {
                 do {
                     let batchResult = try await processPhase1Batch(
-                        range: batchRange,
-                        indexNameSubspace: indexNameSubspace
+                        bounds: bounds,
+                        batchSize: configuration.entriesScanLimit,
+                        indexNameSubspace: indexNameSubspace,
+                        rangeSet: &rangeSet
                     )
 
                     totalEntriesScanned += batchResult.entriesScanned
@@ -297,8 +295,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                     danglingEntriesCounter.increment(by: batchResult.danglingDetected)
                     entriesRepairedCounter.increment(by: batchResult.danglingRepaired)
 
-                    // Mark batch completed and save progress
-                    rangeSet.markCompleted(batchRange)
+                    // Save progress
                     try await saveProgress(rangeSet, key: phase1ProgressKey)
 
                     batchSuccess = true
@@ -331,17 +328,20 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Process a single batch in Phase 1
     private func processPhase1Batch(
-        range: RangeSet.Range,
-        indexNameSubspace: Subspace
+        bounds: RangeSet.BatchBounds,
+        batchSize: Int,
+        indexNameSubspace: Subspace,
+        rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
         var entriesScanned = 0
         var danglingDetected = 0
         var danglingRepaired = 0
+        var lastProcessedKey: FDB.Bytes? = nil
 
         try await database.withTransaction { transaction in
             let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(range.begin),
-                endSelector: .firstGreaterOrEqual(range.end),
+                beginSelector: .firstGreaterOrEqual(bounds.begin),
+                endSelector: .firstGreaterOrEqual(bounds.end),
                 snapshot: false
             )
 
@@ -353,6 +353,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                     indexKey,
                     indexSubspace: indexNameSubspace
                 ) else {
+                    lastProcessedKey = indexKey
+                    if entriesScanned >= batchSize { break }
                     continue
                 }
 
@@ -370,6 +372,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                         danglingRepaired += 1
                     }
                 }
+
+                lastProcessedKey = indexKey
+
+                // Break after batchSize items to limit transaction size
+                if entriesScanned >= batchSize {
+                    break
+                }
+            }
+
+            // Record progress with continuation
+            if let lastKey = lastProcessedKey {
+                let isComplete = entriesScanned < batchSize
+                rangeSet.recordProgress(
+                    rangeIndex: bounds.rangeIndex,
+                    lastProcessedKey: Array(lastKey),
+                    isComplete: isComplete
+                )
+            } else {
+                rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
             }
         }
 
@@ -406,20 +427,18 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         var totalMissingDetected = 0
         var totalMissingRepaired = 0
 
-        // Process batches until complete
-        while !rangeSet.isEmpty {
-            guard let batchRange = rangeSet.nextBatch(size: configuration.entriesScanLimit) else {
-                break
-            }
-
+        // Process batches - each batch in a separate transaction
+        while let bounds = rangeSet.nextBatchBounds() {
             var retryCount = 0
             var batchSuccess = false
 
             while !batchSuccess && retryCount < configuration.maxRetries {
                 do {
                     let batchResult = try await processPhase2Batch(
-                        range: batchRange,
-                        itemTypeSubspace: itemTypeSubspace
+                        bounds: bounds,
+                        batchSize: configuration.entriesScanLimit,
+                        itemTypeSubspace: itemTypeSubspace,
+                        rangeSet: &rangeSet
                     )
 
                     totalItemsScanned += batchResult.itemsScanned
@@ -431,8 +450,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                     missingEntriesCounter.increment(by: batchResult.missingDetected)
                     entriesRepairedCounter.increment(by: batchResult.missingRepaired)
 
-                    // Mark batch completed and save progress
-                    rangeSet.markCompleted(batchRange)
+                    // Save progress
                     try await saveProgress(rangeSet, key: phase2ProgressKey)
 
                     batchSuccess = true
@@ -465,17 +483,20 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Process a single batch in Phase 2
     private func processPhase2Batch(
-        range: RangeSet.Range,
-        itemTypeSubspace: Subspace
+        bounds: RangeSet.BatchBounds,
+        batchSize: Int,
+        itemTypeSubspace: Subspace,
+        rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
         var itemsScanned = 0
         var missingDetected = 0
         var missingRepaired = 0
+        var lastProcessedKey: FDB.Bytes? = nil
 
         try await database.withTransaction { transaction in
             let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(range.begin),
-                endSelector: .firstGreaterOrEqual(range.end),
+                beginSelector: .firstGreaterOrEqual(bounds.begin),
+                endSelector: .firstGreaterOrEqual(bounds.end),
                 snapshot: false
             )
 
@@ -516,6 +537,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                         }
                     }
                 }
+
+                lastProcessedKey = key
+
+                // Break after batchSize items to limit transaction size
+                if itemsScanned >= batchSize {
+                    break
+                }
+            }
+
+            // Record progress with continuation
+            if let lastKey = lastProcessedKey {
+                let isComplete = itemsScanned < batchSize
+                rangeSet.recordProgress(
+                    rangeIndex: bounds.rangeIndex,
+                    lastProcessedKey: Array(lastKey),
+                    isComplete: isComplete
+                )
+            } else {
+                rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
             }
         }
 

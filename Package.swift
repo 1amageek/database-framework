@@ -18,6 +18,8 @@ let package = Package(
         .library(name: "TripleIndex", targets: ["TripleIndex"]),
         .library(name: "AggregationIndex", targets: ["AggregationIndex"]),
         .library(name: "VersionIndex", targets: ["VersionIndex"]),
+        .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
+        .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
         .library(name: "Database", targets: ["Database"]),
     ],
     dependencies: [
@@ -28,6 +30,7 @@ let package = Package(
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
     ],
     targets: [
         .target(
@@ -37,6 +40,7 @@ let package = Package(
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Crypto", package: "swift-crypto"),
             ]
         ),
         .target(
@@ -128,6 +132,22 @@ let package = Package(
             ]
         ),
         .target(
+            name: "BitmapIndex",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        .target(
+            name: "LeaderboardIndex",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        .target(
             name: "Database",
             dependencies: [
                 "DatabaseEngine",
@@ -141,6 +161,8 @@ let package = Package(
                 "TripleIndex",
                 "AggregationIndex",
                 "VersionIndex",
+                "BitmapIndex",
+                "LeaderboardIndex",
             ]
         ),
         // Test Support (shared test utilities)

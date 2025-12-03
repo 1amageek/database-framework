@@ -296,10 +296,47 @@ public final class FDBContainer: Sendable {
     // MARK: - Transaction Support
 
     /// Execute a closure with a database transaction
+    ///
+    /// - Parameters:
+    ///   - configuration: Transaction configuration (priority, timeout, etc.)
+    ///   - operation: The operation to execute within the transaction
+    /// - Returns: The result of the operation
+    /// - Throws: `FDBError` if the transaction fails
     public func withTransaction<T: Sendable>(
+        configuration: TransactionConfiguration = .default,
         _ operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(operation)
+        let maxRetries = configuration.retryLimit ?? 100
+
+        for attempt in 0..<maxRetries {
+            let transaction = try database.createTransaction()
+            try transaction.apply(configuration)
+
+            do {
+                let result = try await operation(transaction)
+                let committed = try await transaction.commit()
+
+                if committed {
+                    return result
+                }
+            } catch {
+                transaction.cancel()
+
+                if let fdbError = error as? FDBError, fdbError.isRetryable {
+                    if attempt < maxRetries - 1 {
+                        // Exponential backoff with jitter
+                        let baseDelay = configuration.maxRetryDelay ?? 1000
+                        let delay = min(baseDelay, 10 * (1 << min(attempt, 10)))
+                        try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
+                        continue
+                    }
+                }
+
+                throw error
+            }
+        }
+
+        throw FDBError(code: 1020)  // transaction_too_old
     }
 
     // MARK: - Index Configuration Management

@@ -76,6 +76,41 @@ public struct IndexQueryContext: Sendable {
         return try await context.model(for: idElement, as: type)
     }
 
+    /// Batch fetch items by their IDs using optimized BatchFetcher
+    ///
+    /// This method is more efficient than `fetchItems` for large result sets
+    /// because it batches the fetches and processes them together within
+    /// a single transaction.
+    ///
+    /// - Parameters:
+    ///   - ids: Array of item IDs (as Tuples)
+    ///   - type: The item type
+    ///   - configuration: Batch fetch configuration
+    /// - Returns: Array of fetched items (order may not match input order)
+    public func batchFetchItems<T: Persistable>(
+        ids: [Tuple],
+        type: T.Type,
+        configuration: BatchFetchConfiguration = .default
+    ) async throws -> [T] {
+        guard !ids.isEmpty else { return [] }
+
+        let store = try await context.container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            // Fall back to sequential fetch for non-FDB stores
+            return try await fetchItems(ids: ids, type: type)
+        }
+
+        let fetcher = BatchFetcher<T>(
+            itemSubspace: fdbStore.recordSubspace,
+            itemType: T.persistableType,
+            configuration: configuration
+        )
+
+        return try await context.container.database.withTransaction { transaction in
+            try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
+        }
+    }
+
     // MARK: - Index Search Operations
 
     /// Execute a full-text search

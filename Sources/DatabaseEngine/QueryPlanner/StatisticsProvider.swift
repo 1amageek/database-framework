@@ -42,6 +42,66 @@ public protocol StatisticsProvider: Sendable {
     ) -> Int?
 }
 
+// MARK: - Live Statistics Provider Protocol
+
+/// Extended statistics provider that supports async server-side statistics
+///
+/// This protocol extends `StatisticsProvider` with async methods that can
+/// fetch real-time statistics from the FoundationDB server, using features like
+/// `getEstimatedRangeSizeBytes` and `getRangeSplitPoints`.
+///
+/// **Server-Side Features Used**:
+/// - `getEstimatedRangeSizeBytes`: Accurate range size estimation without scanning
+/// - `getRangeSplitPoints`: Split points for parallel query execution
+///
+/// Reference: FoundationDB 7.x C API
+public protocol LiveStatisticsProvider: StatisticsProvider {
+    /// Estimate the size of a key range in bytes (server-side)
+    ///
+    /// Uses FoundationDB's `getEstimatedRangeSizeBytes` for accurate estimation
+    /// without needing to scan the entire range.
+    ///
+    /// - Parameters:
+    ///   - beginKey: Start of the range (inclusive)
+    ///   - endKey: End of the range (exclusive)
+    /// - Returns: Estimated size in bytes
+    func estimatedRangeSizeBytes(
+        beginKey: [UInt8],
+        endKey: [UInt8]
+    ) async throws -> Int
+
+    /// Get split points to divide a range for parallel processing
+    ///
+    /// Uses FoundationDB's `getRangeSplitPoints` to find optimal split points
+    /// that divide the range into roughly equal-sized chunks.
+    ///
+    /// - Parameters:
+    ///   - beginKey: Start of the range
+    ///   - endKey: End of the range
+    ///   - chunkSize: Target size per chunk in bytes
+    /// - Returns: Array of split point keys
+    func rangeSplitPoints(
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        chunkSize: Int
+    ) async throws -> [[UInt8]]
+
+    /// Estimate row count for an index range based on server-side byte estimation
+    ///
+    /// - Parameters:
+    ///   - index: The index descriptor
+    ///   - beginKey: Start of the range
+    ///   - endKey: End of the range
+    ///   - avgRowSizeBytes: Average size per row in bytes (for conversion)
+    /// - Returns: Estimated row count
+    func estimatedRowsInRange(
+        index: IndexDescriptor,
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        avgRowSizeBytes: Int
+    ) async throws -> Int
+}
+
 // MARK: - Default Statistics Provider
 
 /// Default statistics provider with heuristic estimates
@@ -897,5 +957,354 @@ public struct SearchStatisticsCollector: Sendable {
         let lat = (Double(y) / maxVal) * 180.0 - 90.0
 
         return (lat, lon)
+    }
+}
+
+// MARK: - FDB Live Statistics Provider
+
+/// Live statistics provider using FoundationDB server-side APIs
+///
+/// This provider uses FDB's `getEstimatedRangeSizeBytes` and `getRangeSplitPoints`
+/// to provide accurate, real-time statistics without scanning data.
+///
+/// **Features**:
+/// - Server-side range size estimation (O(1) instead of O(N))
+/// - Automatic split point calculation for parallel queries
+/// - Byte-to-row count conversion using configurable average row size
+///
+/// **Usage**:
+/// ```swift
+/// let provider = FDBLiveStatisticsProvider(
+///     database: database,
+///     subspace: subspace,
+///     baseProvider: CollectedStatisticsProvider()
+/// )
+///
+/// // Get accurate range size
+/// let bytes = try await provider.estimatedRangeSizeBytes(
+///     beginKey: startKey,
+///     endKey: endKey
+/// )
+///
+/// // Get split points for parallel execution
+/// let splits = try await provider.rangeSplitPoints(
+///     beginKey: startKey,
+///     endKey: endKey,
+///     chunkSize: 10_000_000  // 10MB chunks
+/// )
+/// ```
+public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked Sendable {
+
+    /// Underlying database
+    nonisolated(unsafe) private let database: any DatabaseProtocol
+
+    /// Root subspace for the data
+    private let subspace: Subspace
+
+    /// Base provider for non-live statistics
+    private let baseProvider: StatisticsProvider
+
+    /// Default average row size for byte-to-row conversion
+    private let defaultAvgRowSize: Int
+
+    public init(
+        database: any DatabaseProtocol,
+        subspace: Subspace,
+        baseProvider: StatisticsProvider = DefaultStatisticsProvider(),
+        defaultAvgRowSize: Int = 200
+    ) {
+        self.database = database
+        self.subspace = subspace
+        self.baseProvider = baseProvider
+        self.defaultAvgRowSize = defaultAvgRowSize
+    }
+
+    // MARK: - StatisticsProvider (delegated to base)
+
+    public func estimatedRowCount<T: Persistable>(for type: T.Type) -> Int {
+        baseProvider.estimatedRowCount(for: type)
+    }
+
+    public func estimatedDistinctValues<T: Persistable>(
+        field: String,
+        type: T.Type
+    ) -> Int? {
+        baseProvider.estimatedDistinctValues(field: field, type: type)
+    }
+
+    public func equalitySelectivity<T: Persistable>(
+        field: String,
+        type: T.Type
+    ) -> Double? {
+        baseProvider.equalitySelectivity(field: field, type: type)
+    }
+
+    public func rangeSelectivity<T: Persistable>(
+        field: String,
+        range: RangeBound,
+        type: T.Type
+    ) -> Double? {
+        baseProvider.rangeSelectivity(field: field, range: range, type: type)
+    }
+
+    public func nullSelectivity<T: Persistable>(
+        field: String,
+        type: T.Type
+    ) -> Double? {
+        baseProvider.nullSelectivity(field: field, type: type)
+    }
+
+    public func estimatedIndexEntries(index: IndexDescriptor) -> Int? {
+        baseProvider.estimatedIndexEntries(index: index)
+    }
+
+    // MARK: - LiveStatisticsProvider (server-side)
+
+    public func estimatedRangeSizeBytes(
+        beginKey: [UInt8],
+        endKey: [UInt8]
+    ) async throws -> Int {
+        try await database.withTransaction { transaction in
+            try await transaction.getEstimatedRangeSizeBytes(
+                beginKey: beginKey,
+                endKey: endKey
+            )
+        }
+    }
+
+    public func rangeSplitPoints(
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        chunkSize: Int
+    ) async throws -> [[UInt8]] {
+        try await database.withTransaction { transaction in
+            try await transaction.getRangeSplitPoints(
+                beginKey: beginKey,
+                endKey: endKey,
+                chunkSize: chunkSize
+            )
+        }
+    }
+
+    public func estimatedRowsInRange(
+        index: IndexDescriptor,
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        avgRowSizeBytes: Int
+    ) async throws -> Int {
+        let sizeBytes = try await estimatedRangeSizeBytes(
+            beginKey: beginKey,
+            endKey: endKey
+        )
+
+        let rowSize = avgRowSizeBytes > 0 ? avgRowSizeBytes : defaultAvgRowSize
+        return max(1, sizeBytes / rowSize)
+    }
+
+    // MARK: - Convenience Methods
+
+    /// Get split points for a subspace
+    public func subspaceSplitPoints(
+        subspace: Subspace,
+        chunkSize: Int = 10_000_000  // 10MB default
+    ) async throws -> [[UInt8]] {
+        let (begin, end) = subspace.range()
+        return try await rangeSplitPoints(
+            beginKey: begin,
+            endKey: end,
+            chunkSize: chunkSize
+        )
+    }
+
+    /// Estimate total size of a subspace in bytes
+    public func subspaceSizeBytes(subspace: Subspace) async throws -> Int {
+        let (begin, end) = subspace.range()
+        return try await estimatedRangeSizeBytes(
+            beginKey: begin,
+            endKey: end
+        )
+    }
+
+    /// Estimate row count for a type using server-side size estimation
+    public func estimatedRowCountLive<T: Persistable>(
+        for type: T.Type,
+        recordSubspace: Subspace,
+        avgRowSizeBytes: Int? = nil
+    ) async throws -> Int {
+        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let sizeBytes = try await subspaceSizeBytes(subspace: typeSubspace)
+
+        let rowSize = avgRowSizeBytes ?? defaultAvgRowSize
+        return max(0, sizeBytes / rowSize)
+    }
+
+    /// Estimate index entry count using server-side size estimation
+    public func estimatedIndexEntriesLive(
+        index: IndexDescriptor,
+        indexSubspace: Subspace,
+        avgEntrySizeBytes: Int = 50  // Index entries are typically small
+    ) async throws -> Int {
+        let specificIndexSubspace = indexSubspace.subspace(index.name)
+        let sizeBytes = try await subspaceSizeBytes(subspace: specificIndexSubspace)
+
+        return max(0, sizeBytes / avgEntrySizeBytes)
+    }
+}
+
+// MARK: - Parallel Scan Support
+
+/// Configuration for parallel range scanning
+public struct ParallelScanConfiguration: Sendable {
+    /// Target chunk size in bytes for splitting
+    public let chunkSizeBytes: Int
+
+    /// Maximum number of concurrent tasks
+    public let maxConcurrency: Int
+
+    /// Minimum entries per chunk (to avoid too many small chunks)
+    public let minEntriesPerChunk: Int
+
+    /// Default configuration
+    public static var `default`: ParallelScanConfiguration {
+        ParallelScanConfiguration(
+            chunkSizeBytes: 10_000_000,  // 10MB
+            maxConcurrency: 8,
+            minEntriesPerChunk: 100
+        )
+    }
+
+    /// Configuration for smaller datasets
+    public static var small: ParallelScanConfiguration {
+        ParallelScanConfiguration(
+            chunkSizeBytes: 1_000_000,   // 1MB
+            maxConcurrency: 4,
+            minEntriesPerChunk: 50
+        )
+    }
+
+    /// Configuration for large datasets
+    public static var large: ParallelScanConfiguration {
+        ParallelScanConfiguration(
+            chunkSizeBytes: 50_000_000,  // 50MB
+            maxConcurrency: 16,
+            minEntriesPerChunk: 500
+        )
+    }
+
+    public init(
+        chunkSizeBytes: Int,
+        maxConcurrency: Int,
+        minEntriesPerChunk: Int
+    ) {
+        self.chunkSizeBytes = chunkSizeBytes
+        self.maxConcurrency = maxConcurrency
+        self.minEntriesPerChunk = minEntriesPerChunk
+    }
+}
+
+/// A range chunk for parallel processing
+public struct RangeChunk: Sendable {
+    /// Start key (inclusive)
+    public let beginKey: [UInt8]
+
+    /// End key (exclusive)
+    public let endKey: [UInt8]
+
+    /// Chunk index (0-based)
+    public let index: Int
+
+    /// Estimated size in bytes (if available)
+    public let estimatedSizeBytes: Int?
+
+    public init(
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        index: Int,
+        estimatedSizeBytes: Int? = nil
+    ) {
+        self.beginKey = beginKey
+        self.endKey = endKey
+        self.index = index
+        self.estimatedSizeBytes = estimatedSizeBytes
+    }
+}
+
+extension FDBLiveStatisticsProvider {
+    /// Divide a range into chunks for parallel processing
+    ///
+    /// Uses `getRangeSplitPoints` to find optimal split points based on
+    /// data distribution, ensuring roughly equal-sized chunks.
+    ///
+    /// - Parameters:
+    ///   - beginKey: Start of the range
+    ///   - endKey: End of the range
+    ///   - configuration: Parallel scan configuration
+    /// - Returns: Array of range chunks for parallel processing
+    public func divideRangeForParallelScan(
+        beginKey: [UInt8],
+        endKey: [UInt8],
+        configuration: ParallelScanConfiguration = .default
+    ) async throws -> [RangeChunk] {
+        // Get split points from FDB
+        let splitPoints = try await rangeSplitPoints(
+            beginKey: beginKey,
+            endKey: endKey,
+            chunkSize: configuration.chunkSizeBytes
+        )
+
+        // Build chunks from split points
+        var chunks: [RangeChunk] = []
+        var currentBegin = beginKey
+
+        for (index, splitPoint) in splitPoints.enumerated() {
+            chunks.append(RangeChunk(
+                beginKey: currentBegin,
+                endKey: splitPoint,
+                index: index,
+                estimatedSizeBytes: configuration.chunkSizeBytes
+            ))
+            currentBegin = splitPoint
+        }
+
+        // Add final chunk
+        if currentBegin.lexicographicallyPrecedes(endKey) || currentBegin == beginKey {
+            chunks.append(RangeChunk(
+                beginKey: currentBegin,
+                endKey: endKey,
+                index: chunks.count,
+                estimatedSizeBytes: nil
+            ))
+        }
+
+        // Limit to maxConcurrency
+        if chunks.count > configuration.maxConcurrency {
+            // Merge chunks to fit within concurrency limit
+            return mergeChunks(chunks, targetCount: configuration.maxConcurrency)
+        }
+
+        return chunks
+    }
+
+    /// Merge chunks to reduce count
+    private func mergeChunks(_ chunks: [RangeChunk], targetCount: Int) -> [RangeChunk] {
+        guard chunks.count > targetCount else { return chunks }
+
+        let mergeRatio = (chunks.count + targetCount - 1) / targetCount
+        var merged: [RangeChunk] = []
+
+        for i in stride(from: 0, to: chunks.count, by: mergeRatio) {
+            let endIndex = min(i + mergeRatio, chunks.count)
+            let firstChunk = chunks[i]
+            let lastChunk = chunks[endIndex - 1]
+
+            merged.append(RangeChunk(
+                beginKey: firstChunk.beginKey,
+                endKey: lastChunk.endKey,
+                index: merged.count,
+                estimatedSizeBytes: nil
+            ))
+        }
+
+        return merged
     }
 }
