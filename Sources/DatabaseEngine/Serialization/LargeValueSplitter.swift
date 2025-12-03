@@ -283,7 +283,7 @@ public struct LargeValueSplitter: Sendable {
     private static func bytesToInt32(_ bytes: [UInt8]) -> Int32 {
         guard bytes.count >= 4 else { return 0 }
         var value: Int32 = 0
-        _ = withUnsafeMutableBytes(of: &value) { dest in
+        withUnsafeMutableBytes(of: &value) { dest in
             bytes.prefix(4).withUnsafeBytes { src in
                 dest.copyMemory(from: src)
             }

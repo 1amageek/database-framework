@@ -45,7 +45,7 @@ public final class IndexStateManager: Sendable {
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
@@ -100,7 +100,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             // Read current state within transaction
@@ -137,7 +137,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             // Read current state within transaction
@@ -173,7 +173,7 @@ public final class IndexStateManager: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             // Read current state within transaction (for logging)
@@ -200,7 +200,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexNames: List of index names
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
             var states: [String: IndexState] = [:]
 
             for indexName in indexNames {

@@ -209,11 +209,12 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchStartTime = DispatchTime.now()
-            var itemsInBatch = 0
-            var lastProcessedKey: FDB.Bytes? = nil
 
             do {
-                try await database.withTransaction { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                    var itemsInBatch = 0
+                    var lastProcessedKey: FDB.Bytes? = nil
+
                     let sequence = transaction.getRange(
                         beginSelector: .firstGreaterOrEqual(bounds.begin),
                         endSelector: .firstGreaterOrEqual(bounds.end),
@@ -245,24 +246,28 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                         }
                     }
 
-                    // Record progress with continuation
-                    if let lastKey = lastProcessedKey {
-                        // If we got fewer items than batchSize, the range is complete
-                        let isComplete = itemsInBatch < self.batchSize
-                        rangeSet.recordProgress(
-                            rangeIndex: bounds.rangeIndex,
-                            lastProcessedKey: lastKey,
-                            isComplete: isComplete
-                        )
-                    } else {
-                        // No items in range - mark as complete
-                        rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                    }
-
-                    // Save progress within transaction
-                    try self.saveProgress(rangeSet, transaction)
+                    return (itemsInBatch, lastProcessedKey)
                 }
-                // Transaction committed - progress is now durable
+
+                // Record progress outside transaction
+                if let lastKey = lastProcessedKey {
+                    // If we got fewer items than batchSize, the range is complete
+                    let isComplete = itemsInBatch < self.batchSize
+                    rangeSet.recordProgress(
+                        rangeIndex: bounds.rangeIndex,
+                        lastProcessedKey: lastKey,
+                        isComplete: isComplete
+                    )
+                } else {
+                    // No items in range - mark as complete
+                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                }
+
+                // Save progress in separate transaction
+                let rangeSetCopy = rangeSet
+                try await database.withTransaction(configuration: .batch) { transaction in
+                    try self.saveProgress(rangeSetCopy, transaction)
+                }
 
                 // Record metrics
                 let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
@@ -285,7 +290,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -299,7 +304,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -307,7 +312,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }

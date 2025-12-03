@@ -106,7 +106,7 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        return try await context.container.database.withTransaction { transaction in
+        return try await context.container.database.withTransaction(configuration: .readOnly) { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
     }
@@ -380,7 +380,7 @@ extension FDBDataStore {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction { transaction in
+                    try await database.withTransaction(configuration: .readOnly) { transaction in
                         // Build range
                         let beginKey: [UInt8]
                         let endKey: [UInt8]
@@ -425,7 +425,7 @@ extension FDBDataStore {
 
     /// Get a single value by key (raw access)
     func getValueRaw(key: [UInt8]) async throws -> [UInt8]? {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }

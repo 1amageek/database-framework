@@ -390,7 +390,6 @@ public struct ThrottledOperation<T: Sendable>: Sendable {
                 throttler.recordSuccess(itemCount: itemCount, durationNs: duration)
                 return result
             } catch {
-                let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                 throttler.recordFailure(error: error)
                 lastError = error
 

@@ -333,12 +333,13 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         indexNameSubspace: Subspace,
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
-        var entriesScanned = 0
-        var danglingDetected = 0
-        var danglingRepaired = 0
-        var lastProcessedKey: FDB.Bytes? = nil
 
-        try await database.withTransaction { transaction in
+        let result = try await database.withTransaction(configuration: .batch) { transaction in
+            var entriesScanned = 0
+            var danglingDetected = 0
+            var danglingRepaired = 0
+            var lastProcessedKey: FDB.Bytes? = nil
+
             let sequence = transaction.getRange(
                 beginSelector: .firstGreaterOrEqual(bounds.begin),
                 endSelector: .firstGreaterOrEqual(bounds.end),
@@ -381,23 +382,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 }
             }
 
-            // Record progress with continuation
-            if let lastKey = lastProcessedKey {
-                let isComplete = entriesScanned < batchSize
-                rangeSet.recordProgress(
-                    rangeIndex: bounds.rangeIndex,
-                    lastProcessedKey: Array(lastKey),
-                    isComplete: isComplete
-                )
-            } else {
-                rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-            }
+            return (entriesScanned, danglingDetected, danglingRepaired, lastProcessedKey)
+        }
+
+        // Record progress outside transaction
+        if let lastKey = result.3 {
+            let isComplete = result.0 < batchSize
+            rangeSet.recordProgress(
+                rangeIndex: bounds.rangeIndex,
+                lastProcessedKey: Array(lastKey),
+                isComplete: isComplete
+            )
+        } else {
+            rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
         }
 
         return Phase1Result(
-            entriesScanned: entriesScanned,
-            danglingDetected: danglingDetected,
-            danglingRepaired: danglingRepaired
+            entriesScanned: result.0,
+            danglingDetected: result.1,
+            danglingRepaired: result.2
         )
     }
 
@@ -488,12 +491,13 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         itemTypeSubspace: Subspace,
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
-        var itemsScanned = 0
-        var missingDetected = 0
-        var missingRepaired = 0
-        var lastProcessedKey: FDB.Bytes? = nil
 
-        try await database.withTransaction { transaction in
+        let result = try await database.withTransaction(configuration: .batch) { transaction in
+            var itemsScanned = 0
+            var missingDetected = 0
+            var missingRepaired = 0
+            var lastProcessedKey: FDB.Bytes? = nil
+
             let sequence = transaction.getRange(
                 beginSelector: .firstGreaterOrEqual(bounds.begin),
                 endSelector: .firstGreaterOrEqual(bounds.end),
@@ -546,23 +550,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 }
             }
 
-            // Record progress with continuation
-            if let lastKey = lastProcessedKey {
-                let isComplete = itemsScanned < batchSize
-                rangeSet.recordProgress(
-                    rangeIndex: bounds.rangeIndex,
-                    lastProcessedKey: Array(lastKey),
-                    isComplete: isComplete
-                )
-            } else {
-                rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-            }
+            return (itemsScanned, missingDetected, missingRepaired, lastProcessedKey)
+        }
+
+        // Record progress outside transaction
+        if let lastKey = result.3 {
+            let isComplete = result.0 < batchSize
+            rangeSet.recordProgress(
+                rangeIndex: bounds.rangeIndex,
+                lastProcessedKey: Array(lastKey),
+                isComplete: isComplete
+            )
+        } else {
+            rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
         }
 
         return Phase2Result(
-            itemsScanned: itemsScanned,
-            missingDetected: missingDetected,
-            missingRepaired: missingRepaired
+            itemsScanned: result.0,
+            missingDetected: result.1,
+            missingRepaired: result.2
         )
     }
 
@@ -596,7 +602,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Load saved progress
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -608,7 +614,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)
             transaction.setValue(Array(data), for: key)
@@ -617,7 +623,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Clear all progress
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: phase1ProgressKey)
             transaction.clear(key: phase2ProgressKey)
         }

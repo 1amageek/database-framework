@@ -291,7 +291,7 @@ public struct MigrationContext: Sendable {
             .subspace("formerIndexes")
             .pack(Tuple(indexName))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             let timestamp = Date().timeIntervalSince1970
             transaction.setValue(
                 Tuple(
@@ -313,7 +313,7 @@ public struct MigrationContext: Sendable {
 
         // 6. Clear index data
         let indexRange = info.indexSubspace.subspace(indexName).range()
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -378,7 +378,7 @@ public struct MigrationContext: Sendable {
 
         // 6. Clear existing data
         let indexRange = info.indexSubspace.subspace(indexName).range()
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -425,7 +425,7 @@ public struct MigrationContext: Sendable {
     public func executeOperation<T: Sendable>(
         _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .system) { transaction in
             try await operation(transaction)
         }
     }
@@ -490,7 +490,7 @@ public struct MigrationContext: Sendable {
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             transaction.setValue(Array(data), for: itemKey)
         }
     }
@@ -514,7 +514,7 @@ public struct MigrationContext: Sendable {
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .system) { transaction in
             transaction.clear(key: itemKey)
         }
     }
@@ -537,15 +537,15 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let encoder = ProtobufEncoder()
         let itemSubspace = info.subspace.subspace("R").subspace(itemType)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
-            let batch = items[batchStart..<batchEnd]
+            let batch = Array(items[batchStart..<batchEnd])
 
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .system) { transaction in
+                let encoder = ProtobufEncoder()
                 for item in batch {
                     let data = try encoder.encode(item)
                     let validatedID = try item.validateIDForStorage()
@@ -581,7 +581,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .system) { transaction in
                 for item in batch {
                     let validatedID = try item.validateIDForStorage()
                     let itemKey = itemSubspace.pack(Tuple(validatedID))
@@ -613,8 +613,9 @@ public struct MigrationContext: Sendable {
         let batchSize = 10000  // Use large batches for counting
 
         while true {
-            let batchCount: Int = try await database.withTransaction { transaction in
-                let rangeBegin = lastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
+            let currentLastKey = lastKey
+            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .system) { transaction in
+                let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
                 var lastKeyInBatch: FDB.Bytes? = nil
@@ -633,12 +634,12 @@ public struct MigrationContext: Sendable {
                     }
                 }
 
-                // Update lastKey for next iteration
-                if let key = lastKeyInBatch {
-                    lastKey = key
-                }
+                return (count, lastKeyInBatch)
+            }
 
-                return count
+            // Update lastKey outside transaction
+            if let key = newLastKey {
+                lastKey = key
             }
 
             totalCount += batchCount

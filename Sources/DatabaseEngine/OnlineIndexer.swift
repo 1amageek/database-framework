@@ -234,16 +234,19 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchStartTime = DispatchTime.now()
-            var itemsInBatch = 0
-            var lastProcessedKey: FDB.Bytes? = nil
 
             do {
-                // Process batch in transaction
-                try await database.withTransaction { transaction in
+                // Process batch in transaction with batch priority
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                    var itemsInBatch = 0
+                    var lastProcessedKey: FDB.Bytes? = nil
+
+                    // Use wantAll streaming mode for batch builds
                     let sequence = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(bounds.begin),
-                        endSelector: .firstGreaterOrEqual(bounds.end),
-                        snapshot: false
+                        from: .firstGreaterOrEqual(bounds.begin),
+                        to: .firstGreaterOrEqual(bounds.end),
+                        snapshot: false,
+                        streamingMode: .wantAll
                     )
 
                     for try await (key, value) in sequence {
@@ -254,7 +257,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         let id = try itemTypeSubspace.unpack(key)
 
                         // Call IndexMaintainer to build index entry
-                        try await indexMaintainer.scanItem(
+                        try await self.indexMaintainer.scanItem(
                             item,
                             id: id,
                             transaction: transaction
@@ -269,20 +272,25 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         }
                     }
 
-                    // Record progress with continuation
-                    if let lastKey = lastProcessedKey {
-                        let isComplete = itemsInBatch < self.batchSize
-                        rangeSet.recordProgress(
-                            rangeIndex: bounds.rangeIndex,
-                            lastProcessedKey: lastKey,
-                            isComplete: isComplete
-                        )
-                    } else {
-                        rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                    }
+                    return (itemsInBatch, lastProcessedKey)
+                }
 
-                    // Save progress
-                    try saveProgress(rangeSet, transaction)
+                // Record progress outside transaction
+                if let lastKey = lastProcessedKey {
+                    let isComplete = itemsInBatch < self.batchSize
+                    rangeSet.recordProgress(
+                        rangeIndex: bounds.rangeIndex,
+                        lastProcessedKey: lastKey,
+                        isComplete: isComplete
+                    )
+                } else {
+                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                }
+
+                // Save progress in separate transaction
+                let rangeSetCopy = rangeSet
+                try await database.withTransaction(configuration: .batch) { transaction in
+                    try self.saveProgress(rangeSetCopy, transaction)
                 }
 
                 // Record metrics
@@ -312,7 +320,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -340,7 +348,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// Called after successful completion
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -352,7 +360,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Removes all entries in the index subspace for this index.
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(
                 beginKey: indexRange.begin,

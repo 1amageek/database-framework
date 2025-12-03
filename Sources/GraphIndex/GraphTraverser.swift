@@ -127,7 +127,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction { transaction in
+                    try await database.withTransaction(configuration: .readOnly) { transaction in
                         let useSnapshot = mode == .snapshot
 
                         // Build prefix for range scan
@@ -251,21 +251,27 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
                             let batchEnd = min(batchStart + batchSize, nodes.count)
                             let batch = Array(nodes[batchStart..<batchEnd])
 
-                            // Each batch in its own transaction
-                            try await database.withTransaction { transaction in
-                                for source in batch {
-                                    let scanSubspace = direction == .outgoing ? self.outgoingSubspace : self.incomingSubspace
+                            // Pre-compute scan parameters outside transaction
+                            let scanSubspace = direction == .outgoing ? self.outgoingSubspace : self.incomingSubspace
+                            let scanParams: [(source: String, beginKey: [UInt8], endKey: [UInt8], prefix: Subspace)] = batch.map { source in
+                                var prefixElements: [any TupleElement] = []
+                                if let label = label {
+                                    prefixElements.append(label)
+                                }
+                                prefixElements.append(source)
+                                let prefix = Subspace(prefix: scanSubspace.prefix + Tuple(prefixElements).pack())
+                                let (beginKey, endKey) = prefix.range()
+                                return (source, beginKey, endKey, prefix)
+                            }
 
-                                    var prefixElements: [any TupleElement] = []
-                                    if let label = label {
-                                        prefixElements.append(label)
-                                    }
-                                    prefixElements.append(source)
+                            // Copy current visited set for filtering (Sendable)
+                            let currentVisited = visited
 
-                                    // Note: Don't use subspace.subspace(Tuple(...)) as that treats Tuple as a nested tuple element
-                                    let prefix = Subspace(prefix: scanSubspace.prefix + Tuple(prefixElements).pack())
-                                    let (beginKey, endKey) = prefix.range()
+                            // Each batch in its own transaction - returns discovered targets
+                            let discoveredTargets: [String] = try await database.withTransaction(configuration: .readOnly) { transaction in
+                                var targets: [String] = []
 
+                                for (_, beginKey, endKey, prefix) in scanParams {
                                     let stream = transaction.getRange(
                                         beginSelector: .firstGreaterOrEqual(beginKey),
                                         endSelector: .firstGreaterOrEqual(endKey),
@@ -274,22 +280,30 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
 
                                     for try await (key, _) in stream {
                                         if let target = try self.extractTargetFromKey(key, prefix: prefix) {
-                                            if !visited.contains(target) {
-                                                visited.insert(target)
-                                                nextLevel.insert(target)
+                                            // Filter using copy of visited set
+                                            if !currentVisited.contains(target) && !targets.contains(target) {
+                                                targets.append(target)
 
-                                                if visited.count >= maxNodes {
+                                                if currentVisited.count + targets.count >= maxNodes {
                                                     break
                                                 }
                                             }
                                         }
                                     }
 
-                                    if visited.count >= maxNodes {
+                                    if currentVisited.count + targets.count >= maxNodes {
                                         break
                                     }
                                 }
-                                return ()
+                                return targets
+                            }
+
+                            // Update visited and nextLevel outside transaction
+                            for target in discoveredTargets {
+                                if !visited.contains(target) {
+                                    visited.insert(target)
+                                    nextLevel.insert(target)
+                                }
                             }
 
                             if visited.count >= maxNodes {

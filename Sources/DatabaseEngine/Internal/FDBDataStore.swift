@@ -65,10 +65,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         let (begin, end) = typeSubspace.range()
         let startTime = DispatchTime.now()
 
-        var results: [T] = []
-
         do {
-            try await database.withTransaction { transaction in
+            let results: [T] = try await database.withTransaction(configuration: .readOnly) { transaction in
+                var results: [T] = []
                 let sequence = transaction.getRange(
                     begin: begin,
                     end: end,
@@ -80,6 +79,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                     let model: T = try DataAccess.deserialize(value)
                     results.append(model)
                 }
+                return results
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -99,7 +99,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -206,22 +206,54 @@ internal final class FDBDataStore: DataStore, Sendable {
             return nil
         }
 
-        // Build index scan range based on condition
+        // Build index scan range based on condition OUTSIDE transaction
         let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
+        let valueTuple = condition.valueTuple
+        let keyPathsCount = matchingIndex.keyPaths.count
 
-        var ids: [Tuple] = []
+        // Compute key range outside transaction to avoid capturing non-Sendable condition
+        let scanRange: IndexScanRange
+        switch condition.op {
+        case .equal:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let (begin, end) = valueSubspace.range()
+            scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
 
-        try await database.withTransaction { transaction in
-            switch condition.op {
-            case .equal:
-                // Exact match: scan [indexSubspace]/[value]/*
-                let valueTuple = self.valueToTuple(condition.value)
-                let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                let (begin, end) = valueSubspace.range()
+        case .greaterThan:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let beginKey = valueSubspace.range().1  // End of value range = start after
+            let (_, endKey) = indexSubspaceForIndex.range()
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
 
+        case .greaterThanOrEqual:
+            let beginKey = indexSubspaceForIndex.pack(valueTuple)
+            let (_, endKey) = indexSubspaceForIndex.range()
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        case .lessThan:
+            let (beginKey, _) = indexSubspaceForIndex.range()
+            let endKey = indexSubspaceForIndex.pack(valueTuple)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        case .lessThanOrEqual:
+            let (beginKey, _) = indexSubspaceForIndex.range()
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let endKey = valueSubspace.range().1
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        default:
+            // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
+            return nil
+        }
+
+        // Execute scan in transaction - all captured values are now Sendable
+        let ids: [Tuple] = try await database.withTransaction(configuration: .readOnly) { transaction in
+            var ids: [Tuple] = []
+
+            switch scanRange {
+            case .exactMatch(let begin, let end, let valueSubspace):
                 let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
                 for try await (key, _) in sequence {
-                    // Extract ID from key: [indexSubspace]/[value]/[id...]
                     if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
                         ids.append(idTuple)
                         if let limit = limit, ids.count >= limit {
@@ -230,58 +262,19 @@ internal final class FDBDataStore: DataStore, Sendable {
                     }
                 }
 
-            case .greaterThan, .greaterThanOrEqual:
-                // Range scan from value to end
-                let valueTuple = self.valueToTuple(condition.value)
-                let beginKey: [UInt8]
-                if condition.op == .greaterThan {
-                    // Start after the value's range
-                    let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                    beginKey = valueSubspace.range().1  // End of value range = start after
-                } else {
-                    // Start at value
-                    beginKey = indexSubspaceForIndex.pack(valueTuple)
-                }
-                let (_, endKey) = indexSubspaceForIndex.range()
-
-                let sequence = transaction.getRange(begin: beginKey, end: endKey, snapshot: true)
+            case .range(let begin, let end, let baseSubspace, let keyPathsCount):
+                let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
                 for try await (key, _) in sequence {
-                    if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: indexSubspaceForIndex) {
+                    if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
                         ids.append(idTuple)
                         if let limit = limit, ids.count >= limit {
                             break
                         }
                     }
                 }
-
-            case .lessThan, .lessThanOrEqual:
-                // Range scan from start to value
-                let valueTuple = self.valueToTuple(condition.value)
-                let (beginKey, _) = indexSubspaceForIndex.range()
-                let endKey: [UInt8]
-                if condition.op == .lessThan {
-                    // End before the value
-                    endKey = indexSubspaceForIndex.pack(valueTuple)
-                } else {
-                    // End after the value's range
-                    let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                    endKey = valueSubspace.range().1
-                }
-
-                let sequence = transaction.getRange(begin: beginKey, end: endKey, snapshot: true)
-                for try await (key, _) in sequence {
-                    if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: indexSubspaceForIndex) {
-                        ids.append(idTuple)
-                        if let limit = limit, ids.count >= limit {
-                            break
-                        }
-                    }
-                }
-
-            default:
-                // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
-                return
             }
+
+            return ids
         }
 
         // If no IDs found, return empty result
@@ -299,11 +292,18 @@ internal final class FDBDataStore: DataStore, Sendable {
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
 
+    /// Represents a pre-computed index scan range (Sendable)
+    private enum IndexScanRange: Sendable {
+        case exactMatch(begin: [UInt8], end: [UInt8], valueSubspace: Subspace)
+        /// Range scan with keyPathsCount to know how many elements are index values vs ID
+        case range(begin: [UInt8], end: [UInt8], baseSubspace: Subspace, keyPathsCount: Int)
+    }
+
     /// Extract a simple indexable condition from a predicate
-    private struct IndexableCondition {
+    private struct IndexableCondition: Sendable {
         let fieldName: String
         let op: ComparisonOperator
-        let value: Any  // Using Any since values come from type-erased AnySendable
+        let valueTuple: Tuple
     }
 
     /// Extract all indexable conditions from a predicate
@@ -315,7 +315,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         case .comparison(let comparison):
             switch comparison.op {
             case .equal, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
-                return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, value: comparison.value.value)]
+                // Convert to Tuple here for Sendable compatibility
+                let tuple = valueToTuple(comparison.value.value)
+                return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, valueTuple: tuple)]
             default:
                 return []
             }
@@ -455,24 +457,37 @@ internal final class FDBDataStore: DataStore, Sendable {
         return nil
     }
 
-    /// Extract ID from an index key given a base subspace
+    /// Extract ID from an index key given a base subspace and keyPaths count
     ///
-    /// Index key structure: [baseSubspace]/[value1]/[value2]/.../[id]
-    /// We need to extract the ID portion which comes after the index values.
-    private func extractIDFromIndexKey(_ key: [UInt8], baseSubspace: Subspace) -> Tuple? {
+    /// Index key structure: [baseSubspace]/[value1]/[value2]/.../[id1]/[id2]/...
+    /// The first `keyPathsCount` elements are index values, the rest are the ID.
+    ///
+    /// - Parameters:
+    ///   - key: The raw key bytes
+    ///   - baseSubspace: The index subspace
+    ///   - keyPathsCount: Number of index key paths (determines how many elements are values vs ID)
+    private func extractIDFromIndexKey(_ key: [UInt8], baseSubspace: Subspace, keyPathsCount: Int) -> Tuple? {
         do {
             let tuple = try baseSubspace.unpack(key)
-            // For a simple index with one key path, tuple is [value, id]
-            // Return the last element as ID
-            if tuple.count >= 2 {
-                // Assume last element is the ID
-                if let lastElement = tuple[tuple.count - 1] {
-                    return Tuple([lastElement])
-                }
-            } else if tuple.count == 1, let element = tuple[0] {
-                // Single element could be the ID in some cases
-                return Tuple([element])
+            // tuple = [value1, value2, ..., id1, id2, ...]
+            // Skip first keyPathsCount elements (index values), rest is ID
+            guard tuple.count > keyPathsCount else {
+                return nil
             }
+
+            // Extract ID elements (everything after index values)
+            var idElements: [any TupleElement] = []
+            for i in keyPathsCount..<tuple.count {
+                if let element = tuple[i] {
+                    idElements.append(element)
+                }
+            }
+
+            guard !idElements.isEmpty else {
+                return nil
+            }
+
+            return Tuple(idElements)
         } catch {
             // Key doesn't belong to this subspace
         }
@@ -481,20 +496,21 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch models by IDs
     private func fetchByIds<T: Persistable>(_ type: T.Type, ids: [Tuple]) async throws -> [T] {
-        var results: [T] = []
         let typeSubspace = recordSubspace.subspace(T.persistableType)
 
-        try await database.withTransaction { transaction in
-            for idTuple in ids {
-                let key = typeSubspace.pack(idTuple)
+        // Pre-compute keys outside transaction
+        let keys = ids.map { typeSubspace.pack($0) }
+
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
+            var results: [T] = []
+            for key in keys {
                 if let bytes = try await transaction.getValue(for: key, snapshot: true) {
                     let model: T = try DataAccess.deserialize(bytes)
                     results.append(model)
                 }
             }
+            return results
         }
-
-        return results
     }
 
     /// Check if predicate is a simple field comparison (no AND/OR/NOT)
@@ -538,51 +554,47 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Count using index scan (without deserializing records)
     private func countUsingIndex(condition: IndexableCondition, index: IndexDescriptor) async throws -> Int {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
-        var count = 0
+        let valueTuple = condition.valueTuple
 
-        try await database.withTransaction { transaction in
-            let (beginKey, endKey): ([UInt8], [UInt8])
+        // Compute key range outside transaction to avoid capturing non-Sendable condition
+        let beginKey: [UInt8]
+        let endKey: [UInt8]
 
-            switch condition.op {
-            case .equal:
-                // Exact match: count [indexSubspace]/[value]/*
-                let valueTuple = self.valueToTuple(condition.value)
-                let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                (beginKey, endKey) = valueSubspace.range()
+        switch condition.op {
+        case .equal:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            (beginKey, endKey) = valueSubspace.range()
 
-            case .greaterThan:
-                let valueTuple = self.valueToTuple(condition.value)
-                let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                beginKey = valueSubspace.range().1  // Start after value range
-                endKey = indexSubspaceForIndex.range().1
+        case .greaterThan:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            beginKey = valueSubspace.range().1  // Start after value range
+            endKey = indexSubspaceForIndex.range().1
 
-            case .greaterThanOrEqual:
-                let valueTuple = self.valueToTuple(condition.value)
-                beginKey = indexSubspaceForIndex.pack(valueTuple)
-                endKey = indexSubspaceForIndex.range().1
+        case .greaterThanOrEqual:
+            beginKey = indexSubspaceForIndex.pack(valueTuple)
+            endKey = indexSubspaceForIndex.range().1
 
-            case .lessThan:
-                let valueTuple = self.valueToTuple(condition.value)
-                beginKey = indexSubspaceForIndex.range().0
-                endKey = indexSubspaceForIndex.pack(valueTuple)
+        case .lessThan:
+            beginKey = indexSubspaceForIndex.range().0
+            endKey = indexSubspaceForIndex.pack(valueTuple)
 
-            case .lessThanOrEqual:
-                let valueTuple = self.valueToTuple(condition.value)
-                let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
-                beginKey = indexSubspaceForIndex.range().0
-                endKey = valueSubspace.range().1
+        case .lessThanOrEqual:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            beginKey = indexSubspaceForIndex.range().0
+            endKey = valueSubspace.range().1
 
-            default:
-                return  // Not index-optimizable
-            }
+        default:
+            return 0  // Not index-optimizable
+        }
 
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
+            var count = 0
             let sequence = transaction.getRange(begin: beginKey, end: endKey, snapshot: true)
             for try await _ in sequence {
                 count += 1
             }
+            return count
         }
-
-        return count
     }
 
     /// Count all models of a type
@@ -590,9 +602,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = recordSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        var count = 0
-
-        try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .readOnly) { transaction in
+            var count = 0
             let sequence = transaction.getRange(
                 begin: begin,
                 end: end,
@@ -602,9 +613,8 @@ internal final class FDBDataStore: DataStore, Sendable {
             for try await _ in sequence {
                 count += 1
             }
+            return count
         }
-
-        return count
     }
 
     // MARK: - Save Operations
@@ -616,7 +626,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.saveModel(model, transaction: transaction)
                 }
@@ -676,7 +686,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.deleteModel(model, transaction: transaction)
                 }
@@ -719,7 +729,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = recordSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             // Load the model first for index cleanup
             if let bytes = try await transaction.getValue(for: key, snapshot: false) {
                 // Use Protobuf deserialization via DataAccess
@@ -744,7 +754,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .batch) { transaction in
                 // Process inserts
                 for model in inserts {
                     try await self.saveModelUntyped(model, transaction: transaction)
@@ -1528,7 +1538,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Clear all records of a type
     func clearAll<T: Persistable>(_ type: T.Type) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             let typeSubspace = self.recordSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)

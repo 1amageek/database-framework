@@ -486,10 +486,11 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
         index: IndexDescriptor,
         indexSubspace: Subspace
     ) async throws {
-        var entryCount: Int64 = 0
-        var hll = HyperLogLog()
 
-        try await database.withTransaction { transaction in
+        let (entryCount, distinctKeyCount) = try await database.withTransaction(configuration: .readOnly) { transaction in
+            var entryCount: Int64 = 0
+            var hll = HyperLogLog()
+
             let (beginKey, endKey) = indexSubspace.range()
 
             for try await (key, _) in transaction.getRange(begin: beginKey, end: endKey, snapshot: true) {
@@ -504,9 +505,10 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
                     }
                 }
             }
+
+            return (entryCount, hll.cardinality())
         }
 
-        let distinctKeyCount = hll.cardinality()
         let avgEntriesPerKey = distinctKeyCount > 0 ? Double(entryCount) / Double(distinctKeyCount) : 1.0
 
         let stats = IndexStatisticsData(

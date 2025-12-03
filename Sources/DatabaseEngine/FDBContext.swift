@@ -370,7 +370,7 @@ public final class FDBContext: Sendable {
             let allTypes = Set(insertsByType.keys).union(deletesByType.keys)
 
             // Execute all operations in a single transaction
-            try await container.withTransaction { transaction in
+            try await container.withTransaction(configuration: .default) { transaction in
                 for typeName in allTypes {
                     let typeInserts = insertsByType[typeName] ?? []
                     let typeDeletes = deletesByType[typeName] ?? []

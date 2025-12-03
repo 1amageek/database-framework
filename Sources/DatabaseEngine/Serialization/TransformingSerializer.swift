@@ -19,7 +19,7 @@ public struct TransformationType: OptionSet, Sendable, Equatable {
     }
 
     /// No transformation
-    public static let none = TransformationType(rawValue: 0x00)
+    public static let none: TransformationType = []
 
     /// Data is compressed
     public static let compressed = TransformationType(rawValue: 0x01)
@@ -359,30 +359,20 @@ public struct TransformingSerializer: Sendable {
     }
 
     /// Decompress data using the specified algorithm
+    ///
+    /// Uses progressive buffer sizing to handle various compression ratios.
+    /// Highly compressible data (e.g., repeated bytes) can have compression
+    /// ratios over 100:1, requiring large decompression buffers.
     private func decompress(_ data: Data, algorithm: CompressionAlgorithm) -> Data? {
-        // Start with a reasonable buffer size (4x compressed size)
-        var destinationBufferSize = data.count * 4
-        var destinationBuffer = [UInt8](repeating: 0, count: destinationBufferSize)
+        // Progressive buffer sizes: 8x, 64x, 256x, 1024x
+        // Handles compression ratios from typical (2-10x) to extreme (100x+)
+        let multipliers = [8, 64, 256, 1024]
 
-        var decompressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
-            guard let sourcePtr = sourceBuffer.baseAddress else { return 0 }
-            return compression_decode_buffer(
-                &destinationBuffer,
-                destinationBufferSize,
-                sourcePtr.assumingMemoryBound(to: UInt8.self),
-                data.count,
-                nil,
-                algorithm.algorithm
-            )
-        }
+        for multiplier in multipliers {
+            let destinationBufferSize = max(data.count * multiplier, 1024)
+            var destinationBuffer = [UInt8](repeating: 0, count: destinationBufferSize)
 
-        // If buffer was too small, try with larger buffer
-        if decompressedSize == destinationBufferSize {
-            // Try with much larger buffer
-            destinationBufferSize = data.count * 32
-            destinationBuffer = [UInt8](repeating: 0, count: destinationBufferSize)
-
-            decompressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
+            let decompressedSize = data.withUnsafeBytes { sourceBuffer -> Int in
                 guard let sourcePtr = sourceBuffer.baseAddress else { return 0 }
                 return compression_decode_buffer(
                     &destinationBuffer,
@@ -393,10 +383,33 @@ public struct TransformingSerializer: Sendable {
                     algorithm.algorithm
                 )
             }
+
+            // Success: decompressed size is less than buffer (buffer was large enough)
+            if decompressedSize > 0 && decompressedSize < destinationBufferSize {
+                return Data(destinationBuffer[0..<decompressedSize])
+            }
+
+            // Buffer too small or error: try next size
         }
 
-        guard decompressedSize > 0 else { return nil }
-        return Data(destinationBuffer[0..<decompressedSize])
+        // Final attempt with very large buffer (handles extreme cases)
+        let finalBufferSize = data.count * 4096
+        var finalBuffer = [UInt8](repeating: 0, count: finalBufferSize)
+
+        let finalSize = data.withUnsafeBytes { sourceBuffer -> Int in
+            guard let sourcePtr = sourceBuffer.baseAddress else { return 0 }
+            return compression_decode_buffer(
+                &finalBuffer,
+                finalBufferSize,
+                sourcePtr.assumingMemoryBound(to: UInt8.self),
+                data.count,
+                nil,
+                algorithm.algorithm
+            )
+        }
+
+        guard finalSize > 0 else { return nil }
+        return Data(finalBuffer[0..<finalSize])
     }
 
     // MARK: - Encryption

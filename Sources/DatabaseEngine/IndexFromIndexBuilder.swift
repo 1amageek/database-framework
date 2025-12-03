@@ -275,11 +275,12 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
             let batchStart = DispatchTime.now()
-            var itemsInBatch = 0
-            var lastProcessedKey: FDB.Bytes? = nil
 
             do {
-                try await database.withTransaction { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                    var itemsInBatch = 0
+                    var lastProcessedKey: FDB.Bytes? = nil
+
                     let sequence = transaction.getRange(
                         beginSelector: .firstGreaterOrEqual(bounds.begin),
                         endSelector: .firstGreaterOrEqual(bounds.end),
@@ -307,20 +308,25 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         }
                     }
 
-                    // Record progress with continuation
-                    if let lastKey = lastProcessedKey {
-                        let isComplete = itemsInBatch < batchSize
-                        rangeSet.recordProgress(
-                            rangeIndex: bounds.rangeIndex,
-                            lastProcessedKey: lastKey,
-                            isComplete: isComplete
-                        )
-                    } else {
-                        rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                    }
+                    return (itemsInBatch, lastProcessedKey)
+                }
 
-                    // Save progress
-                    try self.saveProgress(rangeSet, transaction: transaction)
+                // Record progress outside transaction
+                if let lastKey = lastProcessedKey {
+                    let isComplete = itemsInBatch < batchSize
+                    rangeSet.recordProgress(
+                        rangeIndex: bounds.rangeIndex,
+                        lastProcessedKey: lastKey,
+                        isComplete: isComplete
+                    )
+                } else {
+                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                }
+
+                // Save progress in separate transaction
+                let rangeSetCopy = rangeSet
+                try await database.withTransaction(configuration: .batch) { transaction in
+                    try self.saveProgress(rangeSetCopy, transaction: transaction)
                 }
 
                 let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
@@ -362,11 +368,13 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
             let batchStart = DispatchTime.now()
-            var itemsInBatch = 0
-            var lastProcessedKey: FDB.Bytes? = nil
 
             do {
-                try await database.withTransaction { transaction in
+                let (itemsInBatch, lastProcessedKey, dataFetches) = try await database.withTransaction(configuration: .batch) { transaction in
+                    var itemsInBatch = 0
+                    var lastProcessedKey: FDB.Bytes? = nil
+                    var dataFetches = 0
+
                     let sequence = transaction.getRange(
                         beginSelector: .firstGreaterOrEqual(bounds.begin),
                         endSelector: .firstGreaterOrEqual(bounds.end),
@@ -385,7 +393,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                             continue  // Item was deleted
                         }
 
-                        self.dataFetchesCounter.increment()
+                        dataFetches += 1
 
                         // Deserialize item
                         let item: Item = try DataAccess.deserialize(itemData)
@@ -402,20 +410,28 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         }
                     }
 
-                    // Record progress with continuation
-                    if let lastKey = lastProcessedKey {
-                        let isComplete = itemsInBatch < batchSize
-                        rangeSet.recordProgress(
-                            rangeIndex: bounds.rangeIndex,
-                            lastProcessedKey: lastKey,
-                            isComplete: isComplete
-                        )
-                    } else {
-                        rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
-                    }
+                    return (itemsInBatch, lastProcessedKey, dataFetches)
+                }
 
-                    // Save progress
-                    try self.saveProgress(rangeSet, transaction: transaction)
+                // Update metrics outside transaction
+                self.dataFetchesCounter.increment(by: dataFetches)
+
+                // Record progress outside transaction
+                if let lastKey = lastProcessedKey {
+                    let isComplete = itemsInBatch < batchSize
+                    rangeSet.recordProgress(
+                        rangeIndex: bounds.rangeIndex,
+                        lastProcessedKey: lastKey,
+                        isComplete: isComplete
+                    )
+                } else {
+                    rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
+                }
+
+                // Save progress in separate transaction
+                let rangeSetCopy = rangeSet
+                try await database.withTransaction(configuration: .batch) { transaction in
+                    try self.saveProgress(rangeSetCopy, transaction: transaction)
                 }
 
                 let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
@@ -492,7 +508,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: self.progressKey) else {
                 return nil
             }
@@ -506,7 +522,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: self.progressKey)
         }
     }
@@ -514,7 +530,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Index Management
 
     private func clearTargetIndex() async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             let targetRange = self.indexSubspace.subspace(self.targetIndex.name).range()
             transaction.clearRange(beginKey: targetRange.begin, endKey: targetRange.end)
         }
@@ -539,10 +555,11 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         let sourceRange = sourceSubspace.range()
 
         // Collect sample using reservoir sampling
-        var reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = []
-        var itemsSeen = 0
+        // Move reservoir and itemsSeen inside transaction to avoid Sendable capture issues
+        let reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.withTransaction(configuration: .readOnly) { transaction in
+            var reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+            var itemsSeen = 0
 
-        try await database.withTransaction { transaction in
             let sequence = transaction.getRange(
                 beginSelector: .firstGreaterOrEqual(sourceRange.begin),
                 endSelector: .firstGreaterOrEqual(sourceRange.end),
@@ -563,6 +580,8 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     }
                 }
             }
+
+            return reservoir
         }
 
         guard !reservoir.isEmpty else {
@@ -578,9 +597,12 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         let verifyBatchSize = min(100, reservoir.count)
         for batchStart in stride(from: 0, to: reservoir.count, by: verifyBatchSize) {
             let batchEnd = min(batchStart + verifyBatchSize, reservoir.count)
-            let batch = reservoir[batchStart..<batchEnd]
+            let batch = Array(reservoir[batchStart..<batchEnd])
 
-            try await database.withTransaction { transaction in
+            let (batchMissing, batchVerified) = try await database.withTransaction(configuration: .readOnly) { transaction in
+                var batchMissingCount = 0
+                var batchVerifiedCount = 0
+
                 for (sourceKey, sourceValue) in batch {
                     // Extract PK and field values from source
                     guard let pk = try self.extractPrimaryKey(from: sourceKey, sourceSubspace: sourceSubspace) else {
@@ -600,11 +622,17 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     // Check if target entry exists
                     let targetValue = try await transaction.getValue(for: expectedTargetKey)
                     if targetValue == nil {
-                        missingCount += 1
+                        batchMissingCount += 1
                     }
-                    verifiedCount += 1
+                    batchVerifiedCount += 1
                 }
+
+                return (batchMissingCount, batchVerifiedCount)
             }
+
+            // Accumulate results outside transaction
+            missingCount += batchMissing
+            verifiedCount += batchVerified
         }
 
         // Check error rate
