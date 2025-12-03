@@ -369,14 +369,30 @@ internal struct FDBStorageReaderAdapter: StorageReader {
 extension FDBDataStore {
 
     /// Scan a range within a subspace (raw key-value access)
+    ///
+    /// - Parameters:
+    ///   - subspace: The subspace to scan
+    ///   - start: Start tuple (nil = beginning of subspace)
+    ///   - end: End tuple (nil = end of subspace)
+    ///   - startInclusive: Whether start is inclusive
+    ///   - endInclusive: Whether end is inclusive
+    ///   - reverse: Whether to scan in reverse order
+    ///   - limit: Maximum number of entries to return (nil = unlimited)
+    ///   - streamingMode: FDB streaming mode (nil = auto-select based on limit)
     func scanRangeRaw(
         subspace: Subspace,
         start: Tuple?,
         end: Tuple?,
         startInclusive: Bool,
         endInclusive: Bool,
-        reverse: Bool
+        reverse: Bool,
+        limit: Int? = nil,
+        streamingMode: FDB.StreamingMode? = nil
     ) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
+        // Select optimal StreamingMode if not specified
+        let mode = streamingMode ?? FDB.StreamingMode.forQuery(limit: limit)
+        let effectiveLimit = limit ?? 0  // 0 = unlimited in FDB
+
         return AsyncThrowingStream { continuation in
             Task {
                 do {
@@ -410,7 +426,15 @@ extension FDBDataStore {
                             endKey = self.incrementKey(subspace.prefix)
                         }
 
-                        let sequence = transaction.getRange(begin: beginKey, end: endKey, snapshot: true)
+                        // Apply limit pushdown and streaming mode optimization
+                        let sequence = transaction.getRange(
+                            from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
+                            to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+                            limit: effectiveLimit,
+                            reverse: reverse,
+                            snapshot: true,
+                            streamingMode: mode
+                        )
                         for try await (key, value) in sequence {
                             continuation.yield((key: key, value: value))
                         }

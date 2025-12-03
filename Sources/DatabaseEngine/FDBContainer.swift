@@ -64,7 +64,11 @@ public final class FDBContainer: Sendable {
     private let directoryCache: Mutex<[String: Subspace]>
 
     /// Read version cache for GRV optimization
-    private let readVersionCache: ReadVersionCache
+    /// Uses SharedReadVersionCache for consistency across all code paths
+    /// (FDBContainer, FDBDataStore, IndexQueryContext, etc.)
+    private var readVersionCache: ReadVersionCache {
+        SharedReadVersionCache.shared.cache
+    }
 
     /// Transaction size warning threshold (5MB)
     private static let transactionSizeWarningThreshold = 5_000_000
@@ -103,7 +107,7 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        self.readVersionCache = ReadVersionCache()
+        // readVersionCache is now a computed property using SharedReadVersionCache.shared
     }
 
     /// Initialize FDBContainer with database (low-level API)
@@ -128,7 +132,7 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        self.readVersionCache = ReadVersionCache()
+        // readVersionCache is now a computed property using SharedReadVersionCache.shared
     }
 
     // MARK: - Context Management

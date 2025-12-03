@@ -22,8 +22,9 @@ public final class SharedReadVersionCache: Sendable {
     /// Shared singleton instance
     public static let shared = SharedReadVersionCache()
 
-    /// Underlying cache
-    private let cache: ReadVersionCache
+    /// Underlying cache - exposed for direct access by FDBContainer
+    /// to ensure all code paths share the same cache instance
+    public let cache: ReadVersionCache
 
     /// Default staleness for cached reads (seconds)
     private let staleness: Mutex<Double>

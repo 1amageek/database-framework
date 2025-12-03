@@ -68,10 +68,14 @@ internal final class FDBDataStore: DataStore, Sendable {
         do {
             let results: [T] = try await database.withTransaction(configuration: .readOnly) { transaction in
                 var results: [T] = []
+                // Use .wantAll for full table scan - aggressive prefetch reduces round-trips
                 let sequence = transaction.getRange(
-                    begin: begin,
-                    end: end,
-                    snapshot: true
+                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+                    limit: 0,  // unlimited
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: .wantAll
                 )
 
                 for try await (_, value) in sequence {
@@ -247,29 +251,42 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Execute scan in transaction - all captured values are now Sendable
+        // Select optimal StreamingMode based on limit
+        let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
+
         let ids: [Tuple] = try await database.withTransaction(configuration: .readOnly) { transaction in
             var ids: [Tuple] = []
 
             switch scanRange {
             case .exactMatch(let begin, let end, let valueSubspace):
-                let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+                // Apply limit pushdown to reduce server-side work
+                let sequence = transaction.getRange(
+                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+                    limit: limit ?? 0,  // 0 = unlimited in FDB
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: streamingMode
+                )
                 for try await (key, _) in sequence {
                     if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
                         ids.append(idTuple)
-                        if let limit = limit, ids.count >= limit {
-                            break
-                        }
                     }
                 }
 
             case .range(let begin, let end, let baseSubspace, let keyPathsCount):
-                let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+                // Apply limit pushdown to reduce server-side work
+                let sequence = transaction.getRange(
+                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+                    limit: limit ?? 0,  // 0 = unlimited in FDB
+                    reverse: false,
+                    snapshot: true,
+                    streamingMode: streamingMode
+                )
                 for try await (key, _) in sequence {
                     if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
                         ids.append(idTuple)
-                        if let limit = limit, ids.count >= limit {
-                            break
-                        }
                     }
                 }
             }
@@ -589,7 +606,15 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         return try await database.withTransaction(configuration: .readOnly) { transaction in
             var count = 0
-            let sequence = transaction.getRange(begin: beginKey, end: endKey, snapshot: true)
+            // Use .wantAll for count operations - aggressive prefetch
+            let sequence = transaction.getRange(
+                from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
+                to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .wantAll
+            )
             for try await _ in sequence {
                 count += 1
             }
@@ -604,10 +629,14 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         return try await database.withTransaction(configuration: .readOnly) { transaction in
             var count = 0
+            // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
-                begin: begin,
-                end: end,
-                snapshot: true
+                from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                to: FDB.KeySelector.firstGreaterOrEqual(end),
+                limit: 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: .wantAll
             )
 
             for try await _ in sequence {
@@ -615,6 +644,59 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
             return count
         }
+    }
+
+    // MARK: - Approximate Count (O(1))
+
+    /// Approximate count using FDB's getEstimatedRangeSizeBytes
+    ///
+    /// This is O(1) and much faster than full scan for large datasets.
+    /// Accuracy depends on cluster statistics freshness.
+    ///
+    /// - Parameters:
+    ///   - type: The persistable type to count
+    ///   - avgRowSizeBytes: Estimated average row size (default: 500 bytes)
+    /// - Returns: Estimated row count
+    func approximateCount<T: Persistable>(
+        _ type: T.Type,
+        avgRowSizeBytes: Int = 500
+    ) async throws -> Int {
+        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let (begin, end) = typeSubspace.range()
+
+        let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+            try await transaction.getEstimatedRangeSizeBytes(
+                beginKey: begin,
+                endKey: end
+            )
+        }
+
+        let rowSize = max(1, avgRowSizeBytes)
+        return max(0, sizeBytes / rowSize)
+    }
+
+    /// Approximate count for an index range
+    ///
+    /// - Parameters:
+    ///   - index: The index descriptor
+    ///   - avgEntrySizeBytes: Estimated average entry size (default: 50 bytes)
+    /// - Returns: Estimated entry count
+    func approximateIndexCount(
+        index: IndexDescriptor,
+        avgEntrySizeBytes: Int = 50
+    ) async throws -> Int {
+        let indexSubspaceForIndex = indexSubspace.subspace(index.name)
+        let (begin, end) = indexSubspaceForIndex.range()
+
+        let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+            try await transaction.getEstimatedRangeSizeBytes(
+                beginKey: begin,
+                endKey: end
+            )
+        }
+
+        let entrySize = max(1, avgEntrySizeBytes)
+        return max(0, sizeBytes / entrySize)
     }
 
     // MARK: - Save Operations
