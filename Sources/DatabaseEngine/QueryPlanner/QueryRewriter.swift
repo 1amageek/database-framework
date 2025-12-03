@@ -277,8 +277,8 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// - For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
     private func mergeFieldComparisons(_ comparisons: [FieldComparison<T>]) -> [FieldComparison<T>] {
         var result: [FieldComparison<T>] = []
-        var lowerBound: (value: AnySendable, inclusive: Bool)?
-        var upperBound: (value: AnySendable, inclusive: Bool)?
+        var lowerBound: (value: any Sendable, inclusive: Bool)?
+        var upperBound: (value: any Sendable, inclusive: Bool)?
         var equalities: [FieldComparison<T>] = []
         var others: [FieldComparison<T>] = []
 
@@ -333,9 +333,9 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Update lower bound, keeping the stricter one
     /// For lower bounds: higher value is stricter, exclusive is stricter than inclusive at same value
     private func updateLowerBound(
-        existing: (value: AnySendable, inclusive: Bool)?,
-        new: (value: AnySendable, inclusive: Bool)
-    ) -> (value: AnySendable, inclusive: Bool) {
+        existing: (value: any Sendable, inclusive: Bool)?,
+        new: (value: any Sendable, inclusive: Bool)
+    ) -> (value: any Sendable, inclusive: Bool) {
         guard let existing = existing else { return new }
 
         let cmp = compareValues(new.value, existing.value)
@@ -356,9 +356,9 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Update upper bound, keeping the stricter one
     /// For upper bounds: lower value is stricter, exclusive is stricter than inclusive at same value
     private func updateUpperBound(
-        existing: (value: AnySendable, inclusive: Bool)?,
-        new: (value: AnySendable, inclusive: Bool)
-    ) -> (value: AnySendable, inclusive: Bool) {
+        existing: (value: any Sendable, inclusive: Bool)?,
+        new: (value: any Sendable, inclusive: Bool)
+    ) -> (value: any Sendable, inclusive: Bool) {
         guard let existing = existing else { return new }
 
         let cmp = compareValues(new.value, existing.value)
@@ -376,16 +376,16 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
         }
     }
 
-    /// Compare two AnySendable values
-    private func compareValues(_ lhs: AnySendable, _ rhs: AnySendable) -> ComparisonResult {
+    /// Compare two type-erased Sendable values
+    private func compareValues(_ lhs: any Sendable, _ rhs: any Sendable) -> ComparisonResult {
         // Try different comparable types
-        if let l = lhs.value as? Int, let r = rhs.value as? Int {
+        if let l = lhs as? Int, let r = rhs as? Int {
             return l < r ? .orderedAscending : (l > r ? .orderedDescending : .orderedSame)
         }
-        if let l = lhs.value as? Double, let r = rhs.value as? Double {
+        if let l = lhs as? Double, let r = rhs as? Double {
             return l < r ? .orderedAscending : (l > r ? .orderedDescending : .orderedSame)
         }
-        if let l = lhs.value as? String, let r = rhs.value as? String {
+        if let l = lhs as? String, let r = rhs as? String {
             return l.compare(r)
         }
         // Default to same (can't compare)
@@ -529,13 +529,13 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     /// Check if comparisons on a single field are contradictory
     private func fieldHasContradiction(_ comparisons: [FieldComparison<T>]) -> Bool {
         var equalityValues: Set<String> = []
-        var lowerBound: (value: AnySendable, inclusive: Bool)?
-        var upperBound: (value: AnySendable, inclusive: Bool)?
+        var lowerBound: (value: any Sendable, inclusive: Bool)?
+        var upperBound: (value: any Sendable, inclusive: Bool)?
 
         for comp in comparisons {
             switch comp.op {
             case .equal:
-                let valueStr = "\(comp.value.value)"
+                let valueStr = "\(comp.value)"
                 if !equalityValues.isEmpty && !equalityValues.contains(valueStr) {
                     // Multiple different equality values: a == 1 AND a == 2
                     return true
@@ -613,7 +613,7 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
     private func predicateKey(_ predicate: Predicate<T>) -> String {
         switch predicate {
         case .comparison(let comp):
-            return "\(comp.fieldName):\(comp.op.rawValue):\(comp.value.value)"
+            return "\(comp.fieldName):\(comp.op.rawValue):\(comp.value)"
         case .and(let children):
             let keys = children.map { predicateKey($0) }.sorted()
             return "AND(" + keys.joined(separator: ",") + ")"

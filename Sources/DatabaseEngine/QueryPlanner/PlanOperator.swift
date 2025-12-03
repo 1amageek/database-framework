@@ -101,7 +101,7 @@ public struct IndexScanOperator<T: Persistable>: @unchecked Sendable {
     public let reverse: Bool
 
     /// Conditions satisfied by this scan
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 
     /// Estimated matching entries
     public let estimatedEntries: Int
@@ -114,7 +114,7 @@ public struct IndexScanOperator<T: Persistable>: @unchecked Sendable {
         index: IndexDescriptor,
         bounds: IndexScanBounds,
         reverse: Bool = false,
-        satisfiedConditions: [FieldCondition<T>] = [],
+        satisfiedConditions: [any FieldConditionProtocol<T>] = [],
         estimatedEntries: Int,
         limit: Int? = nil
     ) {
@@ -142,10 +142,10 @@ public struct IndexScanBounds: Sendable {
 
     /// A single bound component
     public struct BoundComponent: @unchecked Sendable {
-        public let value: AnySendable?
+        public let value: (any TupleElement)?
         public let inclusive: Bool
 
-        public init(value: AnySendable?, inclusive: Bool) {
+        public init(value: (any TupleElement)?, inclusive: Bool) {
             self.value = value
             self.inclusive = inclusive
         }
@@ -168,15 +168,15 @@ public struct IndexSeekOperator<T: Persistable>: @unchecked Sendable {
     public let index: IndexDescriptor
 
     /// Values to seek (each inner array is one key)
-    public let seekValues: [[AnySendable]]
+    public let seekValues: [[any TupleElement]]
 
     /// Conditions satisfied by this seek
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 
     public init(
         index: IndexDescriptor,
-        seekValues: [[AnySendable]],
-        satisfiedConditions: [FieldCondition<T>] = []
+        seekValues: [[any TupleElement]],
+        satisfiedConditions: [any FieldConditionProtocol<T>] = []
     ) {
         self.index = index
         self.seekValues = seekValues

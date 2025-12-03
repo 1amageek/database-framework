@@ -370,7 +370,7 @@ internal struct DNFConverter<T: Persistable>: Sendable {
     private func predicateKey(_ predicate: Predicate<T>) -> String {
         switch predicate {
         case .comparison(let comp):
-            return "\(comp.fieldName):\(comp.op.rawValue):\(comp.value.value)"
+            return "\(comp.fieldName):\(comp.op.rawValue):\(comp.value)"
         case .and(let children):
             return "AND(" + children.map { predicateKey($0) }.sorted().joined(separator: ",") + ")"
         case .or(let children):
@@ -409,7 +409,7 @@ internal enum DNFConversionError: Error, CustomStringConvertible {
 
 extension FieldComparison {
     /// Create a FieldComparison with explicit values
-    internal init(keyPath: AnyKeyPath, op: ComparisonOperator, value: AnySendable) {
+    internal init(keyPath: AnyKeyPath, op: ComparisonOperator, value: any Sendable) {
         self.keyPath = keyPath
         self.op = op
         self.value = value

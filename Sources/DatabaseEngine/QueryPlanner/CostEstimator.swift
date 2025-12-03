@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Estimates the cost of executing a query plan
 public struct CostEstimator<T: Persistable> {
@@ -287,7 +288,7 @@ public struct CostEstimator<T: Persistable> {
             recordsPerSeek = 1.0
         } else {
             let avgEntriesPerKey = Double(statistics.estimatedIndexEntries(index: op.index) ?? 10000) /
-                                   Double(max(1, statistics.estimatedDistinctValues(field: op.satisfiedConditions.first?.field.fieldName ?? "", type: T.self) ?? 1000))
+                                   Double(max(1, statistics.estimatedDistinctValues(field: op.satisfiedConditions.first?.fieldName ?? "", type: T.self) ?? 1000))
             recordsPerSeek = avgEntriesPerKey
         }
 
@@ -606,7 +607,7 @@ public struct CostEstimator<T: Persistable> {
             let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self)
                 ?? costModel.defaultEqualitySelectivity
             // IN with n values: clamp to 1.0
-            let valueCount = extractArrayCount(from: comparison.value.value)
+            let valueCount = extractArrayCount(from: comparison.value)
             if valueCount > 0 {
                 return min(1.0, eqSelectivity * Double(valueCount))
             }
@@ -624,50 +625,41 @@ public struct CostEstimator<T: Persistable> {
     }
 
     /// Estimate selectivity of a field condition
-    public func estimateConditionSelectivity(_ condition: FieldCondition<T>) -> Double {
-        let fieldName = condition.field.fieldName
+    public func estimateConditionSelectivity(_ condition: any FieldConditionProtocol<T>) -> Double {
+        let fieldName = condition.fieldName
 
-        switch condition.constraint {
-        case .equals:
+        if condition.isEquality {
             return statistics.equalitySelectivity(field: fieldName, type: T.self)
                 ?? costModel.defaultEqualitySelectivity
-
-        case .notEquals:
+        } else if condition.isRange {
+            // Build RangeBound from condition bounds
+            if let bounds = condition.rangeBoundsAsTupleElements() {
+                let rangeBound = RangeBound(
+                    lower: bounds.lower.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) },
+                    upper: bounds.upper.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) }
+                )
+                return statistics.rangeSelectivity(field: fieldName, range: rangeBound, type: T.self)
+                    ?? costModel.defaultRangeSelectivity
+            }
+            return costModel.defaultRangeSelectivity
+        } else if condition.isIn {
             let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self)
                 ?? costModel.defaultEqualitySelectivity
-            return 1 - eqSelectivity
-
-        case .range(let range):
-            return statistics.rangeSelectivity(field: fieldName, range: range, type: T.self)
-                ?? costModel.defaultRangeSelectivity
-
-        case .in(let values):
-            let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self)
-                ?? costModel.defaultEqualitySelectivity
-            return min(1.0, eqSelectivity * Double(values.count))
-
-        case .notIn(let values):
-            // NOT IN excludes specific values: 1 - (selectivity * count)
-            let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self)
-                ?? costModel.defaultEqualitySelectivity
-            return max(0.0, 1.0 - min(1.0, eqSelectivity * Double(values.count)))
-
-        case .isNull(let isNull):
+            return min(1.0, eqSelectivity * Double(condition.inValuesCount))
+        } else if condition.isNullCheck {
             let nullSelectivity = statistics.nullSelectivity(field: fieldName, type: T.self)
                 ?? costModel.defaultNullSelectivity
-            return isNull ? nullSelectivity : (1 - nullSelectivity)
-
-        case .textSearch:
+            return nullSelectivity
+        } else if condition is TextSearchFieldCondition<T> {
             return costModel.defaultTextSearchSelectivity
-
-        case .spatial:
+        } else if condition is SpatialFieldCondition<T> {
             return costModel.defaultSpatialSelectivity
-
-        case .vectorSimilarity:
+        } else if condition is VectorFieldCondition<T> {
             return costModel.defaultVectorSelectivity
-
-        case .stringPattern:
+        } else if condition is StringPatternFieldCondition<T> {
             return costModel.defaultPatternSelectivity
+        } else {
+            return costModel.defaultEqualitySelectivity
         }
     }
 
@@ -676,12 +668,12 @@ public struct CostEstimator<T: Persistable> {
     /// Extract array count from a value that might be an array
     ///
     /// Handles various array representations:
-    /// - `[AnySendable]` arrays
+    /// - `[any TupleElement]` arrays
     /// - Arrays accessed via Mirror reflection
     private func extractArrayCount(from value: Any) -> Int {
-        // Try AnySendable array first
-        if let anySendableArray = value as? [AnySendable] {
-            return anySendableArray.count
+        // Try TupleElement array first
+        if let tupleElementArray = value as? [any TupleElement] {
+            return tupleElementArray.count
         }
 
         // Use Mirror to check if value is a collection

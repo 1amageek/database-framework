@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Protocol for index-specific planning logic
 public protocol IndexPlanningStrategy: Sendable {
@@ -12,7 +13,7 @@ public protocol IndexPlanningStrategy: Sendable {
     /// Check which conditions this index can satisfy
     func matchConditions<T: Persistable>(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         statistics: StatisticsProvider
     ) -> IndexMatchResult<T>
 
@@ -37,10 +38,10 @@ public protocol IndexPlanningStrategy: Sendable {
 /// Result of matching conditions to an index
 public struct IndexMatchResult<T: Persistable>: @unchecked Sendable {
     /// Conditions that can be fully satisfied by the index
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 
     /// Conditions that can be partially satisfied (filter during scan)
-    public let partialConditions: [FieldCondition<T>]
+    public let partialConditions: [any FieldConditionProtocol<T>]
 
     /// Whether the index can satisfy ordering requirements
     public let satisfiesOrdering: Bool
@@ -55,8 +56,8 @@ public struct IndexMatchResult<T: Persistable>: @unchecked Sendable {
     public let estimatedEntries: Int
 
     public init(
-        satisfiedConditions: [FieldCondition<T>],
-        partialConditions: [FieldCondition<T>] = [],
+        satisfiedConditions: [any FieldConditionProtocol<T>],
+        partialConditions: [any FieldConditionProtocol<T>] = [],
         satisfiesOrdering: Bool,
         scanBounds: IndexScanBounds,
         selectivity: Double,
@@ -76,7 +77,7 @@ public struct IndexMatchResult<T: Persistable>: @unchecked Sendable {
             satisfiedConditions: [],
             partialConditions: [],
             satisfiesOrdering: false,
-            scanBounds: .unbounded,
+            scanBounds: IndexScanBounds.unbounded,
             selectivity: 1.0,
             estimatedEntries: 0
         )
@@ -94,10 +95,10 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
 
     public func matchConditions<T: Persistable>(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         statistics: StatisticsProvider
     ) -> IndexMatchResult<T> {
-        var satisfied: [FieldCondition<T>] = []
+        var satisfied: [any FieldConditionProtocol<T>] = []
         var startBounds: [IndexScanBounds.BoundComponent] = []
         var endBounds: [IndexScanBounds.BoundComponent] = []
         var selectivity: Double = 1.0
@@ -116,48 +117,57 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
 
             // Find condition for this field
             guard let condition = conditions.first(where: {
-                $0.field.fieldName == fieldName
+                $0.fieldName == fieldName
             }) else {
                 break // Can't skip fields in index prefix
             }
 
-            switch condition.constraint {
-            case .equals(let value):
+            if condition.isEquality {
                 // Equality extends the prefix
                 satisfied.append(condition)
-                startBounds.append(IndexScanBounds.BoundComponent(value: value, inclusive: true))
-                endBounds.append(IndexScanBounds.BoundComponent(value: value, inclusive: true))
+                let values = condition.constraintToTupleElements()
+                if let value = values.first {
+                    startBounds.append(IndexScanBounds.BoundComponent(value: value, inclusive: true))
+                    endBounds.append(IndexScanBounds.BoundComponent(value: value, inclusive: true))
+                }
 
                 let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self) ?? 0.01
                 selectivity *= eqSelectivity
                 prefixMatched += 1
 
-            case .range(let range):
+            } else if condition.isRange {
                 // Range can only be on last matched field
                 satisfied.append(condition)
 
-                if let lower = range.lower {
-                    startBounds.append(IndexScanBounds.BoundComponent(
-                        value: lower.value,
-                        inclusive: lower.inclusive
-                    ))
-                }
-                if let upper = range.upper {
-                    endBounds.append(IndexScanBounds.BoundComponent(
-                        value: upper.value,
-                        inclusive: upper.inclusive
-                    ))
-                }
+                if let bounds = condition.rangeBoundsAsTupleElements() {
+                    if let lower = bounds.lower {
+                        startBounds.append(IndexScanBounds.BoundComponent(
+                            value: lower.0,
+                            inclusive: lower.1
+                        ))
+                    }
+                    if let upper = bounds.upper {
+                        endBounds.append(IndexScanBounds.BoundComponent(
+                            value: upper.0,
+                            inclusive: upper.1
+                        ))
+                    }
 
-                let rangeSelectivity = statistics.rangeSelectivity(field: fieldName, range: range, type: T.self) ?? 0.3
-                selectivity *= rangeSelectivity
+                    let rangeBound = RangeBound(
+                        lower: bounds.lower.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) },
+                        upper: bounds.upper.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) }
+                    )
+                    let rangeSelectivity = statistics.rangeSelectivity(field: fieldName, range: rangeBound, type: T.self) ?? 0.3
+                    selectivity *= rangeSelectivity
+                }
                 prefixMatched += 1
                 rangeFound = true
 
-            case .in(let values):
+            } else if condition.isIn {
                 // IN becomes multiple seeks - handle as multiple equality
                 satisfied.append(condition)
 
+                let values = condition.constraintToTupleElements()
                 // For bounds, use first and last value (simplified)
                 if let first = values.first {
                     startBounds.append(IndexScanBounds.BoundComponent(value: first, inclusive: true))
@@ -168,15 +178,16 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
 
                 let eqSelectivity = statistics.equalitySelectivity(field: fieldName, type: T.self) ?? 0.01
                 // Clamp IN selectivity to prevent distortion
-                selectivity *= min(1.0, eqSelectivity * Double(values.count))
+                selectivity *= min(1.0, eqSelectivity * Double(condition.inValuesCount))
                 prefixMatched += 1
 
-            case .stringPattern(let pattern) where pattern.type == .prefix:
+            } else if let patternCondition = condition as? StringPatternFieldCondition<T>,
+                      patternCondition.constraint.type == .prefix {
                 // Prefix match can use B-tree index
                 satisfied.append(condition)
 
-                let prefixValue = AnySendable(pattern.pattern)
-                let endPrefix = AnySendable(pattern.pattern + "\u{FFFF}") // High character
+                let prefixValue = patternCondition.constraint.pattern
+                let endPrefix = patternCondition.constraint.pattern + "\u{FFFF}" // High character
 
                 startBounds.append(IndexScanBounds.BoundComponent(value: prefixValue, inclusive: true))
                 endBounds.append(IndexScanBounds.BoundComponent(value: endPrefix, inclusive: false))
@@ -185,7 +196,7 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
                 prefixMatched += 1
                 rangeFound = true
 
-            default:
+            } else {
                 break // Other constraints can't use B-tree index
             }
         }
@@ -210,20 +221,15 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
         analysis: QueryAnalysis<T>
     ) -> PlanOperator<T> {
         // Check for IN condition -> might need union of seeks
-        let hasInCondition = matchResult.satisfiedConditions.contains { condition in
-            if case .in = condition.constraint { return true }
-            return false
-        }
+        let hasInCondition = matchResult.satisfiedConditions.contains { $0.isIn }
 
         // Check for point lookup (all equality on full prefix)
-        let isPointLookup = matchResult.satisfiedConditions.allSatisfy { condition in
-            if case .equals = condition.constraint { return true }
-            return false
-        } && matchResult.satisfiedConditions.count == index.keyPaths.count
+        let isPointLookup = matchResult.satisfiedConditions.allSatisfy { $0.isEquality } &&
+            matchResult.satisfiedConditions.count == index.keyPaths.count
 
         if isPointLookup && !hasInCondition {
             // Single point lookup
-            let seekValues = matchResult.satisfiedConditions.map { $0.constraintValue }
+            let seekValues: [any TupleElement] = matchResult.satisfiedConditions.flatMap { $0.constraintToTupleElements() }
             return .indexSeek(IndexSeekOperator(
                 index: index,
                 seekValues: [seekValues],
@@ -264,27 +270,27 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
         matchResult: IndexMatchResult<T>
     ) -> PlanOperator<T> {
         // Build seek combinations: each combination is (seekValues, conditions)
-        // where conditions are the specific equality conditions for that seek
-        var combinations: [([AnySendable], [FieldCondition<T>])] = [([], [])]
+        // where conditions are the specific conditions for that seek
+        var combinations: [([any TupleElement], [any FieldConditionProtocol<T>])] = [([], [])]
 
         for condition in matchResult.satisfiedConditions {
-            switch condition.constraint {
-            case .equals(let value):
+            if condition.isEquality {
                 // Append value and condition to all existing combinations
-                combinations = combinations.map { (values, conditions) in
-                    (values + [value], conditions + [condition])
+                let values = condition.constraintToTupleElements()
+                combinations = combinations.map { (existingValues, existingConditions) in
+                    (existingValues + values, existingConditions + [condition])
                 }
-
-            case .in(let values):
+            } else if condition.isIn {
                 // Expand: for each existing combination, create one per IN value
-                // Replace IN condition with specific equality condition
-                var newCombinations: [([AnySendable], [FieldCondition<T>])] = []
+                let inValues = condition.constraintToTupleElements()
+                var newCombinations: [([any TupleElement], [any FieldConditionProtocol<T>])] = []
                 for (existingValues, existingConditions) in combinations {
-                    for value in values {
+                    for value in inValues {
                         // Create an equality condition for this specific value
-                        let eqCondition = FieldCondition(
-                            field: condition.field,
-                            constraint: .equals(value)
+                        let eqCondition = ScalarFieldCondition<T>.equals(
+                            field: FieldReference<T>(anyKeyPath: condition.keyPath, fieldName: condition.fieldName),
+                            value: value,
+                            predicate: condition.predicate
                         )
                         newCombinations.append((
                             existingValues + [value],
@@ -293,8 +299,7 @@ public struct ScalarIndexStrategy: IndexPlanningStrategy {
                     }
                 }
                 combinations = newCombinations
-
-            default:
+            } else {
                 // Other constraints don't contribute to seek values
                 // but should be included in conditions for each seek
                 combinations = combinations.map { (values, conditions) in
@@ -356,10 +361,10 @@ public struct FullTextIndexStrategy: IndexPlanningStrategy {
 
     public func matchConditions<T: Persistable>(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         statistics: StatisticsProvider
     ) -> IndexMatchResult<T> {
-        var satisfied: [FieldCondition<T>] = []
+        var satisfied: [any FieldConditionProtocol<T>] = []
 
         guard let firstKeyPath = index.keyPaths.first else {
             return .empty()
@@ -367,18 +372,16 @@ public struct FullTextIndexStrategy: IndexPlanningStrategy {
         let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
-            guard condition.field.fieldName == indexedField else { continue }
+            guard condition.fieldName == indexedField else { continue }
 
-            switch condition.constraint {
-            case .textSearch:
+            // Check for text search condition
+            if condition is TextSearchFieldCondition<T> {
                 satisfied.append(condition)
-
-            case .stringPattern(let pattern) where pattern.type == .contains:
-                // Can use inverted index for contains
+            }
+            // Check for string pattern with contains type
+            else if let patternCondition = condition as? StringPatternFieldCondition<T>,
+                    patternCondition.constraint.type == .contains {
                 satisfied.append(condition)
-
-            default:
-                break
             }
         }
 
@@ -410,16 +413,13 @@ public struct FullTextIndexStrategy: IndexPlanningStrategy {
         let searchTerms: [String]
         let matchMode: TextMatchMode
 
-        switch condition.constraint {
-        case .textSearch(let constraint):
-            searchTerms = constraint.terms
-            matchMode = constraint.matchMode
-
-        case .stringPattern(let pattern):
-            searchTerms = [pattern.pattern]
+        if let textCondition = condition as? TextSearchFieldCondition<T> {
+            searchTerms = textCondition.constraint.terms
+            matchMode = textCondition.constraint.matchMode
+        } else if let patternCondition = condition as? StringPatternFieldCondition<T> {
+            searchTerms = [patternCondition.constraint.pattern]
             matchMode = .any
-
-        default:
+        } else {
             fatalError("Unexpected constraint type for full-text index")
         }
 
@@ -453,10 +453,10 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
 
     public func matchConditions<T: Persistable>(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         statistics: StatisticsProvider
     ) -> IndexMatchResult<T> {
-        var satisfied: [FieldCondition<T>] = []
+        var satisfied: [any FieldConditionProtocol<T>] = []
 
         guard let firstKeyPath = index.keyPaths.first else {
             return .empty()
@@ -464,9 +464,9 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
         let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
-            guard condition.field.fieldName == indexedField else { continue }
+            guard condition.fieldName == indexedField else { continue }
 
-            if case .vectorSimilarity = condition.constraint {
+            if condition is VectorFieldCondition<T> {
                 satisfied.append(condition)
             }
         }
@@ -475,8 +475,8 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
 
         // Vector search returns exactly k results
         let k: Int
-        if case .vectorSimilarity(let constraint) = satisfied.first?.constraint {
-            k = constraint.k
+        if let vectorCondition = satisfied.first as? VectorFieldCondition<T> {
+            k = vectorCondition.constraint.k
         } else {
             k = 10
         }
@@ -496,17 +496,16 @@ public struct VectorIndexStrategy: IndexPlanningStrategy {
         matchResult: IndexMatchResult<T>,
         analysis: QueryAnalysis<T>
     ) -> PlanOperator<T> {
-        guard let condition = matchResult.satisfiedConditions.first,
-              case .vectorSimilarity(let constraint) = condition.constraint else {
+        guard let vectorCondition = matchResult.satisfiedConditions.first as? VectorFieldCondition<T> else {
             fatalError("VectorIndexStrategy requires vector similarity condition")
         }
 
         return .vectorSearch(VectorSearchOperator(
             index: index,
-            queryVector: constraint.queryVector,
-            k: constraint.k,
-            distanceMetric: constraint.metric,
-            efSearch: constraint.efSearch
+            queryVector: vectorCondition.constraint.queryVector,
+            k: vectorCondition.constraint.k,
+            distanceMetric: vectorCondition.constraint.metric,
+            efSearch: vectorCondition.constraint.efSearch
         ))
     }
 
@@ -537,10 +536,10 @@ public struct SpatialIndexStrategy: IndexPlanningStrategy {
 
     public func matchConditions<T: Persistable>(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         statistics: StatisticsProvider
     ) -> IndexMatchResult<T> {
-        var satisfied: [FieldCondition<T>] = []
+        var satisfied: [any FieldConditionProtocol<T>] = []
 
         guard let firstKeyPath = index.keyPaths.first else {
             return .empty()
@@ -548,9 +547,9 @@ public struct SpatialIndexStrategy: IndexPlanningStrategy {
         let indexedField = T.fieldName(for: firstKeyPath)
 
         for condition in conditions {
-            guard condition.field.fieldName == indexedField else { continue }
+            guard condition.fieldName == indexedField else { continue }
 
-            if case .spatial = condition.constraint {
+            if condition is SpatialFieldCondition<T> {
                 satisfied.append(condition)
             }
         }
@@ -576,14 +575,13 @@ public struct SpatialIndexStrategy: IndexPlanningStrategy {
         matchResult: IndexMatchResult<T>,
         analysis: QueryAnalysis<T>
     ) -> PlanOperator<T> {
-        guard let condition = matchResult.satisfiedConditions.first,
-              case .spatial(let constraint) = condition.constraint else {
+        guard let spatialCondition = matchResult.satisfiedConditions.first as? SpatialFieldCondition<T> else {
             fatalError("SpatialIndexStrategy requires spatial condition")
         }
 
         return .spatialScan(SpatialScanOperator(
             index: index,
-            constraint: constraint,
+            constraint: spatialCondition.constraint,
             estimatedResults: matchResult.estimatedEntries
         ))
     }

@@ -2,6 +2,7 @@
 // QueryPlanner - Plan enumeration and generation
 
 import Core
+import FoundationDB
 
 /// Generates candidate execution plans for a query
 public struct PlanEnumerator<T: Persistable> {
@@ -44,7 +45,7 @@ public struct PlanEnumerator<T: Persistable> {
         candidates.append(contentsOf: tryCompositeIndexPlans(analysis: analysis))
 
         // Try index intersection plans (AND with multiple indexes)
-        let equalityCount = analysis.fieldConditions.filter { $0.constraint.isEquality }.count
+        let equalityCount = analysis.fieldConditions.filter { $0.isEquality }.count
         if equalityCount >= 2 {
             candidates.append(contentsOf: tryIntersectionPlans(analysis: analysis))
         }
@@ -117,7 +118,7 @@ public struct PlanEnumerator<T: Persistable> {
         // Wrap with post-filter if needed
         let unsatisfied = analysis.fieldConditions.filter { condition in
             !matchResult.satisfiedConditions.contains(where: {
-                $0.field.fieldName == condition.field.fieldName
+                $0.fieldName == condition.fieldName
             })
         }
 
@@ -168,7 +169,7 @@ public struct PlanEnumerator<T: Persistable> {
             // Add post-filter if needed
             let unsatisfied = analysis.fieldConditions.filter { condition in
                 !matchResult.satisfiedConditions.contains(where: {
-                    $0.field.fieldName == condition.field.fieldName
+                    $0.fieldName == condition.fieldName
                 })
             }
 
@@ -217,15 +218,12 @@ public struct PlanEnumerator<T: Persistable> {
     /// - First-field match: 10x (optimal prefix usage)
     /// - Selectivity: inverse (lower selectivity = better)
     private func tryIntersectionPlans(analysis: QueryAnalysis<T>) -> [PlanOperator<T>] {
-        let equalityConditions = analysis.fieldConditions.filter {
-            if case .equals = $0.constraint { return true }
-            return false
-        }
+        let equalityConditions = analysis.fieldConditions.filter { $0.isEquality }
 
         guard equalityConditions.count >= 2 else { return [] }
 
         // Build scored candidates: (condition, index, score)
-        var rankedCandidates: [(condition: FieldCondition<T>, index: IndexDescriptor, score: Double)] = []
+        var rankedCandidates: [(condition: any FieldConditionProtocol<T>, index: IndexDescriptor, score: Double)] = []
 
         for condition in equalityConditions {
             let candidates = findCandidateIndexes(for: condition)
@@ -243,7 +241,7 @@ public struct PlanEnumerator<T: Persistable> {
         var selectedPlans: [PlanOperator<T>] = []
 
         for (condition, index, _) in rankedCandidates {
-            let fieldName = condition.field.fieldName
+            let fieldName = condition.fieldName
             if usedConditionFields.contains(fieldName) { continue }
 
             if let plan = tryCreateSingleIndexPlan(index: index, condition: condition) {
@@ -263,10 +261,10 @@ public struct PlanEnumerator<T: Persistable> {
     }
 
     /// Find all indexes that could satisfy a condition
-    private func findCandidateIndexes(for condition: FieldCondition<T>) -> [IndexDescriptor] {
+    private func findCandidateIndexes(for condition: any FieldConditionProtocol<T>) -> [IndexDescriptor] {
         indexes.filter { index in
             guard let firstKeyPath = index.keyPaths.first else { return false }
-            return T.fieldName(for: firstKeyPath) == condition.field.fieldName
+            return T.fieldName(for: firstKeyPath) == condition.fieldName
         }
     }
 
@@ -278,7 +276,7 @@ public struct PlanEnumerator<T: Persistable> {
     /// - Higher selectivity: inversely proportional to selectivity
     private func scoreIndex(
         _ index: IndexDescriptor,
-        for condition: FieldCondition<T>
+        for condition: any FieldConditionProtocol<T>
     ) -> Double {
         var score: Double = 1.0
 
@@ -289,13 +287,13 @@ public struct PlanEnumerator<T: Persistable> {
 
         // Prefer indexes where condition field is the first key
         if let firstKeyPath = index.keyPaths.first,
-           T.fieldName(for: firstKeyPath) == condition.field.fieldName {
+           T.fieldName(for: firstKeyPath) == condition.fieldName {
             score *= 10.0
         }
 
         // Factor in estimated selectivity (lower = more selective = better)
         if let selectivity = statistics.equalitySelectivity(
-            field: condition.field.fieldName,
+            field: condition.fieldName,
             type: T.self
         ) {
             // Inverse: selectivity 0.01 → score multiplier 100
@@ -308,7 +306,7 @@ public struct PlanEnumerator<T: Persistable> {
     /// Create an index plan for a single condition
     private func tryCreateSingleIndexPlan(
         index: IndexDescriptor,
-        condition: FieldCondition<T>
+        condition: any FieldConditionProtocol<T>
     ) -> PlanOperator<T>? {
         guard let strategy = strategyRegistry.strategy(for: index) else {
             return nil
@@ -326,7 +324,7 @@ public struct PlanEnumerator<T: Persistable> {
 
         // Create a minimal analysis for this single condition
         let minimalAnalysis = QueryAnalysis<T>(
-            originalPredicate: condition.sourcePredicate,
+            originalPredicate: condition.predicate,
             normalizedCondition: .field(condition),
             fieldConditions: [condition],
             fieldRequirements: [:],
@@ -334,7 +332,7 @@ public struct PlanEnumerator<T: Persistable> {
             limit: nil,
             offset: nil,
             detectedPatterns: [],
-            referencedFields: [condition.field.fieldName]
+            referencedFields: [condition.fieldName]
         )
 
         return strategy.createOperator(
@@ -367,7 +365,7 @@ public struct PlanEnumerator<T: Persistable> {
                 limit: nil,
                 offset: nil,
                 detectedPatterns: [],
-                referencedFields: Set(conditions.map { $0.field.fieldName })
+                referencedFields: Set(conditions.map { $0.fieldName })
             )
 
             // Try to find an index plan for this disjunct
@@ -393,7 +391,7 @@ public struct PlanEnumerator<T: Persistable> {
     }
 
     /// Extract conditions from a QueryCondition
-    private func extractConditions(from condition: QueryCondition<T>) -> [FieldCondition<T>] {
+    private func extractConditions(from condition: QueryCondition<T>) -> [any FieldConditionProtocol<T>] {
         switch condition {
         case .field(let fieldCondition):
             return [fieldCondition]
@@ -652,7 +650,7 @@ public struct PlanEnumerator<T: Persistable> {
             // Add post-filter if needed
             let unsatisfied = analysis.fieldConditions.filter { condition in
                 !matchResult.satisfiedConditions.contains(where: {
-                    $0.field.fieldName == condition.field.fieldName
+                    $0.fieldName == condition.fieldName
                 })
             }
 
@@ -689,30 +687,32 @@ public struct PlanEnumerator<T: Persistable> {
 
             // Find condition for this key path position
             guard let condition = matchResult.satisfiedConditions.first(where: {
-                $0.field.fieldName == fieldName
+                $0.fieldName == fieldName
             }) else {
                 break // Stop at first missing condition (prefix matching)
             }
 
-            switch condition.constraint {
-            case .equals(let value):
-                startComponents.append(.init(value: value, inclusive: true))
-                endComponents.append(.init(value: value, inclusive: true))
-
-            case .range(let bound):
-                if let lower = bound.lower {
-                    startComponents.append(.init(value: lower.value, inclusive: lower.inclusive))
+            // Get bounds from the condition
+            if condition.isEquality {
+                // Equality: use the first value as both bounds
+                if let value = condition.constraintToTupleElements().first {
+                    startComponents.append(.init(value: value, inclusive: true))
+                    endComponents.append(.init(value: value, inclusive: true))
                 }
-                if let upper = bound.upper {
-                    endComponents.append(.init(value: upper.value, inclusive: upper.inclusive))
+            } else if condition.isRange {
+                // Range: use bounds from the condition
+                if let bounds = condition.rangeBoundsAsTupleElements() {
+                    if let (lower, inclusive) = bounds.lower {
+                        startComponents.append(.init(value: lower, inclusive: inclusive))
+                    }
+                    if let (upper, inclusive) = bounds.upper {
+                        endComponents.append(.init(value: upper, inclusive: inclusive))
+                    }
                 }
-
-            default:
-                break
             }
 
             // For multi-column index, stop after first non-equality
-            if i > 0 && !condition.constraint.isEquality {
+            if i > 0 && !condition.isEquality {
                 break
             }
         }
@@ -731,19 +731,15 @@ public struct PlanEnumerator<T: Persistable> {
         var selectivity = 1.0
         for condition in matchResult.satisfiedConditions {
             let fieldSelectivity: Double
-            switch condition.constraint {
-            case .equals:
+            if condition.isEquality {
                 fieldSelectivity = statistics.equalitySelectivity(
-                    field: condition.field.fieldName,
+                    field: condition.fieldName,
                     type: T.self
                 ) ?? 0.01
-            case .range(let bound):
-                fieldSelectivity = statistics.rangeSelectivity(
-                    field: condition.field.fieldName,
-                    range: bound,
-                    type: T.self
-                ) ?? 0.3
-            default:
+            } else if condition.isRange {
+                // Use a default range selectivity
+                fieldSelectivity = 0.3
+            } else {
                 fieldSelectivity = 0.5
             }
             selectivity *= fieldSelectivity
@@ -773,8 +769,8 @@ public struct PlanEnumerator<T: Persistable> {
     // MARK: - Predicate Rebuilding
 
     /// Rebuild a predicate from field conditions
-    private func rebuildPredicate(from conditions: [FieldCondition<T>]) -> Predicate<T> {
-        let predicates = conditions.compactMap { $0.sourcePredicate }
+    private func rebuildPredicate(from conditions: [any FieldConditionProtocol<T>]) -> Predicate<T> {
+        let predicates = conditions.compactMap { $0.predicate }
 
         if predicates.count == 1 {
             return predicates[0]

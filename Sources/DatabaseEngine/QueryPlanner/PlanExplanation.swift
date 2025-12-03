@@ -107,7 +107,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
             lines.append("\(prefix)   reverse: \(scanOp.reverse)")
             lines.append("\(prefix)   est. entries: \(scanOp.estimatedEntries)")
             if !scanOp.satisfiedConditions.isEmpty {
-                let fields = scanOp.satisfiedConditions.map { $0.field.fieldName }
+                let fields = scanOp.satisfiedConditions.map { $0.fieldName }
                 lines.append("\(prefix)   satisfies: \(fields.joined(separator: ", "))")
             }
 
@@ -115,7 +115,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
             lines.append("\(prefix)-> IndexSeek[\(seekOp.index.name)]")
             lines.append("\(prefix)   lookups: \(seekOp.seekValues.count)")
             if !seekOp.satisfiedConditions.isEmpty {
-                let fields = seekOp.satisfiedConditions.map { $0.field.fieldName }
+                let fields = seekOp.satisfiedConditions.map { $0.fieldName }
                 lines.append("\(prefix)   satisfies: \(fields.joined(separator: ", "))")
             }
 
@@ -224,7 +224,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
         if !bounds.start.isEmpty {
             let startDesc = bounds.start.map { component in
                 if let value = component.value {
-                    return component.inclusive ? "[\(value.value)]" : "(\(value.value))"
+                    return component.inclusive ? "[\(value)]" : "(\(value))"
                 }
                 return "-∞"
             }.joined(separator: ", ")
@@ -234,7 +234,7 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
         if !bounds.end.isEmpty {
             let endDesc = bounds.end.map { component in
                 if let value = component.value {
-                    return component.inclusive ? "[\(value.value)]" : "(\(value.value))"
+                    return component.inclusive ? "[\(value)]" : "(\(value))"
                 }
                 return "+∞"
             }.joined(separator: ", ")

@@ -4,6 +4,7 @@
 import Testing
 import Foundation
 import Core
+import FoundationDB
 @testable import DatabaseEngine
 
 // MARK: - Test Model
@@ -52,11 +53,9 @@ struct QueryConditionInPredicateTests {
 
     @Test("containsInPredicate returns false for simple equals")
     func containsInPredicateFalseForEquals() {
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.name,
-                constraint: .equals(AnySendable("Alice"))
-            )
+            ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
         #expect(condition.containsInPredicate == false)
@@ -65,11 +64,9 @@ struct QueryConditionInPredicateTests {
 
     @Test("containsInPredicate returns true for IN constraint")
     func containsInPredicateTrueForIn() {
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([AnySendable("active"), AnySendable("pending")])
-            )
+            ScalarFieldCondition.in(field: field, values: ["active", "pending"])
         )
 
         #expect(condition.containsInPredicate == true)
@@ -78,25 +75,20 @@ struct QueryConditionInPredicateTests {
 
     @Test("inPredicateCount counts nested IN predicates")
     func inPredicateCountNested() {
+        let statusField = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let nameField = FieldReference<InOptTestModel>(\InOptTestModel.name)
+        let emailField = FieldReference<InOptTestModel>(\InOptTestModel.email)
+
         let inCondition1: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([AnySendable("a"), AnySendable("b")])
-            )
+            ScalarFieldCondition.in(field: statusField, values: ["a", "b"])
         )
 
         let inCondition2: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.name,
-                constraint: .in([AnySendable("x"), AnySendable("y"), AnySendable("z")])
-            )
+            ScalarFieldCondition.in(field: nameField, values: ["x", "y", "z"])
         )
 
         let equalsCondition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.email,
-                constraint: .equals(AnySendable("test@example.com"))
-            )
+            ScalarFieldCondition.equals(field: emailField, value: "test@example.com")
         )
 
         let conjunction: QueryCondition<InOptTestModel> = .conjunction([
@@ -134,12 +126,10 @@ struct InPredicateOptimizerExtractTests {
     @Test("Extract IN predicate from simple condition")
     func extractSimpleInPredicate() {
         let optimizer = InPredicateOptimizer<InOptTestModel>()
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
 
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([AnySendable("active"), AnySendable("pending")])
-            )
+            ScalarFieldCondition.in(field: field, values: ["active", "pending"])
         )
 
         let predicates = optimizer.extractInPredicates(from: condition)
@@ -152,12 +142,10 @@ struct InPredicateOptimizerExtractTests {
     @Test("Extract no predicates from equals condition")
     func extractNoPredicatesFromEquals() {
         let optimizer = InPredicateOptimizer<InOptTestModel>()
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
 
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.name,
-                constraint: .equals(AnySendable("Alice"))
-            )
+            ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
         let predicates = optimizer.extractInPredicates(from: condition)
@@ -168,20 +156,14 @@ struct InPredicateOptimizerExtractTests {
     @Test("Extract multiple IN predicates from conjunction")
     func extractMultipleInPredicates() {
         let optimizer = InPredicateOptimizer<InOptTestModel>()
+        let statusField = FieldReference<InOptTestModel>(\InOptTestModel.status)
+        let nameField = FieldReference<InOptTestModel>(\InOptTestModel.name)
+        let emailField = FieldReference<InOptTestModel>(\InOptTestModel.email)
 
         let condition: QueryCondition<InOptTestModel> = .conjunction([
-            .field(FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([AnySendable("a"), AnySendable("b")])
-            )),
-            .field(FieldCondition(
-                keyPath: \InOptTestModel.name,
-                constraint: .in([AnySendable("x"), AnySendable("y")])
-            )),
-            .field(FieldCondition(
-                keyPath: \InOptTestModel.email,
-                constraint: .equals(AnySendable("test@example.com"))
-            ))
+            .field(ScalarFieldCondition.in(field: statusField, values: ["a", "b"])),
+            .field(ScalarFieldCondition.in(field: nameField, values: ["x", "y"])),
+            .field(ScalarFieldCondition.equals(field: emailField, value: "test@example.com"))
         ])
 
         let predicates = optimizer.extractInPredicates(from: condition)
@@ -198,12 +180,10 @@ struct InPredicateOptimizerStrategyTests {
     @Test("No optimization for condition without IN")
     func noOptimizationWithoutIn() {
         let optimizer = InPredicateOptimizer<InOptTestModel>()
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.name)
 
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.name,
-                constraint: .equals(AnySendable("Alice"))
-            )
+            ScalarFieldCondition.equals(field: field, value: "Alice")
         )
 
         let (_, strategy) = optimizer.optimize(
@@ -223,12 +203,10 @@ struct InPredicateOptimizerStrategyTests {
         let optimizer = InPredicateOptimizer<InOptTestModel>(
             configuration: .init(unionThreshold: 10)
         )
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
 
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([AnySendable("a"), AnySendable("b"), AnySendable("c")])
-            )
+            ScalarFieldCondition.in(field: field, values: ["a", "b", "c"])
         )
 
         // Create index on status field
@@ -256,15 +234,13 @@ struct InPredicateOptimizerStrategyTests {
         let optimizer = InPredicateOptimizer<InOptTestModel>(
             configuration: .init(unionThreshold: 5, joinThreshold: 100)
         )
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
 
         // Create 20 values (> unionThreshold, <= joinThreshold)
-        let values = (0..<20).map { AnySendable("value\($0)") }
+        let values: [any TupleElement] = (0..<20).map { "value\($0)" }
 
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in(values)
-            )
+            ScalarFieldCondition.in(field: field, values: values)
         )
 
         let (_, strategy) = optimizer.optimize(
@@ -285,18 +261,11 @@ struct InPredicateOptimizerStrategyTests {
         let optimizer = InPredicateOptimizer<InOptTestModel>(
             configuration: .init(unionThreshold: 10, joinThreshold: 3)
         )
+        let field = FieldReference<InOptTestModel>(\InOptTestModel.status)
 
         // 4 values: > joinThreshold (3), <= 5 for OR expansion
         let condition: QueryCondition<InOptTestModel> = .field(
-            FieldCondition(
-                keyPath: \InOptTestModel.status,
-                constraint: .in([
-                    AnySendable("a"),
-                    AnySendable("b"),
-                    AnySendable("c"),
-                    AnySendable("d")
-                ])
-            )
+            ScalarFieldCondition.in(field: field, values: ["a", "b", "c", "d"])
         )
 
         let (_, strategy) = optimizer.optimize(

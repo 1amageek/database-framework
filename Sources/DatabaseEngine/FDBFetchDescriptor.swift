@@ -163,31 +163,31 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable {
     public let op: ComparisonOperator
 
     /// The value to compare against (type-erased)
-    public let value: AnySendable
+    public let value: any Sendable
 
     /// Create a field comparison
     public init<V: Sendable>(keyPath: KeyPath<T, V>, op: ComparisonOperator, value: V) {
         self.keyPath = keyPath
         self.op = op
-        self.value = AnySendable(value)
+        self.value = value
     }
 
     /// Create a nil comparison
     ///
-    /// For `isNil`/`isNotNil` checks, the value field stores `Optional<V>.none`
-    /// to preserve the correct type information.
+    /// For `isNil`/`isNotNil` checks, the value field stores `NullValue.shared`
+    /// as a sentinel indicating null check operation.
     public init<V: Sendable>(keyPath: KeyPath<T, V?>, op: ComparisonOperator) {
         self.keyPath = keyPath
         self.op = op
-        // Store the correctly typed nil value
-        self.value = AnySendable(Optional<V>.none as Any)
+        // Store NullValue sentinel for nil checks
+        self.value = NullValue.instance
     }
 
     /// Create an IN comparison
     public init<V: Sendable>(keyPath: KeyPath<T, V>, values: [V]) {
         self.keyPath = keyPath
         self.op = .in
-        self.value = AnySendable(values)
+        self.value = values
     }
 
     /// Get the field name using Persistable's fieldName method
@@ -214,16 +214,6 @@ public enum ComparisonOperator: String, Sendable {
     case isNotNil = "isNotNil"
 }
 
-// MARK: - AnySendable
-
-/// Type-erased Sendable wrapper
-public struct AnySendable: @unchecked Sendable {
-    public let value: Any
-
-    public init(_ value: Any) {
-        self.value = value
-    }
-}
 
 // MARK: - SortDescriptor
 

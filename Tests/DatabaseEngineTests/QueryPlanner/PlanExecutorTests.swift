@@ -290,7 +290,7 @@ struct PredicateEvaluationTests {
         }
 
         guard let modelValue = modelValue else { return false }
-        let expectedValue = comparison.value.value
+        let expectedValue = comparison.value
 
         switch comparison.op {
         case .equal:
@@ -306,9 +306,14 @@ struct PredicateEvaluationTests {
         case .greaterThanOrEqual:
             return compareLess(expectedValue, modelValue) || compareEqual(modelValue, expectedValue)
         case .in:
-            if let arr = expectedValue as? [AnySendable] {
-                return arr.contains { compareEqual(modelValue, $0.value) }
+            // Handle typed arrays
+            if let arr = expectedValue as? [String], let val = modelValue as? String {
+                return arr.contains(val)
             }
+            if let arr = expectedValue as? [Int], let val = modelValue as? Int {
+                return arr.contains(val)
+            }
+            // Fallback to reflection
             if let arr = extractArray(from: expectedValue) {
                 return arr.contains { compareEqual(modelValue, $0) }
             }

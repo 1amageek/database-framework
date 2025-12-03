@@ -7,9 +7,12 @@ import Core
 ///
 /// This represents the query predicate in a normalized form suitable for
 /// index matching and cost estimation.
-public indirect enum QueryCondition<T: Persistable>: @unchecked Sendable {
-    /// Single field condition
-    case field(FieldCondition<T>)
+///
+/// **Design**: Uses `any FieldConditionProtocol<T>` for type-erased storage
+/// of typed field conditions (TypedFieldCondition<T, V>).
+public indirect enum QueryCondition<T: Persistable>: Sendable {
+    /// Single field condition (type-erased)
+    case field(any FieldConditionProtocol<T>)
 
     /// Conjunction (AND) - all must be true
     case conjunction([QueryCondition<T>])
@@ -22,6 +25,33 @@ public indirect enum QueryCondition<T: Persistable>: @unchecked Sendable {
 
     /// Always false (empty result)
     case alwaysFalse
+
+    // MARK: - Convenience Initializers
+
+    /// Create a scalar field condition
+    public static func scalar(_ condition: ScalarFieldCondition<T>) -> QueryCondition<T> {
+        .field(condition)
+    }
+
+    /// Create a text search condition
+    public static func textSearch(_ condition: TextSearchFieldCondition<T>) -> QueryCondition<T> {
+        .field(condition)
+    }
+
+    /// Create a spatial condition
+    public static func spatial(_ condition: SpatialFieldCondition<T>) -> QueryCondition<T> {
+        .field(condition)
+    }
+
+    /// Create a vector similarity condition
+    public static func vector(_ condition: VectorFieldCondition<T>) -> QueryCondition<T> {
+        .field(condition)
+    }
+
+    /// Create a string pattern condition
+    public static func pattern(_ condition: StringPatternFieldCondition<T>) -> QueryCondition<T> {
+        .field(condition)
+    }
 }
 
 // MARK: - Convenience Methods
@@ -58,7 +88,7 @@ extension QueryCondition {
     }
 
     /// Get all field conditions (flattened from any structure)
-    public var allFieldConditions: [FieldCondition<T>] {
+    public var allFieldConditions: [any FieldConditionProtocol<T>] {
         switch self {
         case .field(let condition):
             return [condition]
@@ -73,7 +103,7 @@ extension QueryCondition {
 
     /// Get all referenced field names
     public var referencedFields: Set<String> {
-        Set(allFieldConditions.map { $0.field.fieldName })
+        Set(allFieldConditions.map { $0.fieldName })
     }
 
     /// Simplify the condition by removing redundant nodes
@@ -154,7 +184,7 @@ extension QueryCondition: CustomStringConvertible {
     public var description: String {
         switch self {
         case .field(let condition):
-            return "\(condition.field.fieldName) \(describeConstraint(condition.constraint))"
+            return condition.identifier
         case .conjunction(let conditions):
             let parts = conditions.map { $0.description }
             return "(\(parts.joined(separator: " AND ")))"
@@ -165,47 +195,6 @@ extension QueryCondition: CustomStringConvertible {
             return "TRUE"
         case .alwaysFalse:
             return "FALSE"
-        }
-    }
-
-    private func describeConstraint(_ constraint: FieldConstraint) -> String {
-        switch constraint {
-        case .equals(let value):
-            return "= \(value.value)"
-        case .notEquals(let value):
-            return "!= \(value.value)"
-        case .range(let bound):
-            var parts: [String] = []
-            if let lower = bound.lower {
-                parts.append(lower.inclusive ? ">=" : ">")
-                parts.append("\(lower.value.value)")
-            }
-            if let upper = bound.upper {
-                parts.append(upper.inclusive ? "<=" : "<")
-                parts.append("\(upper.value.value)")
-            }
-            return parts.joined(separator: " ")
-        case .in(let values):
-            return "IN [\(values.count) values]"
-        case .notIn(let values):
-            return "NOT IN [\(values.count) values]"
-        case .isNull(let isNull):
-            return isNull ? "IS NULL" : "IS NOT NULL"
-        case .textSearch(let constraint):
-            return "MATCH '\(constraint.terms.joined(separator: " "))'"
-        case .spatial(let constraint):
-            switch constraint.type {
-            case .withinDistance(_, let radius):
-                return "WITHIN \(radius)m"
-            case .withinBounds:
-                return "WITHIN BOUNDS"
-            case .withinPolygon:
-                return "WITHIN POLYGON"
-            }
-        case .vectorSimilarity(let constraint):
-            return "SIMILAR(k=\(constraint.k))"
-        case .stringPattern(let constraint):
-            return "\(constraint.type) '\(constraint.pattern)'"
         }
     }
 }

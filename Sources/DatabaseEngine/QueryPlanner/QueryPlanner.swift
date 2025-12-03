@@ -314,7 +314,7 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
         guard !unsatisfied.isEmpty else { return nil }
 
         // Rebuild predicate from unsatisfied conditions
-        let predicates = unsatisfied.compactMap { $0.sourcePredicate }
+        let predicates = unsatisfied.compactMap { $0.predicate }
 
         if predicates.count == 1 {
             return predicates[0]

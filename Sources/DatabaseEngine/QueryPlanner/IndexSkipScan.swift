@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Index Skip Scan optimization
 ///
@@ -48,7 +49,7 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
     /// Analyze if skip scan is beneficial for this query and index
     public func analyze(
         index: IndexDescriptor,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         analysis: QueryAnalysis<T>
     ) -> SkipScanAnalysis {
         // Get index key fields
@@ -61,7 +62,7 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
         }
 
         // Find which key positions have conditions
-        let conditionFields = Set(conditions.map { $0.field.fieldName })
+        let conditionFields = Set(conditions.map { $0.fieldName })
         var constrainedPositions: Set<Int> = []
         var unconstrainedLeadingPositions: [Int] = []
 
@@ -137,7 +138,7 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
     /// Estimate cost of skip scan
     private func estimateSkipScanCost(
         distinctValues: Int,
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         analysis: QueryAnalysis<T>
     ) -> Double {
         let totalRows = Double(statistics.estimatedRowCount(for: T.self))
@@ -165,18 +166,25 @@ public struct IndexSkipScanAnalyzer<T: Persistable> {
     }
 
     /// Estimate selectivity for a condition
-    private func estimateSelectivity(_ condition: FieldCondition<T>) -> Double {
-        switch condition.constraint {
-        case .equals:
-            return statistics.equalitySelectivity(field: condition.field.fieldName, type: T.self)
+    private func estimateSelectivity(_ condition: any FieldConditionProtocol<T>) -> Double {
+        if condition.isEquality {
+            return statistics.equalitySelectivity(field: condition.fieldName, type: T.self)
                 ?? costModel.defaultEqualitySelectivity
-        case .range:
-            return statistics.rangeSelectivity(field: condition.field.fieldName, range: condition.constraint.rangeBound!, type: T.self)
-                ?? costModel.defaultRangeSelectivity
-        case .isNull:
-            return statistics.nullSelectivity(field: condition.field.fieldName, type: T.self)
+        } else if condition.isRange {
+            // Use range bounds if available
+            if let bounds = condition.rangeBoundsAsTupleElements() {
+                let rangeBound = RangeBound(
+                    lower: bounds.lower.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) },
+                    upper: bounds.upper.map { RangeBoundComponent(value: $0.0, inclusive: $0.1) }
+                )
+                return statistics.rangeSelectivity(field: condition.fieldName, range: rangeBound, type: T.self)
+                    ?? costModel.defaultRangeSelectivity
+            }
+            return costModel.defaultRangeSelectivity
+        } else if condition.isNullCheck {
+            return statistics.nullSelectivity(field: condition.fieldName, type: T.self)
                 ?? costModel.defaultNullSelectivity
-        default:
+        } else {
             return costModel.defaultRangeSelectivity
         }
     }
@@ -245,7 +253,7 @@ public struct SkipScanOperator<T: Persistable>: @unchecked Sendable {
 
     /// Values to iterate over for skipped fields
     /// Each inner array represents one distinct value combination
-    public let skipValues: [[AnySendable]]
+    public let skipValues: [[any TupleElement]]
 
     /// Base bounds (for constrained fields)
     public let baseBounds: IndexScanBounds
@@ -254,17 +262,17 @@ public struct SkipScanOperator<T: Persistable>: @unchecked Sendable {
     public let reverse: Bool
 
     /// Conditions satisfied by this scan
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 
     /// Estimated total entries across all skips
     public let estimatedEntries: Int
 
     public init(
         index: IndexDescriptor,
-        skipValues: [[AnySendable]],
+        skipValues: [[any TupleElement]],
         baseBounds: IndexScanBounds,
         reverse: Bool = false,
-        satisfiedConditions: [FieldCondition<T>] = [],
+        satisfiedConditions: [any FieldConditionProtocol<T>] = [],
         estimatedEntries: Int
     ) {
         self.index = index
@@ -285,7 +293,7 @@ public protocol SkipValueProvider: Sendable {
         field: String,
         type: T.Type,
         index: IndexDescriptor
-    ) async throws -> [AnySendable]
+    ) async throws -> [any TupleElement]
 }
 
 /// Default provider that uses sampling or index scan
@@ -301,7 +309,7 @@ public struct DefaultSkipValueProvider: SkipValueProvider {
         field: String,
         type: T.Type,
         index: IndexDescriptor
-    ) async throws -> [AnySendable] {
+    ) async throws -> [any TupleElement] {
         // Implementation would scan the index to find distinct values
         // For now, return empty array
         []
@@ -352,16 +360,3 @@ public struct SkipScanCostEstimator {
     }
 }
 
-// MARK: - FieldConstraint Extension
-
-extension FieldConstraint {
-    /// Extract range bound if this is a range constraint
-    var rangeBound: RangeBound? {
-        switch self {
-        case .range(let bound):
-            return bound
-        default:
-            return nil
-        }
-    }
-}

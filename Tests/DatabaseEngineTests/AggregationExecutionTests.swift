@@ -14,7 +14,7 @@ struct AggregationExecutionTests {
     @Test func aggregationResultCreation() {
         let result = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(Int64(100)),
+            value: Int64(100),
             groupKey: [:],
             recordCount: 100
         )
@@ -27,14 +27,14 @@ struct AggregationExecutionTests {
     @Test func aggregationResultWithGroupKey() {
         let result = AggregationResult(
             aggregationType: .sum(field: "amount"),
-            value: AnySendable(1250.50),
-            groupKey: ["region": AnySendable("West"), "year": AnySendable(2024)],
+            value: 1250.50,
+            groupKey: ["region": "West", "year": 2024],
             recordCount: 50
         )
 
         #expect(result.groupKey.count == 2)
-        #expect(result.groupKey["region"]?.value as? String == "West")
-        #expect(result.groupKey["year"]?.value as? Int == 2024)
+        #expect(result.groupKey["region"] as? String == "West")
+        #expect(result.groupKey["year"] as? Int == 2024)
         #expect(result.doubleValue == 1250.50)
     }
 
@@ -42,21 +42,21 @@ struct AggregationExecutionTests {
         // Test Int64 direct
         let result1 = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(Int64(42))
+            value: Int64(42)
         )
         #expect(result1.intValue == 42)
 
         // Test Int conversion
         let result2 = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(42)
+            value: 42
         )
         #expect(result2.intValue == 42)
 
         // Test Double (should return nil for intValue)
         let result3 = AggregationResult(
             aggregationType: .avg(field: "x"),
-            value: AnySendable(3.14)
+            value: 3.14
         )
         #expect(result3.intValue == nil)
     }
@@ -65,14 +65,14 @@ struct AggregationExecutionTests {
         // Test Double direct
         let result1 = AggregationResult(
             aggregationType: .avg(field: "amount"),
-            value: AnySendable(99.5)
+            value: 99.5
         )
         #expect(result1.doubleValue == 99.5)
 
         // Test Float conversion
         let result2 = AggregationResult(
             aggregationType: .avg(field: "amount"),
-            value: AnySendable(Float(3.14))
+            value: Float(3.14)
         )
         #expect(result2.doubleValue != nil)
         #expect(abs(result2.doubleValue! - 3.14) < 0.01)
@@ -80,7 +80,7 @@ struct AggregationExecutionTests {
         // Test Int conversion
         let result3 = AggregationResult(
             aggregationType: .sum(field: "count"),
-            value: AnySendable(100)
+            value: 100
         )
         #expect(result3.doubleValue == 100.0)
     }
@@ -88,13 +88,13 @@ struct AggregationExecutionTests {
     @Test func aggregationResultStringValue() {
         let result = AggregationResult(
             aggregationType: .min(field: "name"),
-            value: AnySendable("Aaron")
+            value: "Aaron"
         )
         #expect(result.stringValue == "Aaron")
 
         let numericResult = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(100)
+            value: 100
         )
         #expect(numericResult.stringValue == nil)
     }
@@ -102,8 +102,8 @@ struct AggregationExecutionTests {
     @Test func aggregationResultDescription() {
         let result = AggregationResult(
             aggregationType: .sum(field: "amount"),
-            value: AnySendable(1500.0),
-            groupKey: ["region": AnySendable("East")],
+            value: 1500.0,
+            groupKey: ["region": "East"],
             recordCount: 25
         )
 
@@ -181,17 +181,17 @@ struct AggregationExecutionTests {
     @Test func aggregationResultGroupKeyAccess() {
         let result = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(Int64(50)),
+            value: Int64(50),
             groupKey: [
-                "region": AnySendable("North"),
-                "category": AnySendable("Electronics"),
-                "year": AnySendable(2024)
+                "region": "North",
+                "category": "Electronics",
+                "year": 2024
             ]
         )
 
-        #expect(result.groupKey["region"]?.value as? String == "North")
-        #expect(result.groupKey["category"]?.value as? String == "Electronics")
-        #expect(result.groupKey["year"]?.value as? Int == 2024)
+        #expect(result.groupKey["region"] as? String == "North")
+        #expect(result.groupKey["category"] as? String == "Electronics")
+        #expect(result.groupKey["year"] as? Int == 2024)
         #expect(result.groupKey["nonexistent"] == nil)
     }
 
@@ -200,7 +200,7 @@ struct AggregationExecutionTests {
     @Test func aggregationResultWithZeroValue() {
         let result = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(Int64(0)),
+            value: Int64(0),
             recordCount: 0
         )
 
@@ -211,7 +211,7 @@ struct AggregationExecutionTests {
     @Test func aggregationResultWithNegativeValue() {
         let result = AggregationResult(
             aggregationType: .sum(field: "balance"),
-            value: AnySendable(-500.0)
+            value: -500.0
         )
 
         #expect(result.doubleValue == -500.0)
@@ -221,7 +221,7 @@ struct AggregationExecutionTests {
         let largeValue = Int64.max
         let result = AggregationResult(
             aggregationType: .count,
-            value: AnySendable(largeValue)
+            value: largeValue
         )
 
         #expect(result.intValue == largeValue)
@@ -230,7 +230,7 @@ struct AggregationExecutionTests {
     @Test func aggregationResultWithDecimalPrecision() {
         let result = AggregationResult(
             aggregationType: .avg(field: "price"),
-            value: AnySendable(123.456789)
+            value: 123.456789
         )
 
         #expect(result.doubleValue == 123.456789)
@@ -250,7 +250,7 @@ struct AggregationExecutionTests {
         for type in types {
             let result = AggregationResult(
                 aggregationType: type,
-                value: AnySendable(0)
+                value: 0
             )
             #expect(result.aggregationType == type)
         }

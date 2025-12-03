@@ -165,16 +165,16 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
         var results: [AggregateResult<T>] = []
         for (groupKeyString, groupItems) in groups {
             // Build group key dictionary
-            var groupKeyDict: [String: AnySendable] = [:]
+            var groupKeyDict: [String: any Sendable] = [:]
             let keyParts = groupKeyString.split(separator: "|")
             for (index, fieldName) in groupByFieldNames.enumerated() {
                 if index < keyParts.count {
-                    groupKeyDict[fieldName] = AnySendable(String(keyParts[index]))
+                    groupKeyDict[fieldName] = String(keyParts[index])
                 }
             }
 
             // Compute aggregates
-            var aggregateDict: [String: AnySendable] = [:]
+            var aggregateDict: [String: any Sendable] = [:]
             for agg in aggregations {
                 let value = computeAggregate(items: groupItems, aggregation: agg)
                 aggregateDict[agg.name] = value
@@ -200,10 +200,10 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
     }
 
     /// Compute a single aggregate value
-    private func computeAggregate(items: [T], aggregation: AggregationSpec) -> AnySendable {
+    private func computeAggregate(items: [T], aggregation: AggregationSpec) -> any Sendable {
         switch aggregation.type {
         case .count:
-            return AnySendable(items.count)
+            return items.count
 
         case .sum(let field):
             var sum: Double = 0
@@ -212,7 +212,7 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
                     sum += value
                 }
             }
-            return AnySendable(sum)
+            return sum
 
         case .avg(let field):
             var sum: Double = 0
@@ -224,53 +224,63 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
                 }
             }
             let avg = count > 0 ? sum / Double(count) : 0.0
-            return AnySendable(avg)
+            return avg
 
         case .min(let field):
-            var minValue: AnySendable?
+            var minDouble: Double?
+            var minInt: Int?
+            var minString: String?
+
             for item in items {
                 if let value = item[dynamicMember: field] {
-                    if minValue == nil {
-                        minValue = AnySendable(value)
-                    } else if let numVal = value as? Double,
-                              let minNum = minValue?.value as? Double,
-                              numVal < minNum {
-                        minValue = AnySendable(numVal)
-                    } else if let intVal = value as? Int,
-                              let minInt = minValue?.value as? Int,
-                              intVal < minInt {
-                        minValue = AnySendable(intVal)
-                    } else if let strVal = value as? String,
-                              let minStr = minValue?.value as? String,
-                              strVal < minStr {
-                        minValue = AnySendable(strVal)
+                    if let numVal = value as? Double {
+                        if minDouble == nil || numVal < minDouble! {
+                            minDouble = numVal
+                        }
+                    } else if let intVal = value as? Int {
+                        if minInt == nil || intVal < minInt! {
+                            minInt = intVal
+                        }
+                    } else if let strVal = value as? String {
+                        if minString == nil || strVal < minString! {
+                            minString = strVal
+                        }
                     }
                 }
             }
-            return minValue ?? AnySendable(0)
+
+            if let d = minDouble { return d }
+            if let i = minInt { return i }
+            if let s = minString { return s }
+            return 0
 
         case .max(let field):
-            var maxValue: AnySendable?
+            var maxDouble: Double?
+            var maxInt: Int?
+            var maxString: String?
+
             for item in items {
                 if let value = item[dynamicMember: field] {
-                    if maxValue == nil {
-                        maxValue = AnySendable(value)
-                    } else if let numVal = value as? Double,
-                              let maxNum = maxValue?.value as? Double,
-                              numVal > maxNum {
-                        maxValue = AnySendable(numVal)
-                    } else if let intVal = value as? Int,
-                              let maxInt = maxValue?.value as? Int,
-                              intVal > maxInt {
-                        maxValue = AnySendable(intVal)
-                    } else if let strVal = value as? String,
-                              let maxStr = maxValue?.value as? String,
-                              strVal > maxStr {
-                        maxValue = AnySendable(strVal)
+                    if let numVal = value as? Double {
+                        if maxDouble == nil || numVal > maxDouble! {
+                            maxDouble = numVal
+                        }
+                    } else if let intVal = value as? Int {
+                        if maxInt == nil || intVal > maxInt! {
+                            maxInt = intVal
+                        }
+                    } else if let strVal = value as? String {
+                        if maxString == nil || strVal > maxString! {
+                            maxString = strVal
+                        }
                     }
                 }
             }
-            return maxValue ?? AnySendable(0)
+
+            if let d = maxDouble { return d }
+            if let i = maxInt { return i }
+            if let s = maxString { return s }
+            return 0
         }
     }
 

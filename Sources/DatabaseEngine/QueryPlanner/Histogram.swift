@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Histogram for value distribution and selectivity estimation
 ///
@@ -683,6 +684,27 @@ public enum ComparableValue: Sendable, Codable, Hashable, Comparable {
         }
     }
 
+    /// Create from TupleElement
+    public init(tupleElement: any TupleElement) {
+        switch tupleElement {
+        case let v as Bool:
+            self = .bool(v)
+        case let v as Int:
+            self = .int64(Int64(v))
+        case let v as Int64:
+            self = .int64(v)
+        case let v as Double:
+            self = .double(v)
+        case let v as String:
+            self = .string(v)
+        case let v as [UInt8]:
+            self = .data(Data(v))
+        default:
+            // Fallback: convert to string
+            self = .string(String(describing: tupleElement))
+        }
+    }
+
     /// Convert to FieldValue
     public var fieldValue: FieldValue {
         switch self {
@@ -701,6 +723,27 @@ public enum ComparableValue: Sendable, Codable, Hashable, Comparable {
             return .null
         case .data(let v):
             return .data(v)
+        }
+    }
+
+    /// Convert to TupleElement for FDB storage
+    public func toTupleElement() -> any TupleElement {
+        switch self {
+        case .null:
+            // Return empty string as placeholder since FDB Tuple doesn't have null
+            return ""
+        case .bool(let v):
+            return v
+        case .int64(let v):
+            return v
+        case .double(let v):
+            return v
+        case .string(let v):
+            return v
+        case .date(let v):
+            return v.timeIntervalSince1970
+        case .data(let v):
+            return [UInt8](v)
         }
     }
 }

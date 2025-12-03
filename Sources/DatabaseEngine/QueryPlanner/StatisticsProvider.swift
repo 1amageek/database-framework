@@ -6,6 +6,47 @@ import Core
 import FoundationDB
 import Synchronization
 
+// MARK: - Range Bound
+
+/// Represents a range bound for statistics queries
+///
+/// Used by `rangeSelectivity` to estimate selectivity of range conditions.
+public struct RangeBound: @unchecked Sendable {
+    /// Lower bound (value, inclusive)
+    public let lower: RangeBoundComponent?
+
+    /// Upper bound (value, inclusive)
+    public let upper: RangeBoundComponent?
+
+    public init(
+        lower: RangeBoundComponent? = nil,
+        upper: RangeBoundComponent? = nil
+    ) {
+        self.lower = lower
+        self.upper = upper
+    }
+
+    /// Create a range bound from ScalarConstraintBounds
+    public init(from bounds: ScalarConstraintBounds) {
+        self.lower = bounds.lower.map { RangeBoundComponent(value: $0, inclusive: bounds.lowerInclusive) }
+        self.upper = bounds.upper.map { RangeBoundComponent(value: $0, inclusive: bounds.upperInclusive) }
+    }
+}
+
+/// A single component of a range bound (value + inclusivity)
+public struct RangeBoundComponent: @unchecked Sendable {
+    /// The bound value
+    public let value: any TupleElement
+
+    /// Whether the bound is inclusive
+    public let inclusive: Bool
+
+    public init(value: any TupleElement, inclusive: Bool) {
+        self.value = value
+        self.inclusive = inclusive
+    }
+}
+
 /// Provides statistics about tables and indexes for cost estimation
 public protocol StatisticsProvider: Sendable {
     /// Estimated total row count for a type
@@ -211,7 +252,7 @@ public struct TableStatistics: Sendable {
 }
 
 /// Statistics for a single field
-public struct FieldStatistics: Sendable {
+public struct FieldStatistics: @unchecked Sendable {
     /// Field name
     public let fieldName: String
 
@@ -222,10 +263,10 @@ public struct FieldStatistics: Sendable {
     public let nullRatio: Double
 
     /// Minimum value (if orderable)
-    public let minValue: AnySendable?
+    public let minValue: (any TupleElement)?
 
     /// Maximum value (if orderable)
-    public let maxValue: AnySendable?
+    public let maxValue: (any TupleElement)?
 
     /// Histogram buckets for range estimation
     public let histogram: [HistogramBucket]?
@@ -234,8 +275,8 @@ public struct FieldStatistics: Sendable {
         fieldName: String,
         distinctValues: Int,
         nullRatio: Double,
-        minValue: AnySendable? = nil,
-        maxValue: AnySendable? = nil,
+        minValue: (any TupleElement)? = nil,
+        maxValue: (any TupleElement)? = nil,
         histogram: [HistogramBucket]? = nil
     ) {
         self.fieldName = fieldName
@@ -248,12 +289,16 @@ public struct FieldStatistics: Sendable {
 }
 
 /// A histogram bucket for value distribution
+///
+/// Note: Uses ComparableValue instead of TupleElement because:
+/// 1. Histogram buckets need to be comparable for range selectivity estimation
+/// 2. Histograms are stored as JSON, not in FDB tuples
 public struct HistogramBucket: Sendable {
     /// Lower bound of the bucket
-    public let lowerBound: AnySendable
+    public let lowerBound: ComparableValue
 
     /// Upper bound of the bucket
-    public let upperBound: AnySendable
+    public let upperBound: ComparableValue
 
     /// Number of values in this bucket
     public let count: Int
@@ -262,8 +307,8 @@ public struct HistogramBucket: Sendable {
     public let cumulativeCount: Int
 
     public init(
-        lowerBound: AnySendable,
-        upperBound: AnySendable,
+        lowerBound: ComparableValue,
+        upperBound: ComparableValue,
         count: Int,
         cumulativeCount: Int
     ) {

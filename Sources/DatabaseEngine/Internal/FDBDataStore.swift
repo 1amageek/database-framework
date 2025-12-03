@@ -333,7 +333,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             switch comparison.op {
             case .equal, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
                 // Convert to Tuple here for Sendable compatibility
-                let tuple = valueToTuple(comparison.value.value)
+                let tuple = valueToTuple(comparison.value)
                 return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, valueTuple: tuple)]
             default:
                 return []
@@ -1448,7 +1448,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         comparison: FieldComparison<T>
     ) -> Bool {
         let fieldName = comparison.fieldName
-        let value = comparison.value.value
+        let value = comparison.value
 
         // Handle nil checks separately
         switch comparison.op {

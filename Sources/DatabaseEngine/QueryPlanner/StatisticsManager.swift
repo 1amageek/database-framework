@@ -581,12 +581,12 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
         var maxInclusive = true
 
         if let lower = range.lower {
-            minValue = ComparableValue(fieldValue: FieldValue.from(lower.value.value))
+            minValue = ComparableValue(fieldValue: FieldValue.from(lower.value))
             minInclusive = lower.inclusive
         }
 
         if let upper = range.upper {
-            maxValue = ComparableValue(fieldValue: FieldValue.from(upper.value.value))
+            maxValue = ComparableValue(fieldValue: FieldValue.from(upper.value))
             maxInclusive = upper.inclusive
         }
 

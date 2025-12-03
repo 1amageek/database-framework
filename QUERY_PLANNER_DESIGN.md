@@ -171,45 +171,37 @@ public struct FieldReference<T: Persistable>: Sendable, Hashable {
     }
 }
 
-/// Types of constraints on a field
-public enum FieldConstraint: Sendable {
-    /// Exact equality: field = value
-    case equals(AnySendable)
+/// Protocol for type-erased field conditions
+public protocol FieldConditionProtocol<T>: Sendable {
+    associatedtype T: Persistable
+    var fieldName: String { get }
+    var fieldPath: String { get }
+}
 
-    /// Not equal: field != value
-    case notEquals(AnySendable)
+/// Scalar field condition (equals, in, range, etc.)
+public struct ScalarFieldCondition<T: Persistable>: FieldConditionProtocol {
+    public let field: FieldReference<T>
+    public let constraint: ScalarConstraint
 
-    /// Range: field > lower AND field < upper
-    case range(Range)
+    // Factory methods
+    public static func equals<V: TupleElement>(field: FieldReference<T>, value: V) -> ScalarFieldCondition<T>
+    public static func `in`<V: TupleElement>(field: FieldReference<T>, values: [V]) -> ScalarFieldCondition<T>
+    public static func range(field: FieldReference<T>, lower: RangeBound?, upper: RangeBound?) -> ScalarFieldCondition<T>
+}
 
-    /// Membership: field IN [values]
-    case `in`([AnySendable])
-
-    /// Null check: field IS NULL / IS NOT NULL
+/// Constraint types (without values - values stored separately)
+public enum ScalarConstraintType: Sendable {
+    case equals
+    case notEquals
+    case `in`
+    case range
     case isNull(Bool)
-
-    /// Text search: full-text match
-    case textSearch(TextSearchConstraint)
-
-    /// Spatial: within distance/bounds
-    case spatial(SpatialConstraint)
-
-    /// Vector similarity: nearest neighbors
-    case vectorSimilarity(VectorConstraint)
-
-    /// String pattern: LIKE, PREFIX, SUFFIX, CONTAINS
-    case stringPattern(StringPatternConstraint)
 }
 
 /// Range constraint with bounds
-public struct Range: Sendable {
-    public let lower: Bound?
-    public let upper: Bound?
-
-    public struct Bound: Sendable {
-        public let value: AnySendable
-        public let inclusive: Bool
-    }
+public struct RangeBound: Sendable {
+    public let value: any TupleElement
+    public let inclusive: Bool
 }
 ```
 
@@ -362,7 +354,7 @@ public struct IndexScanBounds: Sendable {
     public let end: [BoundComponent]
 
     public struct BoundComponent: Sendable {
-        public let value: AnySendable?
+        public let value: any TupleElement
         public let inclusive: Bool
     }
 
@@ -375,11 +367,11 @@ public struct IndexSeekOperator<T: Persistable>: Sendable {
     /// The index to seek in
     public let index: IndexDescriptor
 
-    /// Values to seek
-    public let seekValues: [[AnySendable]]
+    /// Values to seek (using TupleElement for FDB compatibility)
+    public let seekValues: [[any TupleElement]]
 
     /// Conditions satisfied by this seek
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 }
 
 /// Union operator (OR)

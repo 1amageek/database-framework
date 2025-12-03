@@ -49,7 +49,7 @@ public struct NullValue: Sendable, Equatable, CustomStringConvertible {
 ///     print("Region: \(result.groupKey), Total: \(result.value)")
 /// }
 /// ```
-public struct AggregationResult: Sendable, CustomStringConvertible {
+public struct AggregationResult: @unchecked Sendable, CustomStringConvertible {
     /// The aggregation type that produced this result
     public let aggregationType: AggregationType
 
@@ -60,12 +60,12 @@ public struct AggregationResult: Sendable, CustomStringConvertible {
     /// - SUM: Double (or original numeric type)
     /// - AVG: Double
     /// - MIN/MAX: Same type as the field
-    public let value: AnySendable
+    public let value: any Sendable
 
     /// Group key values (empty for non-grouped aggregations)
     ///
     /// Keys are field names, values are the grouping values
-    public let groupKey: [String: AnySendable]
+    public let groupKey: [String: any Sendable]
 
     /// Number of records contributing to this aggregate
     /// (if tracked, otherwise nil)
@@ -73,8 +73,8 @@ public struct AggregationResult: Sendable, CustomStringConvertible {
 
     public init(
         aggregationType: AggregationType,
-        value: AnySendable,
-        groupKey: [String: AnySendable] = [:],
+        value: any Sendable,
+        groupKey: [String: any Sendable] = [:],
         recordCount: Int? = nil
     ) {
         self.aggregationType = aggregationType
@@ -86,10 +86,10 @@ public struct AggregationResult: Sendable, CustomStringConvertible {
     public var description: String {
         var desc = "AggregationResult(\(aggregationType)"
         if !groupKey.isEmpty {
-            let keyStr = groupKey.map { "\($0.key)=\($0.value.value)" }.joined(separator: ", ")
+            let keyStr = groupKey.map { "\($0.key)=\($0.value)" }.joined(separator: ", ")
             desc += ", groupKey=[\(keyStr)]"
         }
-        desc += ", value=\(value.value)"
+        desc += ", value=\(value)"
         if let count = recordCount {
             desc += ", count=\(count)"
         }
@@ -101,31 +101,31 @@ public struct AggregationResult: Sendable, CustomStringConvertible {
 
     /// Check if the result is NULL (empty set for MIN/MAX/AVG)
     public var isNull: Bool {
-        value.value is NullValue
+        value is NullValue
     }
 
     /// Get value as Int64 (for COUNT)
     public var intValue: Int64? {
         if isNull { return nil }
-        if let v = value.value as? Int64 { return v }
-        if let v = value.value as? Int { return Int64(v) }
+        if let v = value as? Int64 { return v }
+        if let v = value as? Int { return Int64(v) }
         return nil
     }
 
     /// Get value as Double (for SUM, AVG)
     public var doubleValue: Double? {
         if isNull { return nil }
-        if let v = value.value as? Double { return v }
-        if let v = value.value as? Float { return Double(v) }
-        if let v = value.value as? Int { return Double(v) }
-        if let v = value.value as? Int64 { return Double(v) }
+        if let v = value as? Double { return v }
+        if let v = value as? Float { return Double(v) }
+        if let v = value as? Int { return Double(v) }
+        if let v = value as? Int64 { return Double(v) }
         return nil
     }
 
     /// Get value as String (for MIN/MAX on strings)
     public var stringValue: String? {
         if isNull { return nil }
-        return value.value as? String
+        return value as? String
     }
 }
 
@@ -347,12 +347,12 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
 
     /// Compute a single aggregate value from items
     ///
-    /// Returns the computed aggregate value wrapped in AnySendable.
+    /// Returns the computed aggregate value.
     /// For MIN/MAX on empty sets, returns a special NullValue marker.
-    private func computeAggregate(items: [T], aggregation: AggregationType) -> AnySendable {
+    private func computeAggregate(items: [T], aggregation: AggregationType) -> any Sendable {
         switch aggregation {
         case .count:
-            return AnySendable(Int64(items.count))
+            return Int64(items.count)
 
         case .sum(let field):
             var sum: Double = 0
@@ -361,7 +361,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
                     sum += value
                 }
             }
-            return AnySendable(sum)
+            return sum
 
         case .avg(let field):
             var sum: Double = 0
@@ -374,9 +374,9 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
             }
             // AVG of empty set is NULL (represented as NaN or special value)
             if count == 0 {
-                return AnySendable(NullValue.instance)
+                return NullValue.instance
             }
-            return AnySendable(sum / Double(count))
+            return sum / Double(count)
 
         case .min(let field):
             return computeMinMax(items: items, field: field, isMin: true)
@@ -393,7 +393,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
     ///   - field: Field name to aggregate
     ///   - isMin: true for MIN, false for MAX
     /// - Returns: The MIN/MAX value, or NullValue if empty
-    private func computeMinMax(items: [T], field: String, isMin: Bool) -> AnySendable {
+    private func computeMinMax(items: [T], field: String, isMin: Bool) -> any Sendable {
         // Collect all non-nil values and normalize to comparable types
         var numericValues: [Double] = []
         var stringValues: [String] = []
@@ -415,18 +415,18 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
 
         // Empty set - return NULL
         if !hasNumeric && !hasString {
-            return AnySendable(NullValue.instance)
+            return NullValue.instance
         }
 
         // Prefer numeric comparison if we have numeric values
         if hasNumeric {
             if isMin {
                 if let minVal = numericValues.min() {
-                    return AnySendable(minVal)
+                    return minVal
                 }
             } else {
                 if let maxVal = numericValues.max() {
-                    return AnySendable(maxVal)
+                    return maxVal
                 }
             }
         }
@@ -435,16 +435,16 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         if hasString {
             if isMin {
                 if let minVal = stringValues.min() {
-                    return AnySendable(minVal)
+                    return minVal
                 }
             } else {
                 if let maxVal = stringValues.max() {
-                    return AnySendable(maxVal)
+                    return maxVal
                 }
             }
         }
 
-        return AnySendable(NullValue.instance)
+        return NullValue.instance
     }
 
     /// Extract numeric value from an item field
@@ -493,11 +493,24 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
     }
 
     /// Convert a GroupKey back into a dictionary for the result
-    private func groupKeyToDictionary(_ key: GroupKey) -> [String: AnySendable] {
-        var result: [String: AnySendable] = [:]
+    private func groupKeyToDictionary(_ key: GroupKey) -> [String: any Sendable] {
+        var result: [String: any Sendable] = [:]
         for keyValue in key.values {
             if let value = keyValue.value {
-                result[keyValue.fieldName] = AnySendable(value)
+                // Convert common types to Sendable
+                if let str = value as? String {
+                    result[keyValue.fieldName] = str
+                } else if let int = value as? Int {
+                    result[keyValue.fieldName] = int
+                } else if let int64 = value as? Int64 {
+                    result[keyValue.fieldName] = int64
+                } else if let double = value as? Double {
+                    result[keyValue.fieldName] = double
+                } else if let bool = value as? Bool {
+                    result[keyValue.fieldName] = bool
+                } else {
+                    result[keyValue.fieldName] = String(describing: value)
+                }
             }
         }
         return result
@@ -609,7 +622,7 @@ public struct PredicateEvaluator<T: Persistable> {
         }
 
         guard let modelValue = modelValue else { return false }
-        let expectedValue = comparison.value.value
+        let expectedValue = comparison.value
 
         switch comparison.op {
         case .equal:
@@ -640,8 +653,27 @@ public struct PredicateEvaluator<T: Persistable> {
             }
             return false
         case .in:
-            if let array = expectedValue as? [AnySendable] {
-                return array.contains { compareEqual(modelValue, $0.value) }
+            // Handle arrays of common types
+            if let array = expectedValue as? [String], let val = modelValue as? String {
+                return array.contains(val)
+            }
+            if let array = expectedValue as? [Int], let val = modelValue as? Int {
+                return array.contains(val)
+            }
+            if let array = expectedValue as? [Int64], let val = modelValue as? Int64 {
+                return array.contains(val)
+            }
+            if let array = expectedValue as? [Double], let val = modelValue as? Double {
+                return array.contains(val)
+            }
+            // Fallback: try to compare using array reflection
+            let mirror = Mirror(reflecting: expectedValue)
+            if mirror.displayStyle == .collection {
+                for child in mirror.children {
+                    if compareEqual(modelValue, child.value) {
+                        return true
+                    }
+                }
             }
             return false
         case .isNil, .isNotNil:

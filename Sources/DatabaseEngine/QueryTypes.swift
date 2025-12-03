@@ -126,19 +126,19 @@ public enum DistanceUnit: Sendable {
 // MARK: - Aggregate Result
 
 /// Result of a GROUP BY aggregation query
-public struct AggregateResult<T: Persistable>: Sendable {
+public struct AggregateResult<T: Persistable>: @unchecked Sendable {
     /// Group key values (field name -> value)
-    public let groupKey: [String: AnySendable]
+    public let groupKey: [String: any Sendable]
 
     /// Aggregation results (aggregation name -> value)
-    public let aggregates: [String: AnySendable]
+    public let aggregates: [String: any Sendable]
 
     /// Number of records in this group
     public let count: Int
 
     public init(
-        groupKey: [String: AnySendable],
-        aggregates: [String: AnySendable],
+        groupKey: [String: any Sendable],
+        aggregates: [String: any Sendable],
         count: Int
     ) {
         self.groupKey = groupKey

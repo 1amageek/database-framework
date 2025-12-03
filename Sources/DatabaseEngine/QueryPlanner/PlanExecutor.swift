@@ -317,14 +317,14 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         var endInclusive = true
 
         for component in bounds.start {
-            if let value = component.value?.value, let element = anyToTupleElement(value) {
+            if let element = component.value {
                 startValues.append(element)
                 startInclusive = component.inclusive
             }
         }
 
         for component in bounds.end {
-            if let value = component.value?.value, let element = anyToTupleElement(value) {
+            if let element = component.value {
                 endValues.append(element)
                 endInclusive = component.inclusive
             }
@@ -368,13 +368,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         var allIds: [Tuple] = []
 
         for keyValues in op.seekValues {
-            // Convert seek values to TupleElements
-            var seekElements: [any TupleElement] = []
-            for anySendable in keyValues {
-                if let element = anyToTupleElement(anySendable.value) {
-                    seekElements.append(element)
-                }
-            }
+            // keyValues is already [any TupleElement]
+            let seekElements: [any TupleElement] = keyValues
 
             // Use equality query for point lookup
             let query = ScalarIndexQuery.equals(seekElements)
@@ -624,12 +619,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         let indexSubspace = typeSubspace.subspace(op.index.name)
 
         for keyValues in op.seekValues {
-            var seekElements: [any TupleElement] = []
-            for anySendable in keyValues {
-                if let element = anyToTupleElement(anySendable.value) {
-                    seekElements.append(element)
-                }
-            }
+            // keyValues is already [any TupleElement]
+            let seekElements: [any TupleElement] = keyValues
 
             let query = ScalarIndexQuery.equals(seekElements)
             let entries = try await searcher.search(
@@ -1253,7 +1244,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             return false
         }
 
-        let expectedValue = comparison.value.value
+        let expectedValue = comparison.value
 
         switch comparison.op {
         case .equal:
@@ -1293,11 +1284,20 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             return false
 
         case .in:
-            // Handle AnySendable wrapping an array
-            if let anySendableArray = expectedValue as? [AnySendable] {
-                return anySendableArray.contains { compareEqual(modelValue, $0.value) }
+            // Handle arrays of common types
+            if let array = expectedValue as? [String], let val = modelValue as? String {
+                return array.contains(val)
             }
-            // Handle case where AnySendable.value is an array
+            if let array = expectedValue as? [Int], let val = modelValue as? Int {
+                return array.contains(val)
+            }
+            if let array = expectedValue as? [Int64], let val = modelValue as? Int64 {
+                return array.contains(val)
+            }
+            if let array = expectedValue as? [Double], let val = modelValue as? Double {
+                return array.contains(val)
+            }
+            // Fallback: extract array using reflection
             if let innerArray = extractArrayFromValue(expectedValue) {
                 return innerArray.contains { compareEqual(modelValue, $0) }
             }
@@ -1444,7 +1444,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     ///
     /// Handles various array representations:
     /// - Direct `[Any]` arrays
-    /// - Arrays wrapped in `AnySendable`
     /// - Arrays accessed via Mirror reflection
     private func extractArrayFromValue(_ value: Any) -> [Any]? {
         // Direct array cast

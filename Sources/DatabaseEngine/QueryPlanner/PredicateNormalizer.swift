@@ -1,7 +1,9 @@
 // PredicateNormalizer.swift
 // QueryPlanner - Predicate normalization (CNF/DNF conversion)
 
+import Foundation
 import Core
+import FoundationDB
 
 /// Normalizes predicates to Conjunctive Normal Form (CNF) or Disjunctive Normal Form (DNF)
 ///
@@ -100,89 +102,162 @@ public struct PredicateNormalizer<T: Persistable> {
     private func convertComparison(
         _ comparison: FieldComparison<T>,
         source: Predicate<T>
-    ) -> FieldCondition<T> {
+    ) -> any FieldConditionProtocol<T> {
         let fieldRef = FieldReference<T>(
             anyKeyPath: comparison.keyPath,
-            fieldName: comparison.fieldName,
-            fieldType: Any.self
+            fieldName: comparison.fieldName
         )
-
-        let constraint: FieldConstraint
 
         switch comparison.op {
         case .equal:
-            constraint = .equals(comparison.value)
+            return ScalarFieldCondition<T>.equals(
+                field: fieldRef,
+                value: toTupleElement(comparison.value),
+                predicate: source
+            )
 
         case .notEqual:
-            constraint = .notEquals(comparison.value)
+            return ScalarFieldCondition<T>(
+                field: fieldRef,
+                constraintType: .notEquals,
+                values: [toTupleElement(comparison.value)],
+                sourcePredicate: source
+            )
 
         case .lessThan:
-            constraint = .range(.lessThan(comparison.value))
+            return ScalarFieldCondition<T>.range(
+                field: fieldRef,
+                type: .lessThan,
+                value: toTupleElement(comparison.value),
+                predicate: source
+            )
 
         case .lessThanOrEqual:
-            constraint = .range(.lessThanOrEqual(comparison.value))
+            return ScalarFieldCondition<T>.range(
+                field: fieldRef,
+                type: .lessThanOrEqual,
+                value: toTupleElement(comparison.value),
+                predicate: source
+            )
 
         case .greaterThan:
-            constraint = .range(.greaterThan(comparison.value))
+            return ScalarFieldCondition<T>.range(
+                field: fieldRef,
+                type: .greaterThan,
+                value: toTupleElement(comparison.value),
+                predicate: source
+            )
 
         case .greaterThanOrEqual:
-            constraint = .range(.greaterThanOrEqual(comparison.value))
+            return ScalarFieldCondition<T>.range(
+                field: fieldRef,
+                type: .greaterThanOrEqual,
+                value: toTupleElement(comparison.value),
+                predicate: source
+            )
 
         case .contains:
-            constraint = .stringPattern(StringPatternConstraint(
-                type: .contains,
-                pattern: stringValue(from: comparison.value) ?? ""
-            ))
+            return StringPatternFieldCondition<T>(
+                field: fieldRef,
+                constraint: StringPatternConstraint(
+                    type: .contains,
+                    pattern: stringValue(from: comparison.value) ?? ""
+                ),
+                sourcePredicate: source
+            )
 
         case .hasPrefix:
-            constraint = .stringPattern(StringPatternConstraint(
-                type: .prefix,
-                pattern: stringValue(from: comparison.value) ?? ""
-            ))
+            return StringPatternFieldCondition<T>(
+                field: fieldRef,
+                constraint: StringPatternConstraint(
+                    type: .prefix,
+                    pattern: stringValue(from: comparison.value) ?? ""
+                ),
+                sourcePredicate: source
+            )
 
         case .hasSuffix:
-            constraint = .stringPattern(StringPatternConstraint(
-                type: .suffix,
-                pattern: stringValue(from: comparison.value) ?? ""
-            ))
+            return StringPatternFieldCondition<T>(
+                field: fieldRef,
+                constraint: StringPatternConstraint(
+                    type: .suffix,
+                    pattern: stringValue(from: comparison.value) ?? ""
+                ),
+                sourcePredicate: source
+            )
 
         case .in:
-            if let values = comparison.value.value as? [Any] {
-                constraint = .in(values.map { AnySendable($0) })
+            let values: [any TupleElement]
+            if let arrayValue = comparison.value as? [Any] {
+                values = arrayValue.map { toTupleElementFromAny($0) }
             } else {
-                constraint = .in([comparison.value])
+                values = [toTupleElement(comparison.value)]
             }
+            return ScalarFieldCondition<T>.in(
+                field: fieldRef,
+                values: values,
+                predicate: source
+            )
 
         case .isNil:
-            constraint = .isNull(true)
+            return ScalarFieldCondition<T>.isNull(field: fieldRef, predicate: source)
 
         case .isNotNil:
-            constraint = .isNull(false)
+            return ScalarFieldCondition<T>(
+                field: fieldRef,
+                constraintType: .isNotNull,
+                values: [],
+                sourcePredicate: source
+            )
         }
-
-        return FieldCondition(
-            field: fieldRef,
-            constraint: constraint,
-            sourcePredicate: source
-        )
     }
 
-    /// Extract string value from AnySendable
-    private func stringValue(from value: AnySendable) -> String? {
-        value.value as? String
+    /// Convert any value to TupleElement
+    private func toTupleElement(_ value: any Sendable) -> any TupleElement {
+        toTupleElementFromAny(value)
+    }
+
+    /// Convert Any to TupleElement
+    private func toTupleElementFromAny(_ value: Any) -> any TupleElement {
+        // Handle common types that are TupleElementConvertible
+        switch value {
+        case let v as Int: return v
+        case let v as Int64: return v
+        case let v as Int32: return Int64(v)
+        case let v as Int16: return Int64(v)
+        case let v as Int8: return Int64(v)
+        case let v as UInt: return Int64(v)
+        case let v as UInt64: return Int64(bitPattern: v)
+        case let v as UInt32: return Int64(v)
+        case let v as UInt16: return Int64(v)
+        case let v as UInt8: return Int64(v)
+        case let v as Double: return v
+        case let v as Float: return Double(v)
+        case let v as String: return v
+        case let v as Bool: return v
+        case let v as Data: return [UInt8](v)
+        case let v as UUID: return v.uuidString
+        case let v as Date: return v.timeIntervalSince1970
+        default:
+            // Fallback: convert to string representation
+            return String(describing: value)
+        }
+    }
+
+    /// Extract string value from comparison value
+    private func stringValue(from value: any Sendable) -> String? {
+        if let str = value as? String {
+            return str
+        }
+        return nil
     }
 
     /// Negate a condition (NOT)
     private func negateCondition(_ condition: QueryCondition<T>) -> QueryCondition<T> {
         switch condition {
         case .field(let fieldCondition):
-            // Negate the field constraint
-            let negatedConstraint = negateConstraint(fieldCondition.constraint)
-            return .field(FieldCondition(
-                field: fieldCondition.field,
-                constraint: negatedConstraint,
-                sourcePredicate: fieldCondition.sourcePredicate
-            ))
+            // Use the protocol's negated() method
+            return .field(fieldCondition.negated())
 
         case .conjunction(let conditions):
             // NOT(A AND B) = NOT(A) OR NOT(B) (De Morgan)
@@ -197,47 +272,6 @@ public struct PredicateNormalizer<T: Persistable> {
 
         case .alwaysFalse:
             return .alwaysTrue
-        }
-    }
-
-    /// Negate a field constraint
-    private func negateConstraint(_ constraint: FieldConstraint) -> FieldConstraint {
-        switch constraint {
-        case .equals(let value):
-            return .notEquals(value)
-
-        case .notEquals(let value):
-            return .equals(value)
-
-        case .range(let bound):
-            // NOT(x > a) = x <= a
-            // NOT(x < b) = x >= b
-            // NOT(a < x < b) = x <= a OR x >= b (complex, keep as notEquals for simplicity)
-            if let lower = bound.lower, bound.upper == nil {
-                let newUpper = RangeBound.Bound(value: lower.value, inclusive: !lower.inclusive)
-                return .range(RangeBound(lower: nil, upper: newUpper))
-            } else if let upper = bound.upper, bound.lower == nil {
-                let newLower = RangeBound.Bound(value: upper.value, inclusive: !upper.inclusive)
-                return .range(RangeBound(lower: newLower, upper: nil))
-            } else {
-                // Complex range negation - just mark as not equals
-                return .notEquals(bound.lower?.value ?? bound.upper?.value ?? AnySendable(Optional<Any>.none as Any))
-            }
-
-        case .in(let values):
-            // NOT IN negates the membership check
-            return .notIn(values)
-
-        case .notIn(let values):
-            // NOT (NOT IN) = IN
-            return .in(values)
-
-        case .isNull(let isNull):
-            return .isNull(!isNull)
-
-        case .textSearch, .spatial, .vectorSimilarity, .stringPattern:
-            // These don't have simple negations
-            return constraint
         }
     }
 

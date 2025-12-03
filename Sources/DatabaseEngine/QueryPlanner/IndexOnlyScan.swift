@@ -394,7 +394,7 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
     public let projectedFields: Set<String>
 
     /// Conditions satisfied by this scan
-    public let satisfiedConditions: [FieldCondition<T>]
+    public let satisfiedConditions: [any FieldConditionProtocol<T>]
 
     /// Estimated matching entries
     public let estimatedEntries: Int
@@ -409,7 +409,7 @@ public struct IndexOnlyScanOperator<T: Persistable>: @unchecked Sendable {
         bounds: IndexScanBounds,
         reverse: Bool = false,
         projectedFields: Set<String>,
-        satisfiedConditions: [FieldCondition<T>] = [],
+        satisfiedConditions: [any FieldConditionProtocol<T>] = [],
         estimatedEntries: Int,
         limit: Int? = nil
     ) {
@@ -455,7 +455,7 @@ public struct CoveringIndexSuggester<T: Persistable> {
             let missing = allModelFields.subtracting(metadata.allFields)
 
             // Check if this index is usable for the query conditions
-            let conditionFields = Set(analysis.fieldConditions.map { $0.field.fieldName })
+            let conditionFields = Set(analysis.fieldConditions.map { $0.fieldName })
             let indexKeyFields = Set(metadata.keyFields)
 
             // Index must have at least one condition field as key
@@ -471,7 +471,7 @@ public struct CoveringIndexSuggester<T: Persistable> {
             return CoveringIndexSuggestion(
                 type: .newIndex,
                 indexName: nil,
-                keyFields: Array(Set(analysis.fieldConditions.map { $0.field.fieldName })),
+                keyFields: Array(Set(analysis.fieldConditions.map { $0.fieldName })),
                 storedFields: Array(allModelFields),
                 reason: "Create new covering index with all fields"
             )

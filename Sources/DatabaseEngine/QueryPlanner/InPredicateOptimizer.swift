@@ -14,11 +14,11 @@ import Core
 public enum InOptimizationStrategy<T: Persistable>: Sendable {
     /// Expand IN into a union of index scans (one scan per value)
     /// Best for small number of values with index support
-    case indexUnion(fieldPath: String, values: [AnySendable])
+    case indexUnion(fieldPath: String, values: [any TupleElement])
 
     /// Use a nested loop join with the IN values as the inner table
     /// Best for larger number of values
-    case inJoin(fieldPath: String, values: [AnySendable])
+    case inJoin(fieldPath: String, values: [any TupleElement])
 
     /// Convert to OR conditions (disjunction)
     /// Used when no better strategy is available
@@ -174,11 +174,13 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
     private func collectInPredicates(from condition: QueryCondition<T>, into predicates: inout [InPredicate<T>]) {
         switch condition {
         case .field(let fieldCondition):
-            if case .in(let values) = fieldCondition.constraint {
+            if fieldCondition.isIn {
+                let values = fieldCondition.constraintToTupleElements()
                 predicates.append(InPredicate(
-                    fieldPath: fieldCondition.field.fieldName,
+                    fieldPath: fieldCondition.fieldName,
                     values: values,
-                    originalCondition: fieldCondition
+                    keyPath: fieldCondition.keyPath,
+                    sourcePredicate: fieldCondition.predicate
                 ))
             }
 
@@ -247,13 +249,17 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
     ///
     /// Reference: PostgreSQL ScalarArrayOpExpr expansion for small arrays
     private func buildOrExpansion(from predicate: InPredicate<T>) -> QueryCondition<T> {
-        let fieldRef = predicate.originalCondition.field
+        let fieldRef = FieldReference<T>(
+            anyKeyPath: predicate.keyPath,
+            fieldName: predicate.fieldPath
+        )
 
         // Create equals conditions for each value
         let equalsConditions: [QueryCondition<T>] = predicate.values.map { value in
-            let newFieldCondition = FieldCondition(
+            let newFieldCondition = ScalarFieldCondition<T>.equals(
                 field: fieldRef,
-                constraint: .equals(value)
+                value: value,
+                predicate: predicate.sourcePredicate
             )
             return QueryCondition.field(newFieldCondition)
         }
@@ -294,8 +300,7 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
     ) -> QueryCondition<T> {
         switch condition {
         case .field(let fieldCondition):
-            if fieldCondition.field.fieldName == predicate.fieldPath,
-               case .in = fieldCondition.constraint {
+            if fieldCondition.fieldName == predicate.fieldPath && fieldCondition.isIn {
                 return replacement
             }
             return condition
@@ -321,21 +326,29 @@ public struct InPredicateOptimizer<T: Persistable>: Sendable {
 // MARK: - InPredicate
 
 /// Represents an extracted IN predicate
-public struct InPredicate<T: Persistable>: Sendable {
+public struct InPredicate<T: Persistable>: @unchecked Sendable {
     /// Field path for the IN predicate
     public let fieldPath: String
 
-    /// Values in the IN list
-    public let values: [AnySendable]
+    /// Values in the IN list (as TupleElements)
+    public let values: [any TupleElement]
 
-    /// Original field condition (stored for OR expansion)
-    /// This contains the FieldReference needed to create equals conditions
-    public let originalCondition: FieldCondition<T>
+    /// KeyPath to the field
+    public let keyPath: AnyKeyPath
 
-    public init(fieldPath: String, values: [AnySendable], originalCondition: FieldCondition<T>) {
+    /// Source predicate for rebuilding
+    public let sourcePredicate: Predicate<T>?
+
+    public init(
+        fieldPath: String,
+        values: [any TupleElement],
+        keyPath: AnyKeyPath,
+        sourcePredicate: Predicate<T>?
+    ) {
         self.fieldPath = fieldPath
         self.values = values
-        self.originalCondition = originalCondition
+        self.keyPath = keyPath
+        self.sourcePredicate = sourcePredicate
     }
 }
 
@@ -346,14 +359,14 @@ public enum InPlanOperator<T: Persistable>: @unchecked Sendable {
     /// Union of index scans
     case indexUnion(
         fieldPath: String,
-        values: [AnySendable],
+        values: [any TupleElement],
         indexName: String
     )
 
     /// Nested loop join with IN values
     case inJoin(
         fieldPath: String,
-        values: [AnySendable],
+        values: [any TupleElement],
         innerPlan: PlanOperator<T>
     )
 }
@@ -365,10 +378,7 @@ extension QueryCondition {
     public var containsInPredicate: Bool {
         switch self {
         case .field(let fieldCondition):
-            if case .in = fieldCondition.constraint {
-                return true
-            }
-            return false
+            return fieldCondition.isIn
 
         case .conjunction(let conditions), .disjunction(let conditions):
             return conditions.contains { $0.containsInPredicate }
@@ -382,10 +392,7 @@ extension QueryCondition {
     public var inPredicateCount: Int {
         switch self {
         case .field(let fieldCondition):
-            if case .in = fieldCondition.constraint {
-                return 1
-            }
-            return 0
+            return fieldCondition.isIn ? 1 : 0
 
         case .conjunction(let conditions), .disjunction(let conditions):
             return conditions.reduce(0) { $0 + $1.inPredicateCount }

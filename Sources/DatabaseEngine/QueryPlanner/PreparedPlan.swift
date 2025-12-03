@@ -222,8 +222,8 @@ public final class PlanCache: Sendable {
     }
 
     /// Internal state protected by Mutex
-    private struct State: Sendable {
-        var entries: [QueryFingerprint: AnySendable] = [:]
+    private struct State: @unchecked Sendable {
+        var entries: [QueryFingerprint: any Sendable] = [:]
         var accessOrder: [QueryFingerprint] = []
         var hitCount: Int = 0
         var missCount: Int = 0
@@ -254,7 +254,7 @@ public final class PlanCache: Sendable {
                 return nil
             }
 
-            guard let entry = anyEntry.value as? CacheEntry<T> else {
+            guard let entry = anyEntry as? CacheEntry<T> else {
                 state.missCount += 1
                 return nil
             }
@@ -280,7 +280,7 @@ public final class PlanCache: Sendable {
                 lastAccessTime: Date(),
                 accessCount: entry.accessCount + 1
             )
-            state.entries[fingerprint] = AnySendable(updatedEntry)
+            state.entries[fingerprint] = updatedEntry
 
             return entry.plan
         }
@@ -300,7 +300,7 @@ public final class PlanCache: Sendable {
                 lastAccessTime: Date(),
                 accessCount: 1
             )
-            state.entries[plan.fingerprint] = AnySendable(entry)
+            state.entries[plan.fingerprint] = entry
             state.accessOrder.append(plan.fingerprint)
         }
     }
@@ -414,7 +414,7 @@ extension QueryPlanner {
         switch predicate {
         case .comparison(let comparison):
             // Check if value is a parameter placeholder
-            if let paramName = comparison.value.value as? ParameterPlaceholder {
+            if let paramName = comparison.value as? ParameterPlaceholder {
                 let binding = ParameterBinding(
                     name: paramName.name,
                     fieldName: comparison.fieldName,

@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Bitmap index support for efficient filtering on low-cardinality columns
 ///
@@ -310,10 +311,10 @@ public struct BitmapScanOperator<T: Persistable>: @unchecked Sendable {
 
 /// Bitmap operations
 public enum BitmapOperation: @unchecked Sendable {
-    case equals(value: AnySendable)
-    case notEquals(value: AnySendable)
-    case `in`(values: [AnySendable])
-    case notIn(values: [AnySendable])
+    case equals(value: any TupleElement)
+    case notEquals(value: any TupleElement)
+    case `in`(values: [any TupleElement])
+    case notIn(values: [any TupleElement])
 }
 
 // MARK: - Bitmap Combine Operator
@@ -368,13 +369,13 @@ public struct BitmapIndexAnalyzer<T: Persistable> {
 
     /// Analyze if bitmap indexes can be used
     public func analyze(
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         analysis: QueryAnalysis<T>
     ) -> BitmapIndexAnalysis {
         var usableBitmaps: [UsableBitmapEntry] = []
 
         for condition in conditions {
-            guard let bitmapIndex = availableBitmapIndexes[condition.field.fieldName] else {
+            guard let bitmapIndex = availableBitmapIndexes[condition.fieldName] else {
                 continue
             }
 
@@ -382,7 +383,7 @@ public struct BitmapIndexAnalyzer<T: Persistable> {
             let isSupported = isBitmapSupportedCondition(condition)
             if isSupported {
                 usableBitmaps.append(UsableBitmapEntry(
-                    fieldName: condition.field.fieldName,
+                    fieldName: condition.fieldName,
                     index: bitmapIndex
                 ))
             }
@@ -402,13 +403,9 @@ public struct BitmapIndexAnalyzer<T: Persistable> {
         )
     }
 
-    private func isBitmapSupportedCondition(_ condition: FieldCondition<T>) -> Bool {
-        switch condition.constraint {
-        case .equals, .in, .isNull:
-            return true
-        default:
-            return false
-        }
+    private func isBitmapSupportedCondition(_ condition: any FieldConditionProtocol<T>) -> Bool {
+        // Bitmap indexes support equality, IN, and null checks
+        return condition.isEquality || condition.isIn || condition.isNullCheck
     }
 }
 
@@ -479,15 +476,15 @@ public struct BitmapIndexSuggester<T: Persistable> {
 
     /// Suggest bitmap indexes based on query patterns
     public func suggest(
-        frequentConditions: [FieldCondition<T>],
+        frequentConditions: [any FieldConditionProtocol<T>],
         existingIndexes: [IndexDescriptor]
     ) -> [BitmapIndexSuggestion] {
         var suggestions: [BitmapIndexSuggestion] = []
 
         // Group conditions by field
-        var conditionsByField: [String: [FieldCondition<T>]] = [:]
+        var conditionsByField: [String: [any FieldConditionProtocol<T>]] = [:]
         for condition in frequentConditions {
-            let field = condition.field.fieldName
+            let field = condition.fieldName
             conditionsByField[field, default: []].append(condition)
         }
 
@@ -511,8 +508,8 @@ public struct BitmapIndexSuggester<T: Persistable> {
             }
 
             // Check condition types
-            let equalityCount = conditions.filter { $0.constraint.isEquality }.count
-            let inCount = conditions.filter { $0.constraint.isIn }.count
+            let equalityCount = conditions.filter { $0.isEquality }.count
+            let inCount = conditions.filter { $0.isIn }.count
 
             if equalityCount + inCount > 0 {
                 suggestions.append(BitmapIndexSuggestion(

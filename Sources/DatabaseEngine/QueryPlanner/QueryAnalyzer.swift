@@ -25,8 +25,8 @@ public struct QueryAnalyzer<T: Persistable> {
             normalized = .alwaysTrue
         }
 
-        // Extract conditions
-        let conditions = extractConditions(from: normalized)
+        // Extract all field conditions from the normalized tree
+        let conditions = normalized.allFieldConditions
 
         // Identify field requirements
         let fieldRequirements = extractFieldRequirements(
@@ -61,58 +61,32 @@ public struct QueryAnalyzer<T: Persistable> {
         )
     }
 
-    // MARK: - Condition Extraction
-
-    /// Extract flat list of field conditions from a normalized condition
-    private func extractConditions(from condition: QueryCondition<T>) -> [FieldCondition<T>] {
-        switch condition {
-        case .field(let fieldCondition):
-            return [fieldCondition]
-
-        case .conjunction(let conditions):
-            return conditions.flatMap { extractConditions(from: $0) }
-
-        case .disjunction(let conditions):
-            // For disjunctions, we still extract all conditions for analysis
-            // The planner will handle the OR logic separately
-            return conditions.flatMap { extractConditions(from: $0) }
-
-        case .alwaysTrue, .alwaysFalse:
-            return []
-        }
-    }
-
     // MARK: - Field Requirements
 
     /// Extract requirements for each field
     private func extractFieldRequirements(
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         sortDescriptors: [SortDescriptor<T>]
     ) -> [String: FieldRequirement] {
         var requirements: [String: FieldRequirement] = [:]
 
         // Process conditions
         for condition in conditions {
-            let fieldName = condition.field.fieldName
+            let fieldName = condition.fieldName
             let existing = requirements[fieldName] ?? FieldRequirement(
                 fieldName: fieldName,
                 accessTypes: [],
-                constraints: [],
                 usedInOrdering: false,
                 orderDirection: nil
             )
 
-            let accessType = accessTypeForConstraint(condition.constraint)
+            let accessType = accessTypeForCondition(condition)
             var accessTypes = existing.accessTypes
             accessTypes.insert(accessType)
-
-            var constraints = existing.constraints
-            constraints.append(condition.constraint)
 
             requirements[fieldName] = FieldRequirement(
                 fieldName: fieldName,
                 accessTypes: accessTypes,
-                constraints: constraints,
                 usedInOrdering: existing.usedInOrdering,
                 orderDirection: existing.orderDirection
             )
@@ -124,7 +98,6 @@ public struct QueryAnalyzer<T: Persistable> {
             let existing = requirements[fieldName] ?? FieldRequirement(
                 fieldName: fieldName,
                 accessTypes: [],
-                constraints: [],
                 usedInOrdering: false,
                 orderDirection: nil
             )
@@ -135,7 +108,6 @@ public struct QueryAnalyzer<T: Persistable> {
             requirements[fieldName] = FieldRequirement(
                 fieldName: fieldName,
                 accessTypes: accessTypes,
-                constraints: existing.constraints,
                 usedInOrdering: true,
                 orderDirection: descriptor.order
             )
@@ -144,29 +116,26 @@ public struct QueryAnalyzer<T: Persistable> {
         return requirements
     }
 
-    /// Determine the access type for a constraint
-    private func accessTypeForConstraint(_ constraint: FieldConstraint) -> FieldAccessType {
-        switch constraint {
-        case .equals:
+    /// Determine the access type for a condition
+    private func accessTypeForCondition(_ condition: any FieldConditionProtocol<T>) -> FieldAccessType {
+        if condition.isEquality {
             return .equality
-        case .notEquals:
-            return .inequality
-        case .range:
+        } else if condition.isRange {
             return .range
-        case .in:
+        } else if condition.isIn {
             return .membership
-        case .notIn:
-            return .membership
-        case .isNull:
+        } else if condition.isNullCheck {
             return .equality
-        case .textSearch:
+        } else if condition is TextSearchFieldCondition<T> {
             return .textSearch
-        case .spatial:
+        } else if condition is SpatialFieldCondition<T> {
             return .spatial
-        case .vectorSimilarity:
+        } else if condition is VectorFieldCondition<T> {
             return .vector
-        case .stringPattern:
+        } else if condition is StringPatternFieldCondition<T> {
             return .pattern
+        } else {
+            return .equality  // Default
         }
     }
 
@@ -174,7 +143,7 @@ public struct QueryAnalyzer<T: Persistable> {
 
     /// Detect special query patterns
     private func detectQueryPatterns(
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         sortDescriptors: [SortDescriptor<T>],
         limit: Int?,
         offset: Int?
@@ -182,55 +151,37 @@ public struct QueryAnalyzer<T: Persistable> {
         var patterns: Set<QueryPattern> = []
 
         // Point lookup (single equality)
-        let equalityConditions = conditions.filter { condition in
-            if case .equals = condition.constraint { return true }
-            return false
-        }
+        let equalityConditions = conditions.filter { $0.isEquality }
         if equalityConditions.count == 1 {
             patterns.insert(.pointLookup)
         }
 
         // Range query
-        let rangeConditions = conditions.filter { condition in
-            if case .range = condition.constraint { return true }
-            return false
-        }
+        let rangeConditions = conditions.filter { $0.isRange }
         if !rangeConditions.isEmpty {
             patterns.insert(.rangeQuery)
         }
 
         // Multi-value lookup (IN)
-        let inConditions = conditions.filter { condition in
-            if case .in = condition.constraint { return true }
-            return false
-        }
+        let inConditions = conditions.filter { $0.isIn }
         if !inConditions.isEmpty {
             patterns.insert(.multiValueLookup)
         }
 
         // Full-text search
-        let textConditions = conditions.filter { condition in
-            if case .textSearch = condition.constraint { return true }
-            return false
-        }
+        let textConditions = conditions.filter { $0 is TextSearchFieldCondition<T> }
         if !textConditions.isEmpty {
             patterns.insert(.fullTextSearch)
         }
 
         // Vector search
-        let vectorConditions = conditions.filter { condition in
-            if case .vectorSimilarity = condition.constraint { return true }
-            return false
-        }
+        let vectorConditions = conditions.filter { $0 is VectorFieldCondition<T> }
         if !vectorConditions.isEmpty {
             patterns.insert(.vectorSearch)
         }
 
         // Spatial query
-        let spatialConditions = conditions.filter { condition in
-            if case .spatial = condition.constraint { return true }
-            return false
-        }
+        let spatialConditions = conditions.filter { $0 is SpatialFieldCondition<T> }
         if !spatialConditions.isEmpty {
             patterns.insert(.spatialQuery)
         }
@@ -252,13 +203,13 @@ public struct QueryAnalyzer<T: Persistable> {
 
     /// Extract all referenced field names
     private func extractReferencedFields(
-        conditions: [FieldCondition<T>],
+        conditions: [any FieldConditionProtocol<T>],
         sortDescriptors: [SortDescriptor<T>]
     ) -> Set<String> {
         var fields = Set<String>()
 
         for condition in conditions {
-            fields.insert(condition.field.fieldName)
+            fields.insert(condition.fieldName)
         }
 
         for descriptor in sortDescriptors {
@@ -279,8 +230,8 @@ public struct QueryAnalysis<T: Persistable>: @unchecked Sendable {
     /// Normalized condition tree
     public let normalizedCondition: QueryCondition<T>
 
-    /// Flat list of field conditions
-    public let fieldConditions: [FieldCondition<T>]
+    /// All field conditions (flattened)
+    public let fieldConditions: [any FieldConditionProtocol<T>]
 
     /// Requirements per field
     public let fieldRequirements: [String: FieldRequirement]
@@ -303,7 +254,7 @@ public struct QueryAnalysis<T: Persistable>: @unchecked Sendable {
     public init(
         originalPredicate: Predicate<T>?,
         normalizedCondition: QueryCondition<T>,
-        fieldConditions: [FieldCondition<T>],
+        fieldConditions: [any FieldConditionProtocol<T>],
         fieldRequirements: [String: FieldRequirement],
         sortRequirements: [SortDescriptor<T>],
         limit: Int?,
@@ -338,18 +289,18 @@ public struct QueryAnalysis<T: Persistable>: @unchecked Sendable {
     }
 
     /// Get equality conditions only
-    public var equalityConditions: [FieldCondition<T>] {
-        fieldConditions.filter { $0.constraint.isEquality }
+    public var equalityConditions: [any FieldConditionProtocol<T>] {
+        fieldConditions.filter { $0.isEquality }
     }
 
     /// Get range conditions only
-    public var rangeConditions: [FieldCondition<T>] {
-        fieldConditions.filter { $0.constraint.isRange }
+    public var rangeConditions: [any FieldConditionProtocol<T>] {
+        fieldConditions.filter { $0.isRange }
     }
 
     /// Get IN conditions only
-    public var inConditions: [FieldCondition<T>] {
-        fieldConditions.filter { $0.constraint.isIn }
+    public var inConditions: [any FieldConditionProtocol<T>] {
+        fieldConditions.filter { $0.isIn }
     }
 }
 

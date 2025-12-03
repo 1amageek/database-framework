@@ -3,6 +3,7 @@
 
 import Foundation
 import Core
+import FoundationDB
 
 /// Reservoir Sampling implementation using Algorithm L
 ///
@@ -165,7 +166,7 @@ public struct ReservoirSampling<T: Sendable>: Sendable {
 
 // MARK: - Histogram Building
 
-extension ReservoirSampling where T: Comparable & Hashable {
+extension ReservoirSampling where T: Comparable & Hashable & TupleElement {
 
     /// Build a histogram from the sampled values
     ///
@@ -211,9 +212,10 @@ extension ReservoirSampling where T: Comparable & Hashable {
             let scaledCount = Int(Double(count) * scaleFactor)
             cumulativeCount += scaledCount
 
+            let comparableValue = ComparableValue(tupleElement: value)
             buckets.append(HistogramBucket(
-                lowerBound: AnySendable(value),
-                upperBound: AnySendable(value),
+                lowerBound: comparableValue,
+                upperBound: comparableValue,
                 count: scaledCount,
                 cumulativeCount: cumulativeCount
             ))
@@ -233,16 +235,16 @@ extension ReservoirSampling where T: Comparable & Hashable {
             let startIndex = i
             let endIndex = min(i + valuesPerBucket, sorted.count)
 
-            let lowerBound = sorted[startIndex]
-            let upperBound = sorted[endIndex - 1]
+            let lowerBound = ComparableValue(tupleElement: sorted[startIndex])
+            let upperBound = ComparableValue(tupleElement: sorted[endIndex - 1])
             let count = endIndex - startIndex
 
             let scaledCount = Int(Double(count) * scaleFactor)
             cumulativeCount += scaledCount
 
             buckets.append(HistogramBucket(
-                lowerBound: AnySendable(lowerBound),
-                upperBound: AnySendable(upperBound),
+                lowerBound: lowerBound,
+                upperBound: upperBound,
                 count: scaledCount,
                 cumulativeCount: cumulativeCount
             ))
@@ -309,8 +311,8 @@ extension ReservoirSampling where T == FieldValue {
             cumulativeCount += scaledCount
 
             buckets.append(HistogramBucket(
-                lowerBound: AnySendable(value),
-                upperBound: AnySendable(value),
+                lowerBound: value,
+                upperBound: value,
                 count: scaledCount,
                 cumulativeCount: cumulativeCount
             ))
@@ -345,8 +347,8 @@ extension ReservoirSampling where T == FieldValue {
                 cumulativeCount += scaledCount
 
                 buckets.append(HistogramBucket(
-                    lowerBound: AnySendable(currentBucketStart!),
-                    upperBound: AnySendable(currentBucketEnd!),
+                    lowerBound: currentBucketStart!,
+                    upperBound: currentBucketEnd!,
                     count: scaledCount,
                     cumulativeCount: cumulativeCount
                 ))

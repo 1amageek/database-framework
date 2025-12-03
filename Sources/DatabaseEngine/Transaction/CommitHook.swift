@@ -84,7 +84,7 @@ public struct CommitContext: Sendable {
     public let timestamp: Date
 
     /// Custom metadata attached to the transaction
-    public let metadata: [String: AnySendable]
+    public let metadata: [String: any Sendable]
 
     public init(
         transactionId: UUID = UUID(),
@@ -92,7 +92,7 @@ public struct CommitContext: Sendable {
         updatedRecords: [UpdatedRecord] = [],
         deletedRecords: [AnyPersistable] = [],
         timestamp: Date = Date(),
-        metadata: [String: AnySendable] = [:]
+        metadata: [String: any Sendable] = [:]
     ) {
         self.transactionId = transactionId
         self.insertedRecords = insertedRecords
@@ -122,7 +122,7 @@ public struct CommitContext: Sendable {
 // MARK: - Updated Record
 
 /// Represents an updated record with old and new values
-public struct UpdatedRecord: Sendable {
+public struct UpdatedRecord: @unchecked Sendable {
     /// Type name of the record
     public let typeName: String
 
@@ -130,17 +130,17 @@ public struct UpdatedRecord: Sendable {
     public let id: String
 
     /// Old values (before update)
-    public let oldValues: [String: AnySendable]
+    public let oldValues: [String: any Sendable]
 
     /// New values (after update)
-    public let newValues: [String: AnySendable]
+    public let newValues: [String: any Sendable]
 
     /// Fields that changed
     public var changedFields: Set<String> {
         var changed: Set<String> = []
         for (key, newValue) in newValues {
             if let oldValue = oldValues[key] {
-                if "\(oldValue.value)" != "\(newValue.value)" {
+                if "\(oldValue)" != "\(newValue)" {
                     changed.insert(key)
                 }
             } else {
@@ -153,8 +153,8 @@ public struct UpdatedRecord: Sendable {
     public init(
         typeName: String,
         id: String,
-        oldValues: [String: AnySendable],
-        newValues: [String: AnySendable]
+        oldValues: [String: any Sendable],
+        newValues: [String: any Sendable]
     ) {
         self.typeName = typeName
         self.id = id
@@ -166,7 +166,7 @@ public struct UpdatedRecord: Sendable {
 // MARK: - Any Persistable
 
 /// Type-erased Persistable for storage in CommitContext
-public struct AnyPersistable: Sendable {
+public struct AnyPersistable: @unchecked Sendable {
     /// Type name
     public let typeName: String
 
@@ -174,7 +174,7 @@ public struct AnyPersistable: Sendable {
     public let id: String
 
     /// Field values
-    public let values: [String: AnySendable]
+    public let values: [String: any Sendable]
 
     public init<T: Persistable>(_ item: T) {
         self.typeName = T.persistableType
@@ -182,11 +182,24 @@ public struct AnyPersistable: Sendable {
         self.values = Self.extractValues(from: item)
     }
 
-    private static func extractValues<T: Persistable>(from item: T) -> [String: AnySendable] {
-        var values: [String: AnySendable] = [:]
+    private static func extractValues<T: Persistable>(from item: T) -> [String: any Sendable] {
+        var values: [String: any Sendable] = [:]
         for field in T.allFields {
             if let value = item[dynamicMember: field] {
-                values[field] = AnySendable(value)
+                // Convert to Sendable types
+                if let str = value as? String {
+                    values[field] = str
+                } else if let int = value as? Int {
+                    values[field] = int
+                } else if let int64 = value as? Int64 {
+                    values[field] = int64
+                } else if let double = value as? Double {
+                    values[field] = double
+                } else if let bool = value as? Bool {
+                    values[field] = bool
+                } else {
+                    values[field] = String(describing: value)
+                }
             }
         }
         return values

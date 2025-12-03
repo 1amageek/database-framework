@@ -319,8 +319,8 @@ struct IndexOnlyScanOperatorTests {
         )
 
         let bounds = IndexScanBounds(
-            start: [.init(value: AnySendable("A"), inclusive: true)],
-            end: [.init(value: AnySendable("Z"), inclusive: true)]
+            start: [.init(value: "A", inclusive: true)],
+            end: [.init(value: "Z", inclusive: true)]
         )
 
         let op = IndexOnlyScanOperator<IOSTestUser>(
