@@ -205,6 +205,10 @@ extension PlanOperator: CustomStringConvertible {
             return "SpatialScan(\(op.index.name))"
         case .aggregation(let op):
             return "Aggregation(\(op.index.name), type: \(op.aggregationType))"
+        case .inUnion(let op):
+            return "InUnion(\(op.index.name), field: \(op.fieldPath), values: \(op.valueCount))"
+        case .inJoin(let op):
+            return "InJoin(\(op.index.name), field: \(op.fieldPath), values: \(op.valueCount))"
         }
     }
 }

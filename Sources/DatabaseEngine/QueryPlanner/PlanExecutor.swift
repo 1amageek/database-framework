@@ -137,6 +137,12 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         case .aggregation(let aggOp):
             return try await executeAggregation(aggOp)
+
+        case .inUnion(let inUnionOp):
+            return try await executeInUnion(inUnionOp)
+
+        case .inJoin(let inJoinOp):
+            return try await executeInJoin(inJoinOp)
         }
     }
 
@@ -223,6 +229,12 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         case .aggregation:
             // Aggregations don't return IDs
             return []
+
+        case .inUnion(let inUnionOp):
+            return try await executeInUnionIdsOnly(inUnionOp)
+
+        case .inJoin(let inJoinOp):
+            return try await executeInJoinIdsOnly(inJoinOp)
         }
     }
 
@@ -523,7 +535,8 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     private func isSimpleScanOperator(_ op: PlanOperator<T>) -> Bool {
         switch op {
         case .tableScan, .indexScan, .indexSeek, .indexOnlyScan,
-             .fullTextScan, .vectorSearch, .spatialScan:
+             .fullTextScan, .vectorSearch, .spatialScan,
+             .inUnion, .inJoin:
             return true
         case .union(let unionOp):
             return unionOp.children.allSatisfy { isSimpleScanOperator($0) }
@@ -845,6 +858,233 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             typeName = "AVG(\(field))"
         }
         throw PlanExecutionError.aggregationNotImplemented(type: typeName)
+    }
+
+    // MARK: - IN-Union Execution
+
+    /// Execute IN-Union: parallel index seeks for each value in the IN list
+    ///
+    /// **Algorithm**:
+    /// 1. For each value in the IN list, create an index seek
+    /// 2. Execute all seeks in parallel using TaskGroup
+    /// 3. Union the results (deduplicate by ID)
+    /// 4. Apply any additional filter
+    ///
+    /// **Reference**: FDB Record Layer InExtractor union strategy
+    private func executeInUnion(_ op: any InOperatorExecutable<T>) async throws -> [T] {
+        // Get index subspace
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+
+        // Get values as TupleElements for index seeks
+        let tupleElements = op.valuesAsTupleElements()
+
+        // Execute all seeks in parallel using TaskGroup
+        var allIdsList: [Tuple] = []
+        var uniqueIds: Set<Tuple> = []
+
+        try await withThrowingTaskGroup(of: [Tuple].self) { group in
+            for element in tupleElements {
+                group.addTask {
+                    // Point lookup query
+                    let query = ScalarIndexQuery.equals([element])
+                    let entries = try await searcher.search(
+                        query: query,
+                        in: indexSubspace,
+                        using: self.executionContext.storageReader
+                    )
+
+                    return entries.map { $0.itemID }
+                }
+            }
+
+            // Collect results with deduplication
+            for try await ids in group {
+                for id in ids {
+                    if uniqueIds.insert(id).inserted {
+                        allIdsList.append(id)
+                    }
+                }
+            }
+        }
+
+        // Batch fetch items
+        var results = try await context.indexQueryContext.batchFetchItems(
+            ids: allIdsList,
+            type: T.self,
+            configuration: .default
+        )
+
+        // Apply additional filter if present
+        if let filter = op.additionalFilter {
+            results = results.filter { evaluatePredicate(filter, on: $0) }
+        }
+
+        return results
+    }
+
+    /// Execute IN-Union returning only IDs (no record fetch)
+    private func executeInUnionIdsOnly(_ op: any InOperatorExecutable<T>) async throws -> Set<Tuple> {
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+
+        // Get values as TupleElements for index seeks
+        let tupleElements = op.valuesAsTupleElements()
+
+        var allIds: Set<Tuple> = []
+
+        try await withThrowingTaskGroup(of: [Tuple].self) { group in
+            for element in tupleElements {
+                group.addTask {
+                    let query = ScalarIndexQuery.equals([element])
+                    let entries = try await searcher.search(
+                        query: query,
+                        in: indexSubspace,
+                        using: self.executionContext.storageReader
+                    )
+
+                    return entries.map { $0.itemID }
+                }
+            }
+
+            for try await ids in group {
+                allIds.formUnion(ids)
+            }
+        }
+
+        return allIds
+    }
+
+    // MARK: - IN-Join Execution
+
+    /// Execute IN-Join with optimized strategy selection
+    ///
+    /// **Algorithm**:
+    /// 1. Analyze IN values to determine optimal execution strategy
+    /// 2. Execute using the selected strategy:
+    ///    - convertToUnion: Delegate to IN-Union for small value sets
+    ///    - boundedRangeScan: Scan only the range between min/max values
+    ///    - fullScan: Scan entire index with hash set filtering
+    ///
+    /// **Reference**: FDB Record Layer InExtractor join strategy
+    private func executeInJoin(_ op: any InOperatorExecutable<T>) async throws -> [T] {
+        // Select execution strategy
+        let strategySelector = InJoinStrategySelector()
+        let estimatedIndexSize = op.estimatedTotalResults * 10
+        let strategy = strategySelector.selectStrategy(for: op, estimatedIndexSize: estimatedIndexSize)
+
+        // Execute based on selected strategy
+        let matchingIds: [Tuple]
+        switch strategy {
+        case .convertToUnion:
+            // Delegate to IN-Union execution
+            return try await executeInUnion(op)
+
+        case .boundedRangeScan:
+            matchingIds = try await executeInJoinBoundedScan(op: op)
+
+        case .fullScan:
+            matchingIds = try await executeInJoinFullScan(op: op)
+        }
+
+        // Batch fetch matching items
+        var results = try await context.indexQueryContext.batchFetchItems(
+            ids: matchingIds,
+            type: T.self,
+            configuration: .default
+        )
+
+        // Apply additional filter if present
+        if let filter = op.additionalFilter {
+            results = results.filter { evaluatePredicate(filter, on: $0) }
+        }
+
+        return results
+    }
+
+    /// Execute IN-Join with bounded range scan
+    private func executeInJoinBoundedScan(op: any InOperatorExecutable<T>) async throws -> [Tuple] {
+        guard let range = op.valueRange() else {
+            return try await executeInJoinFullScan(op: op)
+        }
+
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+
+        let query = ScalarIndexQuery(
+            start: [range.min],
+            startInclusive: true,
+            end: [range.max],
+            endInclusive: true
+        )
+
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        return filterMatchingEntries(entries, op: op)
+    }
+
+    /// Execute IN-Join with full index scan
+    private func executeInJoinFullScan(op: any InOperatorExecutable<T>) async throws -> [Tuple] {
+        let typeSubspace = try await context.indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(op.index.name)
+        let searcher = ScalarIndexSearcher(keyFieldCount: op.index.keyPaths.count)
+
+        let query = ScalarIndexQuery.all
+        let entries = try await searcher.search(
+            query: query,
+            in: indexSubspace,
+            using: executionContext.storageReader
+        )
+
+        return filterMatchingEntries(entries, op: op)
+    }
+
+    /// Filter index entries using operator's containsValue
+    private func filterMatchingEntries(
+        _ entries: [IndexEntry],
+        op: any InOperatorExecutable<T>
+    ) -> [Tuple] {
+        var matchingIds: [Tuple] = []
+
+        for entry in entries {
+            if let firstKey = entry.keyValues[0] {
+                if op.containsValue(firstKey) {
+                    matchingIds.append(entry.itemID)
+                }
+            }
+        }
+
+        return matchingIds
+    }
+
+    /// Execute IN-Join returning only IDs (no record fetch)
+    private func executeInJoinIdsOnly(_ op: any InOperatorExecutable<T>) async throws -> Set<Tuple> {
+        let strategySelector = InJoinStrategySelector()
+        let estimatedIndexSize = op.estimatedTotalResults * 10
+        let strategy = strategySelector.selectStrategy(for: op, estimatedIndexSize: estimatedIndexSize)
+
+        let matchingIds: [Tuple]
+        switch strategy {
+        case .convertToUnion:
+            return try await executeInUnionIdsOnly(op)
+
+        case .boundedRangeScan:
+            matchingIds = try await executeInJoinBoundedScan(op: op)
+
+        case .fullScan:
+            matchingIds = try await executeInJoinFullScan(op: op)
+        }
+
+        return Set(matchingIds)
     }
 
     // MARK: - Streaming

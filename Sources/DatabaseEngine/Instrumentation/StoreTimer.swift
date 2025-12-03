@@ -19,7 +19,13 @@ public struct StoreTimerEvent: Hashable, Sendable, CustomStringConvertible {
     public let isCount: Bool
     public let isSize: Bool
 
-    private init(name: String, isCount: Bool = false, isSize: Bool = false) {
+    /// Internal initializer for creating custom events
+    ///
+    /// - Parameters:
+    ///   - name: Event name (used for metrics label)
+    ///   - isCount: Whether this is a count event
+    ///   - isSize: Whether this is a size event
+    public init(name: String, isCount: Bool = false, isSize: Bool = false) {
         self.name = name
         self.isCount = isCount
         self.isSize = isSize

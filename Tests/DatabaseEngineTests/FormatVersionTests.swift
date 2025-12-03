@@ -28,18 +28,13 @@ struct FormatVersionTests {
 
     @Test func wellKnownVersions() {
         #expect(FormatVersion.v1_0_0 == FormatVersion(major: 1, minor: 0, patch: 0))
-        #expect(FormatVersion.v1_1_0 == FormatVersion(major: 1, minor: 1, patch: 0))
-        #expect(FormatVersion.v1_2_0 == FormatVersion(major: 1, minor: 2, patch: 0))
-        #expect(FormatVersion.v1_3_0 == FormatVersion(major: 1, minor: 3, patch: 0))
     }
 
     @Test func currentVersion() {
-        // Current should be v1.3.0
-        #expect(FormatVersion.current == FormatVersion.v1_3_0)
+        #expect(FormatVersion.current == FormatVersion.v1_0_0)
     }
 
     @Test func minimumSupportedVersion() {
-        // Minimum supported should be v1.0.0
         #expect(FormatVersion.minimumSupported == FormatVersion.v1_0_0)
         #expect(FormatVersion.minimumWritable == FormatVersion.v1_0_0)
     }
@@ -119,41 +114,6 @@ struct FormatVersionTests {
         #expect(set.count == 1)
     }
 
-    // MARK: - FormatFeature Tests
-
-    @Test func featureMinimumVersions() {
-        #expect(FormatFeature.largeValueSplitting.minimumVersion == FormatVersion.v1_1_0)
-        #expect(FormatFeature.compression.minimumVersion == FormatVersion.v1_2_0)
-        #expect(FormatFeature.encryption.minimumVersion == FormatVersion.v1_2_0)
-        #expect(FormatFeature.indexOnlyScans.minimumVersion == FormatVersion.v1_0_0)
-        #expect(FormatFeature.weakReadSemantics.minimumVersion == FormatVersion.v1_0_0)
-        // v1.3.0 features
-        #expect(FormatFeature.instrumentation.minimumVersion == FormatVersion.v1_3_0)
-        #expect(FormatFeature.remoteFetch.minimumVersion == FormatVersion.v1_3_0)
-        #expect(FormatFeature.synchronizedSessions.minimumVersion == FormatVersion.v1_3_0)
-        #expect(FormatFeature.preloadCache.minimumVersion == FormatVersion.v1_3_0)
-        #expect(FormatFeature.transactionListeners.minimumVersion == FormatVersion.v1_3_0)
-    }
-
-    @Test func featureDescriptions() {
-        #expect(FormatFeature.largeValueSplitting.description == "Large Value Splitting")
-        #expect(FormatFeature.compression.description == "Compression")
-        #expect(FormatFeature.encryption.description == "Encryption")
-        #expect(FormatFeature.indexOnlyScans.description == "Index-Only Scans")
-        #expect(FormatFeature.weakReadSemantics.description == "Weak Read Semantics")
-        // v1.3.0 feature descriptions
-        #expect(FormatFeature.instrumentation.description == "Instrumentation")
-        #expect(FormatFeature.remoteFetch.description == "Remote Fetch")
-        #expect(FormatFeature.synchronizedSessions.description == "Synchronized Sessions")
-        #expect(FormatFeature.preloadCache.description == "Preload Cache")
-        #expect(FormatFeature.transactionListeners.description == "Transaction Listeners")
-    }
-
-    @Test func allFeaturesCovered() {
-        // Ensure all cases are covered (5 original + 5 from v1.3.0)
-        #expect(FormatFeature.allCases.count == 10)
-    }
-
     // MARK: - FormatVersionError Tests
 
     @Test func tooOldErrorDescription() {
@@ -171,19 +131,19 @@ struct FormatVersionTests {
     @Test func tooNewErrorDescription() {
         let error = FormatVersionError.tooNew(
             stored: FormatVersion(major: 2, minor: 0, patch: 0),
-            current: FormatVersion.v1_2_0
+            current: FormatVersion.v1_0_0
         )
 
         let description = error.description
         #expect(description.contains("too new"))
         #expect(description.contains("2.0.0"))
-        #expect(description.contains("1.2.0"))
+        #expect(description.contains("1.0.0"))
     }
 
     @Test func majorVersionMismatchErrorDescription() {
         let error = FormatVersionError.majorVersionMismatch(
             stored: FormatVersion(major: 2, minor: 0, patch: 0),
-            current: FormatVersion(major: 1, minor: 2, patch: 0)
+            current: FormatVersion(major: 1, minor: 0, patch: 0)
         )
 
         let description = error.description
@@ -194,7 +154,7 @@ struct FormatVersionTests {
     @Test func upgradeFailedErrorDescription() {
         let error = FormatVersionError.upgradeFailed(
             from: FormatVersion.v1_0_0,
-            to: FormatVersion.v1_1_0,
+            to: FormatVersion(major: 1, minor: 1, patch: 0),
             reason: "Test failure"
         )
 
@@ -203,17 +163,5 @@ struct FormatVersionTests {
         #expect(description.contains("1.0.0"))
         #expect(description.contains("1.1.0"))
         #expect(description.contains("Test failure"))
-    }
-
-    @Test func featureNotAvailableErrorDescription() {
-        let error = FormatVersionError.featureNotAvailable(
-            feature: .compression,
-            version: FormatVersion.v1_0_0
-        )
-
-        let description = error.description
-        #expect(description.contains("Compression"))
-        #expect(description.contains("not available"))
-        #expect(description.contains("1.0.0"))
     }
 }

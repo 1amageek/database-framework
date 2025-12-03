@@ -46,17 +46,8 @@ public struct FormatVersion: Sendable, Equatable, Comparable, Hashable, CustomSt
     /// Initial format version
     public static let v1_0_0 = FormatVersion(major: 1, minor: 0, patch: 0)
 
-    /// Added large value splitting support
-    public static let v1_1_0 = FormatVersion(major: 1, minor: 1, patch: 0)
-
-    /// Added compression support
-    public static let v1_2_0 = FormatVersion(major: 1, minor: 2, patch: 0)
-
-    /// Added instrumentation, remote fetch, synchronized sessions, preload cache
-    public static let v1_3_0 = FormatVersion(major: 1, minor: 3, patch: 0)
-
     /// Current format version
-    public static let current = v1_3_0
+    public static let current = v1_0_0
 
     /// Minimum supported version for reading
     public static let minimumSupported = v1_0_0
@@ -168,12 +159,6 @@ public struct FormatVersionManager: Sendable {
     /// Key for storing format version
     private let versionKey: FDB.Bytes
 
-    /// Key for storing format features
-    private let featuresKey: FDB.Bytes
-
-    /// Key for storing last upgrade timestamp
-    private let lastUpgradeKey: FDB.Bytes
-
     // MARK: - Initialization
 
     /// Create a version manager
@@ -182,8 +167,6 @@ public struct FormatVersionManager: Sendable {
     public init(subspace: Subspace) {
         let metadataSubspace = subspace.subspace("_format")
         self.versionKey = metadataSubspace.pack(Tuple("version"))
-        self.featuresKey = metadataSubspace.pack(Tuple("features"))
-        self.lastUpgradeKey = metadataSubspace.pack(Tuple("last_upgrade"))
     }
 
     // MARK: - Version Management
@@ -263,173 +246,9 @@ public struct FormatVersionManager: Sendable {
     /// - Parameters:
     ///   - from: Source version
     ///   - transaction: Transaction to use
-    /// - Throws: If upgrade fails
-    public func upgrade(from: FormatVersion, transaction: any TransactionProtocol) async throws {
-        // Perform version-specific upgrades
-        var current = from
-
-        // v1.0.0 -> v1.1.0: No data migration needed
-        if current < FormatVersion.v1_1_0 {
-            current = FormatVersion.v1_1_0
-        }
-
-        // v1.1.0 -> v1.2.0: No data migration needed
-        if current < FormatVersion.v1_2_0 {
-            current = FormatVersion.v1_2_0
-        }
-
-        // v1.2.0 -> v1.3.0: Added instrumentation, remote fetch, synchronized sessions, preload cache
-        // No data migration needed - these are runtime features
-        if current < FormatVersion.v1_3_0 {
-            current = FormatVersion.v1_3_0
-        }
-
+    public func upgrade(from: FormatVersion, transaction: any TransactionProtocol) {
         // Save new version
         saveVersion(FormatVersion.current, transaction: transaction)
-
-        // Record upgrade timestamp
-        let timestamp = Date().timeIntervalSince1970
-        var timestampBytes: [UInt8] = []
-        withUnsafeBytes(of: timestamp.bitPattern.bigEndian) { bytes in
-            timestampBytes.append(contentsOf: bytes)
-        }
-        transaction.setValue(timestampBytes, for: lastUpgradeKey)
-    }
-
-    /// Load the last upgrade timestamp
-    public func loadLastUpgradeTimestamp(transaction: any TransactionProtocol) async throws -> Date? {
-        guard let bytes = try await transaction.getValue(for: lastUpgradeKey),
-              bytes.count >= 8 else {
-            return nil
-        }
-
-        let bitPattern = bytes.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
-        let interval = Double(bitPattern: bitPattern)
-        return Date(timeIntervalSince1970: interval)
-    }
-
-    // MARK: - Feature Tracking
-
-    /// Load enabled features
-    public func loadFeatures(transaction: any TransactionProtocol) async throws -> Set<FormatFeature> {
-        guard let bytes = try await transaction.getValue(for: featuresKey) else {
-            return []
-        }
-
-        // Decode features from bitmask
-        var features: Set<FormatFeature> = []
-        if bytes.count >= 8 {
-            let mask = bytes.withUnsafeBytes { $0.load(as: UInt64.self).bigEndian }
-            for feature in FormatFeature.allCases {
-                if mask & (1 << feature.rawValue) != 0 {
-                    features.insert(feature)
-                }
-            }
-        }
-        return features
-    }
-
-    /// Save enabled features
-    public func saveFeatures(_ features: Set<FormatFeature>, transaction: any TransactionProtocol) {
-        var mask: UInt64 = 0
-        for feature in features {
-            mask |= (1 << feature.rawValue)
-        }
-        var bytes: [UInt8] = []
-        withUnsafeBytes(of: mask.bigEndian) { bytes.append(contentsOf: $0) }
-        transaction.setValue(bytes, for: featuresKey)
-    }
-
-    /// Check if a feature is available for the given version
-    public func isFeatureAvailable(_ feature: FormatFeature, in version: FormatVersion) -> Bool {
-        feature.minimumVersion <= version
-    }
-}
-
-// MARK: - FormatFeature
-
-/// Optional format features that can be enabled
-public enum FormatFeature: Int, Sendable, CaseIterable, Hashable {
-    /// Large value splitting (for values > 100KB)
-    case largeValueSplitting = 0
-
-    /// Compression of record data
-    case compression = 1
-
-    /// Encryption of record data
-    case encryption = 2
-
-    /// Index-only scans (covering indexes)
-    case indexOnlyScans = 3
-
-    /// Weak read semantics (cached read versions)
-    case weakReadSemantics = 4
-
-    /// Detailed instrumentation (StoreTimer)
-    case instrumentation = 5
-
-    /// Remote fetch optimization
-    case remoteFetch = 6
-
-    /// Synchronized sessions
-    case synchronizedSessions = 7
-
-    /// Record preload caching
-    case preloadCache = 8
-
-    /// Transaction listener support
-    case transactionListeners = 9
-
-    /// Minimum version required for this feature
-    public var minimumVersion: FormatVersion {
-        switch self {
-        case .largeValueSplitting:
-            return .v1_1_0
-        case .compression:
-            return .v1_2_0
-        case .encryption:
-            return .v1_2_0
-        case .indexOnlyScans:
-            return .v1_0_0
-        case .weakReadSemantics:
-            return .v1_0_0
-        case .instrumentation:
-            return .v1_3_0
-        case .remoteFetch:
-            return .v1_3_0
-        case .synchronizedSessions:
-            return .v1_3_0
-        case .preloadCache:
-            return .v1_3_0
-        case .transactionListeners:
-            return .v1_3_0
-        }
-    }
-
-    /// Human-readable description
-    public var description: String {
-        switch self {
-        case .largeValueSplitting:
-            return "Large Value Splitting"
-        case .compression:
-            return "Compression"
-        case .encryption:
-            return "Encryption"
-        case .indexOnlyScans:
-            return "Index-Only Scans"
-        case .weakReadSemantics:
-            return "Weak Read Semantics"
-        case .instrumentation:
-            return "Instrumentation"
-        case .remoteFetch:
-            return "Remote Fetch"
-        case .synchronizedSessions:
-            return "Synchronized Sessions"
-        case .preloadCache:
-            return "Preload Cache"
-        case .transactionListeners:
-            return "Transaction Listeners"
-        }
     }
 }
 
@@ -449,9 +268,6 @@ public enum FormatVersionError: Error, CustomStringConvertible, Sendable {
     /// Upgrade failed
     case upgradeFailed(from: FormatVersion, to: FormatVersion, reason: String)
 
-    /// Feature not available in this version
-    case featureNotAvailable(feature: FormatFeature, version: FormatVersion)
-
     public var description: String {
         switch self {
         case .tooOld(let stored, let minimum):
@@ -465,47 +281,6 @@ public enum FormatVersionError: Error, CustomStringConvertible, Sendable {
 
         case .upgradeFailed(let from, let to, let reason):
             return "Failed to upgrade from \(from) to \(to): \(reason)"
-
-        case .featureNotAvailable(let feature, let version):
-            return "Feature '\(feature.description)' is not available in format version \(version). Minimum required: \(feature.minimumVersion)"
-        }
-    }
-}
-
-// MARK: - Version-Aware Operations
-
-/// Extension for version-aware database operations
-public struct VersionAwareOperations: Sendable {
-    private let versionManager: FormatVersionManager
-    private let currentVersion: FormatVersion
-
-    public init(versionManager: FormatVersionManager, currentVersion: FormatVersion) {
-        self.versionManager = versionManager
-        self.currentVersion = currentVersion
-    }
-
-    /// Check if a feature can be used
-    public func canUse(_ feature: FormatFeature) -> Bool {
-        versionManager.isFeatureAvailable(feature, in: currentVersion)
-    }
-
-    /// Require a feature or throw
-    public func require(_ feature: FormatFeature) throws {
-        guard canUse(feature) else {
-            throw FormatVersionError.featureNotAvailable(feature: feature, version: currentVersion)
-        }
-    }
-
-    /// Execute only if feature is available
-    public func ifAvailable<T>(
-        _ feature: FormatFeature,
-        execute: () throws -> T,
-        fallback: () throws -> T
-    ) rethrows -> T {
-        if canUse(feature) {
-            return try execute()
-        } else {
-            return try fallback()
         }
     }
 }

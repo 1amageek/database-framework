@@ -62,7 +62,58 @@ public struct CostEstimator<T: Persistable> {
 
         case .project(let op):
             return estimate(plan: op.input, analysis: analysis)
+
+        case .inUnion(let op):
+            return estimateInUnion(op, analysis: analysis)
+
+        case .inJoin(let op):
+            return estimateInJoin(op, analysis: analysis)
         }
+    }
+
+    // MARK: - IN-Union Cost
+
+    private func estimateInUnion(
+        _ op: any InOperatorExecutable<T>,
+        analysis: QueryAnalysis<T>
+    ) -> PlanCost {
+        // IN-Union: parallel seeks for each value
+        let indexReads = Double(op.estimatedTotalResults)
+        let recordFetches = indexReads  // Each index entry requires a record fetch
+
+        return PlanCost(
+            indexReads: indexReads,
+            recordFetches: recordFetches,
+            postFilterCount: 0,  // Exact match, no post-filter
+            requiresSort: !analysis.sortRequirements.isEmpty,
+            costModel: costModel
+        )
+    }
+
+    // MARK: - IN-Join Cost
+
+    private func estimateInJoin(
+        _ op: any InOperatorExecutable<T>,
+        analysis: QueryAnalysis<T>
+    ) -> PlanCost {
+        // IN-Join: full index scan with hash lookup filter
+        let totalIndexEntries = Double(
+            statistics.estimatedIndexEntries(index: op.index)
+            ?? statistics.estimatedRowCount(for: T.self)
+        )
+        let indexReads = totalIndexEntries
+        // Estimate selectivity based on value count and index size
+        let estimatedSelectivity = Double(op.valueCount) / max(1.0, totalIndexEntries)
+        let matchingEntries = totalIndexEntries * estimatedSelectivity
+        let recordFetches = matchingEntries
+
+        return PlanCost(
+            indexReads: indexReads,
+            recordFetches: recordFetches,
+            postFilterCount: 0,  // Hash lookup filtering doesn't add post-filter cost
+            requiresSort: !analysis.sortRequirements.isEmpty,
+            costModel: costModel
+        )
     }
 
     // MARK: - Table Scan

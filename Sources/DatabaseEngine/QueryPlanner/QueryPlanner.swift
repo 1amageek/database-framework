@@ -232,6 +232,12 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
 
         case .tableScan:
             break
+
+        case .inUnion(let op):
+            indexes.append(op.index)
+
+        case .inJoin(let op):
+            indexes.append(op.index)
         }
 
         return indexes
@@ -407,6 +413,14 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
             // Table scan doesn't satisfy any conditions via index
             // Aggregation operates on pre-computed values
             break
+
+        case .inUnion(let op):
+            // IN-Union satisfies the IN condition on the field
+            identifiers.insert("\(op.fieldPath):in:\(op.valueCount)")
+
+        case .inJoin(let op):
+            // IN-Join satisfies the IN condition on the field
+            identifiers.insert("\(op.fieldPath):in:\(op.valueCount)")
         }
 
         return identifiers

@@ -197,6 +197,18 @@ public struct PlanExplanation: CustomStringConvertible, Sendable {
             if !aggOp.groupByFields.isEmpty {
                 lines.append("\(prefix)   group by: \(aggOp.groupByFields.joined(separator: ", "))")
             }
+
+        case .inUnion(let inUnionOp):
+            lines.append("\(prefix)-> InUnion[\(inUnionOp.index.name)]")
+            lines.append("\(prefix)   field: \(inUnionOp.fieldPath)")
+            lines.append("\(prefix)   values: \(inUnionOp.valueCount)")
+            lines.append("\(prefix)   est. total results: \(inUnionOp.estimatedTotalResults)")
+
+        case .inJoin(let inJoinOp):
+            lines.append("\(prefix)-> InJoin[\(inJoinOp.index.name)]")
+            lines.append("\(prefix)   field: \(inJoinOp.fieldPath)")
+            lines.append("\(prefix)   values: \(inJoinOp.valueCount)")
+            lines.append("\(prefix)   est. total results: \(inJoinOp.estimatedTotalResults)")
         }
 
         return lines.joined(separator: "\n")

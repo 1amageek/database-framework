@@ -1,7 +1,9 @@
 // PlanOperator.swift
 // QueryPlanner - Execution plan operators
 
+import Foundation
 import Core
+import FoundationDB
 
 /// Operators that make up a query plan
 public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
@@ -55,6 +57,18 @@ public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
 
     /// Aggregation from index
     case aggregation(AggregationOperator<T>)
+
+    // === IN Optimization Operators ===
+
+    /// IN-Union: Execute multiple index seeks in parallel and union results
+    /// Best for small IN lists (< 20 values) with index support
+    /// Uses existential type to support any value type V
+    case inUnion(any InOperatorExecutable<T>)
+
+    /// IN-Join: Nested loop join with IN values as the driving table
+    /// Best for larger IN lists (20-1000 values)
+    /// Uses existential type to support any value type V
+    case inJoin(any InOperatorExecutable<T>)
 }
 
 // MARK: - Table Scan Operator
@@ -400,4 +414,324 @@ public enum AggregationType: Sendable, Hashable {
     case min(field: String)
     case max(field: String)
     case avg(field: String)
+}
+
+// MARK: - IN Operator Protocol
+
+/// Protocol for IN operators that can be executed
+///
+/// This protocol enables type-safe IN operations while allowing
+/// PlanOperator to hold them via existential type (`any InOperatorExecutable<T>`).
+public protocol InOperatorExecutable<T>: Sendable {
+    associatedtype T: Persistable
+
+    /// The index to use
+    var index: IndexDescriptor { get }
+
+    /// Field path being queried
+    var fieldPath: String { get }
+
+    /// Number of values in the IN list
+    var valueCount: Int { get }
+
+    /// Estimated total results
+    var estimatedTotalResults: Int { get }
+
+    /// Additional filter predicate
+    var additionalFilter: Predicate<T>? { get }
+
+    /// Convert a value from index entry to check for membership
+    func containsValue(_ value: Any) -> Bool
+
+    /// Get values as TupleElements for index seeks
+    func valuesAsTupleElements() -> [any TupleElement]
+
+    /// Get min/max values for range scans (nil if not comparable or empty)
+    func valueRange() -> (min: any TupleElement, max: any TupleElement)?
+}
+
+// MARK: - IN-Union Operator
+
+/// IN-Union operator for small IN lists
+///
+/// Executes multiple index seeks (one per value) in parallel and unions the results.
+/// This is efficient for small IN lists (< 20 values) where the overhead of parallel
+/// seeks is offset by the reduced latency.
+///
+/// **Reference**: FDB Record Layer InExtractor union strategy
+///
+/// **Example SQL**:
+/// ```sql
+/// SELECT * FROM users WHERE status IN ('active', 'pending', 'verified')
+/// ```
+///
+/// **Execution**:
+/// 1. Create one index seek per IN value
+/// 2. Execute all seeks in parallel
+/// 3. Union and deduplicate results
+///
+/// **Cost Model**:
+/// - Seeks: O(n) where n = number of IN values
+/// - Network round-trips: 1 (parallel execution)
+/// - Memory: O(result_size)
+public struct InUnionOperator<T: Persistable, V: Comparable & Hashable & Sendable & TupleElementConvertible>: InOperatorExecutable, Sendable {
+    /// The index to use for seeks
+    public let index: IndexDescriptor
+
+    /// Field path being queried (e.g., "status")
+    public let fieldPath: String
+
+    /// Values in the IN list (type-safe)
+    public let values: [V]
+
+    /// Hash set for O(1) lookup
+    public let valueSet: Set<V>
+
+    /// Additional filter to apply after union
+    public let additionalFilter: Predicate<T>?
+
+    /// Estimated results per value
+    public let estimatedResultsPerValue: Int
+
+    /// Whether to deduplicate results (default: true)
+    public let deduplicate: Bool
+
+    public init(
+        index: IndexDescriptor,
+        fieldPath: String,
+        values: [V],
+        additionalFilter: Predicate<T>? = nil,
+        estimatedResultsPerValue: Int = 10,
+        deduplicate: Bool = true
+    ) {
+        self.index = index
+        self.fieldPath = fieldPath
+        self.values = values
+        self.valueSet = Set(values)
+        self.additionalFilter = additionalFilter
+        self.estimatedResultsPerValue = estimatedResultsPerValue
+        self.deduplicate = deduplicate
+    }
+
+    public var valueCount: Int { values.count }
+
+    public var estimatedTotalResults: Int {
+        values.count * estimatedResultsPerValue
+    }
+
+    public func containsValue(_ value: Any) -> Bool {
+        guard let typedValue = value as? V else { return false }
+        return valueSet.contains(typedValue)
+    }
+
+    public func valuesAsTupleElements() -> [any TupleElement] {
+        values.map { $0.toTupleElement() }
+    }
+
+    public func valueRange() -> (min: any TupleElement, max: any TupleElement)? {
+        guard let minVal = values.min(), let maxVal = values.max() else { return nil }
+        return (minVal.toTupleElement(), maxVal.toTupleElement())
+    }
+}
+
+// MARK: - IN-Join Operator
+
+/// IN-Join operator for larger IN lists
+///
+/// Uses a nested loop join pattern where IN values form a "virtual table"
+/// that drives the join. More efficient than union for larger IN lists
+/// because it avoids the overhead of creating many parallel operations.
+///
+/// **Reference**: FDB Record Layer InExtractor join strategy
+///
+/// **Example SQL**:
+/// ```sql
+/// SELECT * FROM orders WHERE customer_id IN (/* 100+ values */)
+/// ```
+///
+/// **Execution**:
+/// 1. Create a hash set from IN values
+/// 2. Scan the index in batches
+/// 3. Filter entries where the key matches any IN value
+///
+/// **Cost Model**:
+/// - Time: O(index_size * log(n)) where n = number of IN values
+/// - Memory: O(n) for the hash set + O(batch_size) for results
+///
+/// **When to Use**:
+/// - IN list has 20-1000 values
+/// - Index exists on the IN field
+/// - Alternative (table scan + filter) would be more expensive
+public struct InJoinOperator<T: Persistable, V: Comparable & Hashable & Sendable & TupleElementConvertible>: InOperatorExecutable, Sendable {
+    /// The index to use
+    public let index: IndexDescriptor
+
+    /// Field path being queried
+    public let fieldPath: String
+
+    /// Values in the IN list (type-safe)
+    public let values: [V]
+
+    /// Hash set for O(1) lookup
+    public let valueSet: Set<V>
+
+    /// Bloom filter for fast rejection
+    public let bloomFilter: InJoinBloomFilter<V>?
+
+    /// Batch size for scanning the index
+    public let batchSize: Int
+
+    /// Additional filter to apply after join
+    public let additionalFilter: Predicate<T>?
+
+    /// Estimated selectivity (fraction of index entries matching)
+    public let estimatedSelectivity: Double
+
+    public init(
+        index: IndexDescriptor,
+        fieldPath: String,
+        values: [V],
+        batchSize: Int = 100,
+        additionalFilter: Predicate<T>? = nil,
+        estimatedSelectivity: Double = 0.1,
+        useBloomFilter: Bool = true
+    ) {
+        self.index = index
+        self.fieldPath = fieldPath
+        self.values = values
+        self.valueSet = Set(values)
+        self.batchSize = batchSize
+        self.additionalFilter = additionalFilter
+        self.estimatedSelectivity = estimatedSelectivity
+
+        // Build Bloom filter for large value sets
+        if useBloomFilter && values.count > 50 {
+            var filter = InJoinBloomFilter<V>(expectedElements: values.count)
+            for v in values {
+                filter.insert(v)
+            }
+            self.bloomFilter = filter
+        } else {
+            self.bloomFilter = nil
+        }
+    }
+
+    public var valueCount: Int { values.count }
+
+    public var estimatedTotalResults: Int {
+        Int(Double(valueCount) * estimatedSelectivity * 100)
+    }
+
+    /// Estimated results based on selectivity and index size
+    public func estimatedResults(indexSize: Int) -> Int {
+        Int(Double(indexSize) * estimatedSelectivity)
+    }
+
+    public func containsValue(_ value: Any) -> Bool {
+        guard let typedValue = value as? V else { return false }
+
+        // Fast rejection with Bloom filter
+        if let bloom = bloomFilter, !bloom.mightContain(typedValue) {
+            return false
+        }
+
+        return valueSet.contains(typedValue)
+    }
+
+    public func valuesAsTupleElements() -> [any TupleElement] {
+        values.map { $0.toTupleElement() }
+    }
+
+    public func valueRange() -> (min: any TupleElement, max: any TupleElement)? {
+        guard let minVal = values.min(), let maxVal = values.max() else { return nil }
+        return (minVal.toTupleElement(), maxVal.toTupleElement())
+    }
+}
+
+// MARK: - TupleElementConvertible
+
+/// Protocol for types that can be converted to TupleElement
+public protocol TupleElementConvertible {
+    func toTupleElement() -> any TupleElement
+}
+
+extension Int: TupleElementConvertible {
+    public func toTupleElement() -> any TupleElement { Int64(self) }
+}
+
+extension Int64: TupleElementConvertible {
+    public func toTupleElement() -> any TupleElement { self }
+}
+
+extension String: TupleElementConvertible {
+    public func toTupleElement() -> any TupleElement { self }
+}
+
+extension Double: TupleElementConvertible {
+    public func toTupleElement() -> any TupleElement { self }
+}
+
+extension Bool: TupleElementConvertible {
+    public func toTupleElement() -> any TupleElement { self }
+}
+
+// MARK: - InJoinBloomFilter
+
+/// Bloom filter specialized for IN-Join operations
+///
+/// Reference: "Space/Time Trade-offs in Hash Coding with Allowable Errors"
+/// by Burton H. Bloom (1970)
+public struct InJoinBloomFilter<Element: Hashable>: Sendable {
+    private var bits: [UInt64]
+    private let bitCount: Int
+    private let hashCount: Int
+
+    public init(expectedElements: Int, falsePositiveRate: Double = 0.01) {
+        let n = Double(max(1, expectedElements))
+        let p = max(0.0001, min(0.5, falsePositiveRate))
+
+        let m = Int(ceil(-n * log(p) / (log(2) * log(2))))
+        self.bitCount = max(64, m)
+
+        let k = max(1, Int(round(Double(bitCount) / n * log(2))))
+        self.hashCount = min(k, 10)
+
+        let wordCount = (bitCount + 63) / 64
+        self.bits = [UInt64](repeating: 0, count: wordCount)
+    }
+
+    public mutating func insert(_ value: Element) {
+        let hashes = computeHashes(value)
+        for hash in hashes {
+            let index = Int(hash % UInt64(bitCount))
+            let wordIndex = index / 64
+            let bitIndex = index % 64
+            bits[wordIndex] |= (1 << bitIndex)
+        }
+    }
+
+    public func mightContain(_ value: Element) -> Bool {
+        let hashes = computeHashes(value)
+        for hash in hashes {
+            let index = Int(hash % UInt64(bitCount))
+            let wordIndex = index / 64
+            let bitIndex = index % 64
+            if (bits[wordIndex] & (1 << bitIndex)) == 0 {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func computeHashes(_ value: Element) -> [UInt64] {
+        let h1 = UInt64(bitPattern: Int64(value.hashValue))
+        var hasher = Hasher()
+        hasher.combine(value)
+        hasher.combine(0x9E3779B9)
+        let h2 = UInt64(bitPattern: Int64(hasher.finalize()))
+
+        return (0..<hashCount).map { i in
+            h1 &+ UInt64(i) &* h2
+        }
+    }
 }

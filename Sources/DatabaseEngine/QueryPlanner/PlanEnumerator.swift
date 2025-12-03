@@ -461,7 +461,7 @@ public struct PlanEnumerator<T: Persistable> {
         case .limit(let op):
             return planProvidesOrdering(op.input, sortRequirements: sortRequirements)
 
-        case .union, .intersection, .tableScan, .fullTextScan, .spatialScan, .aggregation:
+        case .union, .intersection, .tableScan, .fullTextScan, .spatialScan, .aggregation, .inUnion, .inJoin:
             return false
         }
     }

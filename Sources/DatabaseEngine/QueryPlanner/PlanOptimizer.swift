@@ -113,6 +113,10 @@ public struct PlanOptimizer<T: Persistable> {
             return planUsesIndex(op.input, named: indexName)
         case .tableScan:
             return false
+        case .inUnion(let op):
+            return op.index.name == indexName
+        case .inJoin(let op):
+            return op.index.name == indexName
         }
     }
 

@@ -266,6 +266,10 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
         case .intersection(let op):
             let childComplexity = op.children.reduce(0) { $0 + calculateComplexity($1) }
             return childComplexity * 2  // Intersection is more expensive
+
+        // IN-list operators (treat like specialized index operators)
+        case .inUnion, .inJoin:
+            return specializedIndexCost
         }
     }
 
@@ -378,6 +382,12 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
             // Double only the children's complexity, not everything before
             let childComplexity = breakdown.totalComplexity - beforeTotal
             breakdown.totalComplexity += childComplexity  // Add again to double it
+
+        case .inUnion:
+            breakdown.totalComplexity += specializedIndexCost
+
+        case .inJoin:
+            breakdown.totalComplexity += specializedIndexCost
         }
     }
 
@@ -412,6 +422,10 @@ public struct PlanComplexityCalculator<T: Persistable>: Sendable {
             return "SpatialScan(\(op.index.name))"
         case .aggregation(let op):
             return "Aggregation(\(op.index.name))"
+        case .inUnion(let op):
+            return "InUnion(\(op.index.name), \(op.valueCount) values)"
+        case .inJoin(let op):
+            return "InJoin(\(op.index.name), \(op.valueCount) values)"
         }
     }
 }

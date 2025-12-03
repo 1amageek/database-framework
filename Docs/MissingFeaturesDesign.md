@@ -646,3 +646,491 @@ InPredicateOptimizer
 BatchFetcher
     └── DataAccess
 ```
+
+---
+
+## Phase 6: 追加機能 (FDB Record Layer 詳細比較による)
+
+### 6.1 InstrumentedTransaction (計装トランザクション)
+
+#### 目的
+
+FDB Record Layer の `InstrumentedTransaction` / `InstrumentedReadTransaction` に相当する機能。
+トランザクションレベルで詳細なメトリクスを収集する。
+
+#### 参照
+- FDB Record Layer: `InstrumentedTransaction.java`, `InstrumentedReadTransaction.java`
+
+#### API設計
+
+```swift
+// Sources/DatabaseEngine/Instrumentation/InstrumentedTransaction.swift
+
+/// Transaction wrapper that collects detailed metrics
+///
+/// Reference: FDB Record Layer InstrumentedTransaction.java
+///
+/// **Metrics collected**:
+/// - Read/write operation counts
+/// - Bytes read/written
+/// - Transaction timing
+/// - Empty scan detection
+///
+/// **Delayed events**:
+/// Some metrics (writes, deletes) are only recorded on successful commit.
+/// This prevents counting operations that were rolled back.
+public final class InstrumentedTransaction: Sendable {
+
+    /// The underlying FDB transaction
+    nonisolated(unsafe) private let underlying: any TransactionProtocol
+
+    /// Timer for immediate metrics
+    private let timer: StoreTimer
+
+    /// Timer for delayed metrics (recorded on commit only)
+    private let delayedTimer: StoreTimer
+
+    /// Enable assertion checks for key/value sizes
+    private let enableAssertions: Bool
+
+    /// Maximum key length (bytes) before warning
+    private static let maxKeyLength: Int = 10_000
+
+    /// Maximum value length (bytes) before warning
+    private static let maxValueLength: Int = 100_000
+
+    public init(
+        transaction: any TransactionProtocol,
+        timer: StoreTimer,
+        enableAssertions: Bool = false
+    )
+
+    // MARK: - Read Operations
+
+    /// Get a value with instrumentation
+    public func getValue(for key: FDB.Bytes) async throws -> FDB.Bytes?
+
+    /// Get a range with instrumentation
+    public func getRange(
+        begin: FDB.Bytes,
+        end: FDB.Bytes,
+        limit: Int32 = 0,
+        mode: FDB.StreamingMode = .wantAll,
+        reverse: Bool = false
+    ) async throws -> FDB.KeyValuesResult
+
+    // MARK: - Write Operations (delayed metrics)
+
+    /// Set a value with instrumentation (delayed until commit)
+    public func setValue(_ value: FDB.Bytes, for key: FDB.Bytes)
+
+    /// Clear a key with instrumentation (delayed until commit)
+    public func clear(key: FDB.Bytes)
+
+    /// Clear a range with instrumentation (delayed until commit)
+    public func clearRange(begin: FDB.Bytes, end: FDB.Bytes)
+
+    // MARK: - Commit
+
+    /// Commit with instrumentation
+    /// On success: merge delayed metrics into main timer
+    /// On failure: discard delayed metrics
+    public func commit() async throws -> Bool
+}
+```
+
+#### 追加の StoreTimerEvent
+
+```swift
+// StoreTimer.swift に追加
+
+extension StoreTimerEvent {
+    // Read operations
+    public static let reads = StoreTimerEvent(name: "reads", isCount: true)
+    public static let rangeReads = StoreTimerEvent(name: "range_reads", isCount: true)
+    public static let bytesRead = StoreTimerEvent(name: "bytes_read", isSize: true)
+    public static let emptyScans = StoreTimerEvent(name: "empty_scans", isCount: true)
+
+    // Write operations (delayed until commit)
+    public static let writes = StoreTimerEvent(name: "writes", isCount: true)
+    public static let deletes = StoreTimerEvent(name: "deletes", isCount: true)
+    public static let rangeDeletes = StoreTimerEvent(name: "range_deletes", isCount: true)
+    public static let bytesWritten = StoreTimerEvent(name: "bytes_written", isSize: true)
+
+    // Transaction lifecycle
+    public static let commits = StoreTimerEvent(name: "commits", isCount: true)
+    public static let rollbacks = StoreTimerEvent(name: "rollbacks", isCount: true)
+    public static let cancellations = StoreTimerEvent(name: "cancellations", isCount: true)
+}
+```
+
+#### 統合ポイント
+- `FDBContext`: トランザクション作成時に`InstrumentedTransaction`でラップ
+- `StoreTimer`: 新しいイベントタイプを追加
+
+---
+
+### 6.2 IN-Join / IN-Union プランオペレーター
+
+#### 目的
+
+FDB Record Layer の `RecordQueryInJoinPlan` / `RecordQueryInUnionPlan` に相当する機能。
+IN 述語を効率的に実行するための特殊なプラン。
+
+#### 参照
+- FDB Record Layer: `RecordQueryInJoinPlan.java`, `RecordQueryInUnionPlan.java`, `InExtractor.java`
+
+#### 戦略選択
+
+| 条件 | 戦略 | 理由 |
+|------|------|------|
+| IN値 < 20 かつ ソート不要 | IN-Join | 低オーバーヘッド |
+| IN値 >= 20 または ソート必要 | IN-Union | マージソートで効率的 |
+
+#### API設計
+
+```swift
+// Sources/DatabaseEngine/QueryPlanner/PlanOperator.swift に追加
+
+/// Operators that make up a query plan
+public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
+    // ... existing cases ...
+
+    // === IN Predicate Operators ===
+
+    /// IN-Join: Nested loop join for small IN lists
+    /// Best when: Small parameter list, no sorting required
+    case inJoin(InJoinOperator<T>)
+
+    /// IN-Union: Union of index scans for large IN lists with ordering
+    /// Best when: Large parameter list OR sorting required
+    case inUnion(InUnionOperator<T>)
+}
+
+/// IN-Join operator for small IN predicate lists
+///
+/// Executes as nested loop: for each value in the IN list,
+/// perform an index seek and collect results.
+///
+/// **When to use**:
+/// - Small IN list (< 20 values typically)
+/// - No ordering requirement OR ordering matches index
+/// - High selectivity (few matches per value)
+///
+/// **Complexity**: O(|IN list| * seek cost + |results| * fetch cost)
+public struct InJoinOperator<T: Persistable>: @unchecked Sendable {
+    /// The index to seek in
+    public let index: IndexDescriptor
+
+    /// Position of the IN parameter in the index key
+    public let parameterPosition: Int
+
+    /// The IN values (parameter binding)
+    public let inValues: [AnySendable]
+
+    /// Fixed prefix values (before the IN parameter)
+    public let prefixValues: [AnySendable]
+
+    /// Additional filter after index seek
+    public let postFilter: Predicate<T>?
+
+    /// Estimated total results
+    public let estimatedResults: Int
+}
+
+/// IN-Union operator for large IN predicate lists with ordering
+///
+/// Creates a union of index scans, one per IN value, then merges
+/// results maintaining sort order using a priority queue.
+///
+/// **When to use**:
+/// - Large IN list (20+ values)
+/// - Ordering requirement that differs from index order
+/// - Need to limit results before fetching all
+///
+/// **Complexity**: O(|results| * log(|IN list|)) for merge
+/// **Memory**: O(|IN list|) for priority queue
+public struct InUnionOperator<T: Persistable>: @unchecked Sendable {
+    /// The index to use for each scan
+    public let index: IndexDescriptor
+
+    /// Position of the IN parameter in the index key
+    public let parameterPosition: Int
+
+    /// The IN values (parameter binding)
+    public let inValues: [AnySendable]
+
+    /// Fixed prefix values (before the IN parameter)
+    public let prefixValues: [AnySendable]
+
+    /// Comparison key for merge ordering
+    public let comparisonKey: [SortDescriptor<T>]
+
+    /// Whether to scan each branch in reverse
+    public let reverse: Bool
+
+    /// Maximum results to return (enables early termination)
+    public let limit: Int?
+
+    /// Estimated total results
+    public let estimatedResults: Int
+}
+```
+
+#### PlanExecutor 実装
+
+```swift
+// Sources/DatabaseEngine/QueryPlanner/PlanExecutor.swift に追加
+
+extension PlanExecutor {
+
+    /// Execute IN-Join using nested loop strategy
+    ///
+    /// **Algorithm**:
+    /// 1. For each value in the IN list
+    /// 2. Build seek key with prefix + IN value
+    /// 3. Execute index seek
+    /// 4. Collect IDs (deduplicated)
+    /// 5. Batch fetch all records
+    private func executeInJoin(_ op: InJoinOperator<T>) async throws -> [T] {
+        var allIds: Set<Tuple> = []
+
+        // Nested loop: seek for each IN value
+        for inValue in op.inValues {
+            // Build seek key: prefix + inValue
+            var seekElements: [any TupleElement] = []
+            for prefixValue in op.prefixValues {
+                if let element = anyToTupleElement(prefixValue.value) {
+                    seekElements.append(element)
+                }
+            }
+            if let element = anyToTupleElement(inValue.value) {
+                seekElements.append(element)
+            }
+
+            // Execute seek
+            let query = ScalarIndexQuery.equals(seekElements)
+            let entries = try await searcher.search(query: query, ...)
+
+            // Collect IDs
+            for entry in entries {
+                allIds.insert(entry.itemID)
+            }
+        }
+
+        // Batch fetch all unique records
+        var results = try await batchFetchItems(ids: Array(allIds), type: T.self)
+
+        // Apply post-filter if present
+        if let postFilter = op.postFilter {
+            results = results.filter { evaluatePredicate(postFilter, on: $0) }
+        }
+
+        return results
+    }
+
+    /// Execute IN-Union using merge-sort strategy
+    ///
+    /// **Algorithm**:
+    /// 1. For each IN value, scan index and collect entries with sort keys
+    /// 2. Sort all entries by comparison key
+    /// 3. Deduplicate by ID while maintaining order
+    /// 4. Apply limit if present
+    /// 5. Batch fetch records
+    private func executeInUnion(_ op: InUnionOperator<T>) async throws -> [T] {
+        var allEntries: [(id: Tuple, sortKey: [Any])] = []
+
+        for inValue in op.inValues {
+            // Build seek key and scan
+            let entries = try await scanForInValue(inValue, op: op)
+            allEntries.append(contentsOf: entries)
+        }
+
+        // Sort by comparison key
+        let sortedEntries = sortEntriesByComparisonKey(allEntries, comparisonKey: op.comparisonKey)
+
+        // Deduplicate while maintaining order
+        var seenIds: Set<Tuple> = []
+        var uniqueIds: [Tuple] = []
+        for entry in sortedEntries {
+            if !seenIds.contains(entry.id) {
+                seenIds.insert(entry.id)
+                uniqueIds.append(entry.id)
+                if let limit = op.limit, uniqueIds.count >= limit { break }
+            }
+        }
+
+        // Batch fetch records in order
+        return try await batchFetchItems(ids: uniqueIds, type: T.self)
+    }
+}
+```
+
+#### InPredicateOptimizer 拡張
+
+```swift
+// Sources/DatabaseEngine/QueryPlanner/InPredicateOptimizer.swift
+
+extension InPredicateOptimizer {
+
+    /// Threshold for choosing IN-Join vs IN-Union
+    private static let inJoinThreshold = 20
+
+    /// Create optimal plan for IN predicate
+    public func createInPredicatePlan<T: Persistable>(
+        index: IndexDescriptor,
+        parameterPosition: Int,
+        inValues: [AnySendable],
+        prefixValues: [AnySendable],
+        orderBy: [SortDescriptor<T>]?,
+        limit: Int?,
+        estimatedSelectivity: Double,
+        totalRecords: Int
+    ) -> PlanOperator<T> {
+        let estimatedResults = Int(Double(totalRecords) * estimatedSelectivity * Double(inValues.count))
+
+        // Choose strategy
+        let useUnion = inValues.count > Self.inJoinThreshold || (orderBy != nil && !orderBy!.isEmpty)
+
+        if useUnion {
+            return .inUnion(InUnionOperator(
+                index: index,
+                parameterPosition: parameterPosition,
+                inValues: inValues,
+                prefixValues: prefixValues,
+                comparisonKey: orderBy ?? [],
+                reverse: false,
+                limit: limit,
+                estimatedResults: estimatedResults
+            ))
+        } else {
+            return .inJoin(InJoinOperator(
+                index: index,
+                parameterPosition: parameterPosition,
+                inValues: inValues,
+                prefixValues: prefixValues,
+                postFilter: nil,
+                estimatedResults: estimatedResults
+            ))
+        }
+    }
+}
+```
+
+#### 統合ポイント
+- `PlanOperator`: 新しい case を追加
+- `PlanExecutor`: `executeInJoin`, `executeInUnion` を実装
+- `InPredicateOptimizer`: 戦略選択ロジックを拡張
+- `PlanEnumerator`: IN プランの列挙を追加
+
+---
+
+### 6.3 Aggregation 実行の完成
+
+#### 目的
+
+現在の `PlanExecutor.executeAggregation` は未実装（エラーをスロー）。
+既存の Aggregation Index (Count, Sum, MinMax, Average) を活用した実行を実装。
+
+#### API設計
+
+```swift
+// Sources/DatabaseEngine/QueryPlanner/AggregationResult.swift
+
+/// Aggregation result container
+public struct AggregationResult: Sendable {
+    public let aggregationType: AggregationType
+    public let value: Double
+    public let count: Int
+    public let groupKey: [String: AnySendable]?
+}
+
+// PlanExecutor.swift の executeAggregation を実装
+
+extension PlanExecutor {
+
+    /// Execute aggregation using pre-computed aggregation indexes
+    ///
+    /// **Implementation Strategy**:
+    /// - COUNT: Read from CountIndex
+    /// - SUM: Read from SumIndex
+    /// - MIN/MAX: Read from MinMaxIndex
+    /// - AVG: Compute from SumIndex / CountIndex
+    ///
+    /// If no aggregation index exists, falls back to full scan.
+    public func executeAggregationQuery(_ op: AggregationOperator<T>) async throws -> AggregationResult {
+        switch op.aggregationType {
+        case .count:
+            // Read from count index or fallback
+            ...
+        case .sum(let field):
+            // Read from sum index or fallback
+            ...
+        case .min(let field):
+            // Read from min/max index or fallback
+            ...
+        case .max(let field):
+            // Read from min/max index or fallback
+            ...
+        case .avg(let field):
+            // AVG = SUM / COUNT
+            ...
+        }
+    }
+}
+```
+
+#### 統合ポイント
+- `PlanExecutor`: 新しい `executeAggregationQuery` メソッド
+- 既存の `CountIndexMaintainer`, `SumIndexMaintainer`, `MinMaxIndexMaintainer` と連携
+
+---
+
+## 更新された実装順序
+
+### Phase 1 (データ管理基盤) - 完了済み ✅
+1. ✅ `LargeValueSplitter`
+2. ✅ `TransformingSerializer`
+3. ✅ `ReadVersionCache`
+
+### Phase 2 (オンラインインデクサー強化) - 完了済み ✅
+4. ✅ `AdaptiveThrottler`
+5. ✅ `IndexFromIndexBuilder`
+6. ✅ `MultiTargetOnlineIndexer`
+7. ✅ `MutualOnlineIndexer`
+
+### Phase 3 (クエリ最適化) - 部分完了
+8. ✅ `InPredicateOptimizer` (基本)
+9. ✅ `PlanComplexityLimit`
+10. 🔄 `IN-Join/IN-Union Plans` ← **新規追加**
+
+### Phase 4 (トランザクション管理) - 完了済み ✅
+11. ✅ `TransactionPriority`
+12. ✅ `AsyncCommitHook`
+
+### Phase 5 (その他) - 完了済み ✅
+13. ✅ `FormatVersion`
+14. ✅ `BatchFetcher`
+
+### Phase 6 (追加機能) - **新規**
+15. 🆕 `InstrumentedTransaction` - **優先度: 高**
+16. 🆕 `IN-Join/IN-Union PlanExecutor実装` - **優先度: 高**
+17. 🆕 `AggregationResult + executeAggregationQuery` - **優先度: 中**
+
+---
+
+## ファイル構成 (更新)
+
+```
+Sources/DatabaseEngine/
+├── Instrumentation/
+│   ├── StoreTimer.swift              # ✅ 既存
+│   ├── TransactionListener.swift     # ✅ 既存
+│   └── InstrumentedTransaction.swift # 🆕 新規
+├── QueryPlanner/
+│   ├── PlanOperator.swift            # 🔄 IN-Join/IN-Union 追加
+│   ├── PlanExecutor.swift            # 🔄 executeInJoin/executeInUnion 追加
+│   ├── InPredicateOptimizer.swift    # 🔄 戦略選択拡張
+│   └── AggregationResult.swift       # 🆕 新規
+└── ...
+```
