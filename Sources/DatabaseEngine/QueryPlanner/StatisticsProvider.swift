@@ -1172,13 +1172,13 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         )
     }
 
-    /// Estimate row count for a type using server-side size estimation
-    public func estimatedRowCountLive<T: Persistable>(
+    /// Estimate item count for a type using server-side size estimation
+    public func estimatedItemCountLive<T: Persistable>(
         for type: T.Type,
-        recordSubspace: Subspace,
+        itemSubspace: Subspace,
         avgRowSizeBytes: Int? = nil
     ) async throws -> Int {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let sizeBytes = try await subspaceSizeBytes(subspace: typeSubspace)
 
         let rowSize = avgRowSizeBytes ?? defaultAvgRowSize

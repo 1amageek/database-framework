@@ -80,14 +80,14 @@ struct MigrationTests {
     ) async throws {
         let encoder = ProtobufEncoder()
         let subspace = try await container.resolveDirectory(for: BatchTestRecord.self)
-        let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
 
         try await container.database.withTransaction { transaction in
             for record in records {
                 let data = try encoder.encode(record)
                 let validatedID = try record.validateIDForStorage()
-                let recordKey = recordSubspace.pack(Tuple(validatedID))
-                transaction.setValue(Array(data), for: recordKey)
+                let itemKey = itemSubspace.pack(Tuple(validatedID))
+                transaction.setValue(Array(data), for: itemKey)
             }
         }
     }
@@ -186,11 +186,11 @@ struct MigrationTests {
 
             // Verify updates
             let decoder = ProtobufDecoder()
-            let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
 
             for record in records {
                 let validatedID = try record.validateIDForStorage()
-                let key = recordSubspace.pack(Tuple(validatedID))
+                let key = itemSubspace.pack(Tuple(validatedID))
                 let data: FDB.Bytes? = try await container.database.withTransaction { tx in
                     try await tx.getValue(for: key, snapshot: false)
                 }
@@ -277,15 +277,15 @@ struct MigrationTests {
 
             // Verify
             let decoder = ProtobufDecoder()
-            let recordSubspace = subspace.subspace("R").subspace(BatchTestRecord.persistableType)
+            let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(BatchTestRecord.persistableType)
 
             // Check update
             let updateValidatedID = try updateRecord.validateIDForStorage()
-            let updateKey = recordSubspace.pack(Tuple(updateValidatedID))
+            let updateKey = itemSubspace.pack(Tuple(updateValidatedID))
             let updateData: FDB.Bytes? = try await container.database.withTransaction { tx in
                 try await tx.getValue(for: updateKey, snapshot: false)
             }
-            #expect(updateData != nil, "Updated record not found")
+            #expect(updateData != nil, "Updated item not found")
             if let updateData = updateData {
                 let decoded = try decoder.decode(BatchTestRecord.self, from: Data(updateData))
                 #expect(decoded.status == "updated", "Expected status 'updated' but got '\(decoded.status)'")
@@ -293,7 +293,7 @@ struct MigrationTests {
 
             // Check delete
             let deleteValidatedID = try deleteRecord.validateIDForStorage()
-            let deleteKey = recordSubspace.pack(Tuple(deleteValidatedID))
+            let deleteKey = itemSubspace.pack(Tuple(deleteValidatedID))
             let deleteData: FDB.Bytes? = try await container.database.withTransaction { tx in
                 try await tx.getValue(for: deleteKey, snapshot: false)
             }

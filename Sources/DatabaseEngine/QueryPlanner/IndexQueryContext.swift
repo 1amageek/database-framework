@@ -101,7 +101,7 @@ public struct IndexQueryContext: Sendable {
         }
 
         let fetcher = BatchFetcher<T>(
-            itemSubspace: fdbStore.recordSubspace,
+            itemSubspace: fdbStore.itemSubspace,
             itemType: T.persistableType,
             configuration: configuration
         )
@@ -254,12 +254,15 @@ public struct IndexQueryContext: Sendable {
 
     /// Execute a closure within a transaction
     ///
-    /// - Parameter body: Closure that takes a transaction
+    /// - Parameters:
+    ///   - configuration: Transaction configuration (default: `.default`)
+    ///   - body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
+        configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
     ) async throws -> R {
-        return try await context.container.database.withTransaction(body)
+        return try await context.container.database.withTransaction(configuration: configuration, body)
     }
 
     /// Get the index subspace for a type

@@ -444,7 +444,7 @@ public final class FDBContext: Sendable {
         let encoder = ProtobufEncoder()
         let data = try encoder.encode(model)
 
-        let typeSubspace = store.recordSubspace.subspace(persistableType)
+        let typeSubspace = store.itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Check for existing record (for index updates)
@@ -473,7 +473,7 @@ public final class FDBContext: Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        let typeSubspace = store.recordSubspace.subspace(persistableType)
+        let typeSubspace = store.itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Remove index entries first

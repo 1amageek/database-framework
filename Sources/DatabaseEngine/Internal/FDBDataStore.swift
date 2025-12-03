@@ -9,8 +9,8 @@ import Logging
 /// storage operations that FDBContext uses internally.
 ///
 /// Key structure:
-/// - Records: `[subspace]/R/[persistableType]/[id]` = serialized data
-/// - Indexes: `[subspace]/I/[indexName]/[values]/[id]` = ''
+/// - Items: `[subspace]/items/[persistableType]/[id]` = serialized data
+/// - Indexes: `[subspace]/indexes/[indexName]/[values]/[id]` = ''
 ///
 /// **Metrics**: Operations are tracked via DataStoreDelegate (default: MetricsDataStoreDelegate).
 /// Metrics include operation counts, durations, and item counts per type.
@@ -29,10 +29,10 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Delegate for operation callbacks (metrics, etc.)
     private let delegate: DataStoreDelegate
 
-    /// Records subspace: [subspace]/R/
-    let recordSubspace: Subspace
+    /// Items subspace: [subspace]/items/
+    let itemSubspace: Subspace
 
-    /// Indexes subspace: [subspace]/I/
+    /// Indexes subspace: [subspace]/indexes/
     let indexSubspace: Subspace
 
     /// Index state manager for checking index readability
@@ -52,8 +52,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.schema = schema
         self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
         self.delegate = delegate ?? MetricsDataStoreDelegate.shared
-        self.recordSubspace = subspace.subspace("R")
-        self.indexSubspace = subspace.subspace("I")
+        self.itemSubspace = subspace.subspace(SubspaceKey.items)
+        self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.indexStateManager = IndexStateManager(database: database, subspace: subspace, logger: logger)
     }
 
@@ -61,7 +61,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch all models of a type
     func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
         let startTime = DispatchTime.now()
 
@@ -99,7 +99,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch a single model by ID
     func fetch<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws -> T? {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
@@ -518,7 +518,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch models by IDs
     private func fetchByIds<T: Persistable>(_ type: T.Type, ids: [Tuple]) async throws -> [T] {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
 
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
@@ -629,7 +629,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Count all models of a type
     private func countAll<T: Persistable>(_ type: T.Type) async throws -> Int {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
         return try await database.withTransaction(configuration: .readOnly) { transaction in
@@ -666,7 +666,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         _ type: T.Type,
         avgRowSizeBytes: Int = 500
     ) async throws -> Int {
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
         let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
@@ -745,7 +745,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let data = try DataAccess.serialize(model)
 
         // Build key
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Check for existing record (for index updates)
@@ -800,7 +800,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let validatedID = try model.validateIDForStorage()
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Remove index entries first
@@ -813,7 +813,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Delete model by ID
     func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {
         let idTuple = (id as? Tuple) ?? Tuple([id])
-        let typeSubspace = recordSubspace.subspace(T.persistableType)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
         try await database.withTransaction(configuration: .default) { transaction in
@@ -880,7 +880,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let encoder = ProtobufEncoder()
         let data = try encoder.encode(model)
 
-        let typeSubspace = recordSubspace.subspace(persistableType)
+        let typeSubspace = itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Check for existing record (for index updates)
@@ -907,7 +907,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        let typeSubspace = recordSubspace.subspace(persistableType)
+        let typeSubspace = itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
         // Remove index entries first
@@ -1539,7 +1539,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Clear all records of a type
     func clearAll<T: Persistable>(_ type: T.Type) async throws {
         try await database.withTransaction(configuration: .batch) { transaction in
-            let typeSubspace = self.recordSubspace.subspace(T.persistableType)
+            let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
 

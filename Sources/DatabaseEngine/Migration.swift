@@ -164,7 +164,7 @@ public struct MigrationContext: Sendable {
     /// 6. Mark as readable (automatically done by OnlineIndexer after build completes)
     ///
     /// - Parameter indexDescriptor: The index descriptor to add
-    /// - Parameter batchSize: Number of records to process per batch (default: 100)
+    /// - Parameter batchSize: Number of items to process per batch (default: 100)
     /// - Throws: Error if index addition fails or target entity cannot be determined
     public func addIndex(_ indexDescriptor: IndexDescriptor, batchSize: Int = 100) async throws {
         // 1. Identify target entity from Schema
@@ -221,7 +221,7 @@ public struct MigrationContext: Sendable {
         // The EntityIndexBuilder.buildIndex(forPersistableType:) method
         // uses the _EntityIndexBuildable protocol to dispatch to the
         // concrete type's buildEntityIndex implementation.
-        let itemSubspace = info.subspace.subspace("R")  // Records subspace
+        let itemSubspace = info.subspace.subspace(SubspaceKey.items)
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[index.name] ?? []
@@ -332,7 +332,7 @@ public struct MigrationContext: Sendable {
     /// 5. Mark as readable (automatically done by OnlineIndexer after build completes)
     ///
     /// - Parameter indexName: Name of the index to rebuild
-    /// - Parameter batchSize: Number of records to process per batch (default: 100)
+    /// - Parameter batchSize: Number of items to process per batch (default: 100)
     /// - Throws: Error if rebuild fails or index not found in schema
     public func rebuildIndex(indexName: String, batchSize: Int = 100) async throws {
         // 1. Find index descriptor in schema
@@ -389,7 +389,7 @@ public struct MigrationContext: Sendable {
         }
 
         // 6. Build index via OnlineIndexer using EntityIndexBuilder
-        let itemSubspace = info.subspace.subspace("R")  // Records subspace
+        let itemSubspace = info.subspace.subspace(SubspaceKey.items)
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[indexName] ?? []
@@ -435,9 +435,9 @@ public struct MigrationContext: Sendable {
 
     // MARK: - Batch Data Operations (FDB Extensions)
 
-    /// Enumerate all records of a Persistable type with batch processing
+    /// Enumerate all items of a Persistable type with batch processing
     ///
-    /// This method iterates through all records in batches, with each batch
+    /// This method iterates through all items in batches, with each batch
     /// processed in a separate transaction to respect FDB's 5-second limit.
     ///
     /// **Usage**:
@@ -456,14 +456,14 @@ public struct MigrationContext: Sendable {
     ///
     /// - Parameters:
     ///   - type: The Persistable type to enumerate
-    ///   - batchSize: Number of records to fetch per batch (default: 1000)
-    /// - Returns: AsyncThrowingStream of records
+    ///   - batchSize: Number of items to fetch per batch (default: 1000)
+    /// - Returns: AsyncThrowingStream of items
     public func enumerate<T: Persistable>(
         _ type: T.Type,
         batchSize: Int = 1000
     ) -> AsyncThrowingStream<T, Error> {
         // Capture self properties for async enumeration
-        let enumerator = RecordEnumerator<T>(
+        let enumerator = ItemEnumerator<T>(
             itemType: T.persistableType,
             storeRegistry: self.storeRegistry,
             database: self.database,
@@ -472,7 +472,7 @@ public struct MigrationContext: Sendable {
         return enumerator.makeStream()
     }
 
-    /// Update a single record during migration
+    /// Update a single item during migration
     ///
     /// Updates the item in a single transaction. For bulk updates,
     /// consider using `batchUpdate()` instead.
@@ -491,7 +491,7 @@ public struct MigrationContext: Sendable {
         let encoder = ProtobufEncoder()
         let data = try encoder.encode(item)
         let validatedID = try item.validateIDForStorage()
-        let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
+        let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
 
         try await database.withTransaction(configuration: .system) { transaction in
             transaction.setValue(Array(data), for: itemKey)
@@ -515,7 +515,7 @@ public struct MigrationContext: Sendable {
         }
 
         let validatedID = try item.validateIDForStorage()
-        let itemKey = info.subspace.subspace("R").subspace(itemType).pack(Tuple(validatedID))
+        let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
 
         try await database.withTransaction(configuration: .system) { transaction in
             transaction.clear(key: itemKey)
@@ -540,7 +540,7 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let itemSubspace = info.subspace.subspace("R").subspace(itemType)
+        let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
@@ -577,7 +577,7 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let itemSubspace = info.subspace.subspace("R").subspace(itemType)
+        let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
@@ -594,12 +594,20 @@ public struct MigrationContext: Sendable {
         }
     }
 
-    /// Count records of a Persistable type
+    /// Count items of a Persistable type
     ///
-    /// - Parameter type: The Persistable type to count
-    /// - Returns: Number of records
+    /// - Parameters:
+    ///   - type: The Persistable type to count
+    ///   - approximate: If true, uses FDB's `getEstimatedRangeSizeBytes` for O(1) estimation.
+    ///                  Faster but less accurate for large datasets. Default: false (exact count)
+    ///   - avgRowSizeBytes: Estimated average row size for approximate counting (default: 500 bytes)
+    /// - Returns: Number of items (exact or estimated)
     /// - Throws: Error if count fails
-    public func count<T: Persistable>(_ type: T.Type) async throws -> Int {
+    public func count<T: Persistable>(
+        _ type: T.Type,
+        approximate: Bool = false,
+        avgRowSizeBytes: Int = 500
+    ) async throws -> Int {
         let itemType = T.persistableType
 
         guard let info = storeRegistry[itemType] else {
@@ -608,9 +616,22 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        let recordPrefix = info.subspace.subspace("R").subspace(itemType)
-        let (beginKey, endKey) = recordPrefix.range()
+        let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let (beginKey, endKey) = itemPrefix.range()
 
+        // Use approximate count for large datasets
+        if approximate {
+            let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getEstimatedRangeSizeBytes(
+                    beginKey: beginKey,
+                    endKey: endKey
+                )
+            }
+            let rowSize = max(1, avgRowSizeBytes)
+            return max(0, sizeBytes / rowSize)
+        }
+
+        // Exact count via full scan
         var totalCount = 0
         var lastKey: FDB.Bytes? = nil
         let batchSize = 10000  // Use large batches for counting
@@ -790,13 +811,13 @@ struct SendableDatabase: @unchecked Sendable {
     }
 }
 
-// MARK: - RecordEnumerator
+// MARK: - ItemEnumerator
 
-/// Internal helper for enumerating records with batch processing
+/// Internal helper for enumerating items with batch processing
 ///
 /// This struct encapsulates all the state needed for async enumeration
 /// in a Sendable-safe way.
-private struct RecordEnumerator<T: Persistable>: Sendable {
+private struct ItemEnumerator<T: Persistable>: Sendable {
     let itemType: String
     let storeRegistry: [String: MigrationStoreInfo]
     let database: SendableDatabase
@@ -827,9 +848,9 @@ private struct RecordEnumerator<T: Persistable>: Sendable {
                         return
                     }
 
-                    // Build prefix for record scanning
-                    let recordPrefix = info.subspace.subspace("R").subspace(itemType)
-                    let (beginKey, endKey) = recordPrefix.range()
+                    // Build prefix for item scanning
+                    let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+                    let (beginKey, endKey) = itemPrefix.range()
 
                     var lastKey: FDB.Bytes? = nil
                     let decoder = ProtobufDecoder()

@@ -3,10 +3,93 @@
 //
 // This extension bridges database-framework's TransactionConfiguration with
 // fdb-swift-bindings' DatabaseProtocol, enabling configuration-aware transactions.
+//
+// This is the SINGLE implementation of configurable transactions.
+// All transaction entry points (FDBContainer, FDBDataStore, etc.) should
+// delegate to this implementation to ensure consistent behavior.
 
 import Foundation
 import FoundationDB
+import Logging
 import Synchronization
+
+// MARK: - Transaction Monitor
+
+/// Shared transaction monitor for size warnings and logging
+///
+/// This singleton provides centralized monitoring for all transactions,
+/// regardless of which entry point created them.
+///
+/// **Configuration**:
+/// ```swift
+/// TransactionMonitor.shared.configure(
+///     sizeWarningThreshold: 5_000_000,  // 5MB
+///     logger: myLogger
+/// )
+/// ```
+public final class TransactionMonitor: Sendable {
+    /// Shared singleton instance
+    public static let shared = TransactionMonitor()
+
+    /// Configuration state
+    private struct Configuration: Sendable {
+        var sizeWarningThreshold: Int = 5_000_000  // 5MB default
+        var enabled: Bool = true
+    }
+
+    private let config: Mutex<Configuration>
+    private let logger: Logger
+
+    private init() {
+        self.config = Mutex(Configuration())
+        self.logger = Logger(label: "com.fdb.transaction.monitor")
+    }
+
+    /// Configure the transaction monitor
+    ///
+    /// - Parameters:
+    ///   - sizeWarningThreshold: Byte size threshold for warnings (default: 5MB)
+    ///   - enabled: Whether monitoring is enabled (default: true)
+    public func configure(
+        sizeWarningThreshold: Int? = nil,
+        enabled: Bool? = nil
+    ) {
+        config.withLock { cfg in
+            if let threshold = sizeWarningThreshold {
+                cfg.sizeWarningThreshold = threshold
+            }
+            if let enabled = enabled {
+                cfg.enabled = enabled
+            }
+        }
+    }
+
+    /// Check transaction size and log warning if threshold exceeded
+    ///
+    /// - Parameters:
+    ///   - size: Approximate transaction size in bytes
+    ///   - identifier: Optional transaction identifier for logging
+    func checkSize(_ size: Int, identifier: String?) {
+        let (threshold, enabled) = config.withLock { ($0.sizeWarningThreshold, $0.enabled) }
+
+        guard enabled && size > threshold else { return }
+
+        var metadata: Logger.Metadata = [
+            "size_bytes": "\(size)",
+            "threshold_bytes": "\(threshold)"
+        ]
+        if let id = identifier {
+            metadata["transaction_id"] = "\(id)"
+        }
+
+        logger.warning("Large transaction detected", metadata: metadata)
+    }
+
+    /// Get current configuration (for testing)
+    public var sizeWarningThreshold: Int {
+        config.withLock { $0.sizeWarningThreshold }
+    }
+}
 
 // MARK: - Shared ReadVersionCache
 
@@ -110,14 +193,21 @@ extension DatabaseProtocol {
 
             do {
                 let result = try await operation(transaction)
+
+                // Check transaction size before commit (centralized monitoring)
+                let approximateSize = try await transaction.getApproximateSize()
+                TransactionMonitor.shared.checkSize(
+                    approximateSize,
+                    identifier: configuration.debugTransactionIdentifier
+                )
+
                 let committed = try await transaction.commit()
 
                 if committed {
                     // Update cache with commit version for future transactions
-                    if configuration.useGrvCache {
-                        if let commitVersion = try? transaction.getCommittedVersion() {
-                            SharedReadVersionCache.shared.recordCommitVersion(commitVersion)
-                        }
+                    let commitVersion = try? transaction.getCommittedVersion()
+                    if let version = commitVersion {
+                        SharedReadVersionCache.shared.recordCommitVersion(version)
                     }
                     return result
                 }

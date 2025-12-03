@@ -63,16 +63,6 @@ public final class FDBContainer: Sendable {
     /// Directory cache for performance
     private let directoryCache: Mutex<[String: Subspace]>
 
-    /// Read version cache for GRV optimization
-    /// Uses SharedReadVersionCache for consistency across all code paths
-    /// (FDBContainer, FDBDataStore, IndexQueryContext, etc.)
-    private var readVersionCache: ReadVersionCache {
-        SharedReadVersionCache.shared.cache
-    }
-
-    /// Transaction size warning threshold (5MB)
-    private static let transactionSizeWarningThreshold = 5_000_000
-
     /// Migration plan (SwiftData-like API)
     nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
 
@@ -107,7 +97,6 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        // readVersionCache is now a computed property using SharedReadVersionCache.shared
     }
 
     /// Initialize FDBContainer with database (low-level API)
@@ -132,7 +121,6 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        // readVersionCache is now a computed property using SharedReadVersionCache.shared
     }
 
     // MARK: - Context Management
@@ -309,11 +297,13 @@ public final class FDBContainer: Sendable {
 
     /// Execute a closure with a database transaction
     ///
-    /// This method provides optimized transaction execution with:
+    /// This method delegates to `DatabaseProtocol.withTransaction(configuration:)` which provides:
     /// - **GRV Caching**: Reduces read version latency when `useGrvCache` is enabled
     /// - **Automatic Retry**: Exponential backoff with jitter for retryable errors
-    /// - **Size Monitoring**: Logs warnings for large transactions
+    /// - **Size Monitoring**: Logs warnings for large transactions via `TransactionMonitor`
     /// - **Version Tracking**: Updates cache with committed versions
+    ///
+    /// All transaction entry points share the same implementation to ensure consistent behavior.
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (priority, timeout, etc.)
@@ -324,74 +314,18 @@ public final class FDBContainer: Sendable {
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        let maxRetries = configuration.retryLimit ?? 100
-
-        for attempt in 0..<maxRetries {
-            let transaction = try database.createTransaction()
-            try transaction.apply(configuration)
-
-            // Apply cached read version if GRV cache is enabled
-            if configuration.useGrvCache {
-                if let cachedVersion = readVersionCache.getCachedVersion(
-                    semantics: .bounded(seconds: 5.0)
-                ) {
-                    transaction.setReadVersion(cachedVersion)
-                }
-            }
-
-            do {
-                let result = try await operation(transaction)
-
-                // Check transaction size before commit
-                let approximateSize = try await transaction.getApproximateSize()
-                if approximateSize > Self.transactionSizeWarningThreshold {
-                    logger.warning(
-                        "Large transaction detected",
-                        metadata: [
-                            "size_bytes": "\(approximateSize)",
-                            "threshold_bytes": "\(Self.transactionSizeWarningThreshold)"
-                        ]
-                    )
-                }
-
-                let committed = try await transaction.commit()
-
-                if committed {
-                    // Update cache with committed version
-                    let commitVersion = try transaction.getCommittedVersion()
-                    readVersionCache.recordCommitVersion(commitVersion)
-                    return result
-                }
-            } catch {
-                transaction.cancel()
-
-                if let fdbError = error as? FDBError, fdbError.isRetryable {
-                    if attempt < maxRetries - 1 {
-                        // Exponential backoff with jitter to prevent thundering herd
-                        let maxDelay = configuration.maxRetryDelay ?? 1000
-                        let baseDelay = min(maxDelay, 10 * (1 << min(attempt, 10)))
-                        let jitter = Int.random(in: 0...(baseDelay / 4))
-                        let delay = baseDelay + jitter
-                        try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
-                        continue
-                    }
-                }
-
-                throw error
-            }
-        }
-
-        throw FDBError(code: 1020)  // transaction_too_old
+        // Delegate to the single shared implementation
+        try await database.withTransaction(configuration: configuration, operation)
     }
 
     /// Get read version cache statistics
     public var readVersionCacheStatistics: ReadVersionCacheStatistics {
-        readVersionCache.statistics
+        SharedReadVersionCache.shared.statistics
     }
 
     /// Invalidate read version cache
     public func invalidateReadVersionCache() {
-        readVersionCache.invalidate()
+        SharedReadVersionCache.shared.invalidate()
     }
 
     // MARK: - Index Configuration Management

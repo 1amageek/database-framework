@@ -717,11 +717,13 @@ import Testing
 ## Data Layout in FoundationDB
 
 ```
-[fdb]/R/[PersistableType]/[id]           → Protobuf-encoded record
+[fdb]/R/[PersistableType]/[id]           → Protobuf-encoded item
 [fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
 [fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
 [fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
 ```
+
+Subspace keys are single characters for storage efficiency. Use `SubspaceKey.items`, `SubspaceKey.indexes`, etc. for semantic clarity in code.
 
 ## Directory Layer
 
