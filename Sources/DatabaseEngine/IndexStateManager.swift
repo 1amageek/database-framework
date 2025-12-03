@@ -174,23 +174,71 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
         try await database.withTransaction(configuration: .system) { transaction in
-            let stateKey = self.makeStateKey(for: indexName)
-
-            // Read current state within transaction (for logging)
-            let currentState: IndexState
-            if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
-               let stateValue = bytes.first,
-               let state = IndexState(rawValue: stateValue) {
-                currentState = state
-            } else {
-                currentState = .disabled
-            }
-
-            // Write new state (no validation - can disable from any state)
-            transaction.setValue([IndexState.disabled.rawValue], for: stateKey)
-
-            self.logger.info("Disabled index '\(indexName)': \(currentState) → disabled")
+            try await self.disable(indexName, transaction: transaction)
         }
+    }
+
+    /// Disable an index within an existing transaction
+    ///
+    /// Use this when you need to disable an index as part of a larger atomic operation.
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index
+    ///   - transaction: The transaction to use
+    public func disable(_ indexName: String, transaction: any TransactionProtocol) async throws {
+        let stateKey = makeStateKey(for: indexName)
+
+        // Read current state within transaction (for logging)
+        let currentState: IndexState
+        if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
+           let stateValue = bytes.first,
+           let state = IndexState(rawValue: stateValue) {
+            currentState = state
+        } else {
+            currentState = .disabled
+        }
+
+        // Write new state (no validation - can disable from any state)
+        transaction.setValue([IndexState.disabled.rawValue], for: stateKey)
+
+        logger.info("Disabled index '\(indexName)': \(currentState) → disabled")
+    }
+
+    /// Enable an index within an existing transaction
+    ///
+    /// Use this when you need to enable an index as part of a larger atomic operation.
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index
+    ///   - transaction: The transaction to use
+    /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
+    public func enable(_ indexName: String, transaction: any TransactionProtocol) async throws {
+        let stateKey = makeStateKey(for: indexName)
+
+        // Read current state within transaction
+        let currentState: IndexState
+        if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
+           let stateValue = bytes.first,
+           let state = IndexState(rawValue: stateValue) {
+            currentState = state
+        } else {
+            currentState = .disabled
+        }
+
+        // Validate transition: only from DISABLED
+        guard currentState == .disabled else {
+            throw IndexStateError.invalidTransition(
+                from: currentState,
+                to: .writeOnly,
+                index: indexName,
+                reason: "Index must be DISABLED before enabling"
+            )
+        }
+
+        // Write new state
+        transaction.setValue([IndexState.writeOnly.rawValue], for: stateKey)
+
+        logger.info("Enabled index '\(indexName)': \(currentState) → writeOnly")
     }
 
     // MARK: - Batch Operations

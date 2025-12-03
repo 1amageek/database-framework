@@ -254,7 +254,7 @@ public struct MigrationContext: Sendable {
 
     /// Remove an index and add FormerIndex entry
     ///
-    /// **Implementation**:
+    /// **Implementation** (all in single atomic transaction):
     /// 1. Identify target entity from Schema
     /// 2. Create FormerIndex metadata entry
     /// 3. Disable index (via IndexStateManager)
@@ -285,13 +285,21 @@ public struct MigrationContext: Sendable {
             )
         }
 
-        // 4. Create FormerIndex entry
+        let indexManager = IndexManager(
+            database: database,
+            subspace: info.indexSubspace
+        )
+
+        // 4. Atomic transaction: FormerIndex entry + disable + clear data
         let formerIndexKey = info.subspace
             .subspace("storeInfo")
             .subspace("formerIndexes")
             .pack(Tuple(indexName))
 
-        try await database.withTransaction(configuration: .system) { transaction in
+        let indexRange = info.indexSubspace.subspace(indexName).range()
+
+        try await database.withTransaction(configuration: .batch) { transaction in
+            // Write FormerIndex entry
             let timestamp = Date().timeIntervalSince1970
             transaction.setValue(
                 Tuple(
@@ -302,18 +310,11 @@ public struct MigrationContext: Sendable {
                 ).pack(),
                 for: formerIndexKey
             )
-        }
 
-        // 5. Disable index
-        let indexManager = IndexManager(
-            database: database,
-            subspace: info.indexSubspace
-        )
-        try await indexManager.disable(indexName)
+            // Disable index state
+            try await indexManager.stateManager.disable(indexName, transaction: transaction)
 
-        // 6. Clear index data
-        let indexRange = info.indexSubspace.subspace(indexName).range()
-        try await database.withTransaction(configuration: .system) { transaction in
+            // Clear index data
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -325,12 +326,10 @@ public struct MigrationContext: Sendable {
     ///
     /// **Implementation**:
     /// 1. Identify target entity from Schema
-    /// 2. Disable index (via IndexStateManager)
-    /// 3. Clear existing index data (range clear)
-    /// 4. Re-register index with proper itemTypes
-    /// 5. Enable index (→ writeOnly state)
-    /// 6. Build index (via OnlineIndexer using EntityIndexBuilder)
-    /// 7. Mark as readable (automatically done by OnlineIndexer after build completes)
+    /// 2. Convert and register index
+    /// 3. Atomic transaction: disable + clear + enable (→ writeOnly state)
+    /// 4. Build index (via OnlineIndexer using EntityIndexBuilder)
+    /// 5. Mark as readable (automatically done by OnlineIndexer after build completes)
     ///
     /// - Parameter indexName: Name of the index to rebuild
     /// - Parameter batchSize: Number of records to process per batch (default: 100)
@@ -370,25 +369,26 @@ public struct MigrationContext: Sendable {
             // Index already registered - OK
         }
 
-        // 5. Disable index
-        let currentState = try await indexManager.state(of: indexName)
-        if currentState != .disabled {
-            try await indexManager.disable(indexName)
-        }
-
-        // 6. Clear existing data
+        // 5. Atomic transaction: disable + clear + enable
+        // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
-        try await database.withTransaction(configuration: .system) { transaction in
+
+        try await database.withTransaction(configuration: .batch) { transaction in
+            // Disable index (from any state)
+            try await indexManager.stateManager.disable(indexName, transaction: transaction)
+
+            // Clear existing data
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
             )
+
+            // Enable index (disabled → writeOnly)
+            // Note: We just disabled it above, so this will succeed
+            try await indexManager.stateManager.enable(indexName, transaction: transaction)
         }
 
-        // 7. Enable index (→ writeOnly state)
-        try await indexManager.enable(indexName)
-
-        // 8. Build index via OnlineIndexer using EntityIndexBuilder
+        // 6. Build index via OnlineIndexer using EntityIndexBuilder
         let itemSubspace = info.subspace.subspace("R")  // Records subspace
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
@@ -419,13 +419,16 @@ public struct MigrationContext: Sendable {
 
     /// Execute arbitrary database operation
     ///
-    /// - Parameter operation: Operation to execute
+    /// - Parameters:
+    ///   - configuration: Transaction configuration (default: `.default`)
+    ///   - operation: Operation to execute
     /// - Returns: Operation result
     /// - Throws: Any error from the operation
     public func executeOperation<T: Sendable>(
+        configuration: TransactionConfiguration = .default,
         _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(configuration: .system) { transaction in
+        return try await database.withTransaction(configuration: configuration) { transaction in
             try await operation(transaction)
         }
     }
@@ -544,7 +547,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await database.withTransaction(configuration: .system) { transaction in
+            try await database.withTransaction(configuration: .batch) { transaction in
                 let encoder = ProtobufEncoder()
                 for item in batch {
                     let data = try encoder.encode(item)
@@ -581,7 +584,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await database.withTransaction(configuration: .system) { transaction in
+            try await database.withTransaction(configuration: .batch) { transaction in
                 for item in batch {
                     let validatedID = try item.validateIDForStorage()
                     let itemKey = itemSubspace.pack(Tuple(validatedID))
@@ -614,7 +617,7 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .system) { transaction in
+            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .readOnly) { transaction in
                 let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
@@ -832,9 +835,12 @@ private struct RecordEnumerator<T: Persistable>: Sendable {
                     let decoder = ProtobufDecoder()
 
                     while !Task.isCancelled {
+                        // Capture lastKey for Sendable closure
+                        let currentLastKey = lastKey
+
                         // Each batch is a separate transaction
-                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction { transaction in
-                            let rangeBegin = lastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
+                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction(configuration: .batch) { transaction in
+                            let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                             var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
                             let sequence = transaction.getRange(

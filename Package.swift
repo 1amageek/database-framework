@@ -28,8 +28,8 @@ let package = Package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
             branch: "feature/directory-layer"
         ),
-        .package(url: "https://github.com/apple/swift-log.git", from: "1.0.0"),
-        .package(url: "https://github.com/apple/swift-metrics.git", from: "2.0.0"),
+        .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
+        .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
     ],
     targets: [
