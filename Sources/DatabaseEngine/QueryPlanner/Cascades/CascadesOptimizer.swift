@@ -100,6 +100,11 @@ public final class CascadesOptimizer: @unchecked Sendable {
             FilterPushDownRule(),
             FilterToIndexScanRule(),
             JoinCommutativityRule(),
+            // Union/Intersection transformation rules
+            INToUnionRule(),
+            ORToUnionRule(),
+            FilterPushBelowUnionRule(),
+            FilterPushBelowIntersectionRule(),
         ]
 
         // Implementation rules
@@ -109,6 +114,11 @@ public final class CascadesOptimizer: @unchecked Sendable {
             IndexScanImplementationRule(),
             SortImplementationRule(),
             HashJoinImplementationRule(),
+            // Union/Intersection implementation rules
+            HashUnionImplementationRule(),
+            MergeSortUnionImplementationRule(),
+            HashIntersectionImplementationRule(),
+            MergeSortIntersectionImplementationRule(),
         ]
 
         // Sort by promise (higher first)
@@ -332,6 +342,12 @@ public final class CascadesOptimizer: @unchecked Sendable {
         case .physical(.indexScan):
             // Index scans can provide sorted output
             return true  // Simplified check
+        case .physical(.mergeSortUnion(_, let keys, _)):
+            // Merge-sort union provides sorted output by its keys
+            return keys == sortOrder
+        case .physical(.mergeSortIntersection(_, let keys)):
+            // Merge-sort intersection provides sorted output by its keys
+            return keys == sortOrder
         default:
             return false
         }
@@ -342,11 +358,16 @@ public final class CascadesOptimizer: @unchecked Sendable {
         _ op: MemoOperator,
         parentProperties: PropertySet
     ) -> PropertySet {
-        // Most operators don't propagate sort requirements to children
-        // Merge join is an exception
+        // Operators that require sorted input propagate sort requirements to children
         switch op {
         case .physical(.mergeJoin):
             return parentProperties
+        case .physical(.mergeSortUnion(_, let keys, _)):
+            // Merge-sort union requires sorted children
+            return PropertySet(sortOrder: keys)
+        case .physical(.mergeSortIntersection(_, let keys)):
+            // Merge-sort intersection requires sorted children
+            return PropertySet(sortOrder: keys)
         default:
             return .none
         }

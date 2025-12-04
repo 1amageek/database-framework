@@ -242,13 +242,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
                 let (itemsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
-                    try transaction.setOption(forOption: .priorityBatch)
-                    // Set low read priority for background index building
-                    // This prevents OnlineIndexer from impacting foreground user queries
-                    try transaction.setOption(forOption: .readPriorityLow)
-                    // Disable server-side cache for one-time full scans
-                    // Avoids polluting cache with data that won't be re-read
-                    try transaction.setOption(forOption: .readServerSideCacheDisable)
+                    try TransactionConfiguration.batch.apply(to: transaction)
 
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -342,7 +336,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
         return try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -371,7 +365,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Called after successful completion
     private func clearProgress() async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             transaction.clear(key: progressKey)
         }
     }
@@ -384,7 +378,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(
                 beginKey: indexRange.begin,
@@ -573,10 +567,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             let rangeBegin = currentBegin
 
             let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction { transaction in
-                try transaction.setOption(forOption: .priorityBatch)
-                // Set low read priority for background index building
-                try transaction.setOption(forOption: .readPriorityLow)
-                try transaction.setOption(forOption: .readServerSideCacheDisable)
+                try TransactionConfiguration.batch.apply(to: transaction)
 
                 var count = 0
                 var processedKey: [UInt8]? = nil
@@ -668,10 +659,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             let currentLastKey = lastKey
 
             let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction { transaction in
-                try transaction.setOption(forOption: .priorityBatch)
-                // Set low read priority for background index building
-                try transaction.setOption(forOption: .readPriorityLow)
-                try transaction.setOption(forOption: .readServerSideCacheDisable)
+                try TransactionConfiguration.batch.apply(to: transaction)
 
                 var count = 0
                 var processedKey: [UInt8]? = nil
@@ -826,7 +814,7 @@ internal final class ParallelBuildProgress: Sendable {
         let value = encodeProgress(status: status, lastKey: lastKey)
 
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             transaction.setValue(value, for: key)
         }
     }
@@ -856,7 +844,7 @@ internal final class ParallelBuildProgress: Sendable {
         let (begin, end) = progressSubspace.range()
 
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             transaction.clearRange(beginKey: begin, endKey: end)
         }
     }

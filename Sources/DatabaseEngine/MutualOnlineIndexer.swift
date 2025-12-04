@@ -247,11 +247,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
-                    try transaction.setOption(forOption: .priorityBatch)
-                    // Set low read priority for background index building
-                    // This prevents background indexing from impacting foreground user queries
-                    try transaction.setOption(forOption: .readPriorityLow)
-                    try transaction.setOption(forOption: .readServerSideCacheDisable)
+                    try TransactionConfiguration.batch.apply(to: transaction)
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -403,7 +399,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -418,7 +414,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearProgress() async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             transaction.clear(key: forwardProgressKey)
             transaction.clear(key: reverseProgressKey)
         }
@@ -428,7 +424,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearIndexData(for index: Index) async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }

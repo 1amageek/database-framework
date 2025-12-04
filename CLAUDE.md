@@ -251,6 +251,39 @@ let base = 256.0  // なぜ256？
 let threshold = 0.5  // なぜ0.5？
 ```
 
+### デフォルト値の扱い
+
+**デフォルト値がある場合、Optional + nil合体演算子ではなく、直接デフォルト値を設定する。**
+
+```swift
+// ❌ 悪い例: Optional + nil合体演算子
+public let retryLimit: Int?
+
+public init(retryLimit: Int? = nil) {
+    self.retryLimit = retryLimit
+}
+
+func run() {
+    let maxRetries = configuration.retryLimit ?? 10  // 使用側で毎回デフォルト値を指定
+}
+
+// ✅ 良い例: 直接デフォルト値を設定
+public let retryLimit: Int
+
+public init(retryLimit: Int = 5) {
+    self.retryLimit = retryLimit
+}
+
+func run() {
+    let maxRetries = configuration.retryLimit  // そのまま使用可能
+}
+```
+
+**理由**:
+- デフォルト値が一箇所で定義され、一貫性が保たれる
+- 使用側でのnil チェックや `??` が不要になり、コードがシンプルになる
+- 型が非Optionalになり、意図が明確になる
+
 ### 参照すべきリソース
 
 | 分野 | 参照先 |

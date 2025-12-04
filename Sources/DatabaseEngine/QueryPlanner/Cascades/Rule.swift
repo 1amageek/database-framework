@@ -188,6 +188,19 @@ public struct CascadesCostModel: Sendable {
     /// Page size in bytes
     public let pageSize: Int
 
+    // MARK: - Merge-Sort Operation Costs
+
+    /// Cost per key comparison in merge operations
+    /// Reference: FDB Record Layer RecordQueryUnionPlan cost model
+    public let mergeComparisonWeight: Double
+
+    /// Cost per heap operation (insert/extract) in K-way merge
+    public let heapOperationWeight: Double
+
+    /// Maximum number of children before merge-sort becomes less attractive
+    /// Above this threshold, hash-based operators may be preferred
+    public let mergeSortChildThreshold: Int
+
     /// Default values based on PostgreSQL
     public init(
         seqPageCost: Double = 1.0,
@@ -195,7 +208,10 @@ public struct CascadesCostModel: Sendable {
         cpuOperatorCost: Double = 0.0025,
         cpuTupleCost: Double = 0.01,
         cpuIndexTupleCost: Double = 0.005,
-        pageSize: Int = 8192
+        pageSize: Int = 8192,
+        mergeComparisonWeight: Double = 0.02,
+        heapOperationWeight: Double = 0.05,
+        mergeSortChildThreshold: Int = 10
     ) {
         self.seqPageCost = seqPageCost
         self.randomPageCost = randomPageCost
@@ -203,6 +219,9 @@ public struct CascadesCostModel: Sendable {
         self.cpuTupleCost = cpuTupleCost
         self.cpuIndexTupleCost = cpuIndexTupleCost
         self.pageSize = pageSize
+        self.mergeComparisonWeight = mergeComparisonWeight
+        self.heapOperationWeight = heapOperationWeight
+        self.mergeSortChildThreshold = mergeSortChildThreshold
     }
 }
 
@@ -537,5 +556,350 @@ public struct HashJoinImplementationRule: ImplementationRule {
         default:
             return ([], [])
         }
+    }
+}
+
+// MARK: - Union/Intersection Implementation Rules
+
+/// Implement union as hash union (with deduplication)
+public struct HashUnionImplementationRule: ImplementationRule {
+    public let name = "HashUnionImpl"
+    public let pattern = RulePattern.union(children: .any)
+    public let promise = 5
+
+    public init() {}
+
+    public func apply(
+        to expression: MemoExpression,
+        requiredProperties: PropertySet,
+        memo: Memo,
+        context: CascadesOptimizationContext
+    ) -> [(PhysicalOperator, Double)] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .union(let inputs, let deduplicate) = logicalOp else {
+            return []
+        }
+
+        if deduplicate {
+            // Hash union with deduplication
+            // Cost: build hash table + probe
+            let totalCard = Double(inputs.count) * 1000.0
+            let cost = totalCard * context.costModel.cpuTupleCost * 1.5
+
+            return [(.hashUnion(inputs: inputs), cost)]
+        } else {
+            // Simple concatenation
+            let cost = Double(inputs.count) * context.costModel.cpuTupleCost
+
+            return [(.unionAll(inputs: inputs), cost)]
+        }
+    }
+}
+
+/// Implement union as merge-sort union (for sorted inputs)
+///
+/// This is preferred when:
+/// - Inputs are already sorted by the same key
+/// - Result needs to maintain sort order
+/// - Deduplication is needed
+///
+/// **Time**: O(N log K) where N = total elements, K = number of inputs
+/// **Space**: O(K) for the heap
+///
+/// **Reference**: FDB Record Layer RecordQueryUnionPlan
+public struct MergeSortUnionImplementationRule: ImplementationRule {
+    public let name = "MergeSortUnionImpl"
+    public let pattern = RulePattern.union(children: .any)
+    public let promise = 15  // Higher than hash union when applicable
+
+    public init() {}
+
+    public func apply(
+        to expression: MemoExpression,
+        requiredProperties: PropertySet,
+        memo: Memo,
+        context: CascadesOptimizationContext
+    ) -> [(PhysicalOperator, Double)] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .union(let inputs, let deduplicate) = logicalOp else {
+            return []
+        }
+
+        // Skip if too many children (hash may be better)
+        if inputs.count > context.costModel.mergeSortChildThreshold {
+            return []
+        }
+
+        // Generate merge-sort union unconditionally with a default sort key.
+        // The optimizer's satisfiesProperties will filter if sort order doesn't match.
+        // If requiredProperties has a sortOrder, use it; otherwise use a placeholder.
+        // The key insight: merge-sort union produces sorted output by its key,
+        // so it only makes sense when sorted output is needed.
+        let sortKeys: [SortKeyExpr]
+        if let sortOrder = requiredProperties.sortOrder, !sortOrder.isEmpty {
+            sortKeys = sortOrder
+        } else {
+            // Generate with a default primary key sort - actual usage will be
+            // filtered by satisfiesProperties if sort doesn't match requirements
+            sortKeys = [SortKeyExpr(field: "_id", ascending: true)]
+        }
+
+        // Merge-sort union cost:
+        // N * log(K) comparisons for K-way merge
+        // Add sort cost for children if they aren't already sorted
+        let k = Double(inputs.count)
+        let totalCard = k * 1000.0  // Simplified cardinality estimate
+        let mergeComparisonCost = totalCard * log2(max(2, k)) * context.costModel.cpuOperatorCost * context.costModel.mergeComparisonWeight
+        let heapOperationCost = totalCard * context.costModel.cpuOperatorCost * context.costModel.heapOperationWeight
+        // Add estimated child sort cost (will be refined by child optimization)
+        let childSortCost = totalCard * log2(max(2, totalCard / k)) * context.costModel.cpuOperatorCost * 0.01
+
+        let cost = mergeComparisonCost + heapOperationCost + childSortCost
+
+        return [(.mergeSortUnion(inputs: inputs, keys: sortKeys, deduplicate: deduplicate), cost)]
+    }
+}
+
+/// Implement intersection as hash intersection
+public struct HashIntersectionImplementationRule: ImplementationRule {
+    public let name = "HashIntersectionImpl"
+    public let pattern = RulePattern.intersection(children: .any)
+    public let promise = 5
+
+    public init() {}
+
+    public func apply(
+        to expression: MemoExpression,
+        requiredProperties: PropertySet,
+        memo: Memo,
+        context: CascadesOptimizationContext
+    ) -> [(PhysicalOperator, Double)] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .intersection(let inputs) = logicalOp else {
+            return []
+        }
+
+        // Hash intersection cost:
+        // Build hash table from first input, probe with others
+        let firstCard = 1000.0
+        let totalCard = Double(inputs.count) * 1000.0
+        let buildCost = firstCard * context.costModel.cpuTupleCost
+        let probeCost = (totalCard - firstCard) * context.costModel.cpuTupleCost * 0.5
+
+        let cost = buildCost + probeCost
+
+        return [(.hashIntersection(inputs: inputs), cost)]
+    }
+}
+
+/// Implement intersection as merge-sort intersection (for sorted inputs)
+///
+/// Skip-ahead optimization for sorted streams.
+/// Uses smallest stream as driver and seeks in others.
+///
+/// Preferred when:
+/// - Inputs are sorted by the same key
+/// - Inputs have varying cardinalities (skip-ahead helps)
+/// - Result needs to maintain sort order
+///
+/// **Time**: O(N * K) where N = smallest stream size
+/// **Space**: O(K) for iterators
+///
+/// **Reference**: FDB Record Layer RecordQueryIntersectionPlan
+public struct MergeSortIntersectionImplementationRule: ImplementationRule {
+    public let name = "MergeSortIntersectionImpl"
+    public let pattern = RulePattern.intersection(children: .any)
+    public let promise = 15  // Higher than hash intersection when applicable
+
+    public init() {}
+
+    public func apply(
+        to expression: MemoExpression,
+        requiredProperties: PropertySet,
+        memo: Memo,
+        context: CascadesOptimizationContext
+    ) -> [(PhysicalOperator, Double)] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .intersection(let inputs) = logicalOp else {
+            return []
+        }
+
+        // Skip if too many children (hash may be better)
+        if inputs.count > context.costModel.mergeSortChildThreshold {
+            return []
+        }
+
+        // Generate merge-sort intersection with appropriate sort keys.
+        // If requiredProperties has a sortOrder, use it; otherwise use a placeholder.
+        let sortKeys: [SortKeyExpr]
+        if let sortOrder = requiredProperties.sortOrder, !sortOrder.isEmpty {
+            sortKeys = sortOrder
+        } else {
+            // Generate with a default primary key sort
+            sortKeys = [SortKeyExpr(field: "_id", ascending: true)]
+        }
+
+        // Merge-sort intersection cost:
+        // Skip-ahead reduces comparisons for sparse intersections
+        let k = Double(inputs.count)
+        let smallestCard = 500.0  // Simplified: assume smallest stream
+        // Use mergeComparisonWeight for skip-ahead comparisons (similar to merge comparison)
+        let skipAheadCost = smallestCard * k * context.costModel.cpuOperatorCost * context.costModel.mergeComparisonWeight * 5.0  // 5x for seek overhead
+        // Add estimated child sort cost
+        let childSortCost = smallestCard * k * log2(max(2, smallestCard)) * context.costModel.cpuOperatorCost * 0.01
+
+        let cost = skipAheadCost + childSortCost
+
+        return [(.mergeSortIntersection(inputs: inputs, keys: sortKeys), cost)]
+    }
+}
+
+// MARK: - Union/Intersection Transformation Rules
+
+/// Transform IN predicate to union of equality predicates
+///
+/// WHERE x IN (1, 2, 3) → WHERE x = 1 OR x = 2 OR x = 3
+/// This enables using multiple index seeks combined with union.
+///
+/// **Reference**: PostgreSQL "Transforming IN to OR"
+public struct INToUnionRule: TransformationRule {
+    public let name = "INToUnion"
+    public let pattern = RulePattern.filter(child: .scan)
+    public let promise = 25
+
+    public init() {}
+
+    public func apply(to expression: MemoExpression, memo: Memo) -> [LogicalOperator] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .filter(let scanGroup, let predicate) = logicalOp else {
+            return []
+        }
+
+        // Check if predicate contains IN clause
+        guard case .comparison(let field, .in, let value) = predicate,
+              case .array(let values) = value else {
+            return []
+        }
+
+        // Don't transform if too many values (hash join would be better)
+        guard values.count <= 10 else { return [] }
+
+        // Create union of equality filters
+        var filterGroups: [GroupID] = []
+        for v in values {
+            let eqPredicate = PredicateExpr.comparison(field: field, op: .eq, value: v)
+            let filterOp = LogicalOperator.filter(input: scanGroup, predicate: eqPredicate)
+            let filterGroup = memo.addLogicalExpression(filterOp)
+            filterGroups.append(filterGroup)
+        }
+
+        // Create union of all filters
+        return [LogicalOperator.union(inputs: filterGroups, deduplicate: true)]
+    }
+}
+
+/// Push filter below union
+///
+/// Filter(Union(A, B)) → Union(Filter(A), Filter(B))
+/// This enables pushing predicates to index scans within each branch.
+public struct FilterPushBelowUnionRule: TransformationRule {
+    public let name = "FilterPushBelowUnion"
+    public let pattern = RulePattern.filter(child: .union(children: .any))
+    public let promise = 12
+
+    public init() {}
+
+    public func apply(to expression: MemoExpression, memo: Memo) -> [LogicalOperator] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .filter(let unionGroup, let predicate) = logicalOp else {
+            return []
+        }
+
+        guard let unionExpr = memo.getLogicalExpressions(unionGroup).first,
+              case .logical(let unionOp) = unionExpr.op,
+              case .union(let inputs, let deduplicate) = unionOp else {
+            return []
+        }
+
+        // Push filter into each union branch
+        var filteredInputs: [GroupID] = []
+        for input in inputs {
+            let filterOp = LogicalOperator.filter(input: input, predicate: predicate)
+            let filterGroup = memo.addLogicalExpression(filterOp)
+            filteredInputs.append(filterGroup)
+        }
+
+        return [LogicalOperator.union(inputs: filteredInputs, deduplicate: deduplicate)]
+    }
+}
+
+/// Push filter below intersection
+///
+/// Filter(Intersect(A, B)) → Intersect(Filter(A), Filter(B))
+public struct FilterPushBelowIntersectionRule: TransformationRule {
+    public let name = "FilterPushBelowIntersection"
+    public let pattern = RulePattern.filter(child: .intersection(children: .any))
+    public let promise = 12
+
+    public init() {}
+
+    public func apply(to expression: MemoExpression, memo: Memo) -> [LogicalOperator] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .filter(let intersectGroup, let predicate) = logicalOp else {
+            return []
+        }
+
+        guard let intersectExpr = memo.getLogicalExpressions(intersectGroup).first,
+              case .logical(let intersectOp) = intersectExpr.op,
+              case .intersection(let inputs) = intersectOp else {
+            return []
+        }
+
+        // Push filter into each intersection branch
+        var filteredInputs: [GroupID] = []
+        for input in inputs {
+            let filterOp = LogicalOperator.filter(input: input, predicate: predicate)
+            let filterGroup = memo.addLogicalExpression(filterOp)
+            filteredInputs.append(filterGroup)
+        }
+
+        return [LogicalOperator.intersection(inputs: filteredInputs)]
+    }
+}
+
+/// Convert OR predicates to union
+///
+/// WHERE a = 1 OR b = 2 → Union(Filter(a=1), Filter(b=2))
+/// This enables using different indexes for each branch.
+public struct ORToUnionRule: TransformationRule {
+    public let name = "ORToUnion"
+    public let pattern = RulePattern.filter(child: .scan)
+    public let promise = 15
+
+    public init() {}
+
+    public func apply(to expression: MemoExpression, memo: Memo) -> [LogicalOperator] {
+        guard case .logical(let logicalOp) = expression.op,
+              case .filter(let scanGroup, let predicate) = logicalOp else {
+            return []
+        }
+
+        // Check if predicate is OR
+        guard case .or(let predicates) = predicate, predicates.count >= 2 else {
+            return []
+        }
+
+        // Don't transform if too many branches
+        guard predicates.count <= 5 else { return [] }
+
+        // Create union of filters
+        var filterGroups: [GroupID] = []
+        for pred in predicates {
+            let filterOp = LogicalOperator.filter(input: scanGroup, predicate: pred)
+            let filterGroup = memo.addLogicalExpression(filterOp)
+            filterGroups.append(filterGroup)
+        }
+
+        return [LogicalOperator.union(inputs: filterGroups, deduplicate: true)]
     }
 }

@@ -396,8 +396,11 @@ extension DatabaseProtocol {
         timer: StoreTimer? = nil,
         _ operation: @Sendable (InstrumentedTransaction) async throws -> T
     ) async throws -> (result: T, metrics: TransactionMetrics) {
-        let maxRetries = 100
-        let maxDelay = 1000
+        // Use DatabaseConfiguration for retry settings (configurable via environment variables)
+        let config = DatabaseConfiguration.shared
+        let maxRetries = max(1, config.transactionRetryLimit)
+        let maxDelayMs = config.transactionMaxRetryDelay
+        let initialDelayMs = config.transactionInitialDelay
 
         for attempt in 0..<maxRetries {
             let transaction = try createTransaction()
@@ -420,9 +423,13 @@ extension DatabaseProtocol {
 
                 if let fdbError = error as? FDBError, fdbError.isRetryable {
                     if attempt < maxRetries - 1 {
-                        let baseDelay = min(maxDelay, 10 * (1 << min(attempt, 10)))
-                        let jitter = Int.random(in: 0...(baseDelay / 4))
-                        let delay = baseDelay + jitter
+                        // Exponential backoff: initialDelay * 2^attempt, capped by maxDelay
+                        let exponent = min(attempt, 10)
+                        let exponentialDelay = initialDelayMs * (1 << exponent)
+                        let cappedDelay = min(exponentialDelay, maxDelayMs)
+                        // Add jitter (0-50% of delay) to prevent thundering herd
+                        let jitter = Int.random(in: 0...(cappedDelay / 2))
+                        let delay = cappedDelay + jitter
                         try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
                         continue
                     }

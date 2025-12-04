@@ -209,6 +209,28 @@ public enum PhysicalOperator: Sendable, Equatable {
     /// Bitmap intersection (using bitmap indexes)
     case bitmapIntersection(inputs: [GroupID])
 
+    /// Merge-sort union (requires sorted inputs, maintains order)
+    ///
+    /// K-way merge for combining sorted streams while maintaining global order.
+    /// Uses min-heap with one element from each child.
+    ///
+    /// **Time**: O(N log K) where N = total elements, K = number of children
+    /// **Space**: O(K) for the heap
+    ///
+    /// **Reference**: FDB Record Layer RecordQueryUnionPlan
+    case mergeSortUnion(inputs: [GroupID], keys: [SortKeyExpr], deduplicate: Bool)
+
+    /// Merge-sort intersection (requires sorted inputs)
+    ///
+    /// Skip-ahead optimization for sorted streams.
+    /// Scans smallest stream and seeks to matching positions in others.
+    ///
+    /// **Time**: O(N * K) where N = smallest stream size
+    /// **Space**: O(K) for iterators
+    ///
+    /// **Reference**: FDB Record Layer RecordQueryIntersectionPlan
+    case mergeSortIntersection(inputs: [GroupID], keys: [SortKeyExpr])
+
     /// Filter operator
     case filter(input: GroupID, predicate: PredicateExpr)
 
@@ -325,6 +347,10 @@ extension PhysicalOperator {
         case .hashIntersection(let inputs):
             return inputs
         case .bitmapIntersection(let inputs):
+            return inputs
+        case .mergeSortUnion(let inputs, _, _):
+            return inputs
+        case .mergeSortIntersection(let inputs, _):
             return inputs
         case .filter(let input, _):
             return [input]

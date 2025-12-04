@@ -335,10 +335,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     ) async throws -> Phase1Result {
 
         let result = try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
-            // Set low read priority for background scrubbing
-            try transaction.setOption(forOption: .readPriorityLow)
-            try transaction.setOption(forOption: .readServerSideCacheDisable)
+            try TransactionConfiguration.batch.apply(to: transaction)
 
             var entriesScanned = 0
             var danglingDetected = 0
@@ -496,10 +493,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     ) async throws -> Phase2Result {
 
         let result = try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
-            // Set low read priority for background scrubbing
-            try transaction.setOption(forOption: .readPriorityLow)
-            try transaction.setOption(forOption: .readServerSideCacheDisable)
+            try TransactionConfiguration.batch.apply(to: transaction)
 
             var itemsScanned = 0
             var missingDetected = 0
@@ -610,7 +604,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Load saved progress
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
         return try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -623,7 +617,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)
             transaction.setValue(Array(data), for: key)
@@ -633,7 +627,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Clear all progress
     private func clearProgress() async throws {
         try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+            try TransactionConfiguration.batch.apply(to: transaction)
             transaction.clear(key: phase1ProgressKey)
             transaction.clear(key: phase2ProgressKey)
         }

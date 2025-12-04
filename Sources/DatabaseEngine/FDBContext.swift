@@ -245,6 +245,41 @@ public final class FDBContext: Sendable {
         QueryExecutor(context: self, query: Query<T>())
     }
 
+    // MARK: - Cursor (Paginated Fetch)
+
+    /// Create a cursor for paginated fetching with continuation support
+    ///
+    /// Unlike `fetch()` which returns all results at once, cursors return results
+    /// in batches with continuation tokens for efficient pagination.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // First page
+    /// let result = try await context.cursor(User.self)
+    ///     .where(\.isActive == true)
+    ///     .orderBy(\.createdAt, .descending)
+    ///     .batchSize(20)
+    ///     .next()
+    ///
+    /// displayUsers(result.items)
+    ///
+    /// // Next page (can be in a different request/session)
+    /// if let continuation = result.continuation {
+    ///     let nextResult = try await context.cursor(User.self, continuation: continuation).next()
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type to query
+    ///   - continuation: Optional continuation token to resume from
+    /// - Returns: A CursorQueryBuilder for configuring the query
+    public func cursor<T: Persistable & Codable>(
+        _ type: T.Type,
+        continuation: ContinuationToken? = nil
+    ) -> CursorQueryBuilder<T> {
+        CursorQueryBuilder(context: self, continuation: continuation)
+    }
+
     /// Fetch models matching a query (internal use)
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
         let (pendingInserts, pendingDeleteKeys) = stateLock.withLock { state -> ([T], Set<ModelKey>) in
@@ -744,6 +779,69 @@ public enum FDBContextError: Error, CustomStringConvertible {
             return "FDBContextError: Model of type '\(type)' not found"
         case .transactionTooLarge(let currentSize, let limit, let hint):
             return "FDBContextError: Transaction size (\(currentSize) bytes) approaching limit (\(limit) bytes). \(hint)"
+        }
+    }
+}
+
+// MARK: - Transaction API
+
+extension FDBContext {
+    /// Execute a transactional operation with configurable retry and timeout
+    ///
+    /// Provides Firestore-like transaction semantics with explicit read isolation control.
+    /// The closure may be retried on conflict - avoid side effects inside the closure.
+    ///
+    /// **Read Modes**:
+    /// - `tx.get(snapshot: false)` (default): Transactional read that adds read conflict.
+    ///   If another transaction writes to this data before commit, this transaction
+    ///   will conflict and retry.
+    /// - `tx.get(snapshot: true)`: Snapshot read with no conflict tracking.
+    ///   May return stale data, but won't cause conflicts. Use for non-critical reads.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Read-modify-write with conflict detection
+    /// try await context.withTransaction { tx in
+    ///     guard let user = try await tx.get(User.self, id: userId) else { throw ... }
+    ///     var updated = user
+    ///     updated.balance -= amount
+    ///     try await tx.set(updated)
+    /// }
+    ///
+    /// // Mixed reads
+    /// try await context.withTransaction { tx in
+    ///     let user = try await tx.get(User.self, id: userId)           // Transactional
+    ///     let stats = try await tx.get(Stats.self, id: id, snapshot: true) // Snapshot
+    ///     try await tx.set(updated)
+    /// }
+    ///
+    /// // Batch configuration
+    /// try await context.withTransaction(configuration: .batch) { tx in
+    ///     for item in items {
+    ///         try await tx.set(item)
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - configuration: Transaction configuration (timeout, retry, priority)
+    ///   - operation: The transactional operation to execute
+    /// - Returns: The result of the operation
+    /// - Throws: Error if the transaction cannot be committed after retries
+    ///
+    /// **Reference**: Cloud Firestore transaction model, FDB Record Layer FDBRecordContext
+    public func withTransaction<T: Sendable>(
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable (TransactionContext) async throws -> T
+    ) async throws -> T {
+        let runner = TransactionRunner(database: container.database)
+
+        return try await runner.run(configuration: configuration) { transaction in
+            let context = TransactionContext(
+                transaction: transaction,
+                container: self.container
+            )
+            return try await operation(context)
         }
     }
 }
