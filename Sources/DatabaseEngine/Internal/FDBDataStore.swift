@@ -35,8 +35,17 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Indexes subspace: [subspace]/indexes/
     let indexSubspace: Subspace
 
+    /// Metadata subspace: [subspace]/_metadata/
+    let metadataSubspace: Subspace
+
     /// Index state manager for checking index readability
     let indexStateManager: IndexStateManager
+
+    /// Violation tracker for uniqueness constraint violations
+    ///
+    /// Tracks violations during online indexing (writeOnly mode) instead of
+    /// immediately throwing errors.
+    let violationTracker: UniquenessViolationTracker
 
     // MARK: - Initialization
 
@@ -54,7 +63,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.delegate = delegate ?? MetricsDataStoreDelegate.shared
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
+        self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
         self.indexStateManager = IndexStateManager(database: database, subspace: subspace, logger: logger)
+        self.violationTracker = UniquenessViolationTracker(
+            database: database,
+            metadataSubspace: subspace.subspace(SubspaceKey.metadata)
+        )
     }
 
     // MARK: - Fetch Operations
@@ -1005,6 +1019,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                     oldModel: oldModel,
                     newModel: newModel,
                     id: id,
+                    indexState: state,
                     transaction: transaction
                 )
             }
@@ -1014,12 +1029,22 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Update scalar index (ScalarIndexKind, VersionIndexKind)
     ///
     /// Key structure: `[indexSubspace][fieldValue][primaryKey] = ''`
+    ///
+    /// - Parameters:
+    ///   - descriptor: Index descriptor
+    ///   - subspace: Index subspace
+    ///   - oldModel: Previous model (nil for insert)
+    ///   - newModel: New model (nil for delete)
+    ///   - id: Primary key
+    ///   - indexState: Current index state (affects uniqueness check mode)
+    ///   - transaction: Current transaction
     private func updateScalarIndex<T: Persistable>(
         descriptor: IndexDescriptor,
         subspace: Subspace,
         oldModel: T?,
         newModel: T?,
         id: Tuple,
+        indexState: IndexState,
         transaction: any TransactionProtocol
     ) async throws {
         // Remove old index entries
@@ -1039,13 +1064,16 @@ internal final class FDBDataStore: DataStore, Sendable {
         if let new = newModel {
             let newValues = extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
             if !newValues.isEmpty {
-                // Check unique constraint
+                // Check unique constraint with appropriate mode
                 if descriptor.isUnique {
+                    let mode = uniquenessCheckMode(for: indexState)
                     try await checkUniqueConstraint(
                         descriptor: descriptor,
                         subspace: subspace,
                         values: newValues,
                         excludingId: id,
+                        persistableType: T.persistableType,
+                        mode: mode,
                         transaction: transaction
                     )
                 }
@@ -1062,17 +1090,35 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Check unique constraint for index
     ///
-    /// Throws if another record with the same index value already exists.
+    /// Behavior depends on mode:
+    /// - `.immediate`: Throws `UniquenessViolationError` if duplicate exists
+    /// - `.track`: Records violation via `UniquenessViolationTracker` for later resolution
+    /// - `.skip`: Does nothing (for disabled indexes)
+    ///
+    /// - Parameters:
+    ///   - descriptor: Index descriptor
+    ///   - subspace: Index subspace
+    ///   - values: Index values to check
+    ///   - excludingId: Primary key of the record being inserted/updated
+    ///   - persistableType: Type name for violation tracking
+    ///   - mode: How to handle violations
+    ///   - transaction: Current transaction
     private func checkUniqueConstraint(
         descriptor: IndexDescriptor,
         subspace: Subspace,
         values: [any TupleElement],
         excludingId: Tuple,
+        persistableType: String,
+        mode: UniquenessCheckMode,
         transaction: any TransactionProtocol
     ) async throws {
+        // Skip check if mode is skip
+        guard mode != .skip else { return }
+
         // Create value subspace by appending packed values directly to prefix
         // Note: Don't use subspace.subspace(Tuple(values)) as that treats Tuple as a nested tuple element
-        let valueSubspace = Subspace(prefix: subspace.prefix + Tuple(values).pack())
+        let valueKey = Tuple(values).pack()
+        let valueSubspace = Subspace(prefix: subspace.prefix + valueKey)
         let (begin, end) = valueSubspace.range()
 
         let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
@@ -1087,12 +1133,58 @@ internal final class FDBDataStore: DataStore, Sendable {
 
                 if existingBytes != excludingBytes {
                     // Different ID, unique constraint violation
-                    throw FDBIndexError.uniqueConstraintViolation(
-                        indexName: descriptor.name,
-                        values: values.map { String(describing: $0) }
-                    )
+                    switch mode {
+                    case .immediate:
+                        // Throw immediately with detailed error
+                        throw UniquenessViolationError(
+                            indexName: descriptor.name,
+                            persistableType: persistableType,
+                            conflictingValues: values.map { String(describing: $0) },
+                            existingPrimaryKey: existingId,
+                            newPrimaryKey: excludingId
+                        )
+
+                    case .track:
+                        // Record violation for later resolution
+                        try await violationTracker.recordViolation(
+                            indexName: descriptor.name,
+                            persistableType: persistableType,
+                            valueKey: valueKey,
+                            existingPrimaryKey: existingId,
+                            newPrimaryKey: excludingId,
+                            transaction: transaction
+                        )
+                        logger.warning(
+                            "Recorded uniqueness violation (tracking mode)",
+                            metadata: [
+                                "index": "\(descriptor.name)",
+                                "type": "\(persistableType)"
+                            ]
+                        )
+                        // Don't throw - allow operation to continue
+
+                    case .skip:
+                        // Already handled above, but included for completeness
+                        break
+                    }
                 }
             }
+        }
+    }
+
+    /// Determine uniqueness check mode based on index state
+    ///
+    /// - `.readable` indexes: immediate (throw on violation)
+    /// - `.writeOnly` indexes: track (record for later resolution)
+    /// - `.disabled` indexes: skip (no check)
+    private func uniquenessCheckMode(for indexState: IndexState) -> UniquenessCheckMode {
+        switch indexState {
+        case .readable:
+            return .immediate
+        case .writeOnly:
+            return .track
+        case .disabled:
+            return .skip
         }
     }
 
@@ -1347,11 +1439,14 @@ internal final class FDBDataStore: DataStore, Sendable {
                 if !newValues.isEmpty {
                     // Check unique constraint before adding
                     if descriptor.isUnique {
+                        let mode = uniquenessCheckMode(for: state)
                         try await checkUniqueConstraint(
                             descriptor: descriptor,
                             subspace: indexSubspaceForIndex,
                             values: newValues,
                             excludingId: id,
+                            persistableType: modelType.persistableType,
+                            mode: mode,
                             transaction: transaction
                         )
                     }

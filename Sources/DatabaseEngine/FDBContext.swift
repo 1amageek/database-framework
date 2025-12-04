@@ -433,7 +433,7 @@ public final class FDBContext: Sendable {
             let sizeErrorThreshold = 9_500_000   // 9.5MB - error to prevent silent failure
 
             // Execute all operations in a single transaction
-            try await container.withTransaction { transaction in
+            try await container.database.withTransaction { transaction in
                 for typeName in allTypes {
                     let typeInserts = insertsByType[typeName] ?? []
                     let typeDeletes = deletesByType[typeName] ?? []
@@ -519,7 +519,8 @@ public final class FDBContext: Sendable {
         transaction: any TransactionProtocol,
         encoder: ProtobufEncoder
     ) async throws {
-        let persistableType = type(of: model).persistableType
+        let modelType = type(of: model)
+        let persistableType = modelType.persistableType
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
@@ -543,6 +544,55 @@ public final class FDBContext: Sendable {
             store: store,
             transaction: transaction
         )
+
+        // Dual write: If type conforms to Polymorphable and has its own directory,
+        // also save to the polymorphic directory
+        try await saveDualWriteIfNeeded(
+            model: model,
+            data: Array(data),
+            idTuple: idTuple,
+            transaction: transaction
+        )
+    }
+
+    /// Save to polymorphic directory if dual-write is needed
+    ///
+    /// Dual-write occurs when:
+    /// 1. The type conforms to a Polymorphable protocol
+    /// 2. The type has its own #Directory (different from the protocol's directory)
+    private func saveDualWriteIfNeeded(
+        model: any Persistable,
+        data: [UInt8],
+        idTuple: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let modelType = type(of: model)
+
+        // Check if type conforms to Polymorphable
+        guard let polymorphicType = modelType as? any Polymorphable.Type else {
+            return
+        }
+
+        // Check if the type has its own directory (different from polymorphic shared directory)
+        let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
+        let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+
+        guard typeDirectory != polyDirectory else {
+            // Same directory, no dual-write needed
+            return
+        }
+
+        // Resolve polymorphic directory and save
+        let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+        let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+
+        // Get typeCode for this type
+        let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
+        let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+        let polyKey = typeCodeSubspace.pack(idTuple)
+
+        // Save to polymorphic directory
+        transaction.setValue(data, for: polyKey)
     }
 
     /// Delete a single model using the provided store and transaction
@@ -551,7 +601,8 @@ public final class FDBContext: Sendable {
         store: FDBDataStore,
         transaction: any TransactionProtocol
     ) async throws {
-        let persistableType = type(of: model).persistableType
+        let modelType = type(of: model)
+        let persistableType = modelType.persistableType
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
@@ -570,6 +621,53 @@ public final class FDBContext: Sendable {
 
         // Delete the record
         transaction.clear(key: key)
+
+        // Dual delete: If type conforms to Polymorphable and has its own directory,
+        // also delete from the polymorphic directory
+        try await deleteDualWriteIfNeeded(
+            model: model,
+            idTuple: idTuple,
+            transaction: transaction
+        )
+    }
+
+    /// Delete from polymorphic directory if dual-write was used
+    ///
+    /// Dual-delete occurs when:
+    /// 1. The type conforms to a Polymorphable protocol
+    /// 2. The type has its own #Directory (different from the protocol's directory)
+    private func deleteDualWriteIfNeeded(
+        model: any Persistable,
+        idTuple: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let modelType = type(of: model)
+
+        // Check if type conforms to Polymorphable
+        guard let polymorphicType = modelType as? any Polymorphable.Type else {
+            return
+        }
+
+        // Check if the type has its own directory (different from polymorphic shared directory)
+        let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
+        let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+
+        guard typeDirectory != polyDirectory else {
+            // Same directory, no dual-delete needed
+            return
+        }
+
+        // Resolve polymorphic directory and delete
+        let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+        let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+
+        // Get typeCode for this type
+        let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
+        let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+        let polyKey = typeCodeSubspace.pack(idTuple)
+
+        // Delete from polymorphic directory
+        transaction.clear(key: polyKey)
     }
 
     /// Validate ID is a TupleElement
@@ -836,7 +934,11 @@ extension FDBContext {
     ) async throws -> T {
         let runner = TransactionRunner(database: container.database)
 
-        return try await runner.run(configuration: configuration) { transaction in
+        // Pass readVersionCache for weak read semantics support
+        return try await runner.run(
+            configuration: configuration,
+            readVersionCache: container.readVersionCache
+        ) { transaction in
             let context = TransactionContext(
                 transaction: transaction,
                 container: self.container
@@ -863,3 +965,453 @@ extension FDBContext: CustomStringConvertible {
         """
     }
 }
+
+// MARK: - Uniqueness Violation API
+
+extension FDBContext {
+    /// Scan uniqueness violations for an index
+    ///
+    /// Returns all violations for the specified index on the given Persistable type.
+    /// Use this after online indexing completes to review any uniqueness violations
+    /// that were tracked during the build process.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let violations = try await context.scanUniquenessViolations(
+    ///     for: User.self,
+    ///     indexName: "email_idx"
+    /// )
+    /// for violation in violations {
+    ///     print("Duplicate value: \(violation.valueDescription)")
+    ///     print("Conflicting records: \(violation.primaryKeys.count)")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type to scan
+    ///   - indexName: Name of the index to scan for violations
+    ///   - limit: Maximum number of violations to return (nil = all)
+    /// - Returns: Array of uniqueness violations
+    public func scanUniquenessViolations<T: Persistable>(
+        for type: T.Type,
+        indexName: String,
+        limit: Int? = nil
+    ) async throws -> [UniquenessViolation] {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+        return try await fdbStore.violationTracker.scanViolations(
+            indexName: indexName,
+            limit: limit
+        )
+    }
+
+    /// Check if an index has any uniqueness violations
+    ///
+    /// Fast check without loading all violations.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// if try await context.hasUniquenessViolations(for: User.self, indexName: "email_idx") {
+    ///     print("Index has violations - review before making readable")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - indexName: Name of the index to check
+    /// - Returns: True if violations exist
+    public func hasUniquenessViolations<T: Persistable>(
+        for type: T.Type,
+        indexName: String
+    ) async throws -> Bool {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+        return try await fdbStore.violationTracker.hasViolations(indexName: indexName)
+    }
+
+    /// Get a summary of uniqueness violations for an index
+    ///
+    /// Returns violation count and total conflicting records without loading
+    /// all violation details.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let summary = try await context.uniquenessViolationSummary(
+    ///     for: User.self,
+    ///     indexName: "email_idx"
+    /// )
+    /// if summary.hasViolations {
+    ///     print("\(summary.violationCount) duplicate values")
+    ///     print("\(summary.totalConflictingRecords) total conflicting records")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - indexName: Name of the index
+    /// - Returns: Violation summary
+    public func uniquenessViolationSummary<T: Persistable>(
+        for type: T.Type,
+        indexName: String
+    ) async throws -> ViolationSummary {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+        return try await fdbStore.violationTracker.violationSummary(indexName: indexName)
+    }
+
+    /// Clear a resolved uniqueness violation
+    ///
+    /// Call this after confirming the violation has been resolved by
+    /// deleting or updating the duplicate records.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // After resolving a violation
+    /// try await context.clearUniquenessViolation(
+    ///     for: User.self,
+    ///     indexName: "email_idx",
+    ///     valueKey: violation.valueKey
+    /// )
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - indexName: Name of the index
+    ///   - valueKey: The duplicate value key to clear
+    public func clearUniquenessViolation<T: Persistable>(
+        for type: T.Type,
+        indexName: String,
+        valueKey: [UInt8]
+    ) async throws {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+        try await fdbStore.violationTracker.clearViolation(
+            indexName: indexName,
+            valueKey: valueKey
+        )
+    }
+
+    /// Clear all uniqueness violations for an index
+    ///
+    /// Use after all violations have been resolved or when resetting the index.
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - indexName: Name of the index
+    public func clearAllUniquenessViolations<T: Persistable>(
+        for type: T.Type,
+        indexName: String
+    ) async throws {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+        try await fdbStore.violationTracker.clearAllViolations(indexName: indexName)
+    }
+
+    /// Verify if a uniqueness violation has been resolved
+    ///
+    /// Checks the actual index to see if duplicate entries still exist.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let resolution = try await context.verifyUniquenessViolationResolution(
+    ///     for: User.self,
+    ///     indexName: "email_idx",
+    ///     valueKey: violation.valueKey
+    /// )
+    /// switch resolution {
+    /// case .resolved:
+    ///     try await context.clearUniquenessViolation(...)
+    /// case .unresolved(let updatedViolation):
+    ///     print("Still has \(updatedViolation.primaryKeys.count) duplicates")
+    /// case .notFound:
+    ///     print("Violation was already cleared")
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - indexName: Name of the index
+    ///   - valueKey: The duplicate value key to verify
+    /// - Returns: Resolution status
+    public func verifyUniquenessViolationResolution<T: Persistable>(
+        for type: T.Type,
+        indexName: String,
+        valueKey: [UInt8]
+    ) async throws -> ViolationResolution {
+        let store = try await container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
+        }
+
+        let indexSubspace = fdbStore.indexSubspace.subspace(indexName)
+        return try await fdbStore.violationTracker.verifyResolution(
+            indexName: indexName,
+            valueKey: valueKey,
+            indexSubspace: indexSubspace
+        )
+    }
+}
+
+// MARK: - Polymorphic Fetch API
+
+extension FDBContext {
+    /// Create a polymorphic fetch builder for querying multiple types via a shared protocol
+    ///
+    /// Enables querying all concrete types that conform to a `@Polymorphable` protocol.
+    /// Types are automatically discovered from the Schema.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Define polymorphic protocol
+    /// @Polymorphable
+    /// protocol Document {
+    ///     var id: String { get }
+    ///     var title: String { get }
+    ///     #Directory<Document>("app", "documents")
+    /// }
+    ///
+    /// // Conforming types are automatically discovered from Schema
+    /// let schema = Schema([Article.self, Report.self, User.self])
+    ///
+    /// // Fetch all documents
+    /// let docs = try await context.fetchPolymorphic(Document.self)
+    ///
+    /// for doc in docs {
+    ///     switch doc {
+    ///     case let article as Article:
+    ///         print("Article: \(article.content)")
+    ///     case let report as Report:
+    ///         print("Report: \(report.data.count) bytes")
+    ///     default:
+    ///         print("Unknown type")
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Parameter protocolType: The Polymorphable protocol to query
+    /// - Returns: Array of all items conforming to the protocol
+    /// - Throws: Error if no types are found or if fetch fails
+    public func fetchPolymorphic<P: Polymorphable>(_ protocolType: P.Type) async throws -> [any Persistable] {
+        // Find entities that conform to this polymorphic protocol
+        let conformingEntities = container.schema.entities.filter { entity in
+            guard let polyType = entity.persistableType as? any Polymorphable.Type else { return false }
+            return polyType.polymorphableType == P.polymorphableType
+        }
+
+        guard !conformingEntities.isEmpty else {
+            throw FDBRuntimeError.internalError(
+                "No types found in Schema for polymorphic protocol '\(P.polymorphableType)'. " +
+                "Ensure conforming types are included in Schema initialization."
+            )
+        }
+
+        // Resolve polymorphic directory
+        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+
+        var results: [any Persistable] = []
+
+        try await container.database.withTransaction { transaction in
+            // Scan all type codes for this protocol
+            for entity in conformingEntities {
+                guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
+                let typeCode = polyType.typeCode(for: entity.name)
+                let codableType = entity.persistableType
+
+                let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let (begin, end) = typeSubspace.range()
+
+                let sequence = transaction.getRange(
+                    from: begin,
+                    to: end,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+
+                for try await (_, value) in sequence {
+                    // Deserialize using the concrete type
+                    let item = try self.deserializePolymorphic(
+                        bytes: Array(value),
+                        as: codableType
+                    )
+                    results.append(item)
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Fetch a specific polymorphic item by ID
+    ///
+    /// Searches all types in the Schema that conform to the protocol to find an item with the specified ID.
+    ///
+    /// - Parameters:
+    ///   - protocolType: The Polymorphable protocol
+    ///   - id: The ID to search for
+    /// - Returns: The item if found, nil otherwise
+    public func fetchPolymorphic<P: Polymorphable>(
+        _ protocolType: P.Type,
+        id: String
+    ) async throws -> (any Persistable)? {
+        // Find entities that conform to this polymorphic protocol
+        let conformingEntities = container.schema.entities.filter { entity in
+            guard let polyType = entity.persistableType as? any Polymorphable.Type else { return false }
+            return polyType.polymorphableType == P.polymorphableType
+        }
+
+        guard !conformingEntities.isEmpty else {
+            return nil
+        }
+
+        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let idTuple = Tuple([id])
+
+        // Search all type subspaces for this ID
+        return try await container.database.withTransaction { transaction in
+            for entity in conformingEntities {
+                guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
+                let typeCode = polyType.typeCode(for: entity.name)
+                let codableType = entity.persistableType
+
+                let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let key = typeSubspace.pack(idTuple)
+
+                if let value = try await transaction.getValue(for: key, snapshot: true) {
+                    let item = try self.deserializePolymorphic(
+                        bytes: Array(value),
+                        as: codableType
+                    )
+                    return item
+                }
+            }
+            return nil
+        }
+    }
+
+    /// Deserialize bytes into a concrete Persistable type
+    private func deserializePolymorphic(
+        bytes: [UInt8],
+        as type: any Persistable.Type
+    ) throws -> any Persistable {
+        // Persistable types are always Codable (via @Persistable macro)
+        // The type system sees `any Persistable.Type` as `any (Persistable & Codable).Type`
+        try DataAccess.deserializeAny(bytes, as: type)
+    }
+
+    // MARK: - Polymorphic Save/Delete
+
+    /// Save a polymorphic item to the shared directory
+    ///
+    /// Saves the item to the polymorphic protocol's directory with the correct type code prefix.
+    /// The type must be included in the Schema and conform to the Polymorphable protocol.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let article = Article(title: "Hello", content: "World")
+    /// try await context.savePolymorphic(article, as: Document.self)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - item: The item to save
+    ///   - protocolType: The Polymorphable protocol it conforms to
+    /// - Throws: Error if type is not in Schema or save fails
+    public func savePolymorphic<T: Persistable & Codable, P: Polymorphable>(
+        _ item: T,
+        as protocolType: P.Type
+    ) async throws {
+        let typeName = T.persistableType
+
+        // Verify type is in Schema
+        guard container.schema.entity(for: T.self) != nil else {
+            throw FDBRuntimeError.internalError(
+                "Type '\(typeName)' is not found in Schema. " +
+                "Ensure '\(typeName)' is included in Schema initialization."
+            )
+        }
+
+        // Get typeCode from the type directly
+        guard let polyType = T.self as? any Polymorphable.Type else {
+            throw FDBRuntimeError.internalError(
+                "Type '\(typeName)' does not conform to Polymorphable. " +
+                "Ensure '\(typeName)' conforms to '\(P.polymorphableType)'."
+            )
+        }
+        let typeCode = polyType.typeCode(for: typeName)
+
+        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+
+        let validatedID = try item.validateIDForStorage()
+        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+        let key = typeSubspace.pack(idTuple)
+
+        let data = try DataAccess.serialize(item)
+
+        try await container.database.withTransaction { transaction in
+            transaction.setValue(data, for: key)
+        }
+    }
+
+    /// Delete a polymorphic item from the shared directory
+    ///
+    /// Deletes the item from the polymorphic protocol's directory.
+    /// The type must be included in the Schema and conform to the Polymorphable protocol.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// try await context.deletePolymorphic(Article.self, id: articleId, as: Document.self)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The concrete type of the item
+    ///   - id: The ID of the item to delete
+    ///   - protocolType: The Polymorphable protocol it conforms to
+    /// - Throws: Error if type is not in Schema or delete fails
+    public func deletePolymorphic<T: Persistable, P: Polymorphable>(
+        _ type: T.Type,
+        id: String,
+        as protocolType: P.Type
+    ) async throws {
+        let typeName = T.persistableType
+
+        // Verify type is in Schema
+        guard container.schema.entity(for: T.self) != nil else {
+            throw FDBRuntimeError.internalError(
+                "Type '\(typeName)' is not found in Schema."
+            )
+        }
+
+        // Get typeCode from the type directly
+        guard let polyType = T.self as? any Polymorphable.Type else {
+            throw FDBRuntimeError.internalError(
+                "Type '\(typeName)' does not conform to Polymorphable."
+            )
+        }
+        let typeCode = polyType.typeCode(for: typeName)
+
+        let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+
+        let idTuple = Tuple([id])
+        let key = typeSubspace.pack(idTuple)
+
+        try await container.database.withTransaction { transaction in
+            transaction.clear(key: key)
+        }
+    }
+}
+

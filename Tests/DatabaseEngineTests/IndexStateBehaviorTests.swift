@@ -223,15 +223,15 @@ struct IndexStateBehaviorTests {
         }
     }
 
-    @Test("WriteOnly index should enforce unique constraint")
-    func testWriteOnlyIndexEnforcesUniqueConstraint() async throws {
+    @Test("WriteOnly index should track unique constraint violations (not throw)")
+    func testWriteOnlyIndexTracksUniqueConstraintViolations() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
             let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Enable index
+            // Enable index (puts it in writeOnly state)
             try await indexStateManager.enable(indexName)
 
             // Create data store
@@ -245,10 +245,47 @@ struct IndexStateBehaviorTests {
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
             try await dataStore.save([user1])
 
-            // Insert second user with same email - should throw
+            // Insert second user with same email
+            // In writeOnly mode, this should NOT throw but track the violation
+            let user2 = IndexedUser(id: "user2", email: "unique@example.com", name: "User 2")
+            try await dataStore.save([user2])
+
+            // Both users should be saved (writeOnly mode tracks violations, doesn't throw)
+            // This is the intended behavior for online indexing where we need to
+            // continue building the index and resolve violations later
+
+            // Cleanup
+            try await ctx.cleanup()
+        }
+    }
+
+    @Test("Readable index should enforce unique constraint by throwing")
+    func testReadableIndexEnforcesUniqueConstraint() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let ctx = try TestContext()
+
+            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexName = "IndexedUser_email"
+
+            // Enable and make readable
+            try await indexStateManager.enable(indexName)
+            try await indexStateManager.makeReadable(indexName)
+
+            // Create data store
+            let schema = Schema(
+                entities: [Schema.Entity(from: IndexedUser.self)],
+                version: Schema.Version(1, 0, 0)
+            )
+            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+
+            // Insert first user
+            let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
+            try await dataStore.save([user1])
+
+            // Insert second user with same email - should throw in readable mode
             let user2 = IndexedUser(id: "user2", email: "unique@example.com", name: "User 2")
 
-            await #expect(throws: FDBIndexError.self) {
+            await #expect(throws: UniquenessViolationError.self) {
                 try await dataStore.save([user2])
             }
 

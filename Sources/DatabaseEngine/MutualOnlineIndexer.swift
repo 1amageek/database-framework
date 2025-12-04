@@ -246,8 +246,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
-                    try TransactionConfiguration.batch.apply(to: transaction)
+                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -353,18 +352,18 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(forwardRange.begin),
-                endSelector: .firstGreaterOrEqual(forwardRange.end),
-                snapshot: true
-            )
-
-            var count = 0
             let sampleLimit = 1000  // Sample check limit
 
+            // Use limit to control server-side prefetch instead of break
+            let sequence = transaction.getRange(
+                from: .firstGreaterOrEqual(forwardRange.begin),
+                to: .firstGreaterOrEqual(forwardRange.end),
+                limit: sampleLimit,
+                snapshot: true,
+                streamingMode: .iterator
+            )
+
             for try await (key, _) in sequence {
-                guard count < sampleLimit else { break }
-                count += 1
 
                 // Parse forward key to extract relationship
                 let forwardTuple = try forwardSubspace.unpack(key)
@@ -398,8 +397,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -413,8 +411,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: forwardProgressKey)
             transaction.clear(key: reverseProgressKey)
         }
@@ -423,8 +420,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
@@ -536,10 +532,12 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         let prefixSubspace = indexSpace.subspace(Tuple(entityId))
         let range1 = prefixSubspace.range()
 
+        // Use .wantAll for read-only queries that need all results
         let seq1 = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range1.begin),
-            endSelector: .firstGreaterOrEqual(range1.end),
-            snapshot: true
+            from: .firstGreaterOrEqual(range1.begin),
+            to: .firstGreaterOrEqual(range1.end),
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for try await (key, _) in seq1 {
@@ -553,9 +551,10 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         // In a real implementation, we might maintain a secondary index
         let fullRange = indexSpace.range()
         let seq2 = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(fullRange.begin),
-            endSelector: .firstGreaterOrEqual(fullRange.end),
-            snapshot: true
+            from: .firstGreaterOrEqual(fullRange.begin),
+            to: .firstGreaterOrEqual(fullRange.end),
+            snapshot: true,
+            streamingMode: .wantAll
         )
 
         for try await (key, _) in seq2 {

@@ -215,8 +215,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
-                    try TransactionConfiguration.batch.apply(to: transaction)
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
@@ -299,8 +298,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -314,8 +312,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }

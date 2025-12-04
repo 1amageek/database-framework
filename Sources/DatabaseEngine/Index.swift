@@ -54,6 +54,15 @@ public struct Index: @unchecked Sendable {
     /// Compatible with Persistable types across all layers (record-layer, graph-layer, document-layer).
     public let itemTypes: Set<String>?
 
+    /// Whether this index enforces uniqueness constraint
+    ///
+    /// When true, duplicate index values are not allowed. During online indexing,
+    /// violations are tracked instead of immediately rejected, allowing the build
+    /// to complete and violations to be reviewed afterward.
+    ///
+    /// **Reference**: FDB Record Layer unique index constraint
+    public let isUnique: Bool
+
     // MARK: - Initialization
 
     /// Initialize an index with KeyExpression only (legacy compatibility)
@@ -64,12 +73,14 @@ public struct Index: @unchecked Sendable {
     ///   - rootExpression: Expression defining indexed fields
     ///   - subspaceKey: Optional subspace key (defaults to name)
     ///   - itemTypes: Optional set of item type names this index applies to (nil = universal)
+    ///   - isUnique: Whether this index enforces uniqueness (default: false)
     public init(
         name: String,
         kind: any IndexKind,
         rootExpression: KeyExpression,
         subspaceKey: String? = nil,
-        itemTypes: Set<String>? = nil
+        itemTypes: Set<String>? = nil,
+        isUnique: Bool = false
     ) {
         self.name = name
         self.kind = kind
@@ -77,6 +88,7 @@ public struct Index: @unchecked Sendable {
         self.keyPaths = nil
         self.subspaceKey = subspaceKey ?? name
         self.itemTypes = itemTypes
+        self.isUnique = isUnique
     }
 
     /// Initialize an index with both KeyExpression and KeyPaths (optimized)
@@ -91,13 +103,15 @@ public struct Index: @unchecked Sendable {
     ///   - keyPaths: Original KeyPaths for direct extraction
     ///   - subspaceKey: Optional subspace key (defaults to name)
     ///   - itemTypes: Optional set of item type names this index applies to (nil = universal)
+    ///   - isUnique: Whether this index enforces uniqueness (default: false)
     public init(
         name: String,
         kind: any IndexKind,
         rootExpression: KeyExpression,
         keyPaths: [AnyKeyPath],
         subspaceKey: String? = nil,
-        itemTypes: Set<String>? = nil
+        itemTypes: Set<String>? = nil,
+        isUnique: Bool = false
     ) {
         self.name = name
         self.kind = kind
@@ -105,5 +119,6 @@ public struct Index: @unchecked Sendable {
         self.keyPaths = keyPaths
         self.subspaceKey = subspaceKey ?? name
         self.itemTypes = itemTypes
+        self.isUnique = isUnique
     }
 }

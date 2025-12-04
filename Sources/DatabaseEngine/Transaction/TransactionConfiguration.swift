@@ -132,6 +132,18 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// **Reference**: FDB `readServerSideCacheDisable` option (code 508)
     public let disableReadCache: Bool
 
+    /// Weak read semantics configuration
+    ///
+    /// When set, allows transactions to reuse cached read versions,
+    /// reducing `getReadVersion()` network round-trips.
+    ///
+    /// - `nil`: Strict consistency (always get fresh read version)
+    /// - `.default`: Up to 5 second staleness
+    /// - `.relaxed`: Up to 30 second staleness
+    ///
+    /// **Reference**: FDB Record Layer `WeakReadSemantics`
+    public let weakReadSemantics: WeakReadSemantics?
+
     // MARK: - Initialization
 
     /// Create a custom transaction configuration
@@ -149,13 +161,15 @@ public struct TransactionConfiguration: Sendable, Hashable {
     ///   - priority: Transaction priority (default: .default)
     ///   - readPriority: Read operation priority (default: .normal)
     ///   - disableReadCache: Whether to disable server-side read caching (default: false)
+    ///   - weakReadSemantics: Weak read semantics (default: nil = strict consistency)
     public init(
         timeout: Int? = DatabaseConfiguration.shared.transactionTimeout,
         retryLimit: Int = DatabaseConfiguration.shared.transactionRetryLimit,
         maxRetryDelay: Int = DatabaseConfiguration.shared.transactionMaxRetryDelay,
         priority: TransactionPriority = .default,
         readPriority: ReadPriority = .normal,
-        disableReadCache: Bool = false
+        disableReadCache: Bool = false,
+        weakReadSemantics: WeakReadSemantics? = nil
     ) {
         self.timeout = timeout
         self.retryLimit = retryLimit
@@ -163,6 +177,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
         self.priority = priority
         self.readPriority = readPriority
         self.disableReadCache = disableReadCache
+        self.weakReadSemantics = weakReadSemantics
     }
 
     // MARK: - Presets
@@ -180,13 +195,15 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Batch priority (lower than interactive)
     /// - Low read priority
     /// - Server-side cache disabled (to avoid cache pollution)
+    /// - Relaxed weak read semantics (up to 30 second staleness)
     public static let batch = TransactionConfiguration(
         timeout: 30_000,
         retryLimit: 20,
         maxRetryDelay: 2000,
         priority: .batch,
         readPriority: .low,
-        disableReadCache: true
+        disableReadCache: true,
+        weakReadSemantics: .relaxed
     )
 
     /// System/administrative configuration
@@ -220,12 +237,14 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Extended timeout (60 seconds)
     /// - Many retries (50)
     /// - Batch priority
+    /// - Very relaxed weak read semantics (up to 60 second staleness)
     public static let longRunning = TransactionConfiguration(
         timeout: 60_000,
         retryLimit: 50,
         maxRetryDelay: 5000,
         priority: .batch,
-        readPriority: .low
+        readPriority: .low,
+        weakReadSemantics: .veryRelaxed
     )
 }
 
@@ -234,14 +253,19 @@ public struct TransactionConfiguration: Sendable, Hashable {
 extension TransactionConfiguration {
     /// Apply this configuration to a raw transaction
     ///
-    /// Use this method when working with low-level `DatabaseProtocol.withTransaction`
-    /// for batch operations that need direct transaction access.
+    /// **Preferred**: Use `database.withTransaction(configuration:)` instead, which
+    /// automatically applies the configuration:
+    /// ```swift
+    /// try await database.withTransaction(configuration: .batch) { transaction in
+    ///     // ... batch operations
+    /// }
+    /// ```
     ///
-    /// **Usage**:
+    /// **Direct Usage** (when you need manual control):
     /// ```swift
     /// try await database.withTransaction { transaction in
     ///     try TransactionConfiguration.batch.apply(to: transaction)
-    ///     // ... batch operations
+    ///     // ... operations
     /// }
     /// ```
     ///
@@ -310,6 +334,9 @@ extension TransactionConfiguration: CustomStringConvertible {
         }
         if disableReadCache {
             parts.append("disableReadCache: true")
+        }
+        if let semantics = weakReadSemantics {
+            parts.append("weakReadSemantics: \(semantics)")
         }
 
         if parts.isEmpty {

@@ -77,6 +77,10 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     // Progress tracking
     private let progressKey: FDB.Bytes
 
+    // Uniqueness enforcement
+    private let metadataSubspace: Subspace
+    private let violationTracker: UniquenessViolationTracker
+
     // MARK: - Metrics
 
     /// Counter for items indexed
@@ -131,6 +135,15 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             .subspace("_progress")
             .pack(Tuple(index.name))
 
+        // Metadata and violation tracking for unique indexes
+        // Derive metadata subspace from itemSubspace parent (assumes [store]/R/ structure)
+        // Violations stored in [store]/M/_violations/[indexName]/
+        self.metadataSubspace = itemSubspace.subspace(SubspaceKey.metadata)
+        self.violationTracker = UniquenessViolationTracker(
+            database: database,
+            metadataSubspace: metadataSubspace
+        )
+
         // Initialize metrics with index-specific dimensions
         let baseDimensions: [(String, String)] = [
             ("index", index.name),
@@ -167,18 +180,30 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// 2. Check for custom build strategy
     ///    - If present: delegate to strategy
     ///    - If absent: use standard scan-based build
-    /// 3. Transition to readable state
+    /// 3. For unique indexes: check for violations
+    /// 4. Transition to readable state (if no violations)
+    ///
+    /// **Uniqueness Enforcement**:
+    /// For unique indexes (`index.isUnique == true`), violations detected during
+    /// the build are tracked instead of immediately rejected. After the build
+    /// completes, this method checks for violations. If any exist, an error
+    /// is thrown and the index remains in write-only state.
     ///
     /// **Resumability**:
     /// - Standard build: Resumes from last completed batch (via RangeSet)
     /// - Custom build: Resumability depends on strategy implementation
     ///
     /// - Parameter clearFirst: If true, clears existing index data before building
+    /// - Throws: `OnlineIndexerError.uniquenessViolationsDetected` if unique index has violations
     /// - Throws: Error if build fails
     public func buildIndex(clearFirst: Bool = false) async throws {
         // Clear existing data if requested
         if clearFirst {
             try await clearIndexData()
+            // Also clear any existing violation records for this index
+            if index.isUnique {
+                try await violationTracker.clearAllViolations(indexName: index.name)
+            }
         }
 
         // Check if IndexMaintainer provides custom build strategy
@@ -194,6 +219,19 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         } else {
             // Standard scan-based build
             try await buildIndexInBatches()
+        }
+
+        // For unique indexes, check for violations before making readable
+        if index.isUnique {
+            let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+            if hasViolations {
+                let summary = try await violationTracker.violationSummary(indexName: index.name)
+                throw OnlineIndexerError.uniquenessViolationsDetected(
+                    indexName: index.name,
+                    violationCount: summary.violationCount,
+                    totalConflictingRecords: summary.totalConflictingRecords
+                )
+            }
         }
 
         // Transition to readable state
@@ -241,8 +279,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
-                    try TransactionConfiguration.batch.apply(to: transaction)
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
 
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -335,8 +372,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
-        return try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -364,8 +400,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// Called after successful completion
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -377,8 +412,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Removes all entries in the index subspace for this index.
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(
                 beginKey: indexRange.begin,
@@ -429,6 +463,10 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         if clearFirst {
             try await clearIndexData()
             try await progress.clearProgress()
+            // Also clear any existing violation records for this index
+            if index.isUnique {
+                try await violationTracker.clearAllViolations(indexName: index.name)
+            }
         }
 
         // Get item type subspace
@@ -447,6 +485,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // If no split points or only one range, fall back to standard build
         guard splitPoints.count > 1 else {
             try await buildIndexInBatches()
+            // Check for violations before making readable (for unique indexes)
+            if index.isUnique {
+                let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+                if hasViolations {
+                    let summary = try await violationTracker.violationSummary(indexName: index.name)
+                    throw OnlineIndexerError.uniquenessViolationsDetected(
+                        indexName: index.name,
+                        violationCount: summary.violationCount,
+                        totalConflictingRecords: summary.totalConflictingRecords
+                    )
+                }
+            }
             try await indexStateManager.makeReadable(index.name)
             return
         }
@@ -487,6 +537,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // If all chunks are complete, just transition state
         guard !chunksToProcess.isEmpty else {
             try await progress.clearProgress()
+            // Check for violations before making readable (for unique indexes)
+            if index.isUnique {
+                let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+                if hasViolations {
+                    let summary = try await violationTracker.violationSummary(indexName: index.name)
+                    throw OnlineIndexerError.uniquenessViolationsDetected(
+                        indexName: index.name,
+                        violationCount: summary.violationCount,
+                        totalConflictingRecords: summary.totalConflictingRecords
+                    )
+                }
+            }
             try await indexStateManager.makeReadable(index.name)
             return
         }
@@ -534,6 +596,19 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // Clear progress data on successful completion
         try await progress.clearProgress()
 
+        // For unique indexes, check for violations before making readable
+        if index.isUnique {
+            let hasViolations = try await violationTracker.hasViolations(indexName: index.name)
+            if hasViolations {
+                let summary = try await violationTracker.violationSummary(indexName: index.name)
+                throw OnlineIndexerError.uniquenessViolationsDetected(
+                    indexName: index.name,
+                    violationCount: summary.violationCount,
+                    totalConflictingRecords: summary.totalConflictingRecords
+                )
+            }
+        }
+
         // Transition to readable state
         try await indexStateManager.makeReadable(index.name)
     }
@@ -566,9 +641,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction { transaction in
-                try TransactionConfiguration.batch.apply(to: transaction)
-
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -658,9 +731,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         while true {
             let currentLastKey = lastKey
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction { transaction in
-                try TransactionConfiguration.batch.apply(to: transaction)
-
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -813,8 +884,7 @@ internal final class ParallelBuildProgress: Sendable {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
 
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(value, for: key)
         }
     }
@@ -843,8 +913,7 @@ internal final class ParallelBuildProgress: Sendable {
     func clearProgress() async throws {
         let (begin, end) = progressSubspace.range()
 
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: begin, endKey: end)
         }
     }
@@ -890,6 +959,44 @@ internal final class ParallelBuildProgress: Sendable {
             return ChunkProgress(status: status, lastProcessedKey: lastKey)
         } catch {
             return nil
+        }
+    }
+}
+
+// MARK: - OnlineIndexerError
+
+/// Errors that can occur during online index building
+public enum OnlineIndexerError: Error, CustomStringConvertible {
+    /// Uniqueness violations were detected during index build
+    ///
+    /// The index was built but cannot be made readable because
+    /// duplicate values exist. Review violations using
+    /// `context.scanUniquenessViolations(for:indexName:)`.
+    ///
+    /// **Recovery**:
+    /// 1. Scan violations to identify duplicates
+    /// 2. Resolve duplicates (delete or update records)
+    /// 3. Re-run the index build
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the affected index
+    ///   - violationCount: Number of distinct duplicate values
+    ///   - totalConflictingRecords: Total records with duplicates
+    case uniquenessViolationsDetected(
+        indexName: String,
+        violationCount: Int,
+        totalConflictingRecords: Int
+    )
+
+    public var description: String {
+        switch self {
+        case .uniquenessViolationsDetected(let indexName, let violationCount, let totalRecords):
+            return """
+            Unique index '\(indexName)' has violations: \
+            \(violationCount) duplicate value(s) affecting \(totalRecords) record(s). \
+            Index remains in write-only state. \
+            Use scanUniquenessViolations() to review and resolve duplicates.
+            """
         }
     }
 }

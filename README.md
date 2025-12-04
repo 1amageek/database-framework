@@ -10,6 +10,7 @@ Database provides:
 - **FDBContext**: Change tracking and batch operations
 - **Index Maintainers**: Concrete implementations for all index types
 - **Migration System**: Schema versioning and online index building
+- **Polymorphable**: Union type support with shared directories and polymorphic queries
 - **Infrastructure**: Query optimization, transaction management, serialization, batch operations
 
 ## Two-Package Architecture
@@ -456,6 +457,82 @@ let container = try FDBContainer(
         )
     ]
 )
+```
+
+## Polymorphable (Union Types)
+
+Polymorphable enables multiple `Persistable` types to share a directory and indexes, allowing polymorphic queries across different concrete types.
+
+### Defining Polymorphic Types
+
+```swift
+// In database-kit: Define a polymorphic protocol
+@Polymorphable
+protocol Document: Polymorphable {
+    var id: String { get }
+    var title: String { get }
+
+    #Directory<Document>("app", "documents")
+}
+
+// Conforming types
+@Persistable
+struct Article: Document {
+    var id: String = ULID().ulidString
+    var title: String
+    var content: String
+
+    #Directory<Article>("app", "articles")  // Enables dual-write
+}
+
+@Persistable
+struct Report: Document {
+    var id: String = ULID().ulidString
+    var title: String
+    var data: Data
+    // Uses default directory (persistableType)
+}
+```
+
+### Dual-Write Behavior
+
+When a type conforms to `Polymorphable` AND has its own `#Directory`:
+- **Save**: Data written to both type-specific AND polymorphic directories
+- **Delete**: Data removed from both directories
+
+### Polymorphic Queries
+
+```swift
+let schema = Schema([Article.self, Report.self])
+let container = try FDBContainer(for: schema)
+let context = container.newContext()
+
+// Save items (automatic dual-write for Article)
+let article = Article(title: "Hello", content: "World")
+let report = Report(title: "Q4 Report", data: Data())
+context.insert(article)
+context.insert(report)
+try await context.save()
+
+// Fetch all documents (returns [any Persistable])
+let allDocuments = try await context.fetchPolymorphic(Article.self)
+// Returns both Article and Report instances
+
+// Fetch by ID from polymorphic directory
+let doc = try await context.fetchPolymorphic(Article.self, id: someId)
+```
+
+### Swift Type System Note
+
+Due to Swift's type system limitations, protocol types cannot be passed to generic functions:
+
+```swift
+// ❌ Compile error
+try await context.fetchPolymorphic(Document.self)
+
+// ✅ Use any conforming concrete type
+try await context.fetchPolymorphic(Article.self)
+// All conforming types share the same polymorphic directory
 ```
 
 ## Migration System

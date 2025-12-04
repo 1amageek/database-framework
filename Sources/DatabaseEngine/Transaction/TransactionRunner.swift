@@ -14,8 +14,16 @@ import FoundationDB
 /// TransactionRunner handles:
 /// - Creating new transactions for each retry attempt
 /// - Applying TransactionConfiguration options
+/// - Applying cached read versions (weak read semantics)
 /// - Retrying on retryable FDB errors with exponential backoff
 /// - Respecting retry limits from configuration
+///
+/// **Weak Read Semantics**:
+/// When `TransactionConfiguration.weakReadSemantics` is set and a `ReadVersionCache`
+/// is provided, the runner will attempt to use a cached read version on the first
+/// attempt. This reduces `getReadVersion()` network round-trips.
+/// - Only applied on first attempt (retry uses fresh version)
+/// - Cache is updated after successful commit
 ///
 /// **Backoff Algorithm**:
 /// - Initial delay: Configurable via `DatabaseConfiguration.shared.transactionInitialDelay` (default: 300ms)
@@ -25,7 +33,7 @@ import FoundationDB
 ///
 /// **Environment Variable**: `DATABASE_TRANSACTION_INITIAL_DELAY` to configure initial delay
 ///
-/// **Reference**: FDB client retry loop pattern, AWS exponential backoff
+/// **Reference**: FDB client retry loop pattern, AWS exponential backoff, FDB Record Layer WeakReadSemantics
 internal struct TransactionRunner: Sendable {
     // MARK: - Properties
 
@@ -51,12 +59,14 @@ internal struct TransactionRunner: Sendable {
     /// Execute a transaction with the given configuration
     ///
     /// - Parameters:
-    ///   - configuration: Transaction configuration (timeout, retry, priority)
+    ///   - configuration: Transaction configuration (timeout, retry, priority, weak read semantics)
+    ///   - readVersionCache: Optional cache for weak read semantics
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: FDBError if the transaction cannot be committed after retries
     func run<T: Sendable>(
         configuration: TransactionConfiguration,
+        readVersionCache: ReadVersionCache? = nil,
         operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
         let maxRetries = max(1, configuration.retryLimit)
@@ -69,13 +79,28 @@ internal struct TransactionRunner: Sendable {
             // 2. Apply configuration options
             try configuration.apply(to: transaction)
 
+            // 3. Apply cached read version (only on first attempt)
+            //    On retry, we want a fresh version to avoid repeating transaction_too_old errors
+            if attempt == 0 {
+                applyCachedReadVersion(
+                    to: transaction,
+                    configuration: configuration,
+                    cache: readVersionCache
+                )
+            }
+
             do {
-                // 3. Execute operation
+                // 4. Execute operation
                 let result = try await operation(transaction)
 
-                // 4. Commit
+                // 5. Commit
                 let committed = try await transaction.commit()
                 if committed {
+                    // 6. Update cache after successful commit
+                    await updateCacheAfterCommit(
+                        transaction: transaction,
+                        cache: readVersionCache
+                    )
                     return result
                 }
 
@@ -86,7 +111,7 @@ internal struct TransactionRunner: Sendable {
                 continue
 
             } catch {
-                // 5. Check if retryable
+                // 7. Check if retryable
                 if let fdbError = error as? FDBError {
                     if fdbError.isRetryable && attempt < maxRetries - 1 {
                         // Apply exponential backoff before retry
@@ -102,6 +127,51 @@ internal struct TransactionRunner: Sendable {
 
         // Should not reach here, but safety fallback
         throw FDBError(.transactionTooOld)
+    }
+
+    // MARK: - Weak Read Semantics
+
+    /// Apply cached read version to transaction if available and valid
+    ///
+    /// Only called on first attempt. On retry, we use fresh version to avoid
+    /// repeating `transaction_too_old` errors from stale cached versions.
+    private func applyCachedReadVersion(
+        to transaction: any TransactionProtocol,
+        configuration: TransactionConfiguration,
+        cache: ReadVersionCache?
+    ) {
+        guard let cache = cache,
+              let semantics = configuration.weakReadSemantics,
+              let cachedVersion = cache.getCachedVersion(semantics: semantics) else {
+            return
+        }
+
+        transaction.setReadVersion(cachedVersion)
+    }
+
+    /// Update cache after successful commit
+    ///
+    /// For write transactions: use committed version (most accurate)
+    /// For read-only transactions: use read version
+    private func updateCacheAfterCommit(
+        transaction: any TransactionProtocol,
+        cache: ReadVersionCache?
+    ) async {
+        guard let cache = cache else { return }
+
+        do {
+            let committedVersion = try transaction.getCommittedVersion()
+            if committedVersion > 0 {
+                // Write transaction: use committed version
+                cache.updateFromCommit(version: committedVersion)
+            } else {
+                // Read-only transaction: use read version
+                let readVersion = try await transaction.getReadVersion()
+                cache.updateFromRead(version: readVersion)
+            }
+        } catch {
+            // Ignore cache update errors - they're not critical
+        }
     }
 
     // MARK: - Backoff

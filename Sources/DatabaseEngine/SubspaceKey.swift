@@ -40,4 +40,9 @@ public enum SubspaceKey {
     ///
     /// Layout: `[subspace]/T/[indexName]`
     public static let state = "T"
+
+    /// Metadata subspace key - stores metadata including violations
+    ///
+    /// Layout: `[subspace]/M/[key]`
+    public static let metadata = "M"
 }

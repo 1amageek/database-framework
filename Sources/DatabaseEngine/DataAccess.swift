@@ -336,6 +336,27 @@ public struct DataAccess: Sendable {
         return try decoder.decode(Item.self, from: Data(bytes))
     }
 
+    /// Deserialize bytes to a type-erased Persistable using runtime type
+    ///
+    /// Used for polymorphic deserialization where the concrete type is known at runtime.
+    ///
+    /// - Parameters:
+    ///   - bytes: The bytes to deserialize
+    ///   - type: The concrete Persistable type to decode as
+    /// - Returns: Deserialized item (type-erased)
+    /// - Throws: Error if deserialization fails
+    public static func deserializeAny(
+        _ bytes: FDB.Bytes,
+        as type: any (Persistable & Codable).Type
+    ) throws -> any Persistable {
+        let decoder = ProtobufDecoder()
+        let decoded = try decoder.decodeAny(type, from: Data(bytes))
+        guard let persistable = decoded as? any Persistable else {
+            throw FDBRuntimeError.internalError("Decoded value is not Persistable")
+        }
+        return persistable
+    }
+
     // MARK: - Covering Index Support (Optional)
 
     /// Reconstruct an item from covering index key and value

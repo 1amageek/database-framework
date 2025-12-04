@@ -70,6 +70,7 @@ struct TransactionContextTests {
         #expect(config.priority == .default)
         #expect(config.readPriority == .normal)
         #expect(config.disableReadCache == false)
+        #expect(config.weakReadSemantics == nil)  // Strict consistency by default
     }
 
     @Test("TransactionConfiguration.batch has expected values")
@@ -81,6 +82,7 @@ struct TransactionContextTests {
         #expect(config.priority == .batch)
         #expect(config.readPriority == .low)
         #expect(config.disableReadCache == true)
+        #expect(config.weakReadSemantics == .relaxed)  // Batch uses relaxed semantics
     }
 
     @Test("TransactionConfiguration.system has expected values")

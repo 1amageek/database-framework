@@ -83,6 +83,16 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
 | `OnlineIndexer` | Background index building for schema migrations |
+| `MultiTargetOnlineIndexer` | Build multiple indexes in single data scan |
+| `MutualOnlineIndexer` | Build bidirectional indexes (e.g., followers/following) |
+| `OnlineIndexScrubber` | Detect and repair index inconsistencies |
+| `IndexFromIndexBuilder` | Build new index from existing index |
+| `CascadesOptimizer` | Cascades framework query optimizer |
+| `TransactionConfiguration` | Transaction priority, timeout, retry settings |
+| `LargeValueSplitter` | Handle values exceeding FDB's 100KB limit |
+| `TransformingSerializer` | Compression (LZ4/zlib/LZMA/LZFSE) and encryption (AES-256-GCM) |
+| `Polymorphable` | Protocol enabling union types with shared directory and polymorphic queries |
+| `IndexStateManager` | Manages index lifecycle states (disabled/writeOnly/readable) |
 
 ### Data Layout in FoundationDB
 
@@ -94,6 +104,183 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 ```
 
 Subspace keys are single characters for storage efficiency. Use `SubspaceKey.items`, `SubspaceKey.indexes`, etc. for semantic clarity in code.
+
+## Implemented Features
+
+### Index Types (13 types)
+
+| Index | Module | Description |
+|-------|--------|-------------|
+| Scalar | `ScalarIndex` | Equality/range queries on single/compound fields |
+| Vector | `VectorIndex` | Semantic search (Flat brute-force, HNSW approximate) |
+| FullText | `FullTextIndex` | Text search with stemming, fuzzy matching, highlighting |
+| Spatial | `SpatialIndex` | Geographic queries (Geohash, Morton Code, S2 cells) |
+| Rank | `RankIndex` | Leaderboard-style ranking with position queries |
+| Permuted | `PermutedIndex` | Permutation-based multi-field queries |
+| Graph | `GraphIndex` | Graph traversal with adjacency index |
+| Triple | `TripleIndex` | RDF/semantic triple storage (subject-predicate-object) |
+| Aggregation | `AggregationIndex` | Materialized aggregations (Count, Sum, Min/Max, Average) |
+| Version | `VersionIndex` | Temporal versioning with FDB versionstamps |
+| Bitmap | `BitmapIndex` | Set membership queries using Roaring Bitmaps |
+| Leaderboard | `LeaderboardIndex` | Time-windowed leaderboards |
+
+### Online Indexing
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `OnlineIndexer` | `OnlineIndexer.swift` | Batch processing with resumable progress via RangeSet |
+| `MultiTargetOnlineIndexer` | `MultiTargetOnlineIndexer.swift` | Build multiple indexes in single scan |
+| `MutualOnlineIndexer` | `MutualOnlineIndexer.swift` | Build bidirectional indexes simultaneously |
+| `OnlineIndexScrubber` | `OnlineIndexScrubber.swift` | Two-phase consistency verification and repair |
+| `IndexFromIndexBuilder` | `IndexFromIndexBuilder.swift` | Build index from existing index (reduces I/O) |
+| `AdaptiveThrottler` | `AdaptiveThrottler.swift` | Backpressure-aware rate limiting |
+
+### Query Planning (Cascades Framework)
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `CascadesOptimizer` | `Cascades/CascadesOptimizer.swift` | Top-down rule-based optimizer (Graefe 1995) |
+| `Memo` | `Cascades/Memo.swift` | Memoization structure for equivalence classes |
+| `Rule` | `Cascades/Rule.swift` | Transformation and implementation rules |
+| `Expression` | `Cascades/Expression.swift` | Logical and physical operators |
+| `CostEstimator` | `CostEstimator.swift` | Statistics-driven cost model |
+| `StatisticsProvider` | `StatisticsProvider.swift` | Column cardinality, histograms, HyperLogLog |
+
+### Serialization & Storage
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `LargeValueSplitter` | `Serialization/LargeValueSplitter.swift` | Handle values > 100KB (FDB limit) |
+| `TransformingSerializer` | `Serialization/TransformingSerializer.swift` | Compression (LZ4/zlib/LZMA/LZFSE) + encryption (AES-256-GCM) |
+| `RecordEncryption` | `Serialization/RecordEncryption.swift` | Key providers (Static, Rotating, Derived, Environment) |
+| `StoragePipeline` | `Serialization/StoragePipeline.swift` | Composable transformation chain |
+
+### Transaction Management
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `TransactionConfiguration` | `Transaction/TransactionConfiguration.swift` | Priority (default/batch/system), timeout, retry |
+| `TransactionRunner` | `Transaction/TransactionRunner.swift` | Retry logic with exponential backoff |
+| `CommitHook` | `Transaction/CommitHook.swift` | Synchronous callbacks before commit |
+| `AsyncCommitHook` | `Transaction/AsyncCommitHook.swift` | Asynchronous callbacks before commit |
+
+### Polymorphable (Union Record Type)
+
+Polymorphable enables multiple `Persistable` types to share a directory and indexes, allowing polymorphic queries across different concrete types (similar to FDB Record Layer's Union Record Type).
+
+**Core Concept**:
+```swift
+// In database-kit: Define a polymorphic protocol
+@Polymorphable
+protocol Document: Polymorphable {
+    var id: String { get }
+    var title: String { get }
+
+    #Directory<Document>("app", "documents")
+}
+
+// Conforming types share the protocol's directory
+@Persistable
+struct Article: Document {
+    var id: String = ULID().ulidString
+    var title: String
+    var content: String
+
+    #Directory<Article>("app", "articles")  // Optional: own directory for dual-write
+}
+
+@Persistable
+struct Report: Document {
+    var id: String = ULID().ulidString
+    var title: String
+    var data: Data
+    // No #Directory: uses default (persistableType)
+}
+```
+
+**Property Separation** (due to Swift type system limitations):
+
+| Property | Protocol | Description |
+|----------|----------|-------------|
+| `directoryPathComponents` | `Persistable` | Type-specific directory |
+| `polymorphicDirectoryPathComponents` | `Polymorphable` | Shared protocol directory |
+| `directoryLayer` | `Persistable` | Type-specific layer |
+| `polymorphicDirectoryLayer` | `Polymorphable` | Shared protocol layer |
+| `indexDescriptors` | `Persistable` | Type-specific indexes |
+| `polymorphicIndexDescriptors` | `Polymorphable` | Shared protocol indexes |
+
+**Dual-Write Behavior**:
+When a type conforms to `Polymorphable` AND has its own `#Directory`:
+- Save: Data written to both type-specific AND polymorphic directories
+- Delete: Data removed from both directories
+
+**Storage Layout**:
+```
+[polymorphic-directory]/R/[typeCode]/[id] → Protobuf-encoded item
+[type-directory]/R/[PersistableType]/[id] → Protobuf-encoded item (if dual-write)
+```
+
+`typeCode` is a deterministic Int64 hash (DJB2 algorithm) of the type name.
+
+**Usage**:
+```swift
+// Save (automatic dual-write if applicable)
+context.insert(article)
+try await context.save()
+
+// Polymorphic query - returns all conforming types
+let allDocuments = try await context.fetchPolymorphic(Article.self)
+// Returns [Article, Report, ...] as [any Persistable]
+
+// Fetch by ID from polymorphic directory
+let doc = try await context.fetchPolymorphic(Article.self, id: someId)
+```
+
+**Swift Type System Limitation**:
+Protocol types cannot be passed to generic functions requiring `Polymorphable` conformance:
+```swift
+// ❌ Compile error: 'any Document' cannot conform to 'Polymorphable'
+try await context.fetchPolymorphic(Document.self)
+
+// ✅ Use concrete type (all conforming types share the same polymorphic directory)
+try await context.fetchPolymorphic(Article.self)
+```
+
+**Schema.Entity Design Principle**:
+`Schema.Entity` is pure data type metadata. Storage information (directories, polymorphic settings) is accessed from the type at runtime via `entity.persistableType`:
+```swift
+// Schema.Entity only contains:
+// - name: String
+// - allFields: [String]
+// - indexDescriptors: [IndexDescriptor]
+// - enumMetadata: [String: EnumMetadata]
+// - persistableType: any Persistable.Type  (for runtime type access)
+
+// To check if a type is polymorphic:
+if let polyType = entity.persistableType as? any Polymorphable.Type {
+    let typeCode = polyType.typeCode(for: entity.name)
+    let polyDir = polyType.polymorphicDirectoryPathComponents
+}
+```
+
+### Comparison with FDB Record Layer
+
+| Feature | Record Layer | database-framework | Status |
+|---------|--------------|-------------------|--------|
+| Index Types | Value, Rank, Lucene, Count, Sum, Spatial | 13 types including Vector, Graph, Triple | ✅ More |
+| Online Indexer | ✅ | ✅ Multi-target, Mutual, Index-from-Index | ✅ |
+| Index Scrubbing | ✅ | ✅ Two-phase verification | ✅ |
+| Query Planner | Cascades | ✅ Cascades framework | ✅ |
+| Large Record Splitting | ✅ SplitHelper | ✅ LargeValueSplitter | ✅ |
+| Compression | ✅ Deflate | ✅ LZ4/zlib/LZMA/LZFSE | ✅ |
+| Encryption | ✅ AES-CBC | ✅ AES-256-GCM | ✅ |
+| Transaction Priority | ✅ | ✅ default/batch/system | ✅ |
+| Version History | ✅ FDBRecordVersion | ✅ VersionIndex with versionstamps | ✅ |
+| Synthetic Records | ✅ JoinedRecordType | ❌ | Not implemented |
+| Union Record Type | ✅ | ✅ Polymorphable (dual-write) | ✅ |
+| Uniqueness Enforcement | ✅ checkUniqueness | ✅ Index state-based | ✅ |
+| SQL Interface | ✅ ANTLR parser | ❌ | Not implemented (SwiftData-like API) |
+| Weak Read Semantics | ✅ Cached read version | ❌ | Not implemented |
 
 ### Index Maintainer Pattern
 

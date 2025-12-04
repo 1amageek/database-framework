@@ -334,9 +334,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
 
-        let result = try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
-
+        let result = try await database.withTransaction(configuration: .batch) { transaction in
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
@@ -492,9 +490,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
 
-        let result = try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
-
+        let result = try await database.withTransaction(configuration: .batch) { transaction in
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
@@ -603,8 +599,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Load saved progress
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        return try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -616,8 +611,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)
             transaction.setValue(Array(data), for: key)
@@ -626,8 +620,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Clear all progress
     private func clearProgress() async throws {
-        try await database.withTransaction { transaction in
-            try TransactionConfiguration.batch.apply(to: transaction)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: phase1ProgressKey)
             transaction.clear(key: phase2ProgressKey)
         }

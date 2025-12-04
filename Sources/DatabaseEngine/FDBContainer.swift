@@ -66,6 +66,15 @@ public final class FDBContainer: Sendable {
     /// Migration plan (SwiftData-like API)
     nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
 
+    /// Read version cache for weak read semantics
+    ///
+    /// Shared across all contexts created from this container.
+    /// Used to reduce `getReadVersion()` network round-trips when
+    /// `TransactionConfiguration.weakReadSemantics` is set.
+    ///
+    /// **Reference**: FDB Record Layer `FDBDatabase.lastSeenVersion`
+    public let readVersionCache: ReadVersionCache
+
     // MARK: - Initialization
 
     /// Initialize FDBContainer with schema
@@ -97,6 +106,7 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
+        self.readVersionCache = ReadVersionCache()
     }
 
     /// Initialize FDBContainer with database (low-level API)
@@ -121,6 +131,7 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
+        self.readVersionCache = ReadVersionCache()
     }
 
     // MARK: - Context Management
@@ -293,30 +304,101 @@ public final class FDBContainer: Sendable {
         return FDBDataStore(database: database, subspace: subspace, schema: schema)
     }
 
-    // MARK: - Transaction Support
+    // MARK: - Polymorphic Directory Resolution
 
-    /// Execute a closure with a database transaction
+    /// Resolve directory for a polymorphic protocol
     ///
-    /// This is a pass-through to the underlying database's withTransaction.
-    /// Use `TransactionProtocol.setOption(forOption:)` to configure transaction behavior.
+    /// Creates or opens the directory specified by the protocol's `#Directory` macro.
+    /// Used by `FDBContext.fetchPolymorphic()` to retrieve all items of conforming types.
     ///
     /// **Example**:
     /// ```swift
-    /// try await container.withTransaction { transaction in
-    ///     // For batch operations
-    ///     try transaction.setOption(forOption: .priorityBatch)
-    ///
-    ///     // ... operations
+    /// @Polymorphable
+    /// protocol Document {
+    ///     #Directory<Document>("app", "documents")
     /// }
+    ///
+    /// let subspace = try await container.resolvePolymorphicDirectory(for: Document.self)
     /// ```
     ///
-    /// - Parameter operation: The operation to execute within the transaction
-    /// - Returns: The result of the operation
-    /// - Throws: `FDBError` if the transaction fails
-    public func withTransaction<T: Sendable>(
-        _ operation: @Sendable (any TransactionProtocol) async throws -> T
-    ) async throws -> T {
-        try await database.withTransaction(operation)
+    /// - Parameter protocolType: The Polymorphable protocol
+    /// - Returns: The resolved subspace
+    /// - Throws: Error if protocol has Field path components (not allowed)
+    public func resolvePolymorphicDirectory<P: Polymorphable>(for protocolType: P.Type) async throws -> Subspace {
+        let cacheKey = "_polymorphic_\(P.polymorphableType)"
+
+        // Check cache first
+        if let cached = directoryCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
+        let pathComponents = P.polymorphicDirectoryPathComponents
+        var path: [String] = []
+
+        for component in pathComponents {
+            if let pathElement = component as? Path {
+                path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                path.append(stringElement)
+            } else {
+                throw FDBRuntimeError.internalError(
+                    "Polymorphic protocols cannot use Field path components. " +
+                    "Use only static Path components (string literals) in #Directory."
+                )
+            }
+        }
+
+        // Create or open the directory
+        let directoryLayer = DirectoryLayer(database: database)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: path)
+        let subspace = dirSubspace.subspace
+
+        // Cache the result
+        directoryCache.withLock { $0[cacheKey] = subspace }
+
+        return subspace
+    }
+
+    /// Resolve the directory for a Polymorphable protocol (type-erased version)
+    ///
+    /// Used when the protocol type is known only at runtime (e.g., from `polymorphicProtocol`).
+    ///
+    /// - Parameter protocolType: The Polymorphable protocol metatype
+    /// - Returns: The resolved subspace
+    /// - Throws: Error if protocol has Field path components (not allowed)
+    public func resolvePolymorphicDirectory(for protocolType: any Polymorphable.Type) async throws -> Subspace {
+        let cacheKey = "_polymorphic_\(protocolType.polymorphableType)"
+
+        // Check cache first
+        if let cached = directoryCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
+        let pathComponents = protocolType.polymorphicDirectoryPathComponents
+        var path: [String] = []
+
+        for component in pathComponents {
+            if let pathElement = component as? Path {
+                path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                path.append(stringElement)
+            } else {
+                throw FDBRuntimeError.internalError(
+                    "Polymorphic protocols cannot use Field path components. " +
+                    "Use only static Path components (string literals) in #Directory."
+                )
+            }
+        }
+
+        // Create or open the directory
+        let directoryLayer = DirectoryLayer(database: database)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: path)
+        let subspace = dirSubspace.subspace
+
+        // Cache the result
+        directoryCache.withLock { $0[cacheKey] = subspace }
+
+        return subspace
     }
 
     // MARK: - Index Configuration Management
