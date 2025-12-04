@@ -66,7 +66,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            let results: [T] = try await database.withTransaction(configuration: .readOnly) { transaction in
+            let results: [T] = try await database.withTransaction { transaction in
                 var results: [T] = []
                 // Use .wantAll for full table scan - aggressive prefetch reduces round-trips
                 let sequence = transaction.getRange(
@@ -103,7 +103,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        return try await database.withTransaction(configuration: .readOnly) { transaction in
+        return try await database.withTransaction { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -254,7 +254,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Select optimal StreamingMode based on limit
         let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
 
-        let ids: [Tuple] = try await database.withTransaction(configuration: .readOnly) { transaction in
+        let ids: [Tuple] = try await database.withTransaction { transaction in
             var ids: [Tuple] = []
 
             switch scanRange {
@@ -523,7 +523,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await database.withTransaction(configuration: .readOnly) { transaction in
+        return try await database.withTransaction { transaction in
             var results: [T] = []
             for key in keys {
                 if let bytes = try await transaction.getValue(for: key, snapshot: true) {
@@ -609,7 +609,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             return 0  // Not index-optimizable
         }
 
-        return try await database.withTransaction(configuration: .readOnly) { transaction in
+        return try await database.withTransaction { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -632,7 +632,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await database.withTransaction(configuration: .readOnly) { transaction in
+        return try await database.withTransaction { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -669,7 +669,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+        let sizeBytes = try await database.withTransaction { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -693,7 +693,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+        let sizeBytes = try await database.withTransaction { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -713,7 +713,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction(configuration: .default) { transaction in
+            try await database.withTransaction { transaction in
                 for model in models {
                     try await self.saveModel(model, transaction: transaction)
                 }
@@ -773,7 +773,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction(configuration: .default) { transaction in
+            try await database.withTransaction { transaction in
                 for model in models {
                     try await self.deleteModel(model, transaction: transaction)
                 }
@@ -816,7 +816,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        try await database.withTransaction(configuration: .default) { transaction in
+        try await database.withTransaction { transaction in
             // Load the model first for index cleanup
             if let bytes = try await transaction.getValue(for: key, snapshot: false) {
                 // Use Protobuf deserialization via DataAccess
@@ -839,12 +839,14 @@ internal final class FDBDataStore: DataStore, Sendable {
         deletes: [any Persistable]
     ) async throws {
         let startTime = DispatchTime.now()
+        let encoder = ProtobufEncoder()  // Reuse across all inserts (Sendable)
 
         do {
-            try await database.withTransaction(configuration: .batch) { transaction in
+            try await database.withTransaction { transaction in
+                try transaction.setOption(forOption: .priorityBatch)
                 // Process inserts
                 for model in inserts {
-                    try await self.saveModelUntyped(model, transaction: transaction)
+                    try await self.saveModelUntyped(model, transaction: transaction, encoder: encoder)
                 }
 
                 // Process deletes
@@ -870,14 +872,14 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Save model without type parameter (for batch operations)
     private func saveModelUntyped(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any TransactionProtocol,
+        encoder: ProtobufEncoder
     ) async throws {
         let persistableType = type(of: model).persistableType
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        // Serialize using Protobuf
-        let encoder = ProtobufEncoder()
+        // Serialize using Protobuf (encoder reused across all models)
         let data = try encoder.encode(model)
 
         let typeSubspace = itemSubspace.subspace(persistableType)
@@ -1538,7 +1540,8 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Clear all records of a type
     func clearAll<T: Persistable>(_ type: T.Type) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)

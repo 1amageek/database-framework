@@ -389,20 +389,18 @@ extension DatabaseProtocol {
     /// ```
     ///
     /// - Parameters:
-    ///   - configuration: Optional transaction configuration
     ///   - timer: Optional StoreTimer for automatic metric export
     ///   - operation: The operation to execute
     /// - Returns: Tuple of (operation result, transaction metrics)
     public func withInstrumentedTransaction<T: Sendable>(
-        configuration: TransactionConfiguration = .default,
         timer: StoreTimer? = nil,
         _ operation: @Sendable (InstrumentedTransaction) async throws -> T
     ) async throws -> (result: T, metrics: TransactionMetrics) {
-        let maxRetries = configuration.retryLimit ?? 100
+        let maxRetries = 100
+        let maxDelay = 1000
 
         for attempt in 0..<maxRetries {
             let transaction = try createTransaction()
-            try transaction.apply(configuration)
 
             let instrumented = InstrumentedTransaction(wrapping: transaction, timer: timer)
 
@@ -422,7 +420,6 @@ extension DatabaseProtocol {
 
                 if let fdbError = error as? FDBError, fdbError.isRetryable {
                     if attempt < maxRetries - 1 {
-                        let maxDelay = configuration.maxRetryDelay ?? 1000
                         let baseDelay = min(maxDelay, 10 * (1 << min(attempt, 10)))
                         let jitter = Int.random(in: 0...(baseDelay / 4))
                         let delay = baseDelay + jitter

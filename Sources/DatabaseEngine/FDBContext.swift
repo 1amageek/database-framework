@@ -54,6 +54,24 @@ public final class FDBContext: Sendable {
     /// Logger
     private let logger: Logger
 
+    /// Error handler for autosave failures
+    ///
+    /// When set, this handler is called if autosave fails. This allows the caller
+    /// to be notified of save failures that would otherwise be silently logged.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let context = container.newContext(autosaveEnabled: true)
+    /// context.autosaveErrorHandler = { error in
+    ///     print("Autosave failed: \(error)")
+    ///     // Show user notification, retry, etc.
+    /// }
+    /// ```
+    public var autosaveErrorHandler: (@Sendable (Error) -> Void)? {
+        get { stateLock.withLock { $0.autosaveErrorHandler } }
+        set { stateLock.withLock { $0.autosaveErrorHandler = newValue } }
+    }
+
     // MARK: - Initialization
 
     /// Initialize FDBContext
@@ -84,6 +102,9 @@ public final class FDBContext: Sendable {
 
         /// Whether an autosave task is already scheduled
         var autosaveScheduled: Bool = false
+
+        /// Error handler for autosave failures
+        var autosaveErrorHandler: (@Sendable (Error) -> Void)?
 
         /// Whether the context has unsaved changes
         var hasChanges: Bool {
@@ -369,8 +390,15 @@ public final class FDBContext: Sendable {
             // Get all unique types
             let allTypes = Set(insertsByType.keys).union(deletesByType.keys)
 
+            // Create encoder once for all models (Sendable, reusable)
+            let encoder = ProtobufEncoder()
+
+            // Transaction size limits (FDB max is 10MB)
+            let sizeWarningThreshold = 8_000_000  // 8MB - warn before approaching limit
+            let sizeErrorThreshold = 9_500_000   // 9.5MB - error to prevent silent failure
+
             // Execute all operations in a single transaction
-            try await container.withTransaction(configuration: .default) { transaction in
+            try await container.withTransaction { transaction in
                 for typeName in allTypes {
                     let typeInserts = insertsByType[typeName] ?? []
                     let typeDeletes = deletesByType[typeName] ?? []
@@ -390,7 +418,26 @@ public final class FDBContext: Sendable {
 
                     // Save inserts
                     for model in typeInserts {
-                        try await self.saveModel(model, store: store, transaction: transaction)
+                        try await self.saveModel(model, store: store, transaction: transaction, encoder: encoder)
+                    }
+
+                    // Monitor transaction size after processing each type
+                    let currentSize = try await transaction.getApproximateSize()
+                    if currentSize > sizeErrorThreshold {
+                        throw FDBContextError.transactionTooLarge(
+                            currentSize: currentSize,
+                            limit: 10_000_000,
+                            hint: "Consider using batch operations or reducing the number of changes per save()"
+                        )
+                    } else if currentSize > sizeWarningThreshold {
+                        self.logger.warning(
+                            "Transaction approaching size limit",
+                            metadata: [
+                                "currentSize": "\(currentSize)",
+                                "threshold": "\(sizeWarningThreshold)",
+                                "typeName": "\(typeName)"
+                            ]
+                        )
                     }
 
                     // Delete deletes
@@ -434,14 +481,14 @@ public final class FDBContext: Sendable {
     private func saveModel(
         _ model: any Persistable,
         store: FDBDataStore,
-        transaction: any TransactionProtocol
+        transaction: any TransactionProtocol,
+        encoder: ProtobufEncoder
     ) async throws {
         let persistableType = type(of: model).persistableType
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        // Serialize using Protobuf
-        let encoder = ProtobufEncoder()
+        // Serialize using Protobuf (encoder reused across all models)
         let data = try encoder.encode(model)
 
         let typeSubspace = store.itemSubspace.subspace(persistableType)
@@ -566,7 +613,13 @@ public final class FDBContext: Sendable {
         transaction: any TransactionProtocol
     ) async throws {
         let (begin, end) = indexSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+        // Use wantAll to minimize round-trips for full index scan
+        let sequence = transaction.getRange(
+            from: begin,
+            to: end,
+            snapshot: false,
+            streamingMode: .wantAll
+        )
 
         for try await (key, _) in sequence {
             if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace),
@@ -578,6 +631,9 @@ public final class FDBContext: Sendable {
 
     /// Extract ID from an index key
     private func extractIDFromIndexKey(_ key: [UInt8], subspace: Subspace) -> Tuple? {
+        // Quick check: verify key belongs to this subspace before attempting unpack
+        guard subspace.contains(key) else { return nil }
+
         do {
             let tuple = try subspace.unpack(key)
             if tuple.count >= 2, let lastElement = tuple[tuple.count - 1] {
@@ -625,8 +681,8 @@ public final class FDBContext: Sendable {
 
             guard let self = self else { return }
 
-            let shouldSave = self.stateLock.withLock { state in
-                state.hasChanges && state.autosaveEnabled
+            let (shouldSave, errorHandler) = self.stateLock.withLock { state in
+                (state.hasChanges && state.autosaveEnabled, state.autosaveErrorHandler)
             }
 
             if shouldSave {
@@ -634,6 +690,15 @@ public final class FDBContext: Sendable {
                     try await self.save()
                 } catch {
                     self.logger.error("Autosave failed: \(error)")
+
+                    // Notify caller via error handler
+                    errorHandler?(error)
+
+                    // Disable autosave after failure to prevent repeated errors
+                    self.stateLock.withLock { state in
+                        state.autosaveEnabled = false
+                    }
+                    self.logger.warning("Autosave disabled due to failure. Call save() manually or re-enable autosave.")
                 }
             }
         }
@@ -669,6 +734,7 @@ public final class FDBContext: Sendable {
 public enum FDBContextError: Error, CustomStringConvertible {
     case concurrentSaveNotAllowed
     case modelNotFound(String)
+    case transactionTooLarge(currentSize: Int, limit: Int, hint: String)
 
     public var description: String {
         switch self {
@@ -676,6 +742,8 @@ public enum FDBContextError: Error, CustomStringConvertible {
             return "FDBContextError: Cannot save while another save operation is in progress"
         case .modelNotFound(let type):
             return "FDBContextError: Model of type '\(type)' not found"
+        case .transactionTooLarge(let currentSize, let limit, let hint):
+            return "FDBContextError: Transaction size (\(currentSize) bytes) approaching limit (\(limit) bytes). \(hint)"
         }
     }
 }

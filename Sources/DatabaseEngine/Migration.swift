@@ -298,7 +298,8 @@ public struct MigrationContext: Sendable {
 
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             // Write FormerIndex entry
             let timestamp = Date().timeIntervalSince1970
             transaction.setValue(
@@ -373,7 +374,8 @@ public struct MigrationContext: Sendable {
         // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             // Disable index (from any state)
             try await indexManager.stateManager.disable(indexName, transaction: transaction)
 
@@ -419,16 +421,16 @@ public struct MigrationContext: Sendable {
 
     /// Execute arbitrary database operation
     ///
-    /// - Parameters:
-    ///   - configuration: Transaction configuration (default: `.default`)
-    ///   - operation: Operation to execute
+    /// Use `transaction.setOption(forOption:)` within the operation to configure
+    /// transaction behavior (e.g., priority, timeout).
+    ///
+    /// - Parameter operation: Operation to execute
     /// - Returns: Operation result
     /// - Throws: Any error from the operation
     public func executeOperation<T: Sendable>(
-        configuration: TransactionConfiguration = .default,
         _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(configuration: configuration) { transaction in
+        return try await database.withTransaction { transaction in
             try await operation(transaction)
         }
     }
@@ -493,7 +495,7 @@ public struct MigrationContext: Sendable {
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
 
-        try await database.withTransaction(configuration: .system) { transaction in
+        try await database.withTransaction { transaction in
             transaction.setValue(Array(data), for: itemKey)
         }
     }
@@ -517,7 +519,7 @@ public struct MigrationContext: Sendable {
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
 
-        try await database.withTransaction(configuration: .system) { transaction in
+        try await database.withTransaction { transaction in
             transaction.clear(key: itemKey)
         }
     }
@@ -541,14 +543,15 @@ public struct MigrationContext: Sendable {
         }
 
         let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let encoder = ProtobufEncoder()  // Reuse across all batches (Sendable)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await database.withTransaction(configuration: .batch) { transaction in
-                let encoder = ProtobufEncoder()
+            try await database.withTransaction { transaction in
+                try transaction.setOption(forOption: .priorityBatch)
                 for item in batch {
                     let data = try encoder.encode(item)
                     let validatedID = try item.validateIDForStorage()
@@ -584,7 +587,8 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await database.withTransaction(configuration: .batch) { transaction in
+            try await database.withTransaction { transaction in
+                try transaction.setOption(forOption: .priorityBatch)
                 for item in batch {
                     let validatedID = try item.validateIDForStorage()
                     let itemKey = itemSubspace.pack(Tuple(validatedID))
@@ -621,7 +625,7 @@ public struct MigrationContext: Sendable {
 
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await database.withTransaction(configuration: .readOnly) { transaction in
+            let sizeBytes = try await database.withTransaction { transaction in
                 try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
@@ -638,24 +642,24 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .readOnly) { transaction in
+            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction { transaction in
                 let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
                 var lastKeyInBatch: FDB.Bytes? = nil
 
+                // Use limit and wantAll mode to reduce round-trips for counting
                 let sequence = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(rangeBegin),
-                    endSelector: .firstGreaterOrEqual(endKey),
-                    snapshot: true
+                    from: .firstGreaterOrEqual(rangeBegin),
+                    to: .firstGreaterOrEqual(endKey),
+                    limit: batchSize,
+                    snapshot: true,
+                    streamingMode: .wantAll
                 )
 
                 for try await (key, _) in sequence {
                     count += 1
                     lastKeyInBatch = key
-                    if count >= batchSize {
-                        break
-                    }
                 }
 
                 return (count, lastKeyInBatch)
@@ -860,23 +864,22 @@ private struct ItemEnumerator<T: Persistable>: Sendable {
                         let currentLastKey = lastKey
 
                         // Each batch is a separate transaction
-                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction(configuration: .batch) { transaction in
+                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction { transaction in
+                            try transaction.setOption(forOption: .priorityBatch)
                             let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                             var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+                            // Use limit and wantAll mode for efficient batch enumeration
                             let sequence = transaction.getRange(
-                                beginSelector: .firstGreaterOrEqual(rangeBegin),
-                                endSelector: .firstGreaterOrEqual(endKey),
-                                snapshot: true  // Use snapshot reads for enumeration
+                                from: .firstGreaterOrEqual(rangeBegin),
+                                to: .firstGreaterOrEqual(endKey),
+                                limit: batchSize,
+                                snapshot: true,
+                                streamingMode: .wantAll
                             )
 
-                            var count = 0
                             for try await (key, value) in sequence {
                                 results.append((key: key, value: value))
-                                count += 1
-                                if count >= batchSize {
-                                    break
-                                }
                             }
                             return results
                         }

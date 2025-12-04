@@ -297,35 +297,26 @@ public final class FDBContainer: Sendable {
 
     /// Execute a closure with a database transaction
     ///
-    /// This method delegates to `DatabaseProtocol.withTransaction(configuration:)` which provides:
-    /// - **GRV Caching**: Reduces read version latency when `useGrvCache` is enabled
-    /// - **Automatic Retry**: Exponential backoff with jitter for retryable errors
-    /// - **Size Monitoring**: Logs warnings for large transactions via `TransactionMonitor`
-    /// - **Version Tracking**: Updates cache with committed versions
+    /// This is a pass-through to the underlying database's withTransaction.
+    /// Use `TransactionProtocol.setOption(forOption:)` to configure transaction behavior.
     ///
-    /// All transaction entry points share the same implementation to ensure consistent behavior.
+    /// **Example**:
+    /// ```swift
+    /// try await container.withTransaction { transaction in
+    ///     // For batch operations
+    ///     try transaction.setOption(forOption: .priorityBatch)
     ///
-    /// - Parameters:
-    ///   - configuration: Transaction configuration (priority, timeout, etc.)
-    ///   - operation: The operation to execute within the transaction
+    ///     // ... operations
+    /// }
+    /// ```
+    ///
+    /// - Parameter operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: `FDBError` if the transaction fails
     public func withTransaction<T: Sendable>(
-        configuration: TransactionConfiguration = .default,
         _ operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        // Delegate to the single shared implementation
-        try await database.withTransaction(configuration: configuration, operation)
-    }
-
-    /// Get read version cache statistics
-    public var readVersionCacheStatistics: ReadVersionCacheStatistics {
-        SharedReadVersionCache.shared.statistics
-    }
-
-    /// Invalidate read version cache
-    public func invalidateReadVersionCache() {
-        SharedReadVersionCache.shared.invalidate()
+        try await database.withTransaction(operation)
     }
 
     // MARK: - Index Configuration Management
@@ -381,7 +372,7 @@ extension FDBContainer {
             .subspace("schema")
             .pack(Tuple("version"))
 
-        return try await database.withTransaction(configuration: .readOnly) { transaction -> Schema.Version? in
+        return try await database.withTransaction { transaction -> Schema.Version? in
             guard let versionBytes = try await transaction.getValue(for: versionKey, snapshot: true) else {
                 return nil
             }
@@ -415,7 +406,8 @@ extension FDBContainer {
             .subspace("schema")
             .pack(Tuple("version"))
 
-        try await database.withTransaction(configuration: .system) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .accessSystemKeys)
             let versionTuple = Tuple(version.major, version.minor, version.patch)
             transaction.setValue(versionTuple.pack(), for: versionKey)
         }

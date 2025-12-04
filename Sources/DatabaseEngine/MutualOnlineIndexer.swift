@@ -246,21 +246,26 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
+                    try transaction.setOption(forOption: .priorityBatch)
+                    // Set low read priority for background index building
+                    // This prevents background indexing from impacting foreground user queries
+                    try transaction.setOption(forOption: .readPriorityLow)
+                    try transaction.setOption(forOption: .readServerSideCacheDisable)
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
-                    // Use .iterator for adaptive batching that respects transaction limits
+                    // Use limit + .iterator for efficient batch processing
+                    // limit ensures server-side cutoff, .iterator adapts to transaction limits
                     let sequence = transaction.getRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
+                        limit: self.batchSize,
                         snapshot: false,
                         streamingMode: .iterator
                     )
 
-                    // Process up to batchSize items, then break
-                    // This limits transaction size without requiring FDB limit parameter
                     for try await (key, value) in sequence {
                         // Deserialize item
                         let item: Item = try DataAccess.deserialize(value)
@@ -283,11 +288,6 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
                         pairsInBatch += 1
-
-                        // Break after batchSize items to limit transaction size
-                        if itemsInBatch >= self.batchSize {
-                            break
-                        }
                     }
 
                     // Save progress atomically with work
@@ -353,7 +353,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         let forwardSubspace = indexSubspace.subspace(forwardIndex.name)
         let reverseSubspace = indexSubspace.subspace(reverseIndex.name)
 
-        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await database.withTransaction(configuration: .readOnly) { transaction in
+        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await database.withTransaction { transaction in
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()
@@ -402,7 +402,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -416,7 +417,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             transaction.clear(key: forwardProgressKey)
             transaction.clear(key: reverseProgressKey)
         }
@@ -425,7 +427,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }

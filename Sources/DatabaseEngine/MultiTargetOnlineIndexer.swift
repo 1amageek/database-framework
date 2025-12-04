@@ -215,20 +215,25 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction { transaction in
+                    try transaction.setOption(forOption: .priorityBatch)
+                    // Set low read priority for background index building
+                    // This prevents background indexing from impacting foreground user queries
+                    try transaction.setOption(forOption: .readPriorityLow)
+                    try transaction.setOption(forOption: .readServerSideCacheDisable)
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
-                    // Use .iterator for adaptive batching that respects transaction limits
+                    // Use limit + .iterator for efficient batch processing
+                    // limit ensures server-side cutoff, .iterator adapts to transaction limits
                     let sequence = transaction.getRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
+                        limit: self.batchSize,
                         snapshot: false,
                         streamingMode: .iterator
                     )
 
-                    // Process up to batchSize items, then break
-                    // This limits transaction size without requiring FDB limit parameter
                     for try await (key, value) in sequence {
                         // Deserialize item once
                         let item: Item = try DataAccess.deserialize(value)
@@ -245,11 +250,6 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
-
-                        // Break after batchSize items to limit transaction size
-                        if itemsInBatch >= self.batchSize {
-                            break
-                        }
                     }
 
                     // Save progress atomically with work
@@ -303,7 +303,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -317,7 +318,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             transaction.clear(key: progressKey)
         }
     }
@@ -325,7 +327,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }

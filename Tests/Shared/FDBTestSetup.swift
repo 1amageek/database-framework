@@ -116,16 +116,10 @@ public actor FDBTestSetup {
             }
         }
         isTestRunning = true
-
-        // Invalidate application-level GRV cache at start to ensure fresh read versions
-        SharedReadVersionCache.shared.invalidate()
     }
 
     /// Release access and wake next waiting test
     private func releaseAccess() {
-        // Invalidate GRV cache to prevent "Version not valid" errors in next test
-        SharedReadVersionCache.shared.invalidate()
-
         isTestRunning = false
         if !waitingTests.isEmpty {
             let next = waitingTests.removeFirst()

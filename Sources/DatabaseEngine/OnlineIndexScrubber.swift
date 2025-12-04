@@ -334,16 +334,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
 
-        let result = try await database.withTransaction(configuration: .batch) { transaction in
+        let result = try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
+            // Set low read priority for background scrubbing
+            try transaction.setOption(forOption: .readPriorityLow)
+            try transaction.setOption(forOption: .readServerSideCacheDisable)
+
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
             var lastProcessedKey: FDB.Bytes? = nil
 
+            // Use limit + .iterator for efficient batch scrubbing
+            // .iterator is appropriate since we do reads within the transaction
             let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(bounds.begin),
-                endSelector: .firstGreaterOrEqual(bounds.end),
-                snapshot: false
+                from: .firstGreaterOrEqual(bounds.begin),
+                to: .firstGreaterOrEqual(bounds.end),
+                limit: batchSize,
+                snapshot: false,
+                streamingMode: .iterator
             )
 
             for try await (indexKey, _) in sequence {
@@ -355,7 +364,6 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                     indexSubspace: indexNameSubspace
                 ) else {
                     lastProcessedKey = indexKey
-                    if entriesScanned >= batchSize { break }
                     continue
                 }
 
@@ -375,11 +383,6 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 }
 
                 lastProcessedKey = indexKey
-
-                // Break after batchSize items to limit transaction size
-                if entriesScanned >= batchSize {
-                    break
-                }
             }
 
             return (entriesScanned, danglingDetected, danglingRepaired, lastProcessedKey)
@@ -492,16 +495,25 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
 
-        let result = try await database.withTransaction(configuration: .batch) { transaction in
+        let result = try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
+            // Set low read priority for background scrubbing
+            try transaction.setOption(forOption: .readPriorityLow)
+            try transaction.setOption(forOption: .readServerSideCacheDisable)
+
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
             var lastProcessedKey: FDB.Bytes? = nil
 
+            // Use limit + .iterator for efficient batch scrubbing
+            // .iterator is appropriate since we do reads/writes within the transaction
             let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(bounds.begin),
-                endSelector: .firstGreaterOrEqual(bounds.end),
-                snapshot: false
+                from: .firstGreaterOrEqual(bounds.begin),
+                to: .firstGreaterOrEqual(bounds.end),
+                limit: batchSize,
+                snapshot: false,
+                streamingMode: .iterator
             )
 
             for try await (key, value) in sequence {
@@ -543,11 +555,6 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 }
 
                 lastProcessedKey = key
-
-                // Break after batchSize items to limit transaction size
-                if itemsScanned >= batchSize {
-                    break
-                }
             }
 
             return (itemsScanned, missingDetected, missingRepaired, lastProcessedKey)
@@ -602,7 +609,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Load saved progress
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        return try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -614,7 +622,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)
             transaction.setValue(Array(data), for: key)
@@ -623,7 +632,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Clear all progress
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await database.withTransaction { transaction in
+            try transaction.setOption(forOption: .priorityBatch)
             transaction.clear(key: phase1ProgressKey)
             transaction.clear(key: phase2ProgressKey)
         }

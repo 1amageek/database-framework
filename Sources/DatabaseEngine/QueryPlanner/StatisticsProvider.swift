@@ -848,7 +848,9 @@ public struct SearchStatisticsCollector: Sendable {
         // Scan terms subspace
         for try await (key, _) in reader.scanSubspace(termsSubspace) {
             // Key structure: [termsSubspace][term][docID]
-            guard let keyTuple = try? termsSubspace.unpack(key) else { continue }
+            // Quick check before attempting unpack
+            guard termsSubspace.contains(key),
+                  let keyTuple = try? termsSubspace.unpack(key) else { continue }
             guard keyTuple.count >= 2 else { continue }
 
             if let term = keyTuple[0] as? String {
@@ -898,7 +900,9 @@ public struct SearchStatisticsCollector: Sendable {
         var maxLon = -Double.infinity
 
         for try await (key, _) in reader.scanSubspace(subspace) {
-            guard let keyTuple = try? subspace.unpack(key) else { continue }
+            // Quick check before attempting unpack
+            guard subspace.contains(key),
+                  let keyTuple = try? subspace.unpack(key) else { continue }
             guard keyTuple.count >= 1 else { continue }
 
             entryCount += 1
@@ -1109,8 +1113,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         beginKey: [UInt8],
         endKey: [UInt8]
     ) async throws -> Int {
-        // Use readOnly config for statistics queries (GRV cache enabled)
-        try await database.withTransaction(configuration: .readOnly) { transaction in
+        try await database.withTransaction { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
                 endKey: endKey
@@ -1123,8 +1126,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         endKey: [UInt8],
         chunkSize: Int
     ) async throws -> [[UInt8]] {
-        // Use readOnly config for statistics queries (GRV cache enabled)
-        try await database.withTransaction(configuration: .readOnly) { transaction in
+        try await database.withTransaction { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,

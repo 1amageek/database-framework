@@ -106,7 +106,7 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        return try await context.container.database.withTransaction(configuration: .readOnly) { transaction in
+        return try await context.container.database.withTransaction { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
     }
@@ -255,14 +255,12 @@ public struct IndexQueryContext: Sendable {
     /// Execute a closure within a transaction
     ///
     /// - Parameters:
-    ///   - configuration: Transaction configuration (default: `.default`)
     ///   - body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
-        configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
     ) async throws -> R {
-        return try await context.container.database.withTransaction(configuration: configuration, body)
+        return try await context.container.database.withTransaction(body)
     }
 
     /// Get the index subspace for a type
@@ -399,7 +397,7 @@ extension FDBDataStore {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction(configuration: .readOnly) { transaction in
+                    try await database.withTransaction { transaction in
                         // Build range
                         let beginKey: [UInt8]
                         let endKey: [UInt8]
@@ -430,9 +428,24 @@ extension FDBDataStore {
                         }
 
                         // Apply limit pushdown and streaming mode optimization
+                        // Use appropriate key selectors for forward vs reverse iteration
+                        let fromSelector: FDB.KeySelector
+                        let toSelector: FDB.KeySelector
+
+                        if reverse {
+                            // For reverse iteration, use lastLessOrEqual for efficient positioning
+                            // Start from end (exclusive) and go backwards to begin (inclusive)
+                            fromSelector = FDB.KeySelector.lastLessThan(endKey)
+                            toSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
+                        } else {
+                            // Forward iteration uses standard firstGreaterOrEqual
+                            fromSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
+                            toSelector = FDB.KeySelector.firstGreaterOrEqual(endKey)
+                        }
+
                         let sequence = transaction.getRange(
-                            from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
-                            to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+                            from: fromSelector,
+                            to: toSelector,
                             limit: effectiveLimit,
                             reverse: reverse,
                             snapshot: true,
@@ -452,7 +465,7 @@ extension FDBDataStore {
 
     /// Get a single value by key (raw access)
     func getValueRaw(key: [UInt8]) async throws -> [UInt8]? {
-        return try await database.withTransaction(configuration: .readOnly) { transaction in
+        return try await database.withTransaction { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }
