@@ -356,6 +356,52 @@ import Testing
 
 Test models are defined in `Tests/Shared/TestModels.swift`.
 
+### テスト分離パターン
+
+**重要**: テストは並列実行されるため、ハードコードされた ID を使用すると他のテストと干渉する。
+
+**問題**:
+- `cleanup()` で全データを削除すると、並列実行中の他のテストのデータも削除される
+- 固定 ID（例: `"C001"`, `"O-test-001"`）を使用すると、複数のテストが同じデータを操作してしまう
+
+**解決策**: 各テストで UUID ベースのユニーク ID を生成する
+
+```swift
+@Suite("My Tests", .serialized)
+struct MyTests {
+
+    /// Generate unique test ID to avoid conflicts with parallel tests
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
+    }
+
+    @Test func testSomething() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        // ✅ 良い例: ユニーク ID を使用
+        let customerId = uniqueID("C-test")
+        let orderId = uniqueID("O-test")
+
+        var customer = Customer(name: "Alice")
+        customer.id = customerId
+        context.insert(customer)
+        try await context.save()
+
+        // テストロジック...
+    }
+}
+```
+
+**ガイドライン**:
+1. ✅ `uniqueID()` ヘルパー関数を各テストスイートに追加
+2. ✅ 全ての ID を `uniqueID("prefix")` で生成
+3. ✅ 検証対象のデータのみを検証（他のテストのデータを想定しない）
+4. ❌ `cleanup()` で `clearAll()` を呼ばない（他のテストに影響）
+5. ❌ ハードコードされた ID（`"C001"`, `"test-id"` など）を使用しない
+
+**例**: `IndexStateBehaviorTests`, `RelationshipIndexTests` を参照
+
 ## Adding a New Index Type
 
 1. Define `IndexKind` in database-kit (e.g., `TimeSeriesIndexKind`)

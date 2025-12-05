@@ -1,5 +1,4 @@
 import Core
-import Relationship
 
 // MARK: - Query
 
@@ -381,47 +380,25 @@ extension KeyPath where Root: Persistable, Value: Equatable & FieldValueConverti
 
 // MARK: - QueryExecutor
 
-/// Executor for fluent query API with Snapshot support
-///
-/// All queries return `Snapshot<T>` for uniform API. Use `joining()` to load relationships.
+/// Executor for fluent query API
 ///
 /// **Usage**:
 /// ```swift
-/// // Basic query - returns Snapshot<User>[]
 /// let users = try await context.fetch(User.self)
 ///     .where(\.isActive == true)
 ///     .where(\.age > 18)
 ///     .orderBy(\.name)
 ///     .limit(10)
 ///     .execute()
-///
-/// // With relationship loading
-/// let orders = try await context.fetch(Order.self)
-///     .joining(\.customerID)  // Load customer for each order
-///     .execute()
-///
-/// for order in orders {
-///     // Access via ref() since Snapshot extensions can't be macro-generated
-///     let customer = order.ref(Customer.self, \.customerID)
-///     print(customer?.name)
-/// }
 /// ```
 public struct QueryExecutor<T: Persistable>: Sendable {
-    private let context: FDBContext
-    private var query: Query<T>
-
-    /// KeyPaths of FK fields to join (load related items)
-    ///
-    /// Note: `nonisolated(unsafe)` is used because AnyKeyPath is not Sendable,
-    /// but this is safe since the array is only modified during query building
-    /// (before execution) and each call returns a new QueryExecutor copy.
-    private nonisolated(unsafe) var joiningKeyPaths: [AnyKeyPath]
+    package let context: FDBContext
+    package var query: Query<T>
 
     /// Initialize with context and query
     public init(context: FDBContext, query: Query<T>) {
         self.context = context
         self.query = query
-        self.joiningKeyPaths = []
     }
 
     /// Add a filter predicate
@@ -459,86 +436,10 @@ public struct QueryExecutor<T: Persistable>: Sendable {
         return copy
     }
 
-    // MARK: - Joining (Relationship Loading)
-
-    /// Join a to-one relationship (optional FK field)
-    ///
-    /// When executed, this will batch-load the related items for all results.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let orders = try await context.fetch(Order.self)
-    ///     .joining(\.customerID)
-    ///     .execute()
-    ///
-    /// for order in orders {
-    ///     let customer = order.ref(Customer.self, \.customerID)
-    /// }
-    /// ```
-    ///
-    /// - Parameter keyPath: KeyPath to the optional FK field
-    /// - Returns: QueryExecutor with the join added
-    public func joining(_ keyPath: KeyPath<T, String?>) -> QueryExecutor<T> {
-        var copy = self
-        copy.joiningKeyPaths.append(keyPath)
-        return copy
-    }
-
-    /// Join a to-one relationship (required FK field)
-    ///
-    /// - Parameter keyPath: KeyPath to the required FK field
-    /// - Returns: QueryExecutor with the join added
-    public func joining(_ keyPath: KeyPath<T, String>) -> QueryExecutor<T> {
-        var copy = self
-        copy.joiningKeyPaths.append(keyPath)
-        return copy
-    }
-
-    /// Join a to-many relationship (FK array field)
-    ///
-    /// When executed, this will batch-load all related items.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let customers = try await context.fetch(Customer.self)
-    ///     .joining(\.orderIDs)
-    ///     .execute()
-    ///
-    /// for customer in customers {
-    ///     let orders = customer.refs(Order.self, \.orderIDs)
-    /// }
-    /// ```
-    ///
-    /// - Parameter keyPath: KeyPath to the FK array field
-    /// - Returns: QueryExecutor with the join added
-    public func joining(_ keyPath: KeyPath<T, [String]>) -> QueryExecutor<T> {
-        var copy = self
-        copy.joiningKeyPaths.append(keyPath)
-        return copy
-    }
-
     // MARK: - Execute
 
-    /// Execute the query and return Snapshot results
-    ///
-    /// Returns `[Snapshot<T>]` which wraps items and optionally loaded relationships.
-    /// Use `ref()` or `refs()` methods on Snapshot to access loaded relationships.
-    public func execute() async throws -> [Snapshot<T>] {
-        let items = try await context.fetch(query)
-
-        // If no joins, return simple snapshots
-        if joiningKeyPaths.isEmpty {
-            return items.map { Snapshot(item: $0) }
-        }
-
-        // Build snapshots with loaded relationships
-        return try await buildSnapshots(items: items)
-    }
-
-    /// Execute the query and return raw items (no Snapshot wrapper)
-    ///
-    /// Use this for backward compatibility or when you don't need relationship loading.
-    public func executeRaw() async throws -> [T] {
+    /// Execute the query and return results
+    public func execute() async throws -> [T] {
         try await context.fetch(query)
     }
 
@@ -547,117 +448,9 @@ public struct QueryExecutor<T: Persistable>: Sendable {
         try await context.fetchCount(query)
     }
 
-    /// Execute the query and return first Snapshot result
-    public func first() async throws -> Snapshot<T>? {
+    /// Execute the query and return first result
+    public func first() async throws -> T? {
         try await limit(1).execute().first
-    }
-
-    /// Execute the query and return first raw item
-    public func firstRaw() async throws -> T? {
-        try await limit(1).executeRaw().first
-    }
-
-    // MARK: - Private Helpers
-
-    /// Build Snapshots with loaded relationships
-    private func buildSnapshots(items: [T]) async throws -> [Snapshot<T>] {
-        // Find relationship descriptors for the joining keyPaths
-        let descriptors = T.relationshipDescriptors
-        var relationshipsToLoad: [(keyPath: AnyKeyPath, descriptor: RelationshipDescriptor)] = []
-
-        for keyPath in joiningKeyPaths {
-            let fieldName = T.fieldName(for: keyPath)
-            if let descriptor = descriptors.first(where: { $0.propertyName == fieldName }) {
-                relationshipsToLoad.append((keyPath, descriptor))
-            }
-        }
-
-        // Collect all FK values to batch load
-        var fkValuesToLoad: [String: Set<String>] = [:]  // relatedTypeName -> Set of IDs
-
-        for item in items {
-            for (keyPath, descriptor) in relationshipsToLoad {
-                if descriptor.isToMany {
-                    // To-many: collect all IDs from the array
-                    if let typedKeyPath = keyPath as? KeyPath<T, [String]> {
-                        let ids = item[keyPath: typedKeyPath]
-                        var idSet = fkValuesToLoad[descriptor.relatedTypeName] ?? []
-                        ids.forEach { idSet.insert($0) }
-                        fkValuesToLoad[descriptor.relatedTypeName] = idSet
-                    }
-                } else {
-                    // To-one: collect the single ID if present
-                    if let typedKeyPath = keyPath as? KeyPath<T, String?> {
-                        if let id = item[keyPath: typedKeyPath] {
-                            var idSet = fkValuesToLoad[descriptor.relatedTypeName] ?? []
-                            idSet.insert(id)
-                            fkValuesToLoad[descriptor.relatedTypeName] = idSet
-                        }
-                    } else if let typedKeyPath = keyPath as? KeyPath<T, String> {
-                        let id = item[keyPath: typedKeyPath]
-                        var idSet = fkValuesToLoad[descriptor.relatedTypeName] ?? []
-                        idSet.insert(id)
-                        fkValuesToLoad[descriptor.relatedTypeName] = idSet
-                    }
-                }
-            }
-        }
-
-        // Batch load related items by type
-        // Note: This is a simplified implementation. A full implementation would
-        // use the Schema to resolve types and batch load efficiently.
-        // For now, we load items via context for each unique ID.
-        var loadedItems: [String: [String: any Persistable]] = [:]  // typeName -> (id -> item)
-
-        for (typeName, ids) in fkValuesToLoad {
-            var itemsById: [String: any Persistable] = [:]
-            for id in ids {
-                // Load item using the relationship descriptor's type name
-                // This requires knowing the type at runtime - simplified for now
-                if let item = try await context.loadItemByTypeName(typeName, id: id) {
-                    itemsById[id] = item
-                }
-            }
-            loadedItems[typeName] = itemsById
-        }
-
-        // Build Snapshots with loaded relations
-        var snapshots: [Snapshot<T>] = []
-
-        for item in items {
-            var relations: [AnyKeyPath: any Sendable] = [:]
-
-            for (keyPath, descriptor) in relationshipsToLoad {
-                guard let itemsById = loadedItems[descriptor.relatedTypeName] else {
-                    continue
-                }
-
-                if descriptor.isToMany {
-                    // To-many: load array of related items
-                    if let typedKeyPath = keyPath as? KeyPath<T, [String]> {
-                        let ids = item[keyPath: typedKeyPath]
-                        let relatedItems = ids.compactMap { itemsById[$0] }
-                        relations[keyPath] = relatedItems
-                    }
-                } else {
-                    // To-one: load single related item
-                    if let typedKeyPath = keyPath as? KeyPath<T, String?> {
-                        if let id = item[keyPath: typedKeyPath], let related = itemsById[id] {
-                            relations[keyPath] = related
-                        }
-                    } else if let typedKeyPath = keyPath as? KeyPath<T, String> {
-                        let id = item[keyPath: typedKeyPath]
-                        if let related = itemsById[id] {
-                            relations[keyPath] = related
-                        }
-                    }
-                }
-            }
-
-            snapshots.append(Snapshot(item: item, relations: relations))
-        }
-
-        return snapshots
     }
 
     // MARK: - Query Planner Integration

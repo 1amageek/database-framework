@@ -186,31 +186,29 @@ struct RelationshipIndexUpdateTests {
         )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        // Use clearAll instead of deleteAll to avoid decoding issues
-        // when schema has changed (e.g., Protobuf field ordering)
-        try await context.clearAll(RTestCustomer.self)
-        try await context.clearAll(RTestOrder.self)
+    /// Generate unique test ID to avoid conflicts with parallel tests
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
     @Test("Relationship index is updated on save")
     func testRelationshipIndexUpdate() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Create customer (use unique ID to avoid conflicts)
+        let customerId = uniqueID("C-idx")
+        let orderId = uniqueID("O-idx")
+
+        // Create customer
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-idx-001"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Create order with relationship
         var order = RTestOrder(total: 99.99)
-        order.id = "O-idx-001"
-        order.customerID = "C-idx-001"
+        order.id = orderId
+        order.customerID = customerId
         context.insert(order)
         try await context.save()
 
@@ -219,8 +217,8 @@ struct RelationshipIndexUpdateTests {
             container: container,
             orderType: RTestOrder.self,
             indexName: "RTestOrder_customer",
-            customerID: "C-idx-001",
-            orderID: "O-idx-001"
+            customerID: customerId,
+            orderID: orderId
         )
         #expect(indexExists == true, "Relationship index entry should exist")
     }
@@ -228,28 +226,30 @@ struct RelationshipIndexUpdateTests {
     @Test("Relationship index is cleared on FK change")
     func testRelationshipIndexClearOnFKChange() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Create two customers (use unique IDs)
+        let customer1Id = uniqueID("C-idx")
+        let customer2Id = uniqueID("C-idx")
+        let orderId = uniqueID("O-idx")
+
+        // Create two customers
         var customer1 = RTestCustomer(name: "Alice")
-        customer1.id = "C-idx-002"
+        customer1.id = customer1Id
         var customer2 = RTestCustomer(name: "Bob")
-        customer2.id = "C-idx-003"
+        customer2.id = customer2Id
         context.insert(customer1)
         context.insert(customer2)
         try await context.save()
 
         // Create order with relationship to customer1
         var order = RTestOrder(total: 99.99)
-        order.id = "O-idx-002"
-        order.customerID = "C-idx-002"
+        order.id = orderId
+        order.customerID = customer1Id
         context.insert(order)
         try await context.save()
 
         // Change FK to customer2
-        order.customerID = "C-idx-003"
+        order.customerID = customer2Id
         context.insert(order)  // Re-insert to mark as modified
         try await context.save()
 
@@ -258,8 +258,8 @@ struct RelationshipIndexUpdateTests {
             container: container,
             orderType: RTestOrder.self,
             indexName: "RTestOrder_customer",
-            customerID: "C-idx-002",
-            orderID: "O-idx-002"
+            customerID: customer1Id,
+            orderID: orderId
         )
         #expect(oldIndexExists == false, "Old relationship index entry should be cleared")
 
@@ -268,8 +268,8 @@ struct RelationshipIndexUpdateTests {
             container: container,
             orderType: RTestOrder.self,
             indexName: "RTestOrder_customer",
-            customerID: "C-idx-003",
-            orderID: "O-idx-002"
+            customerID: customer2Id,
+            orderID: orderId
         )
         #expect(newIndexExists == true, "New relationship index entry should exist")
     }
@@ -277,20 +277,21 @@ struct RelationshipIndexUpdateTests {
     @Test("Relationship index is cleared on delete")
     func testRelationshipIndexClearOnDelete() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Create customer (use unique ID)
+        let customerId = uniqueID("C-idx")
+        let orderId = uniqueID("O-idx")
+
+        // Create customer
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-idx-004"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Create order with relationship
         var order = RTestOrder(total: 99.99)
-        order.id = "O-idx-003"
-        order.customerID = "C-idx-004"
+        order.id = orderId
+        order.customerID = customerId
         context.insert(order)
         try await context.save()
 
@@ -299,8 +300,8 @@ struct RelationshipIndexUpdateTests {
             container: container,
             orderType: RTestOrder.self,
             indexName: "RTestOrder_customer",
-            customerID: "C-idx-004",
-            orderID: "O-idx-003"
+            customerID: customerId,
+            orderID: orderId
         )
         #expect(beforeDelete == true, "Index should exist before delete")
 
@@ -313,8 +314,8 @@ struct RelationshipIndexUpdateTests {
             container: container,
             orderType: RTestOrder.self,
             indexName: "RTestOrder_customer",
-            customerID: "C-idx-004",
-            orderID: "O-idx-003"
+            customerID: customerId,
+            orderID: orderId
         )
         #expect(afterDelete == false, "Relationship index entry should be cleared after delete")
     }
@@ -368,62 +369,60 @@ struct RelationshipQueryTests {
         )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        // Use clearAll instead of deleteAll to avoid decoding issues
-        // when schema has changed (e.g., Protobuf field ordering)
-        try await context.clearAll(RTestCustomer.self)
-        try await context.clearAll(RTestOrder.self)
+    /// Generate unique test ID to avoid conflicts with parallel tests
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
     @Test("related() loads to-one related item")
     func testRelatedToOne() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Create customer (use unique ID to avoid conflicts with parallel tests)
+        let customerId = uniqueID("C-rel")
+        let orderId = uniqueID("O-rel")
+
+        // Create customer
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-rel-001"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Create order with relationship
         var order = RTestOrder(total: 99.99)
-        order.id = "O-rel-001"
-        order.customerID = "C-rel-001"
+        order.id = orderId
+        order.customerID = customerId
         context.insert(order)
         try await context.save()
 
         // Load order and get related customer using new API
-        let loadedOrder = try await context.model(for: "O-rel-001", as: RTestOrder.self)
+        let loadedOrder = try await context.model(for: orderId, as: RTestOrder.self)
         #expect(loadedOrder != nil)
 
         // New API: related(item, \.fkField, as: RelatedType.self)
         let relatedCustomer = try await context.related(loadedOrder!, \.customerID, as: RTestCustomer.self)
         #expect(relatedCustomer != nil)
-        #expect(relatedCustomer?.id == "C-rel-001")
+        #expect(relatedCustomer?.id == customerId)
         #expect(relatedCustomer?.name == "Alice")
     }
 
     @Test("related() returns nil for missing FK")
     func testRelatedToOneNilFK() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Create order WITHOUT customer FK (use unique ID to avoid conflicts)
+        let orderId = uniqueID("O-rel-nil")
+
+        // Create order WITHOUT customer FK
         var order = RTestOrder(total: 99.99)
-        order.id = "O-rel-002-nil-fk"
+        order.id = orderId
         // order.customerID is nil
         context.insert(order)
         try await context.save()
 
         // Load order and try to get related customer
-        guard let loadedOrder = try await context.model(for: "O-rel-002-nil-fk", as: RTestOrder.self) else {
-            #expect(false, "Order should exist after insert")
+        guard let loadedOrder = try await context.model(for: orderId, as: RTestOrder.self) else {
+            Issue.record("Order should exist after insert")
             return
         }
 
@@ -452,32 +451,31 @@ struct SnapshotTests {
         )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        try await context.clearAll(RTestCustomer.self)
-        try await context.clearAll(RTestOrder.self)
+    /// Generate unique test ID to avoid conflicts with parallel tests
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
     @Test("get() returns Snapshot with item")
     func testGetReturnsSnapshot() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-snap")
 
         // Create customer
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-snap-001"
+        customer.id = customerId
         customer.tier = "gold"
         context.insert(customer)
         try await context.save()
 
         // Get by ID using new API
-        let snapshot = try await context.get(RTestCustomer.self, id: "C-snap-001")
+        let snapshot = try await context.get(RTestCustomer.self, id: customerId)
         #expect(snapshot != nil)
 
         // Access properties via dynamicMember
-        #expect(snapshot?.id == "C-snap-001")
+        #expect(snapshot?.id == customerId)
         #expect(snapshot?.name == "Alice")
         #expect(snapshot?.tier == "gold")
     }
@@ -485,39 +483,38 @@ struct SnapshotTests {
     @Test("get() returns nil for missing item")
     func testGetReturnsNilForMissing() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
 
-        // Get non-existent item
-        let snapshot = try await context.get(RTestCustomer.self, id: "nonexistent")
+        // Get non-existent item with unique ID
+        let snapshot = try await context.get(RTestCustomer.self, id: uniqueID("nonexistent"))
         #expect(snapshot == nil)
     }
 
     @Test("get() with joining loads related item")
     func testGetWithJoining() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-snap")
+        let orderId = uniqueID("O-snap")
 
         // Create customer
         var customer = RTestCustomer(name: "Bob")
-        customer.id = "C-snap-002"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Create order with relationship
         var order = RTestOrder(total: 150.00)
-        order.id = "O-snap-001"
-        order.customerID = "C-snap-002"
+        order.id = orderId
+        order.customerID = customerId
         context.insert(order)
         try await context.save()
 
         // Get order with customer joined
         let snapshot = try await context.get(
             RTestOrder.self,
-            id: "O-snap-001",
+            id: orderId,
             joining: \.customerID,
             as: RTestCustomer.self
         )
@@ -529,20 +526,20 @@ struct SnapshotTests {
         // Access related customer via ref()
         let relatedCustomer = snapshot?.ref(RTestCustomer.self, \.customerID)
         #expect(relatedCustomer != nil)
-        #expect(relatedCustomer?.id == "C-snap-002")
+        #expect(relatedCustomer?.id == customerId)
         #expect(relatedCustomer?.name == "Bob")
     }
 
     @Test("get() with joining returns nil relation for nil FK")
     func testGetWithJoiningNilFK() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let orderId = uniqueID("O-snap")
 
         // Create order WITHOUT customer FK
         var order = RTestOrder(total: 75.00)
-        order.id = "O-snap-002"
+        order.id = orderId
         // customerID is nil
         context.insert(order)
         try await context.save()
@@ -550,7 +547,7 @@ struct SnapshotTests {
         // Get order with joining
         let snapshot = try await context.get(
             RTestOrder.self,
-            id: "O-snap-002",
+            id: orderId,
             joining: \.customerID,
             as: RTestCustomer.self
         )
@@ -567,55 +564,57 @@ struct SnapshotTests {
     @Test("Snapshot item property returns the underlying item")
     func testSnapshotItemProperty() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-snap")
 
         // Create customer
         var customer = RTestCustomer(name: "Charlie")
-        customer.id = "C-snap-003"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Get snapshot
-        let snapshot = try await context.get(RTestCustomer.self, id: "C-snap-003")
+        let snapshot = try await context.get(RTestCustomer.self, id: customerId)
         #expect(snapshot != nil)
 
         // Access underlying item
         let item = snapshot?.item
-        #expect(item?.id == "C-snap-003")
+        #expect(item?.id == customerId)
         #expect(item?.name == "Charlie")
     }
 
     @Test("execute() returns Snapshot array")
     func testExecuteReturnsSnapshots() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let id1 = uniqueID("C-fetch")
+        let id2 = uniqueID("C-fetch")
+        let id3 = uniqueID("C-fetch")
 
         // Create multiple customers
         var customer1 = RTestCustomer(name: "Alice")
-        customer1.id = "C-fetch-001"
+        customer1.id = id1
         var customer2 = RTestCustomer(name: "Bob")
-        customer2.id = "C-fetch-002"
+        customer2.id = id2
         var customer3 = RTestCustomer(name: "Charlie")
-        customer3.id = "C-fetch-003"
+        customer3.id = id3
 
         context.insert(customer1)
         context.insert(customer2)
         context.insert(customer3)
         try await context.save()
 
-        // Fetch all customers
+        // Fetch all customers - check that our 3 are included
         let snapshots = try await context.fetch(RTestCustomer.self).execute()
-        #expect(snapshots.count == 3)
+        #expect(snapshots.count >= 3)
 
-        // Access properties via dynamicMember
-        let names = Set(snapshots.map { $0.name })
-        #expect(names.contains("Alice"))
-        #expect(names.contains("Bob"))
-        #expect(names.contains("Charlie"))
+        // Verify our customers are in the results
+        let ids = Set(snapshots.map { $0.id })
+        #expect(ids.contains(id1))
+        #expect(ids.contains(id2))
+        #expect(ids.contains(id3))
     }
 
     // MARK: - To-Many Snapshot Tests
@@ -623,17 +622,20 @@ struct SnapshotTests {
     @Test("get() with To-Many joining loads related items")
     func testGetWithToManyJoining() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
+        let orderId1 = uniqueID("O-many")
+        let orderId2 = uniqueID("O-many")
+        let orderId3 = uniqueID("O-many")
 
         // Create orders first
         var order1 = RTestOrder(total: 100.00)
-        order1.id = "O-many-001"
+        order1.id = orderId1
         var order2 = RTestOrder(total: 200.00)
-        order2.id = "O-many-002"
+        order2.id = orderId2
         var order3 = RTestOrder(total: 300.00)
-        order3.id = "O-many-003"
+        order3.id = orderId3
         context.insert(order1)
         context.insert(order2)
         context.insert(order3)
@@ -641,15 +643,15 @@ struct SnapshotTests {
 
         // Create customer with order IDs
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-many-001"
-        customer.orderIDs = ["O-many-001", "O-many-002", "O-many-003"]
+        customer.id = customerId
+        customer.orderIDs = [orderId1, orderId2, orderId3]
         context.insert(customer)
         try await context.save()
 
         // Get customer with orders joined
         let snapshot = try await context.get(
             RTestCustomer.self,
-            id: "C-many-001",
+            id: customerId,
             joining: \.orderIDs,
             as: RTestOrder.self
         )
@@ -673,13 +675,13 @@ struct SnapshotTests {
     @Test("get() with empty FK array returns empty refs()")
     func testGetWithEmptyFKArray() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
 
         // Create customer with empty orderIDs
         var customer = RTestCustomer(name: "Bob")
-        customer.id = "C-many-002"
+        customer.id = customerId
         // orderIDs is empty by default
         context.insert(customer)
         try await context.save()
@@ -687,7 +689,7 @@ struct SnapshotTests {
         // Get customer with orders joined
         let snapshot = try await context.get(
             RTestCustomer.self,
-            id: "C-many-002",
+            id: customerId,
             joining: \.orderIDs,
             as: RTestOrder.self
         )
@@ -702,25 +704,26 @@ struct SnapshotTests {
     @Test("refs() returns empty array when not loaded")
     func testRefsReturnsEmptyWhenNotLoaded() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
+        let orderId = uniqueID("O-many")
 
         // Create orders
         var order1 = RTestOrder(total: 50.00)
-        order1.id = "O-many-004"
+        order1.id = orderId
         context.insert(order1)
         try await context.save()
 
         // Create customer with order ID
         var customer = RTestCustomer(name: "Charlie")
-        customer.id = "C-many-003"
-        customer.orderIDs = ["O-many-004"]
+        customer.id = customerId
+        customer.orderIDs = [orderId]
         context.insert(customer)
         try await context.save()
 
         // Get customer WITHOUT joining
-        let snapshot = try await context.get(RTestCustomer.self, id: "C-many-003")
+        let snapshot = try await context.get(RTestCustomer.self, id: customerId)
         #expect(snapshot != nil)
 
         // refs() should return empty array (not loaded)
@@ -731,27 +734,30 @@ struct SnapshotTests {
     @Test("refs() handles non-existent FK IDs gracefully")
     func testRefsHandlesNonExistentIDs() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
+        let orderId = uniqueID("O-many")
+        let nonExistentId1 = uniqueID("O-nonexistent")
+        let nonExistentId2 = uniqueID("O-nonexistent")
 
         // Create only one order
         var order1 = RTestOrder(total: 75.00)
-        order1.id = "O-many-005"
+        order1.id = orderId
         context.insert(order1)
         try await context.save()
 
         // Create customer with some non-existent order IDs
         var customer = RTestCustomer(name: "Diana")
-        customer.id = "C-many-004"
-        customer.orderIDs = ["O-many-005", "O-nonexistent-001", "O-nonexistent-002"]
+        customer.id = customerId
+        customer.orderIDs = [orderId, nonExistentId1, nonExistentId2]
         context.insert(customer)
         try await context.save()
 
         // Get customer with orders joined
         let snapshot = try await context.get(
             RTestCustomer.self,
-            id: "C-many-004",
+            id: customerId,
             joining: \.orderIDs,
             as: RTestOrder.self
         )
@@ -760,59 +766,61 @@ struct SnapshotTests {
         // refs() should only return existing orders
         let orders = snapshot?.refs(RTestOrder.self, \.orderIDs) ?? []
         #expect(orders.count == 1)
-        #expect(orders.first?.id == "O-many-005")
+        #expect(orders.first?.id == orderId)
     }
 
     @Test("related() loads To-Many related items")
     func testRelatedToMany() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
+        let orderId1 = uniqueID("O-many")
+        let orderId2 = uniqueID("O-many")
 
         // Create orders
         var order1 = RTestOrder(total: 10.00)
-        order1.id = "O-many-006"
+        order1.id = orderId1
         var order2 = RTestOrder(total: 20.00)
-        order2.id = "O-many-007"
+        order2.id = orderId2
         context.insert(order1)
         context.insert(order2)
         try await context.save()
 
         // Create customer with order IDs
         var customer = RTestCustomer(name: "Eve")
-        customer.id = "C-many-005"
-        customer.orderIDs = ["O-many-006", "O-many-007"]
+        customer.id = customerId
+        customer.orderIDs = [orderId1, orderId2]
         context.insert(customer)
         try await context.save()
 
         // Load customer and get related orders using related() API
-        let loadedCustomer = try await context.model(for: "C-many-005", as: RTestCustomer.self)
+        let loadedCustomer = try await context.model(for: customerId, as: RTestCustomer.self)
         #expect(loadedCustomer != nil)
 
         let relatedOrders = try await context.related(loadedCustomer!, \.orderIDs, as: RTestOrder.self)
         #expect(relatedOrders.count == 2)
 
         let orderIDs = Set(relatedOrders.map { $0.id })
-        #expect(orderIDs.contains("O-many-006"))
-        #expect(orderIDs.contains("O-many-007"))
+        #expect(orderIDs.contains(orderId1))
+        #expect(orderIDs.contains(orderId2))
     }
 
     @Test("related() returns empty array for empty FK array")
     func testRelatedToManyEmptyArray() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-many")
 
         // Create customer with no orders
         var customer = RTestCustomer(name: "Frank")
-        customer.id = "C-many-006"
+        customer.id = customerId
         context.insert(customer)
         try await context.save()
 
         // Load customer
-        let loadedCustomer = try await context.model(for: "C-many-006", as: RTestCustomer.self)
+        let loadedCustomer = try await context.model(for: customerId, as: RTestCustomer.self)
         #expect(loadedCustomer != nil)
 
         // related() should return empty array
@@ -840,32 +848,33 @@ struct ToManyRelationshipIndexUpdateTests {
         )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        try await context.clearAll(RTestCustomer.self)
-        try await context.clearAll(RTestOrder.self)
+    /// Generate unique test ID to avoid conflicts with parallel tests
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
     @Test("To-Many relationship index entries are created on save")
     func testToManyIndexCreation() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-tm-idx")
+        let orderId1 = uniqueID("O-tm-idx")
+        let orderId2 = uniqueID("O-tm-idx")
 
         // Create orders
         var order1 = RTestOrder(total: 100.00)
-        order1.id = "O-tm-idx-001"
+        order1.id = orderId1
         var order2 = RTestOrder(total: 200.00)
-        order2.id = "O-tm-idx-002"
+        order2.id = orderId2
         context.insert(order1)
         context.insert(order2)
         try await context.save()
 
         // Create customer with order IDs
         var customer = RTestCustomer(name: "Alice")
-        customer.id = "C-tm-idx-001"
-        customer.orderIDs = ["O-tm-idx-001", "O-tm-idx-002"]
+        customer.id = customerId
+        customer.orderIDs = [orderId1, orderId2]
         context.insert(customer)
         try await context.save()
 
@@ -873,34 +882,37 @@ struct ToManyRelationshipIndexUpdateTests {
         let index1Exists = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-001",
-            customerID: "C-tm-idx-001"
+            orderID: orderId1,
+            customerID: customerId
         )
-        #expect(index1Exists == true, "Index entry for O-tm-idx-001 should exist")
+        #expect(index1Exists == true, "Index entry for order 1 should exist")
 
         let index2Exists = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-002",
-            customerID: "C-tm-idx-001"
+            orderID: orderId2,
+            customerID: customerId
         )
-        #expect(index2Exists == true, "Index entry for O-tm-idx-002 should exist")
+        #expect(index2Exists == true, "Index entry for order 2 should exist")
     }
 
     @Test("To-Many index entries are updated when FK array changes")
     func testToManyIndexUpdateOnChange() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-tm-idx")
+        let orderId1 = uniqueID("O-tm-idx")
+        let orderId2 = uniqueID("O-tm-idx")
+        let orderId3 = uniqueID("O-tm-idx")
 
         // Create orders
         var order1 = RTestOrder(total: 100.00)
-        order1.id = "O-tm-idx-003"
+        order1.id = orderId1
         var order2 = RTestOrder(total: 200.00)
-        order2.id = "O-tm-idx-004"
+        order2.id = orderId2
         var order3 = RTestOrder(total: 300.00)
-        order3.id = "O-tm-idx-005"
+        order3.id = orderId3
         context.insert(order1)
         context.insert(order2)
         context.insert(order3)
@@ -908,70 +920,71 @@ struct ToManyRelationshipIndexUpdateTests {
 
         // Create customer with initial order IDs
         var customer = RTestCustomer(name: "Bob")
-        customer.id = "C-tm-idx-002"
-        customer.orderIDs = ["O-tm-idx-003", "O-tm-idx-004"]
+        customer.id = customerId
+        customer.orderIDs = [orderId1, orderId2]
         context.insert(customer)
         try await context.save()
 
         // Verify initial index entries
-        var idx3 = try await verifyToManyIndexEntry(
+        var idx1 = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-003",
-            customerID: "C-tm-idx-002"
+            orderID: orderId1,
+            customerID: customerId
         )
-        #expect(idx3 == true)
+        #expect(idx1 == true)
 
-        // Update customer: remove order 3, add order 5
-        customer.orderIDs = ["O-tm-idx-004", "O-tm-idx-005"]
+        // Update customer: remove order 1, add order 3
+        customer.orderIDs = [orderId2, orderId3]
         context.insert(customer)
         try await context.save()
 
         // Verify old index entry is removed
-        idx3 = try await verifyToManyIndexEntry(
+        idx1 = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-003",
-            customerID: "C-tm-idx-002"
+            orderID: orderId1,
+            customerID: customerId
         )
-        #expect(idx3 == false, "Old index entry should be removed")
+        #expect(idx1 == false, "Old index entry should be removed")
 
         // Verify new index entry exists
-        let idx5 = try await verifyToManyIndexEntry(
+        let idx3 = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-005",
-            customerID: "C-tm-idx-002"
+            orderID: orderId3,
+            customerID: customerId
         )
-        #expect(idx5 == true, "New index entry should exist")
+        #expect(idx3 == true, "New index entry should exist")
 
         // Verify unchanged entry still exists
-        let idx4 = try await verifyToManyIndexEntry(
+        let idx2 = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-004",
-            customerID: "C-tm-idx-002"
+            orderID: orderId2,
+            customerID: customerId
         )
-        #expect(idx4 == true, "Unchanged index entry should still exist")
+        #expect(idx2 == true, "Unchanged index entry should still exist")
     }
 
     @Test("To-Many index entries are cleared on delete")
     func testToManyIndexClearOnDelete() async throws {
         let container = try await setupContainer()
-        try await cleanup(container: container)
-
         let context = container.newContext()
+
+        let customerId = uniqueID("C-tm-idx")
+        let orderId = uniqueID("O-tm-idx")
 
         // Create orders
         var order1 = RTestOrder(total: 100.00)
-        order1.id = "O-tm-idx-006"
+        order1.id = orderId
         context.insert(order1)
         try await context.save()
 
         // Create customer with order ID
         var customer = RTestCustomer(name: "Charlie")
-        customer.id = "C-tm-idx-003"
-        customer.orderIDs = ["O-tm-idx-006"]
+        customer.id = customerId
+        customer.orderIDs = [orderId]
         context.insert(customer)
         try await context.save()
 
@@ -979,8 +992,8 @@ struct ToManyRelationshipIndexUpdateTests {
         var indexExists = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-006",
-            customerID: "C-tm-idx-003"
+            orderID: orderId,
+            customerID: customerId
         )
         #expect(indexExists == true)
 
@@ -992,8 +1005,8 @@ struct ToManyRelationshipIndexUpdateTests {
         indexExists = try await verifyToManyIndexEntry(
             container: container,
             indexName: "RTestCustomer_orders",
-            orderID: "O-tm-idx-006",
-            customerID: "C-tm-idx-003"
+            orderID: orderId,
+            customerID: customerId
         )
         #expect(indexExists == false, "Index entry should be cleared after delete")
     }

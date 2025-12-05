@@ -84,20 +84,38 @@ public struct CoveringIndexMetadata: Sendable {
 public struct IndexEntryDecoder<T: Persistable & Codable>: Sendable {
     private let metadata: CoveringIndexMetadata
 
-    /// Field name to field number mapping (built from T.allFields order)
+    /// Field name to field number mapping (uses DJB2 hash to match ProtobufDecoder)
     private let fieldNumberMap: [String: Int]
 
     public init(metadata: CoveringIndexMetadata) {
         self.metadata = metadata
 
-        // Build field number map based on T.allFields order
+        // Build field number map using DJB2 hash
         // This matches ProtobufEncoder/Decoder's field number assignment
         var map: [String: Int] = [:]
-        for (index, fieldName) in T.allFields.enumerated() {
-            // ProtobufEncoder uses 1-based field numbers
-            map[fieldName] = index + 1
+        for fieldName in T.allFields {
+            map[fieldName] = Self.deriveFieldNumber(from: fieldName)
         }
         self.fieldNumberMap = map
+    }
+
+    /// Derives a deterministic field number from a field name.
+    /// Uses DJB2 hash algorithm for stability across runs.
+    /// This must match ProtobufDecoder's implementation exactly.
+    private static func deriveFieldNumber(from fieldName: String) -> Int {
+        var hash: UInt64 = 5381
+        for char in fieldName.utf8 {
+            hash = ((hash << 5) &+ hash) &+ UInt64(char)  // hash * 33 + char
+        }
+        // Protobuf field numbers must be positive and <= 536870911 (2^29-1)
+        // Reserved range 19000-19999 should be avoided
+        let maxFieldNumber: UInt64 = 536870911
+        let rawNumber = Int((hash % (maxFieldNumber - 20000)) + 1)
+        // Skip reserved range 19000-19999
+        if rawNumber >= 19000 && rawNumber <= 19999 {
+            return rawNumber + 1000
+        }
+        return rawNumber
     }
 
     /// Decode an item from an index entry

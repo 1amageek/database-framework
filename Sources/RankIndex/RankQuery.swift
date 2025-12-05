@@ -104,7 +104,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute using in-memory calculation (fallback path)
     private func executeInMemory() async throws -> [(item: T, rank: Int)] {
-        let items = try await queryContext.context.fetch(T.self).executeRaw()
+        let items = try await queryContext.context.fetch(T.self).execute()
 
         // Extract values and sort
         let itemsWithValues: [(item: T, value: Double)] = items.compactMap { item in

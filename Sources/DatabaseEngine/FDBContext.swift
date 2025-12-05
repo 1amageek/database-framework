@@ -940,47 +940,6 @@ public final class FDBContext: Sendable {
             try block(model)
         }
     }
-
-    // MARK: - Dynamic Type Loading
-
-    /// Load an item by type name and string ID
-    ///
-    /// Used by QueryExecutor for batch loading related items in `joining()`.
-    /// This is a general-purpose method for loading items when the type
-    /// is determined at runtime.
-    ///
-    /// - Parameters:
-    ///   - typeName: The Persistable type name (e.g., "Customer")
-    ///   - id: The item ID as a string
-    /// - Returns: The loaded item, or nil if not found
-    public func loadItemByTypeName(
-        _ typeName: String,
-        id: String
-    ) async throws -> (any Persistable)? {
-        // Find the entity in schema
-        guard let entity = container.schema.entities.first(where: { $0.name == typeName }) else {
-            return nil
-        }
-
-        let persistableType = entity.persistableType
-        let subspace = try await container.resolveDirectory(for: persistableType)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let typeSubspace = itemSubspace.subspace(typeName)
-        let key = typeSubspace.pack(Tuple([id]))
-
-        var result: (any Persistable)?
-
-        try await container.database.withTransaction { tx in
-            guard let data = try await tx.getValue(for: key, snapshot: false) else {
-                return
-            }
-
-            let decoder = ProtobufDecoder()
-            result = try decoder.decode(persistableType, from: Data(data))
-        }
-
-        return result
-    }
 }
 
 // MARK: - Errors

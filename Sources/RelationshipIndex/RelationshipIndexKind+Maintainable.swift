@@ -1,8 +1,7 @@
 // RelationshipIndexKind+Maintainable.swift
 // RelationshipIndex - IndexKindMaintainable extension for RelationshipIndexKind
 //
-// This file provides the bridge between RelationshipIndexKind (defined in Relationship package)
-// and RelationshipIndexMaintainer (defined in this package).
+// Bridges RelationshipIndexKind (database-kit) with RelationshipIndexMaintainer (database-framework).
 
 import Foundation
 import Core
@@ -12,39 +11,8 @@ import FoundationDB
 
 // MARK: - IndexKindMaintainable Extension
 
-/// Extends RelationshipIndexKind (from Relationship) with IndexKindMaintainable conformance
-///
-/// **Design**:
-/// - RelationshipIndexKind struct is defined in Relationship (FDB-independent)
-/// - RelationshipIndexMaintainer is defined in RelationshipIndex (FDB-dependent)
-/// - This extension bridges them together
-///
-/// **Configuration**:
-/// Relationship indexes require `RelationshipIndexConfiguration` to provide the
-/// `relatedItemLoader` callback. Without this configuration, relationship indexes
-/// will be created but will not build index entries (they'll be skipped).
-///
-/// **Usage**:
-/// ```swift
-/// let kind = RelationshipIndexKind<Order, Customer>(
-///     foreignKey: \.customerID,
-///     relatedFields: [\.name],
-///     localFields: [\.total]
-/// )
-/// let maintainer = kind.makeIndexMaintainer(...)  // Returns RelationshipIndexMaintainer
-/// ```
 extension RelationshipIndexKind: IndexKindMaintainable {
     /// Create a RelationshipIndexMaintainer for this index kind
-    ///
-    /// This bridges `RelationshipIndexKind` (metadata) with `RelationshipIndexMaintainer` (runtime).
-    /// Called by the system when building or maintaining indexes.
-    ///
-    /// - Parameters:
-    ///   - index: Index definition
-    ///   - subspace: FDB subspace for this index
-    ///   - idExpression: Expression for extracting item's unique identifier
-    ///   - configurations: Index configurations (may contain RelationshipIndexConfiguration)
-    /// - Returns: RelationshipIndexMaintainer instance
     public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
@@ -59,13 +27,11 @@ extension RelationshipIndexKind: IndexKindMaintainable {
         // Extract the related item loader from configuration (if available)
         let relatedItemLoader = relationshipConfig?.relatedItemLoader
 
-        // Pass the metadata strings to the maintainer
         return RelationshipIndexMaintainer<Item>(
-            relationshipPropertyName: self.relationshipPropertyName,
             foreignKeyFieldName: self.foreignKeyFieldName,
             relatedTypeName: self.relatedTypeName,
             relatedFieldNames: self.relatedFieldNames,
-            localFieldNames: self.localFieldNames,
+            isToMany: self.isToMany,
             index: index,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression,
