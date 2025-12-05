@@ -297,6 +297,15 @@ struct PolymorphableFDBTests {
             let container = FDBContainer(database: database, schema: schema)
             let context = container.newContext()
 
+            // Clean up any leftover data from previous test runs
+            // Clear polymorphic directory to ensure test isolation
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: TestArticle.self)
+            let polyItemSubspace = polySubspace.subspace(SubspaceKey.items)
+            try await database.withTransaction { transaction in
+                let (begin, end) = polyItemSubspace.range()
+                transaction.clearRange(beginKey: begin, endKey: end)
+            }
+
             // Create article and report
             let article = TestArticle(title: "Article Title", content: "Article content")
             let report = TestReport(title: "Report Title", data: Data("Report data".utf8))

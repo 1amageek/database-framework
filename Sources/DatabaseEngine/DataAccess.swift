@@ -466,6 +466,8 @@ public struct DataAccess: Sendable {
             return intArray.map { Int64($0) as any TupleElement }
         case let int64Array as [Int64]:
             return int64Array.map { $0 as any TupleElement }
+        case let stringArray as [String]:
+            return stringArray.map { $0 as any TupleElement }
         case let arrayValue as [any TupleElement]:
             return arrayValue
         default:

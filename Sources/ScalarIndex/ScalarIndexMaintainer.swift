@@ -79,8 +79,12 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Update index when item changes
     ///
     /// **Process**:
-    /// 1. Remove old index entry (if oldItem exists)
-    /// 2. Add new index entry (if newItem exists)
+    /// 1. Remove old index entries (if oldItem exists)
+    /// 2. Add new index entries (if newItem exists)
+    ///
+    /// **Array Field Handling**:
+    /// For array-typed fields (e.g., `[String]` in To-Many relationships),
+    /// creates one index entry per array element instead of a single entry.
     ///
     /// **Uniqueness check**: Performed implicitly by FDB
     /// - If unique constraint violated, transaction will fail
@@ -94,17 +98,21 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws {
-        // Remove old index entry
+        // Remove old index entries
         if let oldItem = oldItem {
-            let oldKey = try buildIndexKey(for: oldItem)
-            transaction.clear(key: oldKey)
+            let oldKeys = try buildIndexKeys(for: oldItem)
+            for key in oldKeys {
+                transaction.clear(key: key)
+            }
         }
 
-        // Add new index entry
+        // Add new index entries
         if let newItem = newItem {
-            let newKey = try buildIndexKey(for: newItem)
-            // Value is empty for scalar indexes
-            transaction.setValue([], for: newKey)
+            let newKeys = try buildIndexKeys(for: newItem)
+            for key in newKeys {
+                // Value is empty for scalar indexes
+                transaction.setValue([], for: key)
+            }
         }
     }
 
@@ -119,30 +127,43 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let key = try buildIndexKey(for: item, id: id)
-        transaction.setValue([], for: key)
+        let keys = try buildIndexKeys(for: item, id: id)
+        for key in keys {
+            transaction.setValue([], for: key)
+        }
     }
 
     /// Compute expected index keys for an item (for scrubber verification)
     ///
-    /// Returns the index key that should exist for this item.
+    /// Returns the index keys that should exist for this item.
+    /// For array fields, returns one key per array element.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        return [try buildIndexKey(for: item, id: id)]
+        return try buildIndexKeys(for: item, id: id)
     }
 
     // MARK: - Private Methods
 
-    /// Build index key for an item
+    /// Build index keys for an item
     ///
-    /// Key structure: [subspace][fieldValues...][id]
+    /// Key structure: [subspace][fieldValue][id]
+    ///
+    /// **Array Field Handling**:
+    /// For single-field indexes on array types (e.g., To-Many FK fields),
+    /// creates one key per array element. This enables reverse lookups like
+    /// "find all customers who have order O001 in their orderIDs".
+    ///
+    /// Example:
+    /// - Field `orderIDs = ["O001", "O002"]` produces:
+    ///   - Key: `[subspace]["O001"]["C001"]`
+    ///   - Key: `[subspace]["O002"]["C001"]`
     ///
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
-    private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> [UInt8] {
+    private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [[UInt8]] {
         // Extract field values using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
         let fieldValues = try DataAccess.evaluateIndexFields(
@@ -159,21 +180,60 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
             itemId = try DataAccess.extractId(from: item, using: idExpression)
         }
 
-        // Build key: [subspace][fieldValues...][id]
-        var allElements: [any TupleElement] = []
-        for value in fieldValues {
-            allElements.append(value)
+        // Handle empty field values (e.g., empty array) - no index entries
+        if fieldValues.isEmpty {
+            return []
         }
 
-        // Append id elements
-        for i in 0..<itemId.count {
-            if let element = itemId[i] {
-                allElements.append(element)
+        // For single-field indexes on array types:
+        // If we have multiple field values from a single KeyPath, and only 1 KeyPath,
+        // treat it as an array field and create separate keys for each element.
+        //
+        // For composite indexes (multiple KeyPaths), we concatenate all values
+        // into a single key as before.
+        //
+        // Note: We check isArrayField from Index metadata when available,
+        // otherwise use the expression's columnCount to determine field count.
+        // Using columnCount ensures composite indexes (e.g., [city, age]) are
+        // correctly identified even when keyPaths is nil.
+        let indexFieldCount = index.keyPaths?.count ?? index.rootExpression.columnCount
+        let isSingleFieldArrayIndex = indexFieldCount == 1 && fieldValues.count > 1
+
+        if isSingleFieldArrayIndex {
+            // Array field: create one key per element
+            var keys: [[UInt8]] = []
+            for value in fieldValues {
+                var allElements: [any TupleElement] = [value]
+
+                // Append id elements
+                for i in 0..<itemId.count {
+                    if let element = itemId[i] {
+                        allElements.append(element)
+                    }
+                }
+
+                let key = subspace.pack(Tuple(allElements))
+                try validateKeySize(key)
+                keys.append(key)
             }
-        }
+            return keys
+        } else {
+            // Scalar/composite field: single key with all values
+            var allElements: [any TupleElement] = []
+            for value in fieldValues {
+                allElements.append(value)
+            }
 
-        let key = subspace.pack(Tuple(allElements))
-        try validateKeySize(key)
-        return key
+            // Append id elements
+            for i in 0..<itemId.count {
+                if let element = itemId[i] {
+                    allElements.append(element)
+                }
+            }
+
+            let key = subspace.pack(Tuple(allElements))
+            try validateKeySize(key)
+            return [key]
+        }
     }
 }

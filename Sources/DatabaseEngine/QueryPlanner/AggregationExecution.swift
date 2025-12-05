@@ -173,7 +173,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         // TODO: Check for CountIndex and use it if available
         // For now, fall back to in-memory counting
 
-        let items = try await context.fetch(T.self).execute()
+        let items = try await context.fetch(T.self).executeRaw()
 
         if let predicate = predicate {
             let evaluator = PredicateEvaluator<T>()
@@ -199,7 +199,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         // TODO: Check for matching aggregation index
         // For now, compute in memory
 
-        var items = try await context.fetch(T.self).execute()
+        var items = try await context.fetch(T.self).executeRaw()
 
         if let predicate = predicate {
             let evaluator = PredicateEvaluator<T>()
@@ -233,7 +233,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         having: ((AggregationResult) -> Bool)? = nil
     ) async throws -> [AggregationResult] {
         // Fetch all items
-        var items = try await context.fetch(T.self).execute()
+        var items = try await context.fetch(T.self).executeRaw()
 
         // Apply predicate filter
         if let predicate = predicate {
@@ -289,7 +289,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         predicate: Predicate<T>? = nil
     ) async throws -> [AggregationType: [AggregationResult]] {
         // Fetch items once
-        var items = try await context.fetch(T.self).execute()
+        var items = try await context.fetch(T.self).executeRaw()
 
         if let predicate = predicate {
             let evaluator = PredicateEvaluator<T>()

@@ -48,7 +48,7 @@ struct QPTestUser: Persistable {
         ["id", "name", "email", "age", "score", "isActive", "department", "createdAt"]
     }
 
-    static var indexDescriptors: [IndexDescriptor] {
+    static var descriptors: [any Descriptor] {
         return [
             IndexDescriptor(name: "idx_email", keyPaths: [\QPTestUser.email], kind: ScalarIndexKind<QPTestUser>(fields: [\.email])),
             IndexDescriptor(name: "idx_age", keyPaths: [\QPTestUser.age], kind: ScalarIndexKind<QPTestUser>(fields: [\.age])),

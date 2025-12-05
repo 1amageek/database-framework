@@ -282,6 +282,48 @@ if let polyType = entity.persistableType as? any Polymorphable.Type {
 | SQL Interface | ✅ ANTLR parser | ❌ | Not implemented (SwiftData-like API) |
 | Weak Read Semantics | ✅ Cached read version | ❌ | Not implemented |
 
+### Extension Pattern for Optional Features
+
+**設計原則**: このプロジェクトは SPM dependencies でカスタマイズ可能なデータベースを目指している。オプション機能は extension で提供し、コアを変更しない。
+
+**パターン**:
+```swift
+// 各機能モジュールが FDBContext に extension で API を追加
+// ユーザーは必要なモジュールを import して使う
+
+// VectorIndex モジュール
+extension FDBContext {
+    public func findSimilar<T: Persistable>(_ type: T.Type) -> VectorQueryBuilder<T>
+}
+
+// FullTextIndex モジュール
+extension FDBContext {
+    public func search<T: Persistable>(_ type: T.Type) -> FullTextQueryBuilder<T>
+}
+
+// Relationship (DatabaseEngine 内)
+extension FDBContext {
+    public func related<T, R>(_ item: T, _ relationship: KeyPath<T, R?>) async throws -> R?
+    public func related<T, R>(_ item: T, _ relationship: KeyPath<T, [R]>) async throws -> [R]
+}
+```
+
+**重要な禁止事項**:
+- ❌ コアの `FDBContext.save()` や `delete()` を直接変更してオプション機能を埋め込まない
+- ❌ 使わないユーザーにオーバーヘッドを強制しない
+- ✅ 新しいメソッドを extension で追加
+- ✅ ユーザーが明示的に呼び出す
+
+**Relationship の Delete Rule Enforcement**:
+```swift
+// 基本の delete (relationship rules なし)
+context.delete(customer)
+try await context.save()
+
+// Delete rule enforcement が必要な場合は extension メソッドを使用
+try await context.deleteEnforcingRelationshipRules(customer)
+```
+
 ### Index Maintainer Pattern
 
 Each index module follows this pattern:

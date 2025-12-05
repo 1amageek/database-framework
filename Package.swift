@@ -20,10 +20,11 @@ let package = Package(
         .library(name: "VersionIndex", targets: ["VersionIndex"]),
         .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
+        .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
         .library(name: "Database", targets: ["Database"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        .package(path: "../database-kit"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
             branch: "feature/directory-layer"
@@ -38,6 +39,7 @@ let package = Package(
             name: "DatabaseEngine",
             dependencies: [
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),  // For joining() support
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
@@ -150,6 +152,16 @@ let package = Package(
             ]
         ),
         .target(
+            name: "RelationshipIndex",
+            dependencies: [
+                "DatabaseEngine",
+                "ScalarIndex",  // For FK index lookups
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        .target(
             name: "Database",
             dependencies: [
                 "DatabaseEngine",
@@ -165,6 +177,7 @@ let package = Package(
                 "VersionIndex",
                 "BitmapIndex",
                 "LeaderboardIndex",
+                "RelationshipIndex",
             ]
         ),
         // Test Support (shared test utilities)
@@ -184,6 +197,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "ScalarIndex",
+                "RelationshipIndex",
                 "TestSupport",
             ],
             exclude: ["IndexTestDesign.md"],

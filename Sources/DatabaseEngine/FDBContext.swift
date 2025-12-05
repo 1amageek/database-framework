@@ -1,3 +1,4 @@
+import Foundation
 import FoundationDB
 import Core
 import Synchronization
@@ -235,6 +236,35 @@ public final class FDBContext: Sendable {
         let models = try await fetch(Query<T>())
         for model in models {
             delete(model)
+        }
+    }
+
+    /// Clear all data for a type without decoding (useful for tests and schema migrations)
+    ///
+    /// Unlike `deleteAll`, this method directly clears the subspace range without
+    /// loading/decoding any data. Use this when:
+    /// - Schema has changed and old data cannot be decoded
+    /// - You need efficient bulk deletion without per-record operations
+    ///
+    /// **Note**: This does NOT track deletions in the context. Changes are applied immediately.
+    ///
+    /// - Parameter type: The Persistable type to clear
+    public func clearAll<T: Persistable>(_ type: T.Type) async throws {
+        let subspace = try await container.resolveDirectory(for: type)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let indexSubspace = subspace.subspace(SubspaceKey.indexes)
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
+
+        try await container.database.withTransaction { transaction in
+            // Clear all items for this type
+            let (itemBegin, itemEnd) = typeSubspace.range()
+            transaction.clearRange(beginKey: itemBegin, endKey: itemEnd)
+
+            // Clear all indexes for this type
+            for descriptor in T.indexDescriptors {
+                let indexRange = indexSubspace.subspace(descriptor.name).range()
+                transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
+            }
         }
     }
 
@@ -513,7 +543,7 @@ public final class FDBContext: Sendable {
     }
 
     /// Save a single model using the provided store and transaction
-    private func saveModel(
+    internal func saveModel(
         _ model: any Persistable,
         store: FDBDataStore,
         transaction: any TransactionProtocol,
@@ -596,7 +626,7 @@ public final class FDBContext: Sendable {
     }
 
     /// Delete a single model using the provided store and transaction
-    private func deleteModel(
+    internal func deleteModel(
         _ model: any Persistable,
         store: FDBDataStore,
         transaction: any TransactionProtocol
@@ -701,6 +731,7 @@ public final class FDBContext: Sendable {
 
         for descriptor in indexDescriptors {
             let indexSubspaceForIndex = store.indexSubspace.subspace(descriptor.name)
+            let keyPathCount = descriptor.keyPaths.count
 
             // Clear old index entries if updating
             if oldData != nil {
@@ -715,12 +746,16 @@ public final class FDBContext: Sendable {
             if let deletingModel = deletingModel {
                 let oldValues = extractIndexValues(from: deletingModel, keyPaths: descriptor.keyPaths)
                 if !oldValues.isEmpty {
-                    let oldIndexKey = buildIndexKey(
+                    // Use buildIndexKeys to handle array fields
+                    let oldIndexKeys = buildIndexKeys(
                         subspace: indexSubspaceForIndex,
                         values: oldValues,
-                        id: id
+                        id: id,
+                        keyPathCount: keyPathCount
                     )
-                    transaction.clear(key: oldIndexKey)
+                    for key in oldIndexKeys {
+                        transaction.clear(key: key)
+                    }
                 }
             }
 
@@ -728,12 +763,16 @@ public final class FDBContext: Sendable {
             if let newModel = newModel {
                 let newValues = extractIndexValues(from: newModel, keyPaths: descriptor.keyPaths)
                 if !newValues.isEmpty {
-                    let newIndexKey = buildIndexKey(
+                    // Use buildIndexKeys to handle array fields (creates separate keys for each element)
+                    let newIndexKeys = buildIndexKeys(
                         subspace: indexSubspaceForIndex,
                         values: newValues,
-                        id: id
+                        id: id,
+                        keyPathCount: keyPathCount
                     )
-                    transaction.setValue([], for: newIndexKey)
+                    for key in newIndexKeys {
+                        transaction.setValue([], for: key)
+                    }
                 }
             }
         }
@@ -783,7 +822,7 @@ public final class FDBContext: Sendable {
         (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
     }
 
-    /// Build index key
+    /// Build index key (single key with all values)
     private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
         var elements: [any TupleElement] = values
         for i in 0..<id.count {
@@ -792,6 +831,47 @@ public final class FDBContext: Sendable {
             }
         }
         return subspace.pack(Tuple(elements))
+    }
+
+    /// Build index keys (handles array fields by creating separate keys for each element)
+    ///
+    /// For single-field indexes on array types (e.g., To-Many FK fields like `[String]`),
+    /// creates one key per array element. This enables reverse lookups like
+    /// "find all customers who have order O001".
+    ///
+    /// Example:
+    /// - Field `orderIDs = ["O001", "O002"]` with keyPathCount=1 produces:
+    ///   - Key: `[subspace]["O001"][id]`
+    ///   - Key: `[subspace]["O002"][id]`
+    ///
+    /// For composite indexes (multiple fields), all values go into a single key.
+    private func buildIndexKeys(
+        subspace: Subspace,
+        values: [any TupleElement],
+        id: Tuple,
+        keyPathCount: Int
+    ) -> [[UInt8]] {
+        // For single-field indexes with multiple values, create separate keys for each value
+        // This handles array-typed fields (e.g., [String] for To-Many relationships)
+        let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
+
+        if isSingleFieldArrayIndex {
+            // Array field: create one key per element
+            var keys: [[UInt8]] = []
+            for value in values {
+                var elements: [any TupleElement] = [value]
+                for i in 0..<id.count {
+                    if let element = id[i] {
+                        elements.append(element)
+                    }
+                }
+                keys.append(subspace.pack(Tuple(elements)))
+            }
+            return keys
+        } else {
+            // Scalar/composite field: single key with all values
+            return [buildIndexKey(subspace: subspace, values: values, id: id)]
+        }
     }
 
     // MARK: - Rollback
@@ -859,6 +939,47 @@ public final class FDBContext: Sendable {
         for model in models {
             try block(model)
         }
+    }
+
+    // MARK: - Dynamic Type Loading
+
+    /// Load an item by type name and string ID
+    ///
+    /// Used by QueryExecutor for batch loading related items in `joining()`.
+    /// This is a general-purpose method for loading items when the type
+    /// is determined at runtime.
+    ///
+    /// - Parameters:
+    ///   - typeName: The Persistable type name (e.g., "Customer")
+    ///   - id: The item ID as a string
+    /// - Returns: The loaded item, or nil if not found
+    public func loadItemByTypeName(
+        _ typeName: String,
+        id: String
+    ) async throws -> (any Persistable)? {
+        // Find the entity in schema
+        guard let entity = container.schema.entities.first(where: { $0.name == typeName }) else {
+            return nil
+        }
+
+        let persistableType = entity.persistableType
+        let subspace = try await container.resolveDirectory(for: persistableType)
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let typeSubspace = itemSubspace.subspace(typeName)
+        let key = typeSubspace.pack(Tuple([id]))
+
+        var result: (any Persistable)?
+
+        try await container.database.withTransaction { tx in
+            guard let data = try await tx.getValue(for: key, snapshot: false) else {
+                return
+            }
+
+            let decoder = ProtobufDecoder()
+            result = try decoder.decode(persistableType, from: Data(data))
+        }
+
+        return result
     }
 }
 

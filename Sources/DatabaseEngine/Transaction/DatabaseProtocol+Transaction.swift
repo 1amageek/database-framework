@@ -11,8 +11,9 @@ import FoundationDB
 extension DatabaseProtocol {
     /// Execute a transaction with the specified configuration
     ///
-    /// This is the preferred way to run transactions with specific settings.
-    /// Configuration is automatically applied, eliminating manual `apply(to:)` calls.
+    /// This method applies `TransactionConfiguration` options (priority, timeout, etc.)
+    /// to the transaction and relies on the underlying `DatabaseProtocol.withTransaction()`
+    /// for retry logic.
     ///
     /// **Usage**:
     /// ```swift

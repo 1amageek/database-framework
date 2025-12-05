@@ -137,7 +137,7 @@ dependencies: [
 
 | Module | Description |
 |--------|-------------|
-| `DatabaseEngine` | FDBContainer, FDBContext, IndexMaintainer protocol |
+| `DatabaseEngine` | FDBContainer, FDBContext, IndexMaintainer protocol, Relationship support |
 | `ScalarIndex` | VALUE index implementation |
 | `VectorIndex` | HNSW and flat vector search |
 | `FullTextIndex` | Inverted index for text search |
@@ -147,6 +147,7 @@ dependencies: [
 | `GraphIndex` | Adjacency list traversal |
 | `AggregationIndex` | COUNT, SUM, MIN, MAX, AVG |
 | `VersionIndex` | Version history with versionstamps |
+| `CrossTypeIndex` | Cross-type indexes spanning relationships |
 | `Database` | All-in-one re-export |
 
 ## Infrastructure Components
@@ -533,6 +534,106 @@ try await context.fetchPolymorphic(Document.self)
 // ✅ Use any conforming concrete type
 try await context.fetchPolymorphic(Article.self)
 // All conforming types share the same polymorphic directory
+```
+
+## Relationship Support
+
+Database provides SwiftData-like relationship support via the `@Relationship` macro (defined in database-kit) and extension methods on `FDBContext`.
+
+### Defining Relationships
+
+```swift
+// In database-kit
+@Persistable
+struct Order {
+    var id: String = ULID().ulidString
+    var total: Double
+
+    // To-one relationship: generates hidden `customerId` field
+    @Relationship(inverse: \Customer.orders)
+    var customer: Customer?
+}
+
+@Persistable
+struct Customer {
+    var id: String = ULID().ulidString
+    var name: String
+
+    // To-many relationship: derived from inverse
+    @Relationship(deleteRule: .cascade, inverse: \Order.customer)
+    var orders: [Order]
+}
+```
+
+### How It Works
+
+The `@Relationship` macro automatically:
+1. Generates a foreign key field (`customerId: String?` for `customer: Customer?`)
+2. Creates a relationship index (`Order_customer`) via `ScalarIndexKind`
+3. Marks the relationship property as transient (not stored directly)
+
+**Storage Layout**:
+```
+[fdb]/R/Order/["O001"] → { id: "O001", total: 99.99, customerId: "C001" }
+[fdb]/I/Order_customer/["C001"]/["O001"] → ''  // Index for relationship queries
+```
+
+### Querying Relationships
+
+Use extension methods on `FDBContext`:
+
+```swift
+import DatabaseEngine
+
+let context = container.newContext()
+
+// To-one: O(1) direct ID lookup
+let order = try await context.model(for: "O001", as: Order.self)!
+let customer = try await context.related(order, \.customer)
+
+// To-many: O(k) index scan where k = number of related items
+let customer = try await context.model(for: "C001", as: Customer.self)!
+let orders = try await context.related(customer, \.orders)
+```
+
+### Delete Rules
+
+Delete rules are enforced via explicit extension methods, not automatically:
+
+```swift
+// ⚠️ Basic delete (NO relationship rules - may leave orphan references)
+context.delete(customer)
+try await context.save()
+
+// ✅ Delete with relationship rule enforcement
+// - .cascade: Delete all related orders
+// - .deny: Throw error if orders exist
+// - .nullify: Set FK fields to nil on related items
+// - .noAction: Do nothing
+try await context.deleteEnforcingRelationshipRules(customer)
+```
+
+> **⚠️ Important**: The basic `delete()` + `save()` does NOT enforce any delete rules.
+> If you have `@Relationship` declarations with delete rules, you MUST use
+> `deleteEnforcingRelationshipRules()` to enforce them. Using basic `delete()`
+> will ignore all relationship rules and may leave orphan references in your database.
+
+**Design Philosophy**: Relationship features are optional. Users who don't use `@Relationship` have zero overhead. Delete rule enforcement requires explicit method calls rather than being embedded in the core `delete()` path.
+
+### Extension Pattern
+
+This follows the framework's extension pattern for optional features:
+
+```swift
+// DatabaseEngine/Relationship/FDBContext+Relationship.swift
+extension FDBContext {
+    // Query methods
+    public func related<T, R>(_ item: T, _ relationship: KeyPath<T, R?>) async throws -> R?
+    public func related<T, R>(_ item: T, _ relationship: KeyPath<T, [R]>) async throws -> [R]
+
+    // Delete rule enforcement (explicit call required)
+    public func deleteEnforcingRelationshipRules<T>(_ model: T) async throws
+}
 ```
 
 ## Migration System

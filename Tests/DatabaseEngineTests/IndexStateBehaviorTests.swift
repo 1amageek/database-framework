@@ -27,7 +27,7 @@ struct IndexedUser: Persistable {
     static var persistableType: String { "IndexedUser" }
     static var allFields: [String] { ["id", "email", "name"] }
 
-    static var indexDescriptors: [IndexDescriptor] {
+    static var descriptors: [any Descriptor] {
         [
             IndexDescriptor(
                 name: "IndexedUser_email",

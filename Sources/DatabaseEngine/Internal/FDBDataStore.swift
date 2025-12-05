@@ -1424,12 +1424,16 @@ internal final class FDBDataStore: DataStore, Sendable {
             if let deletingModel = deletingModel {
                 let oldValues = extractIndexValuesUntyped(from: deletingModel, keyPaths: descriptor.keyPaths)
                 if !oldValues.isEmpty {
-                    let oldIndexKey = buildIndexKey(
+                    // For single-field array indexes, create separate keys for each element
+                    let oldIndexKeys = buildIndexKeys(
                         subspace: indexSubspaceForIndex,
                         values: oldValues,
-                        id: id
+                        id: id,
+                        keyPathCount: descriptor.keyPaths.count
                     )
-                    transaction.clear(key: oldIndexKey)
+                    for key in oldIndexKeys {
+                        transaction.clear(key: key)
+                    }
                 }
             }
 
@@ -1437,8 +1441,17 @@ internal final class FDBDataStore: DataStore, Sendable {
             if let newModel = newModel {
                 let newValues = extractIndexValuesUntyped(from: newModel, keyPaths: descriptor.keyPaths)
                 if !newValues.isEmpty {
-                    // Check unique constraint before adding
-                    if descriptor.isUnique {
+                    // For single-field array indexes, create separate keys for each element
+                    let newIndexKeys = buildIndexKeys(
+                        subspace: indexSubspaceForIndex,
+                        values: newValues,
+                        id: id,
+                        keyPathCount: descriptor.keyPaths.count
+                    )
+
+                    // Check unique constraint before adding (only for non-array indexes)
+                    // Array indexes are typically not unique per element
+                    if descriptor.isUnique && newIndexKeys.count == 1 {
                         let mode = uniquenessCheckMode(for: state)
                         try await checkUniqueConstraint(
                             descriptor: descriptor,
@@ -1451,12 +1464,9 @@ internal final class FDBDataStore: DataStore, Sendable {
                         )
                     }
 
-                    let newIndexKey = buildIndexKey(
-                        subspace: indexSubspaceForIndex,
-                        values: newValues,
-                        id: id
-                    )
-                    transaction.setValue([], for: newIndexKey)
+                    for key in newIndexKeys {
+                        transaction.setValue([], for: key)
+                    }
                 }
             }
         }
@@ -1508,7 +1518,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
     }
 
-    /// Build index key
+    /// Build index key (single key with all values)
     private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
         var elements: [any TupleElement] = values
         for i in 0..<id.count {
@@ -1517,6 +1527,46 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
         }
         return subspace.pack(Tuple(elements))
+    }
+
+    /// Build index keys (handles array fields by creating separate keys)
+    ///
+    /// For single-field indexes on array types (e.g., To-Many FK fields),
+    /// creates one key per array element. This enables reverse lookups.
+    ///
+    /// Example:
+    /// - Field `orderIDs = ["O001", "O002"]` with keyPathCount=1 produces:
+    ///   - Key: `[subspace]["O001"][id]`
+    ///   - Key: `[subspace]["O002"][id]`
+    ///
+    /// For composite indexes (multiple keyPaths), all values go into a single key.
+    private func buildIndexKeys(
+        subspace: Subspace,
+        values: [any TupleElement],
+        id: Tuple,
+        keyPathCount: Int
+    ) -> [[UInt8]] {
+        // For single-field indexes with multiple values, create separate keys for each value
+        // This handles array-typed fields (e.g., [String] for To-Many relationships)
+        let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
+
+        if isSingleFieldArrayIndex {
+            // Array field: create one key per element
+            var keys: [[UInt8]] = []
+            for value in values {
+                var elements: [any TupleElement] = [value]
+                for i in 0..<id.count {
+                    if let element = id[i] {
+                        elements.append(element)
+                    }
+                }
+                keys.append(subspace.pack(Tuple(elements)))
+            }
+            return keys
+        } else {
+            // Scalar/composite field: single key with all values
+            return [buildIndexKey(subspace: subspace, values: values, id: id)]
+        }
     }
 
     // MARK: - Predicate Evaluation

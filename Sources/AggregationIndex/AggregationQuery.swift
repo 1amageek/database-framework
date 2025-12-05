@@ -146,7 +146,7 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
         // TODO: Use precomputed aggregation indexes when available (CountIndex, SumIndex, etc.)
         // For GROUP BY queries, in-memory calculation is required.
         // For simple aggregates without GROUP BY, precomputed indexes could provide O(1) lookups.
-        let items = try await queryContext.context.fetch(T.self).execute()
+        let items = try await queryContext.context.fetch(T.self).executeRaw()
 
         // Group items
         var groups: [String: [T]] = [:]
