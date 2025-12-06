@@ -282,14 +282,16 @@ internal final class IndexMaintenanceService: Sendable {
     /// Extract ID as Tuple from model
     ///
     /// - Parameter model: The model to extract ID from
-    /// - Returns: ID as Tuple
+    /// - Returns: ID as Tuple containing the ID element
     /// - Throws: If ID cannot be converted to TupleElement
+    ///
+    /// **Note**: `Tuple` itself cannot be a `Persistable.ID` because `Tuple` does not
+    /// conform to `Codable` (required by `Persistable.ID`). The ID is always a single
+    /// `TupleElement` (e.g., String, Int64) which is wrapped in a `Tuple` for key building.
     static func extractIDTuple(from model: any Persistable) throws -> Tuple {
         let id = model.id
         let typeName = type(of: model).persistableType
-        if let tuple = id as? Tuple {
-            return tuple
-        } else if let element = id as? any TupleElement {
+        if let element = id as? any TupleElement {
             return Tuple([element])
         } else {
             throw IndexMaintenanceError.invalidID(type: typeName)

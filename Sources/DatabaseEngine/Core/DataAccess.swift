@@ -563,12 +563,6 @@ extension Optional: _OptionalProtocol {
 /// Errors that can occur during DataAccess operations
 public enum DataAccessError: Error, CustomStringConvertible {
     case fieldNotFound(itemType: String, keyPath: String)
-
-    /// **Deprecated**: Nested fields are now supported via Mirror reflection.
-    /// This error is kept for backward compatibility but should not be thrown.
-    @available(*, deprecated, message: "Nested fields are now supported")
-    case nestedFieldsNotSupported(itemType: String, keyPath: String)
-
     case rangeFieldsNotSupported(itemType: String, suggestion: String)
     case reconstructionNotSupported(itemType: String, suggestion: String)
     case typeMismatch(itemType: String, keyPath: String, expected: String, actual: String)
@@ -586,8 +580,6 @@ public enum DataAccessError: Error, CustomStringConvertible {
         switch self {
         case .fieldNotFound(let itemType, let keyPath):
             return "Field '\(keyPath)' not found in \(itemType)"
-        case .nestedFieldsNotSupported(let itemType, let keyPath):
-            return "Nested field '\(keyPath)' error for \(itemType). Note: Nested fields are now supported - this error should not occur."
         case .rangeFieldsNotSupported(let itemType, let suggestion):
             return "Range fields not supported for \(itemType). \(suggestion)"
         case .reconstructionNotSupported(let itemType, let suggestion):
