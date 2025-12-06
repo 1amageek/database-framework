@@ -2,24 +2,30 @@
 // AggregationIndexLayer - Index maintainer for SUM aggregation
 //
 // Maintains sums using atomic FDB operations for thread-safe updates.
+// Type-safe: Integer types are stored as Int64, floating-point as scaled Int64.
 
 import Foundation
 import Core
 import DatabaseEngine
 import FoundationDB
 
-/// Maintainer for SUM aggregation indexes
+/// Maintainer for SUM aggregation indexes with compile-time type safety
+///
+/// **Type-Safe Design**:
+/// - `Value` type parameter preserves numeric type at compile time
+/// - Integer types (Int, Int64, Int32): Stored as Int64 bytes (precision preserved)
+/// - Floating-point types (Float, Double): Stored as scaled fixed-point Int64
 ///
 /// **Functionality**:
 /// - Maintain sums of numeric values grouped by field values
 /// - Atomic add/subtract operations
 /// - Efficient GROUP BY SUM queries
-/// - Supports both Int64 and Double values
+/// - Precision preservation for integer types
 ///
 /// **Index Structure**:
 /// ```
 /// Key: [indexSubspace][groupValue1][groupValue2]...
-/// Value: Double (8 bytes IEEE 754) or Int64 (8 bytes little-endian)
+/// Value: Int64 (8 bytes little-endian) for integers, scaled Int64 for floats
 /// ```
 ///
 /// **Expression Structure**:
@@ -29,23 +35,13 @@ import FoundationDB
 ///
 /// **Examples**:
 /// ```swift
-/// // Sum of sales amount by category
-/// Key: [I]/Sale_category_amount/["electronics"] = 350000.0
-/// Key: [I]/Sale_category_amount/["clothing"] = 120000.0
+/// // Sum of sales amount by category (Int64)
+/// Key: [I]/Sale_category_amount/["electronics"] = 350000 (Int64)
 ///
-/// // Sum of order totals by (status, payment_method)
-/// Key: [I]/Order_status_payment_total/["shipped"]/["credit_card"] = 5000000.0
+/// // Sum of prices by category (Double)
+/// Key: [I]/Sale_category_price/["electronics"] = scaled(350000.50)
 /// ```
-///
-/// **Usage**:
-/// ```swift
-/// let maintainer = SumIndexMaintainer<Sale>(
-///     index: categorySumIndex,
-///     subspace: indexSubspace,
-///     idExpression: FieldKeyExpression(fieldName: "id")
-/// )
-/// ```
-public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -56,6 +52,11 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     /// ID expression for extracting item's unique identifier
     public let idExpression: KeyExpression
+
+    /// Whether the value type is a floating-point type (compile-time known)
+    private var isFloatingPoint: Bool {
+        Value.self == Double.self || Value.self == Float.self
+    }
 
     // MARK: - Initialization
 
@@ -85,7 +86,9 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     /// - Update (same group): Apply delta only (1 atomic op instead of 2)
     /// - Update (different group): Subtract from old group, add to new group
     ///
-    /// **Atomic Operations**: Uses FDB atomic add with fixed-point Int64
+    /// **Type-Aware Storage**:
+    /// - Integer types: Stored as Int64 bytes (precision preserved)
+    /// - Floating-point: Stored as scaled fixed-point Int64
     ///
     /// - Parameters:
     ///   - oldItem: Previous item (nil for insert)
@@ -96,13 +99,86 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws {
-        // Extract grouping and sum values
+        if isFloatingPoint {
+            try await updateIndexDouble(oldItem: oldItem, newItem: newItem, transaction: transaction)
+        } else {
+            try await updateIndexInt64(oldItem: oldItem, newItem: newItem, transaction: transaction)
+        }
+    }
+
+    /// Update index for integer types (Int, Int64, Int32)
+    private func updateIndexInt64(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Extract grouping and sum values as Int64
+        let oldData: (groupingKey: FDB.Bytes, sumValue: Int64)?
+        if let oldItem = oldItem {
+            let values = try evaluateIndexFields(from: oldItem)
+            if values.count >= 2 {
+                let groupingValues = Array(values.dropLast())
+                let sumValue = try extractInt64Value(values.last!)
+                let groupingKey = try packAndValidate(Tuple(groupingValues))
+                oldData = (groupingKey, sumValue)
+            } else {
+                oldData = nil
+            }
+        } else {
+            oldData = nil
+        }
+
+        let newData: (groupingKey: FDB.Bytes, sumValue: Int64)?
+        if let newItem = newItem {
+            let values = try evaluateIndexFields(from: newItem)
+            if values.count >= 2 {
+                let groupingValues = Array(values.dropLast())
+                let sumValue = try extractInt64Value(values.last!)
+                let groupingKey = try packAndValidate(Tuple(groupingValues))
+                newData = (groupingKey, sumValue)
+            } else {
+                newData = nil
+            }
+        } else {
+            newData = nil
+        }
+
+        // Apply updates based on case
+        switch (oldData, newData) {
+        case let (.some(old), .some(new)) where old.groupingKey == new.groupingKey:
+            let delta = new.sumValue - old.sumValue
+            if delta != 0 {
+                addToSumInt64(key: new.groupingKey, value: delta, transaction: transaction)
+            }
+
+        case let (.some(old), .some(new)):
+            addToSumInt64(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
+            addToSumInt64(key: new.groupingKey, value: new.sumValue, transaction: transaction)
+
+        case let (nil, .some(new)):
+            addToSumInt64(key: new.groupingKey, value: new.sumValue, transaction: transaction)
+
+        case let (.some(old), nil):
+            addToSumInt64(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
+
+        case (nil, nil):
+            break
+        }
+    }
+
+    /// Update index for floating-point types (Float, Double)
+    private func updateIndexDouble(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Extract grouping and sum values as Double
         let oldData: (groupingKey: FDB.Bytes, sumValue: Double)?
         if let oldItem = oldItem {
             let values = try evaluateIndexFields(from: oldItem)
             if values.count >= 2 {
                 let groupingValues = Array(values.dropLast())
-                let sumValue = try extractNumericValue(values.last!)
+                let sumValue = try extractDoubleValue(values.last!)
                 let groupingKey = try packAndValidate(Tuple(groupingValues))
                 oldData = (groupingKey, sumValue)
             } else {
@@ -117,7 +193,7 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
             let values = try evaluateIndexFields(from: newItem)
             if values.count >= 2 {
                 let groupingValues = Array(values.dropLast())
-                let sumValue = try extractNumericValue(values.last!)
+                let sumValue = try extractDoubleValue(values.last!)
                 let groupingKey = try packAndValidate(Tuple(groupingValues))
                 newData = (groupingKey, sumValue)
             } else {
@@ -130,27 +206,22 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         // Apply updates based on case
         switch (oldData, newData) {
         case let (.some(old), .some(new)) where old.groupingKey == new.groupingKey:
-            // Same group: apply delta only (1 atomic op)
             let delta = new.sumValue - old.sumValue
             if delta != 0 {
-                try await addToSum(key: new.groupingKey, value: delta, transaction: transaction)
+                addToSumDouble(key: new.groupingKey, value: delta, transaction: transaction)
             }
 
         case let (.some(old), .some(new)):
-            // Different groups: subtract from old, add to new (2 atomic ops)
-            try await addToSum(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
-            try await addToSum(key: new.groupingKey, value: new.sumValue, transaction: transaction)
+            addToSumDouble(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
+            addToSumDouble(key: new.groupingKey, value: new.sumValue, transaction: transaction)
 
         case let (nil, .some(new)):
-            // Insert: add to new group
-            try await addToSum(key: new.groupingKey, value: new.sumValue, transaction: transaction)
+            addToSumDouble(key: new.groupingKey, value: new.sumValue, transaction: transaction)
 
         case let (.some(old), nil):
-            // Delete: subtract from old group
-            try await addToSum(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
+            addToSumDouble(key: old.groupingKey, value: -old.sumValue, transaction: transaction)
 
         case (nil, nil):
-            // Nothing to do
             break
         }
     }
@@ -175,12 +246,16 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         }
 
         let groupingValues = Array(values.dropLast())
-        let sumValue = try extractNumericValue(values.last!)
-
         let sumKey = try packAndValidate(Tuple(groupingValues))
 
-        // Add to sum
-        try await addToSum(key: sumKey, value: sumValue, transaction: transaction)
+        // Add to sum based on value type
+        if isFloatingPoint {
+            let sumValue = try extractDoubleValue(values.last!)
+            addToSumDouble(key: sumKey, value: sumValue, transaction: transaction)
+        } else {
+            let sumValue = try extractInt64Value(values.last!)
+            addToSumInt64(key: sumKey, value: sumValue, transaction: transaction)
+        }
     }
 
     /// Compute expected index keys for an item (for scrubber verification)
@@ -202,13 +277,95 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     // MARK: - Query Methods
 
-    /// Get the sum for a specific grouping
+    /// Get the sum for a specific grouping (type-safe)
+    ///
+    /// Returns Double for both integer and floating-point Value types.
+    /// For integer types, the stored Int64 is converted to Double.
+    /// For floating-point types, the scaled value is converted back to Double.
+    ///
+    /// - Parameters:
+    ///   - groupingValues: The grouping key values
+    ///   - transaction: The transaction to use
+    /// - Returns: The sum as Double (0.0 if no entries)
+    public func getSum(
+        groupingValues: [any TupleElement],
+        transaction: any TransactionProtocol
+    ) async throws -> Double {
+        let sumKey = try packAndValidate(Tuple(groupingValues))
+
+        guard let bytes = try await transaction.getValue(for: sumKey) else {
+            return 0.0
+        }
+
+        if isFloatingPoint {
+            return ByteConversion.scaledBytesToDouble(bytes)
+        } else {
+            return Double(ByteConversion.bytesToInt64(bytes))
+        }
+    }
+
+    /// Get all sums in this index (type-safe)
+    ///
+    /// Returns Double for both integer and floating-point Value types.
+    ///
+    /// - Parameter transaction: The transaction to use
+    /// - Returns: Array of (groupingValues, sum) tuples
+    public func getAllSums(
+        transaction: any TransactionProtocol
+    ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
+        let range = subspace.range()
+        var results: [(grouping: [any TupleElement], sum: Double)] = []
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(range.begin),
+            endSelector: .firstGreaterOrEqual(range.end),
+            snapshot: true
+        )
+
+        for try await (key, value) in sequence {
+            guard subspace.contains(key) else { break }
+
+            let keyTuple = try subspace.unpack(key)
+            let elements = try Tuple.unpack(from: keyTuple.pack())
+            let sum: Double
+            if isFloatingPoint {
+                sum = ByteConversion.scaledBytesToDouble(value)
+            } else {
+                sum = Double(ByteConversion.bytesToInt64(value))
+            }
+
+            results.append((grouping: elements, sum: sum))
+        }
+
+        return results
+    }
+
+    /// Get the sum for a specific grouping as Int64 (legacy)
+    ///
+    /// - Parameters:
+    ///   - groupingValues: The grouping key values
+    ///   - transaction: The transaction to use
+    /// - Returns: The sum (0 if no entries)
+    public func getSumInt64(
+        groupingValues: [any TupleElement],
+        transaction: any TransactionProtocol
+    ) async throws -> Int64 {
+        let sumKey = try packAndValidate(Tuple(groupingValues))
+
+        guard let bytes = try await transaction.getValue(for: sumKey) else {
+            return 0
+        }
+
+        return ByteConversion.bytesToInt64(bytes)
+    }
+
+    /// Get the sum for a specific grouping as Double (legacy)
     ///
     /// - Parameters:
     ///   - groupingValues: The grouping key values
     ///   - transaction: The transaction to use
     /// - Returns: The sum (0.0 if no entries)
-    public func getSum(
+    public func getSumDouble(
         groupingValues: [any TupleElement],
         transaction: any TransactionProtocol
     ) async throws -> Double {
@@ -221,11 +378,40 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         return ByteConversion.scaledBytesToDouble(bytes)
     }
 
-    /// Get all sums in this index
+    /// Get all sums in this index as Int64
     ///
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
-    public func getAllSums(
+    public func getAllSumsInt64(
+        transaction: any TransactionProtocol
+    ) async throws -> [(grouping: [any TupleElement], sum: Int64)] {
+        let range = subspace.range()
+        var results: [(grouping: [any TupleElement], sum: Int64)] = []
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(range.begin),
+            endSelector: .firstGreaterOrEqual(range.end),
+            snapshot: true
+        )
+
+        for try await (key, value) in sequence {
+            guard subspace.contains(key) else { break }
+
+            let keyTuple = try subspace.unpack(key)
+            let elements = try Tuple.unpack(from: keyTuple.pack())
+            let sum = ByteConversion.bytesToInt64(value)
+
+            results.append((grouping: elements, sum: sum))
+        }
+
+        return results
+    }
+
+    /// Get all sums in this index as Double
+    ///
+    /// - Parameter transaction: The transaction to use
+    /// - Returns: Array of (groupingValues, sum) tuples
+    public func getAllSumsDouble(
         transaction: any TransactionProtocol
     ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
         let range = subspace.range()
@@ -252,57 +438,104 @@ public struct SumIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     // MARK: - Private Helpers
 
-    /// Add value to sum using atomic operation
+    /// Add Int64 value to sum using atomic operation
     ///
-    /// **Atomicity**: Uses FDB's `.add` atomic operation to prevent lost updates
-    /// under concurrent transactions.
-    ///
-    /// **Implementation**: Converts Double to fixed-point Int64 (6 decimal places)
-    /// to enable atomic integer addition.
-    ///
-    /// **Precision**: 6 decimal places (e.g., 123456.789012)
-    /// **Range**: ±9,223,372,036,854.775807
-    private func addToSum(
+    /// **Atomicity**: Uses FDB's `.add` atomic operation to prevent lost updates.
+    /// **Precision**: Exact (no conversion loss for integers).
+    private func addToSumInt64(
         key: FDB.Bytes,
-        value: Double,
+        value: Int64,
         transaction: any TransactionProtocol
-    ) async throws {
-        // Convert to fixed-point Int64 for atomic operation using ByteConversion
-        let bytes = ByteConversion.doubleToScaledBytes(value)
-
-        // Use atomic add - no read required, concurrent-safe
+    ) {
+        let bytes = ByteConversion.int64ToBytes(value)
         transaction.atomicOp(key: key, param: bytes, mutationType: .add)
     }
 
-    /// Extract numeric value from tuple element as Double
+    /// Add Double value to sum using atomic operation
     ///
-    /// **Supported Types**:
-    /// - `Double` → stored as-is
-    /// - `Float` → cast to Double
-    /// - `Int64` → cast to Double
-    /// - `Int` → cast to Double
-    /// - `Int32` → cast to Double
+    /// **Atomicity**: Uses FDB's `.add` atomic operation to prevent lost updates.
+    /// **Implementation**: Converts Double to fixed-point Int64 (6 decimal places).
+    /// **Precision**: 6 decimal places (e.g., 123456.789012)
+    private func addToSumDouble(
+        key: FDB.Bytes,
+        value: Double,
+        transaction: any TransactionProtocol
+    ) {
+        let bytes = ByteConversion.doubleToScaledBytes(value)
+        transaction.atomicOp(key: key, param: bytes, mutationType: .add)
+    }
+
+    /// Extract value from tuple element as Int64 (type-safe for integer Value types)
+    ///
+    /// Value type is known at compile time, so we know exactly which conversion to use.
+    ///
+    /// - Parameter element: Tuple element to extract
+    /// - Returns: Int64 value
+    /// - Throws: IndexError if extraction fails
+    private func extractInt64Value(_ element: any TupleElement) throws -> Int64 {
+        // Value type is known at compile time
+        switch Value.self {
+        case is Int64.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration(
+                    "Expected Int64, got \(type(of: element))"
+                )
+            }
+            return value
+
+        case is Int.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration(
+                    "Expected Int (as Int64), got \(type(of: element))"
+                )
+            }
+            return value
+
+        case is Int32.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration(
+                    "Expected Int32 (as Int64), got \(type(of: element))"
+                )
+            }
+            return value
+
+        default:
+            throw IndexError.invalidConfiguration(
+                "SUM index (integer mode) requires Int64, Int, or Int32. Got: \(Value.self)"
+            )
+        }
+    }
+
+    /// Extract value from tuple element as Double (type-safe for floating-point Value types)
+    ///
+    /// Value type is known at compile time, so we know exactly which conversion to use.
     ///
     /// - Parameter element: Tuple element to extract
     /// - Returns: Double value
-    /// - Throws: IndexError if element is not a supported numeric type
-    private func extractNumericValue(_ element: any TupleElement) throws -> Double {
-        if let double = element as? Double {
-            return double
-        } else if let float = element as? Float {
-            return Double(float)
-        } else if let int64 = element as? Int64 {
-            return Double(int64)
-        } else if let int = element as? Int {
-            return Double(int)
-        } else if let int32 = element as? Int32 {
-            return Double(int32)
-        } else if let uint64 = element as? UInt64 {
-            return Double(uint64)
-        } else {
+    /// - Throws: IndexError if extraction fails
+    private func extractDoubleValue(_ element: any TupleElement) throws -> Double {
+        // Value type is known at compile time
+        switch Value.self {
+        case is Double.Type:
+            guard let value = element as? Double else {
+                throw IndexError.invalidConfiguration(
+                    "Expected Double, got \(type(of: element))"
+                )
+            }
+            return value
+
+        case is Float.Type:
+            // Float is stored as Double in FDB Tuple layer
+            guard let value = element as? Double else {
+                throw IndexError.invalidConfiguration(
+                    "Expected Float (as Double), got \(type(of: element))"
+                )
+            }
+            return value
+
+        default:
             throw IndexError.invalidConfiguration(
-                "SUM index supports numeric types: Double, Float, Int64, Int, Int32, UInt64. " +
-                "Got: \(type(of: element))."
+                "SUM index (floating-point mode) requires Double or Float. Got: \(Value.self)"
             )
         }
     }

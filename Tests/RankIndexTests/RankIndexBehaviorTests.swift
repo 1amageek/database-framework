@@ -73,8 +73,8 @@ private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: RankIndexMaintainer<TestPlayer>
-    let kind: RankIndexKind<TestPlayer>
+    let maintainer: RankIndexMaintainer<TestPlayer, Int64>
+    let kind: RankIndexKind<TestPlayer, Int64>
 
     init(indexName: String = "TestPlayer_score") throws {
         self.database = try FDBClient.openDatabase()
@@ -82,7 +82,7 @@ private struct TestContext {
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
 
-        self.kind = RankIndexKind<TestPlayer>(field: \.score)
+        self.kind = RankIndexKind<TestPlayer, Int64>(field: \.score)
 
         // Expression: score
         let index = Index(
@@ -93,7 +93,7 @@ private struct TestContext {
             itemTypes: Set(["TestPlayer"])
         )
 
-        self.maintainer = RankIndexMaintainer<TestPlayer>(
+        self.maintainer = RankIndexMaintainer<TestPlayer, Int64>(
             index: index,
             bucketSize: kind.bucketSize,
             subspace: indexSubspace,
@@ -143,7 +143,7 @@ struct RankIndexBehaviorTests {
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as TestPlayer?,
                 newItem: player,
                 transaction: transaction
             )
@@ -169,7 +169,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as TestPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -194,7 +194,7 @@ struct RankIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as TestPlayer?,
                 newItem: player,
                 transaction: transaction
             )
@@ -207,7 +207,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: player,
-                newItem: nil,
+                newItem: nil as TestPlayer?,
                 transaction: transaction
             )
         }
@@ -230,7 +230,7 @@ struct RankIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as TestPlayer?,
                 newItem: player,
                 transaction: transaction
             )
@@ -272,7 +272,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as TestPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -308,7 +308,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as TestPlayer?,
                     newItem: player,
                     transaction: transaction
                 )
@@ -348,7 +348,7 @@ struct RankIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for player in players {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as TestPlayer?,
                     newItem: player,
                     transaction: transaction
                 )

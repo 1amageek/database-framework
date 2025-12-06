@@ -129,34 +129,49 @@ public struct HyperLogLog: Sendable, Codable, Equatable {
 
     // MARK: - Adding Values
 
-    /// Add a FieldValue to the estimator
-    public mutating func add(_ value: FieldValue) {
-        let hash = hashFieldValue(value)
-        addHash(hash)
+    /// Internal generic add using HashBytesConvertible
+    private mutating func addValue<T: HashBytesConvertible>(_ value: T) {
+        addHash(DeterministicHash.hash(value))
     }
 
-    /// Add a hashable value to the estimator
-    public mutating func add<T: Hashable>(_ value: T) {
-        let hash = murmurHash64(value)
-        addHash(hash)
+    /// Add a FieldValue to the estimator
+    public mutating func add(_ value: FieldValue) {
+        addValue(value)
     }
 
     /// Add a string value
     public mutating func add(_ value: String) {
-        let hash = murmurHash64(value)
-        addHash(hash)
+        addValue(value)
     }
 
     /// Add an integer value
     public mutating func add(_ value: Int) {
-        let hash = murmurHash64(value)
-        addHash(hash)
+        addValue(value)
     }
 
     /// Add an Int64 value
     public mutating func add(_ value: Int64) {
-        let hash = murmurHash64(value)
-        addHash(hash)
+        addValue(value)
+    }
+
+    /// Add a Double value
+    public mutating func add(_ value: Double) {
+        addValue(value)
+    }
+
+    /// Add a Bool value
+    public mutating func add(_ value: Bool) {
+        addValue(value)
+    }
+
+    /// Add raw bytes
+    public mutating func add(_ value: [UInt8]) {
+        addHash(DeterministicHash.hash(bytes: value))
+    }
+
+    /// Add Data
+    public mutating func add(_ value: Data) {
+        addValue(value)
     }
 
     /// Add a pre-computed hash value
@@ -319,55 +334,6 @@ public struct HyperLogLog: Sendable, Codable, Equatable {
     /// Serialized size in bytes
     public var serializedSize: Int {
         registerCount
-    }
-
-    // MARK: - Hash Functions
-
-    /// MurmurHash3 64-bit finalizer
-    ///
-    /// Provides excellent distribution for cardinality estimation.
-    /// Reference: Austin Appleby, MurmurHash3
-    private func murmurHash64<T: Hashable>(_ value: T) -> UInt64 {
-        // Get initial hash from Swift's Hasher
-        var hasher = Hasher()
-        hasher.combine(value)
-        let h = hasher.finalize()
-
-        // Apply MurmurHash3 64-bit finalizer for better distribution
-        var hash = UInt64(bitPattern: Int64(h))
-
-        hash ^= hash >> 33
-        hash = hash &* 0xff51afd7ed558ccd
-        hash ^= hash >> 33
-        hash = hash &* 0xc4ceb9fe1a85ec53
-        hash ^= hash >> 33
-
-        return hash
-    }
-
-    /// Hash FieldValue
-    private func hashFieldValue(_ value: FieldValue) -> UInt64 {
-        switch value {
-        case .null:
-            return murmurHash64(0 as Int)
-        case .bool(let v):
-            return murmurHash64(v)
-        case .int64(let v):
-            return murmurHash64(v)
-        case .double(let v):
-            return murmurHash64(v.bitPattern)
-        case .string(let v):
-            return murmurHash64(v)
-        case .data(let v):
-            return murmurHash64(v)
-        case .array(let values):
-            // Hash array by combining element hashes
-            var hash: UInt64 = 0
-            for element in values {
-                hash ^= hashFieldValue(element)
-            }
-            return hash
-        }
     }
 }
 

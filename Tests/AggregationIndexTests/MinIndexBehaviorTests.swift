@@ -77,7 +77,7 @@ private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: MinIndexMaintainer<MinTestProduct>
+    let maintainer: MinIndexMaintainer<MinTestProduct, Int64>
 
     init(indexName: String = "MinTestProduct_category_price") throws {
         self.database = try FDBClient.openDatabase()
@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: category + price (grouping + min value)
         let index = Index(
             name: indexName,
-            kind: MinIndexKind<MinTestProduct>(groupBy: [\.category], value: \.price),
+            kind: MinIndexKind<MinTestProduct, Int64>(groupBy: [\.category], value: \.price),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "price")
@@ -97,7 +97,7 @@ private struct TestContext {
             itemTypes: Set(["MinTestProduct"])
         )
 
-        self.maintainer = MinIndexMaintainer<MinTestProduct>(
+        self.maintainer = MinIndexMaintainer<MinTestProduct, Int64>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -148,7 +148,7 @@ struct MinIndexBehaviorTests {
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MinTestProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -174,7 +174,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MinTestProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -199,7 +199,7 @@ struct MinIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MinTestProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -212,7 +212,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: product,
-                newItem: nil,
+                newItem: nil as MinTestProduct?,
                 transaction: transaction
             )
         }
@@ -235,7 +235,7 @@ struct MinIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MinTestProduct?,
                 newItem: product,
                 transaction: transaction
             )
@@ -276,7 +276,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MinTestProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -304,7 +304,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MinTestProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -379,7 +379,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for product in products {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MinTestProduct?,
                     newItem: product,
                     transaction: transaction
                 )
@@ -393,7 +393,7 @@ struct MinIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: products[1],
-                newItem: nil,
+                newItem: nil as MinTestProduct?,
                 transaction: transaction
             )
         }

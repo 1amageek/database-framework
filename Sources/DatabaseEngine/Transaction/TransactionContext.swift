@@ -155,34 +155,34 @@ public final class TransactionContext: @unchecked Sendable {
     /// Set (insert or update) a model
     ///
     /// This operation adds a write conflict on the model's key.
+    /// Performs scalar index maintenance only (suitable for transactional operations).
+    ///
+    /// **Note**: For full index maintenance including aggregations and uniqueness
+    /// constraints, use FDBContext.save() instead.
     ///
     /// - Parameter model: The model to save
     /// - Throws: Error if serialization fails
     public func set<T: Persistable>(_ model: T) async throws {
         let subspaces = try await resolveSubspaces(for: T.self)
-        let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
-        let idTuple: Tuple
-        if let tuple = model.id as? Tuple {
-            idTuple = tuple
-        } else if let element = model.id as? any TupleElement {
-            idTuple = Tuple([element])
-        } else {
-            throw TransactionContextError.invalidID(type: T.persistableType)
-        }
-        let key = typeSubspace.pack(idTuple)
+        let idTuple = try IndexMaintenanceService.extractIDTuple(from: model)
 
-        // Get old value for index updates
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
-
-        // Serialize the model
+        // Serialize model
         let data = try DataAccess.serialize(model)
 
-        // Write the record
+        // Build key
+        let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
+        let key = typeSubspace.pack(idTuple)
+
+        // Get existing record for diff-based index update
+        let oldData = try await transaction.getValue(for: key, snapshot: false)
+        let oldModel: T? = oldData.flatMap { try? DataAccess.deserialize($0) }
+
+        // Write record
         transaction.setValue(data, for: key)
 
-        // Update indexes
-        try await updateIndexes(
-            oldData: oldData,
+        // Update scalar indexes using diff-based approach
+        try await updateScalarIndexes(
+            oldModel: oldModel,
             newModel: model,
             id: idTuple,
             indexSubspace: subspaces.indexSubspace
@@ -192,31 +192,85 @@ public final class TransactionContext: @unchecked Sendable {
     /// Delete a model
     ///
     /// This operation adds a write conflict on the model's key.
+    /// Performs scalar index cleanup only.
     ///
     /// - Parameter model: The model to delete
     /// - Throws: Error if index cleanup fails
     public func delete<T: Persistable>(_ model: T) async throws {
         let subspaces = try await resolveSubspaces(for: T.self)
+        let idTuple = try IndexMaintenanceService.extractIDTuple(from: model)
+
+        // Build key
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
-        let idTuple: Tuple
-        if let tuple = model.id as? Tuple {
-            idTuple = tuple
-        } else if let element = model.id as? any TupleElement {
-            idTuple = Tuple([element])
-        } else {
-            throw TransactionContextError.invalidID(type: T.persistableType)
-        }
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first
-        try await removeIndexEntries(
-            for: model,
+        // Remove scalar index entries
+        try await updateScalarIndexes(
+            oldModel: model,
+            newModel: nil as T?,
             id: idTuple,
             indexSubspace: subspaces.indexSubspace
         )
 
-        // Delete the record
+        // Delete record
         transaction.clear(key: key)
+    }
+
+    // MARK: - Private: Scalar Index Maintenance
+
+    /// Update scalar indexes using diff-based approach
+    ///
+    /// Only handles scalar indexes. Aggregation indexes (count, sum, min/max)
+    /// and uniqueness constraints are not enforced in TransactionContext.
+    private func updateScalarIndexes<T: Persistable>(
+        oldModel: T?,
+        newModel: T?,
+        id: Tuple,
+        indexSubspace: Subspace
+    ) async throws {
+        let indexDescriptors = T.indexDescriptors
+        guard !indexDescriptors.isEmpty else { return }
+
+        for descriptor in indexDescriptors {
+            // Skip non-scalar indexes (count, sum, min, max)
+            let kindIdentifier = type(of: descriptor.kind).identifier
+            guard kindIdentifier == "scalar" || kindIdentifier == "version" else {
+                continue
+            }
+
+            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
+            let keyPathCount = descriptor.keyPaths.count
+
+            // Compute old index keys
+            var oldKeys: Set<[UInt8]> = []
+            if let old = oldModel {
+                let oldValues = IndexMaintenanceService.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
+                if !oldValues.isEmpty {
+                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: oldValues, id: id, keyPathCount: keyPathCount) {
+                        oldKeys.insert(key)
+                    }
+                }
+            }
+
+            // Compute new index keys
+            var newKeys: Set<[UInt8]> = []
+            if let new = newModel {
+                let newValues = IndexMaintenanceService.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
+                if !newValues.isEmpty {
+                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: newValues, id: id, keyPathCount: keyPathCount) {
+                        newKeys.insert(key)
+                    }
+                }
+            }
+
+            // Apply diff
+            for key in oldKeys.subtracting(newKeys) {
+                transaction.clear(key: key)
+            }
+            for key in newKeys.subtracting(oldKeys) {
+                transaction.setValue([], for: key)
+            }
+        }
     }
 
     /// Delete a model by ID
@@ -242,97 +296,6 @@ public final class TransactionContext: @unchecked Sendable {
     /// TransactionContext's abstractions.
     public var rawTransaction: any TransactionProtocol {
         transaction
-    }
-
-    // MARK: - Index Management
-
-    /// Update indexes for a model change
-    ///
-    /// **Optimization**: Instead of scanning all index entries to find those matching the ID,
-    /// we deserialize the old model and compute the exact old index keys to delete.
-    /// This is O(1) per index instead of O(N) where N is total index entries.
-    private func updateIndexes<T: Persistable>(
-        oldData: [UInt8]?,
-        newModel: T,
-        id: Tuple,
-        indexSubspace: Subspace
-    ) async throws {
-        let indexDescriptors = T.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        // Deserialize old model if updating (to compute old index keys directly)
-        var oldModel: T? = nil
-        if let oldData = oldData {
-            oldModel = try? DataAccess.deserialize(oldData)
-        }
-
-        for descriptor in indexDescriptors {
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-
-            // Remove old index entry if updating (O(1) - direct key deletion)
-            if let oldModel = oldModel {
-                let oldValues = extractIndexValues(from: oldModel, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    let oldIndexKey = buildIndexKey(
-                        subspace: indexSubspaceForIndex,
-                        values: oldValues,
-                        id: id
-                    )
-                    transaction.clear(key: oldIndexKey)
-                }
-            }
-
-            // Add new index entry
-            let newValues = extractIndexValues(from: newModel, keyPaths: descriptor.keyPaths)
-            if !newValues.isEmpty {
-                let newIndexKey = buildIndexKey(
-                    subspace: indexSubspaceForIndex,
-                    values: newValues,
-                    id: id
-                )
-                transaction.setValue([], for: newIndexKey)
-            }
-        }
-    }
-
-    /// Remove all index entries for a model
-    private func removeIndexEntries<T: Persistable>(
-        for model: T,
-        id: Tuple,
-        indexSubspace: Subspace
-    ) async throws {
-        let indexDescriptors = T.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        for descriptor in indexDescriptors {
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-
-            let values = extractIndexValues(from: model, keyPaths: descriptor.keyPaths)
-            if !values.isEmpty {
-                let indexKey = buildIndexKey(
-                    subspace: indexSubspaceForIndex,
-                    values: values,
-                    id: id
-                )
-                transaction.clear(key: indexKey)
-            }
-        }
-    }
-
-    /// Extract index values from a model
-    private func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
-    }
-
-    /// Build index key
-    private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
-        var elements: [any TupleElement] = values
-        for i in 0..<id.count {
-            if let element = id[i] {
-                elements.append(element)
-            }
-        }
-        return subspace.pack(Tuple(elements))
     }
 }
 

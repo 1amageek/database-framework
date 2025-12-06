@@ -14,13 +14,18 @@ import FoundationDB
 /// Extends TimeWindowLeaderboardIndexKind with IndexKindMaintainable conformance
 extension TimeWindowLeaderboardIndexKind: IndexKindMaintainable {
     /// Create a TimeWindowLeaderboardIndexMaintainer for this index kind
+    ///
+    /// This bridges `TimeWindowLeaderboardIndexKind<Root, Score>` (metadata) with
+    /// `TimeWindowLeaderboardIndexMaintainer<Item, Score>` (runtime).
+    /// The `Score` type parameter is preserved at compile time for type-safe queries.
     public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item> {
-        return TimeWindowLeaderboardIndexMaintainer<Item>(
+        // Score type is preserved from TimeWindowLeaderboardIndexKind<Root, Score>
+        return TimeWindowLeaderboardIndexMaintainer<Item, Score>(
             index: index,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression,

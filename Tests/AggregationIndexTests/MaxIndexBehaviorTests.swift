@@ -77,7 +77,7 @@ private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: MaxIndexMaintainer<MaxTestScore>
+    let maintainer: MaxIndexMaintainer<MaxTestScore, Int64>
 
     init(indexName: String = "MaxTestScore_subject_score") throws {
         self.database = try FDBClient.openDatabase()
@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: subject + score (grouping + max value)
         let index = Index(
             name: indexName,
-            kind: MaxIndexKind<MaxTestScore>(groupBy: [\.subject], value: \.score),
+            kind: MaxIndexKind<MaxTestScore, Int64>(groupBy: [\.subject], value: \.score),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "subject"),
                 FieldKeyExpression(fieldName: "score")
@@ -97,7 +97,7 @@ private struct TestContext {
             itemTypes: Set(["MaxTestScore"])
         )
 
-        self.maintainer = MaxIndexMaintainer<MaxTestScore>(
+        self.maintainer = MaxIndexMaintainer<MaxTestScore, Int64>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -148,7 +148,7 @@ struct MaxIndexBehaviorTests {
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MaxTestScore?,
                 newItem: score,
                 transaction: transaction
             )
@@ -174,7 +174,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MaxTestScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -199,7 +199,7 @@ struct MaxIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MaxTestScore?,
                 newItem: score,
                 transaction: transaction
             )
@@ -212,7 +212,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: score,
-                newItem: nil,
+                newItem: nil as MaxTestScore?,
                 transaction: transaction
             )
         }
@@ -235,7 +235,7 @@ struct MaxIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as MaxTestScore?,
                 newItem: score,
                 transaction: transaction
             )
@@ -276,7 +276,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MaxTestScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -304,7 +304,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MaxTestScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -379,7 +379,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for score in scores {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as MaxTestScore?,
                     newItem: score,
                     transaction: transaction
                 )
@@ -393,7 +393,7 @@ struct MaxIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: scores[1],
-                newItem: nil,
+                newItem: nil as MaxTestScore?,
                 transaction: transaction
             )
         }

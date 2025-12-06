@@ -8,7 +8,11 @@ import Core
 import DatabaseEngine
 import FoundationDB
 
-/// Maintainer for RANK indexes
+/// Maintainer for RANK indexes with compile-time type safety
+///
+/// **Type-Safe Design**:
+/// - `Score` type parameter preserves the score type at compile time
+/// - Query results preserve the original Score type
 ///
 /// **Functionality**:
 /// - Leaderboard queries (top-K)
@@ -33,14 +37,14 @@ import FoundationDB
 ///
 /// **Usage**:
 /// ```swift
-/// let maintainer = RankIndexMaintainer<Player>(
+/// let maintainer = RankIndexMaintainer<Player, Int64>(
 ///     index: rankIndex,
-///     kind: RankIndexKind(bucketSize: 100),
+///     bucketSize: 100,
 ///     subspace: rankSubspace,
 ///     idExpression: FieldKeyExpression(fieldName: "id")
 /// )
 /// ```
-public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
     public let index: Index
     public let subspace: Subspace
     public let idExpression: KeyExpression
@@ -127,6 +131,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     /// Get top K items (highest scores)
     ///
+    /// **Type-Safe**: Returns Score type instead of forcing Int64.
+    ///
     /// **Algorithm**: Uses max-heap to maintain top-k during O(n) scan.
     /// Previous implementation: O(n log n) full sort.
     /// Current implementation: O(n log k) using bounded heap.
@@ -141,14 +147,14 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public func getTopK(
         k: Int,
         transaction: any TransactionProtocol
-    ) async throws -> [(score: Int64, primaryKey: [any TupleElement])] {
+    ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
         let range = scoresSubspace.range()
 
         // Use min-heap of size k to track top-k highest scores
         // Min-heap because we want to evict the smallest of our "top" candidates
-        var topKHeap = TopKHeap<(score: Int64, primaryKey: [any TupleElement])>(
+        var topKHeap = TopKHeap<(score: Score, primaryKey: [any TupleElement])>(
             k: k,
             comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
         )
@@ -169,13 +175,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
                 continue
             }
 
-            // First element is score
-            let score: Int64
-            if let int64 = elements[0] as? Int64 {
-                score = int64
-            } else if let int = elements[0] as? Int {
-                score = Int64(int)
-            } else {
+            // First element is score - extract as Score type
+            guard let score = try? extractScore(from: elements[0]) else {
                 continue
             }
 
@@ -192,6 +193,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     /// Get rank for a specific score
     ///
+    /// **Type-Safe**: Accepts Score type instead of forcing Int64.
+    ///
     /// Returns the number of items with score greater than the given score.
     /// Rank 0 = highest score.
     ///
@@ -207,17 +210,19 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     ///   - transaction: FDB transaction
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
-        score: Int64,
+        score: Score,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
         // Optimization: Start scan from score + 1 (only count entries with higher scores)
         // Key structure: [scoresSubspace][score][pk]
-        // Tuple encoding preserves Int64 ordering, so we can compute the boundary key
+        // Tuple encoding preserves numeric ordering
 
         let rangeEnd = scoresSubspace.range().end
 
         // Build key for score + 1 (first key with score > target)
-        let boundaryKey = scoresSubspace.pack(Tuple(score + 1))
+        // Convert Score to TupleElement for key building
+        let nextScore = score + 1 as! any TupleElement
+        let boundaryKey = scoresSubspace.pack(Tuple(nextScore))
 
         // Scan only entries with score > target
         let sequence = transaction.getRange(
@@ -254,6 +259,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
 
     /// Get score at a given percentile
     ///
+    /// **Type-Safe**: Returns Score type instead of forcing Int64.
+    ///
     /// **Optimization**: Uses getTopK with bounded heap instead of full sort.
     /// Previous implementation: O(n log n) full scan and sort.
     /// Current implementation: O(n log k) where k = targetRank + 1.
@@ -266,7 +273,7 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     public func getPercentile(
         _ percentile: Double,
         transaction: any TransactionProtocol
-    ) async throws -> Int64? {
+    ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexError.invalidScore("Percentile must be between 0.0 and 1.0")
         }
@@ -298,6 +305,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
     ///
     /// Key structure: [scoresSubspace][score][primaryKey]
     ///
+    /// **Type-Safe**: Uses Score type parameter for type-safe extraction.
+    ///
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
@@ -314,21 +323,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
             return nil
         }
 
-        // Extract score as Int64
-        let score: Int64
-        if let int64 = scoreValues[0] as? Int64 {
-            score = int64
-        } else if let int = scoreValues[0] as? Int {
-            score = Int64(int)
-        } else if let double = scoreValues[0] as? Double {
-            score = Int64(double)
-        } else if let float = scoreValues[0] as? Float {
-            score = Int64(float)
-        } else {
-            throw RankIndexError.invalidScore(
-                "Rank index score must be numeric, got: \(type(of: scoreValues[0]))"
-            )
-        }
+        // Extract score as Score type (type-safe)
+        let score = try extractScore(from: scoreValues[0])
 
         // Extract primary key
         let primaryKeyTuple: Tuple
@@ -339,7 +335,8 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         }
 
         // Build key: [score][primaryKey...]
-        var allElements: [any TupleElement] = [score]
+        // Score conforms to Numeric, which includes TupleElement-compatible types
+        var allElements: [any TupleElement] = [score as! any TupleElement]
         for i in 0..<primaryKeyTuple.count {
             if let element = primaryKeyTuple[i] {
                 allElements.append(element)
@@ -347,6 +344,50 @@ public struct RankIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
         }
 
         return try packAndValidate(Tuple(allElements), in: scoresSubspace)
+    }
+
+    /// Extract score from tuple element (type-safe)
+    private func extractScore(from element: any TupleElement) throws -> Score {
+        switch Score.self {
+        case is Int64.Type:
+            guard let value = element as? Int64 else {
+                throw RankIndexError.invalidScore("Expected Int64, got \(type(of: element))")
+            }
+            return value as! Score
+
+        case is Int.Type:
+            guard let value = element as? Int64 else {
+                throw RankIndexError.invalidScore("Expected Int (as Int64), got \(type(of: element))")
+            }
+            return Int(value) as! Score
+
+        case is Int32.Type:
+            guard let value = element as? Int64 else {
+                throw RankIndexError.invalidScore("Expected Int32 (as Int64), got \(type(of: element))")
+            }
+            return Int32(value) as! Score
+
+        case is Double.Type:
+            guard let value = element as? Double else {
+                throw RankIndexError.invalidScore("Expected Double, got \(type(of: element))")
+            }
+            return value as! Score
+
+        case is Float.Type:
+            guard let value = element as? Double else {
+                throw RankIndexError.invalidScore("Expected Float (as Double), got \(type(of: element))")
+            }
+            return Float(value) as! Score
+
+        default:
+            // Fallback: try direct cast
+            guard let value = element as? Score else {
+                throw RankIndexError.invalidScore(
+                    "Cannot convert \(type(of: element)) to \(Score.self)"
+                )
+            }
+            return value
+        }
     }
 }
 

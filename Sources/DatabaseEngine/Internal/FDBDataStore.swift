@@ -47,6 +47,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// immediately throwing errors.
     let violationTracker: UniquenessViolationTracker
 
+    /// Index maintenance service for all index operations
+    let indexMaintenanceService: IndexMaintenanceService
+
     // MARK: - Initialization
 
     init(
@@ -68,6 +71,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.violationTracker = UniquenessViolationTracker(
             database: database,
             metadataSubspace: subspace.subspace(SubspaceKey.metadata)
+        )
+        self.indexMaintenanceService = IndexMaintenanceService(
+            indexStateManager: indexStateManager,
+            violationTracker: violationTracker,
+            indexSubspace: indexSubspace,
+            logger: logger
         )
     }
 
@@ -774,8 +783,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Save the record
         transaction.setValue(data, for: key)
 
-        // Update indexes
-        try await updateIndexes(oldModel: oldModel, newModel: model, id: idTuple, transaction: transaction)
+        // Update indexes via IndexMaintenanceService
+        try await indexMaintenanceService.updateIndexes(oldModel: oldModel, newModel: model, id: idTuple, transaction: transaction)
     }
 
     // MARK: - Delete Operations
@@ -817,8 +826,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first
-        try await updateIndexes(oldModel: model, newModel: nil, id: idTuple, transaction: transaction)
+        // Remove index entries first via IndexMaintenanceService
+        try await indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
 
         // Delete the record
         transaction.clear(key: key)
@@ -836,8 +845,8 @@ internal final class FDBDataStore: DataStore, Sendable {
                 // Use Protobuf deserialization via DataAccess
                 let model: T = try DataAccess.deserialize(bytes)
 
-                // Remove index entries
-                try await self.updateIndexes(oldModel: model, newModel: nil, id: idTuple, transaction: transaction)
+                // Remove index entries via IndexMaintenanceService
+                try await self.indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
             }
 
             // Delete the record
@@ -905,8 +914,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Save the record
         transaction.setValue(Array(data), for: key)
 
-        // Update indexes using type-erased helper
-        try await updateIndexesUntyped(
+        // Update indexes via IndexMaintenanceService
+        try await indexMaintenanceService.updateIndexesUntyped(
             oldData: oldData,
             newModel: model,
             id: idTuple,
@@ -926,647 +935,17 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first
-        try await updateIndexesUntyped(
-            oldData: nil,  // We use the model directly for old values
+        // Remove index entries first via IndexMaintenanceService
+        try await indexMaintenanceService.updateIndexesUntyped(
+            oldData: nil,
             newModel: nil,
             id: idTuple,
             transaction: transaction,
-            deletingModel: model  // Pass the model being deleted
+            deletingModel: model
         )
 
         // Delete the record
         transaction.clear(key: key)
-    }
-
-    // MARK: - Index Operations
-
-    /// Update indexes for a model change
-    ///
-    /// This method handles different IndexKind behaviors:
-    /// - **ScalarIndexKind/VersionIndexKind**: Standard key-value index
-    /// - **CountIndexKind**: Atomic increment/decrement counter
-    /// - **SumIndexKind**: Atomic add/subtract aggregation
-    /// - **MinIndexKind/MaxIndexKind**: Sorted value tracking
-    ///
-    /// For unique indexes, validates that no duplicate values exist.
-    ///
-    /// **Index State Handling**:
-    /// - Only indexes with `shouldMaintain == true` are updated
-    /// - `disabled` indexes are skipped entirely (no maintenance, no unique checks)
-    /// - `writeOnly` and `readable` indexes are maintained normally
-    private func updateIndexes<T: Persistable>(
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let indexDescriptors = T.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        // Batch fetch all index states for performance
-        let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexStateManager.states(of: indexNames, transaction: transaction)
-
-        for descriptor in indexDescriptors {
-            // Check if index should be maintained based on its state
-            let state = indexStates[descriptor.name] ?? .disabled
-            guard state.shouldMaintain else {
-                logger.trace("Skipping index '\(descriptor.name)' maintenance (state: \(state))")
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-            let kindIdentifier = type(of: descriptor.kind).identifier
-
-            switch kindIdentifier {
-            case "count":
-                // CountIndexKind: Atomic counter per group key
-                try await updateCountIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    transaction: transaction
-                )
-
-            case "sum":
-                // SumIndexKind: Atomic sum per group key
-                try await updateSumIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    transaction: transaction
-                )
-
-            case "min", "max":
-                // MinIndexKind/MaxIndexKind: Sorted value tracking with group key
-                try await updateMinMaxIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    id: id,
-                    transaction: transaction
-                )
-
-            default:
-                // ScalarIndexKind, VersionIndexKind: Standard key-value index
-                try await updateScalarIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    id: id,
-                    indexState: state,
-                    transaction: transaction
-                )
-            }
-        }
-    }
-
-    /// Update scalar index (ScalarIndexKind, VersionIndexKind)
-    ///
-    /// Key structure: `[indexSubspace][fieldValue][primaryKey] = ''`
-    ///
-    /// - Parameters:
-    ///   - descriptor: Index descriptor
-    ///   - subspace: Index subspace
-    ///   - oldModel: Previous model (nil for insert)
-    ///   - newModel: New model (nil for delete)
-    ///   - id: Primary key
-    ///   - indexState: Current index state (affects uniqueness check mode)
-    ///   - transaction: Current transaction
-    private func updateScalarIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        indexState: IndexState,
-        transaction: any TransactionProtocol
-    ) async throws {
-        // Remove old index entries
-        if let old = oldModel {
-            let oldValues = extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-            if !oldValues.isEmpty {
-                let oldIndexKey = buildIndexKey(
-                    subspace: subspace,
-                    values: oldValues,
-                    id: id
-                )
-                transaction.clear(key: oldIndexKey)
-            }
-        }
-
-        // Add new index entries
-        if let new = newModel {
-            let newValues = extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-            if !newValues.isEmpty {
-                // Check unique constraint with appropriate mode
-                if descriptor.isUnique {
-                    let mode = uniquenessCheckMode(for: indexState)
-                    try await checkUniqueConstraint(
-                        descriptor: descriptor,
-                        subspace: subspace,
-                        values: newValues,
-                        excludingId: id,
-                        persistableType: T.persistableType,
-                        mode: mode,
-                        transaction: transaction
-                    )
-                }
-
-                let newIndexKey = buildIndexKey(
-                    subspace: subspace,
-                    values: newValues,
-                    id: id
-                )
-                transaction.setValue([], for: newIndexKey)
-            }
-        }
-    }
-
-    /// Check unique constraint for index
-    ///
-    /// Behavior depends on mode:
-    /// - `.immediate`: Throws `UniquenessViolationError` if duplicate exists
-    /// - `.track`: Records violation via `UniquenessViolationTracker` for later resolution
-    /// - `.skip`: Does nothing (for disabled indexes)
-    ///
-    /// - Parameters:
-    ///   - descriptor: Index descriptor
-    ///   - subspace: Index subspace
-    ///   - values: Index values to check
-    ///   - excludingId: Primary key of the record being inserted/updated
-    ///   - persistableType: Type name for violation tracking
-    ///   - mode: How to handle violations
-    ///   - transaction: Current transaction
-    private func checkUniqueConstraint(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        values: [any TupleElement],
-        excludingId: Tuple,
-        persistableType: String,
-        mode: UniquenessCheckMode,
-        transaction: any TransactionProtocol
-    ) async throws {
-        // Skip check if mode is skip
-        guard mode != .skip else { return }
-
-        // Create value subspace by appending packed values directly to prefix
-        // Note: Don't use subspace.subspace(Tuple(values)) as that treats Tuple as a nested tuple element
-        let valueKey = Tuple(values).pack()
-        let valueSubspace = Subspace(prefix: subspace.prefix + valueKey)
-        let (begin, end) = valueSubspace.range()
-
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
-
-        for try await (key, _) in sequence {
-            // Check if this key belongs to a different record
-            if let existingId = extractIDFromIndexKey(key, subspace: valueSubspace) {
-                // Compare tuples using byte representation for type-safe comparison
-                // This avoids issues with String(describing:) treating different types as equal
-                let existingBytes = existingId.pack()
-                let excludingBytes = excludingId.pack()
-
-                if existingBytes != excludingBytes {
-                    // Different ID, unique constraint violation
-                    switch mode {
-                    case .immediate:
-                        // Throw immediately with detailed error
-                        throw UniquenessViolationError(
-                            indexName: descriptor.name,
-                            persistableType: persistableType,
-                            conflictingValues: values.map { String(describing: $0) },
-                            existingPrimaryKey: existingId,
-                            newPrimaryKey: excludingId
-                        )
-
-                    case .track:
-                        // Record violation for later resolution
-                        try await violationTracker.recordViolation(
-                            indexName: descriptor.name,
-                            persistableType: persistableType,
-                            valueKey: valueKey,
-                            existingPrimaryKey: existingId,
-                            newPrimaryKey: excludingId,
-                            transaction: transaction
-                        )
-                        logger.warning(
-                            "Recorded uniqueness violation (tracking mode)",
-                            metadata: [
-                                "index": "\(descriptor.name)",
-                                "type": "\(persistableType)"
-                            ]
-                        )
-                        // Don't throw - allow operation to continue
-
-                    case .skip:
-                        // Already handled above, but included for completeness
-                        break
-                    }
-                }
-            }
-        }
-    }
-
-    /// Determine uniqueness check mode based on index state
-    ///
-    /// - `.readable` indexes: immediate (throw on violation)
-    /// - `.writeOnly` indexes: track (record for later resolution)
-    /// - `.disabled` indexes: skip (no check)
-    private func uniquenessCheckMode(for indexState: IndexState) -> UniquenessCheckMode {
-        switch indexState {
-        case .readable:
-            return .immediate
-        case .writeOnly:
-            return .track
-        case .disabled:
-            return .skip
-        }
-    }
-
-    /// Update count index (CountIndexKind)
-    ///
-    /// Key structure: `[indexSubspace][groupKey] = Int64(count)`
-    /// Uses atomic increment/decrement operations.
-    private func updateCountIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        transaction: any TransactionProtocol
-    ) async throws {
-        // Decrement count for old group key
-        if let old = oldModel {
-            let groupValues = extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-            if !groupValues.isEmpty {
-                let key = subspace.pack(Tuple(groupValues))
-                // Atomic decrement by -1
-                let decrementValue = withUnsafeBytes(of: Int64(-1).littleEndian) { Array($0) }
-                transaction.atomicOp(key: key, param: decrementValue, mutationType: .add)
-            }
-        }
-
-        // Increment count for new group key
-        if let new = newModel {
-            let groupValues = extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-            if !groupValues.isEmpty {
-                let key = subspace.pack(Tuple(groupValues))
-                // Atomic increment by +1
-                let incrementValue = withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) }
-                transaction.atomicOp(key: key, param: incrementValue, mutationType: .add)
-            }
-        }
-    }
-
-    /// Update sum index (SumIndexKind)
-    ///
-    /// Key structure: `[indexSubspace][groupKey] = Double(sum)`
-    /// Uses read-modify-write pattern. Last keyPath is the value field.
-    ///
-    /// **Note**: FDB's atomic `.add` only supports 64-bit signed integer addition.
-    /// Using `Double.bitPattern` with `.add` is incorrect because IEEE 754 bit patterns
-    /// don't produce correct sums when added as integers.
-    /// We use read-modify-write instead, which is correct but not atomic across transactions.
-    /// Conflicts are handled by FDB's optimistic concurrency control and automatic retry.
-    private func updateSumIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        transaction: any TransactionProtocol
-    ) async throws {
-        guard descriptor.keyPaths.count >= 2,
-              let valueKeyPath = descriptor.keyPaths.last else { return }
-
-        let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-
-        // Calculate delta: newValue - oldValue
-        var oldNumeric: Double = 0.0
-        var newNumeric: Double = 0.0
-        var groupKey: [UInt8]?
-
-        if let old = oldModel {
-            let groupValues = extractIndexValues(from: old, keyPaths: groupKeyPaths)
-            let valueValues = extractIndexValues(from: old, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, let oldValue = valueValues.first {
-                groupKey = subspace.pack(Tuple(groupValues))
-                oldNumeric = toDouble(oldValue) ?? 0.0
-            }
-        }
-
-        if let new = newModel {
-            let groupValues = extractIndexValues(from: new, keyPaths: groupKeyPaths)
-            let valueValues = extractIndexValues(from: new, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, let newValue = valueValues.first {
-                groupKey = subspace.pack(Tuple(groupValues))
-                newNumeric = toDouble(newValue) ?? 0.0
-            }
-        }
-
-        // Apply delta using read-modify-write
-        guard let key = groupKey else { return }
-
-        let delta = newNumeric - oldNumeric
-        if delta == 0.0 { return }
-
-        // Read current sum
-        let currentBytes = try await transaction.getValue(for: key, snapshot: false)
-        var currentSum: Double = 0.0
-        if let bytes = currentBytes, bytes.count == 8 {
-            let bitPattern = bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
-            currentSum = Double(bitPattern: UInt64(littleEndian: bitPattern))
-        }
-
-        // Write new sum
-        let newSum = currentSum + delta
-        let newSumBytes = withUnsafeBytes(of: newSum.bitPattern.littleEndian) { Array($0) }
-        transaction.setValue(newSumBytes, for: key)
-    }
-
-    /// Convert TupleElement to Double for sum operations
-    private func toDouble(_ value: any TupleElement) -> Double? {
-        switch value {
-        case let v as Int64: return Double(v)
-        case let v as Double: return v
-        case let v as Int: return Double(v)
-        case let v as Float: return Double(v)
-        default: return nil
-        }
-    }
-
-    /// Update min/max index (MinIndexKind, MaxIndexKind)
-    ///
-    /// Key structure: `[indexSubspace][groupKey][value][primaryKey] = ''`
-    /// Stores sorted values for efficient min/max queries.
-    private func updateMinMaxIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        guard descriptor.keyPaths.count >= 2,
-              let valueKeyPath = descriptor.keyPaths.last else { return }
-
-        let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-
-        // Remove old entry
-        if let old = oldModel {
-            let groupValues = extractIndexValues(from: old, keyPaths: groupKeyPaths)
-            let valueValues = extractIndexValues(from: old, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, !valueValues.isEmpty {
-                var keyElements: [any TupleElement] = groupValues
-                keyElements.append(contentsOf: valueValues)
-                for i in 0..<id.count {
-                    if let element = id[i] {
-                        keyElements.append(element)
-                    }
-                }
-                let oldKey = subspace.pack(Tuple(keyElements))
-                transaction.clear(key: oldKey)
-            }
-        }
-
-        // Add new entry
-        if let new = newModel {
-            let groupValues = extractIndexValues(from: new, keyPaths: groupKeyPaths)
-            let valueValues = extractIndexValues(from: new, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, !valueValues.isEmpty {
-                var keyElements: [any TupleElement] = groupValues
-                keyElements.append(contentsOf: valueValues)
-                for i in 0..<id.count {
-                    if let element = id[i] {
-                        keyElements.append(element)
-                    }
-                }
-                let newKey = subspace.pack(Tuple(keyElements))
-                transaction.setValue([], for: newKey)
-            }
-        }
-    }
-
-    /// Update indexes for type-erased models (batch operations)
-    ///
-    /// For Protobuf-serialized data, we use a "clear and re-add" strategy for updates
-    /// since Protobuf is not self-describing. This scans for existing index entries
-    /// with this ID and clears them before adding new ones.
-    ///
-    /// **Important**: This path now includes:
-    /// - Index state checking (only maintains indexes with `shouldMaintain == true`)
-    /// - Unique constraint checking (prevents duplicates, only for maintained indexes)
-    /// - Proper cleanup of old index entries on update
-    ///
-    /// **Index State Handling**:
-    /// - Only indexes with `shouldMaintain == true` are updated
-    /// - `disabled` indexes are skipped entirely (no maintenance, no unique checks)
-    /// - `writeOnly` and `readable` indexes are maintained normally
-    ///
-    /// - Parameters:
-    ///   - oldData: The old record data (for update operations), nil for insert
-    ///   - newModel: The new model being saved, nil for delete
-    ///   - id: The model's ID tuple
-    ///   - transaction: The FDB transaction
-    ///   - deletingModel: The model being deleted (for delete operations)
-    private func updateIndexesUntyped(
-        oldData: [UInt8]?,
-        newModel: (any Persistable)?,
-        id: Tuple,
-        transaction: any TransactionProtocol,
-        deletingModel: (any Persistable)? = nil
-    ) async throws {
-        // Determine which model type we're working with
-        let modelType: any Persistable.Type
-        if let newModel = newModel {
-            modelType = type(of: newModel)
-        } else if let deletingModel = deletingModel {
-            modelType = type(of: deletingModel)
-        } else {
-            return  // No model to process
-        }
-
-        let indexDescriptors = modelType.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        // Batch fetch all index states for performance
-        let indexNames = indexDescriptors.map(\.name)
-        let indexStates = try await indexStateManager.states(of: indexNames, transaction: transaction)
-
-        for descriptor in indexDescriptors {
-            // Check if index should be maintained based on its state
-            let state = indexStates[descriptor.name] ?? .disabled
-            guard state.shouldMaintain else {
-                logger.trace("Skipping index '\(descriptor.name)' maintenance (state: \(state))")
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-
-            // For update operations (oldData exists), clear existing index entries for this ID
-            // Since Protobuf is not self-describing, we scan the index to find entries with this ID
-            if oldData != nil {
-                try await clearIndexEntriesForId(
-                    indexSubspace: indexSubspaceForIndex,
-                    id: id,
-                    transaction: transaction
-                )
-            }
-
-            // For delete operations, extract values from the model being deleted
-            if let deletingModel = deletingModel {
-                let oldValues = extractIndexValuesUntyped(from: deletingModel, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    // For single-field array indexes, create separate keys for each element
-                    let oldIndexKeys = buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: oldValues,
-                        id: id,
-                        keyPathCount: descriptor.keyPaths.count
-                    )
-                    for key in oldIndexKeys {
-                        transaction.clear(key: key)
-                    }
-                }
-            }
-
-            // Add new index entries
-            if let newModel = newModel {
-                let newValues = extractIndexValuesUntyped(from: newModel, keyPaths: descriptor.keyPaths)
-                if !newValues.isEmpty {
-                    // For single-field array indexes, create separate keys for each element
-                    let newIndexKeys = buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: newValues,
-                        id: id,
-                        keyPathCount: descriptor.keyPaths.count
-                    )
-
-                    // Check unique constraint before adding (only for non-array indexes)
-                    // Array indexes are typically not unique per element
-                    if descriptor.isUnique && newIndexKeys.count == 1 {
-                        let mode = uniquenessCheckMode(for: state)
-                        try await checkUniqueConstraint(
-                            descriptor: descriptor,
-                            subspace: indexSubspaceForIndex,
-                            values: newValues,
-                            excludingId: id,
-                            persistableType: modelType.persistableType,
-                            mode: mode,
-                            transaction: transaction
-                        )
-                    }
-
-                    for key in newIndexKeys {
-                        transaction.setValue([], for: key)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Clear all index entries for a given ID by scanning the index
-    ///
-    /// This is used in the type-erased path where we can't deserialize the old values.
-    /// We scan the index subspace and clear any entries that end with the given ID.
-    ///
-    /// **Performance note**: This is O(n) where n is the number of index entries.
-    /// For better performance, use the typed path which can extract old values directly.
-    ///
-    /// - Parameters:
-    ///   - indexSubspace: The subspace for this specific index
-    ///   - id: The model's ID tuple to match
-    ///   - transaction: The FDB transaction
-    private func clearIndexEntriesForId(
-        indexSubspace: Subspace,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let (begin, end) = indexSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
-
-        for try await (key, _) in sequence {
-            // Check if this key ends with the given ID
-            if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace),
-               extractedId.pack() == id.pack() {
-                transaction.clear(key: key)
-            }
-        }
-    }
-
-    /// Extract index values from a type-erased model
-    ///
-    /// Uses KeyPath direct extraction for optimal performance.
-    /// Swift 5.7+ implicit existential opening allows passing `any Persistable`
-    /// directly to generic functions.
-    private func extractIndexValuesUntyped(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
-    }
-
-    /// Extract index values from a model
-    ///
-    /// Uses KeyPath direct extraction for optimal performance.
-    /// Avoids string-based field lookup and Mirror reflection.
-    private func extractIndexValues<T: Persistable>(from model: T, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
-    }
-
-    /// Build index key (single key with all values)
-    private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
-        var elements: [any TupleElement] = values
-        for i in 0..<id.count {
-            if let element = id[i] {
-                elements.append(element)
-            }
-        }
-        return subspace.pack(Tuple(elements))
-    }
-
-    /// Build index keys (handles array fields by creating separate keys)
-    ///
-    /// For single-field indexes on array types (e.g., To-Many FK fields),
-    /// creates one key per array element. This enables reverse lookups.
-    ///
-    /// Example:
-    /// - Field `orderIDs = ["O001", "O002"]` with keyPathCount=1 produces:
-    ///   - Key: `[subspace]["O001"][id]`
-    ///   - Key: `[subspace]["O002"][id]`
-    ///
-    /// For composite indexes (multiple keyPaths), all values go into a single key.
-    private func buildIndexKeys(
-        subspace: Subspace,
-        values: [any TupleElement],
-        id: Tuple,
-        keyPathCount: Int
-    ) -> [[UInt8]] {
-        // For single-field indexes with multiple values, create separate keys for each value
-        // This handles array-typed fields (e.g., [String] for To-Many relationships)
-        let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
-
-        if isSingleFieldArrayIndex {
-            // Array field: create one key per element
-            var keys: [[UInt8]] = []
-            for value in values {
-                var elements: [any TupleElement] = [value]
-                for i in 0..<id.count {
-                    if let element = id[i] {
-                        elements.append(element)
-                    }
-                }
-                keys.append(subspace.pack(Tuple(elements)))
-            }
-            return keys
-        } else {
-            // Scalar/composite field: single key with all values
-            return [buildIndexKey(subspace: subspace, values: values, id: id)]
-        }
     }
 
     // MARK: - Predicate Evaluation

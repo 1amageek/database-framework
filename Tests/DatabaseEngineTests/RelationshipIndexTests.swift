@@ -38,6 +38,24 @@ struct RTestOrder {
     var customerID: String? = nil
 }
 
+// MARK: - Test Helpers
+
+/// Enable all indexes for a Persistable type to readable state
+/// Skips if already enabled to avoid state transition errors
+private func enableAllIndexes<T: Persistable>(container: FDBContainer, for type: T.Type) async throws {
+    let store = try await container.store(for: type) as! FDBDataStore
+    for descriptor in T.indexDescriptors {
+        let currentState = try await store.indexStateManager.state(of: descriptor.name)
+        if currentState == .disabled {
+            try await store.indexStateManager.enable(descriptor.name)
+            try await store.indexStateManager.makeReadable(descriptor.name)
+        } else if currentState == .writeOnly {
+            try await store.indexStateManager.makeReadable(descriptor.name)
+        }
+        // If already readable, skip
+    }
+}
+
 // MARK: - Macro Generation Tests
 
 @Suite("Relationship Macro Generation Tests")
@@ -180,10 +198,16 @@ struct RelationshipIndexUpdateTests {
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
+        let container = FDBContainer(
             database: database,
             schema: schema
         )
+
+        // Enable all indexes for testing
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
     }
 
     /// Generate unique test ID to avoid conflicts with parallel tests
@@ -363,10 +387,16 @@ struct RelationshipQueryTests {
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
+        let container = FDBContainer(
             database: database,
             schema: schema
         )
+
+        // Enable all indexes for testing
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
     }
 
     /// Generate unique test ID to avoid conflicts with parallel tests
@@ -445,10 +475,16 @@ struct SnapshotTests {
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
+        let container = FDBContainer(
             database: database,
             schema: schema
         )
+
+        // Enable all indexes for testing
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
     }
 
     /// Generate unique test ID to avoid conflicts with parallel tests
@@ -842,10 +878,16 @@ struct ToManyRelationshipIndexUpdateTests {
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
+        let container = FDBContainer(
             database: database,
             schema: schema
         )
+
+        // Enable all indexes for testing
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
     }
 
     /// Generate unique test ID to avoid conflicts with parallel tests

@@ -247,6 +247,7 @@ public final class FDBContext: Sendable {
     /// - You need efficient bulk deletion without per-record operations
     ///
     /// **Note**: This does NOT track deletions in the context. Changes are applied immediately.
+    /// **Note**: Also clears polymorphic directory data if type conforms to Polymorphable.
     ///
     /// - Parameter type: The Persistable type to clear
     public func clearAll<T: Persistable>(_ type: T.Type) async throws {
@@ -254,6 +255,21 @@ public final class FDBContext: Sendable {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let indexSubspace = subspace.subspace(SubspaceKey.indexes)
         let typeSubspace = itemSubspace.subspace(T.persistableType)
+
+        // Check if type conforms to Polymorphable and needs dual-clear
+        let polymorphicSubspace: Subspace? = try await {
+            guard let polymorphicType = T.self as? any Polymorphable.Type else {
+                return nil
+            }
+            let typeDirectory = T.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            guard typeDirectory != polyDirectory else {
+                return nil  // Same directory, no dual-clear needed
+            }
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+            let typeCode = polymorphicType.typeCode(for: T.persistableType)
+            return polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
+        }()
 
         try await container.database.withTransaction { transaction in
             // Clear all items for this type
@@ -264,6 +280,12 @@ public final class FDBContext: Sendable {
             for descriptor in T.indexDescriptors {
                 let indexRange = indexSubspace.subspace(descriptor.name).range()
                 transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
+            }
+
+            // Clear polymorphic directory data if applicable
+            if let polySubspace = polymorphicSubspace {
+                let (polyBegin, polyEnd) = polySubspace.range()
+                transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
             }
         }
     }
@@ -543,6 +565,10 @@ public final class FDBContext: Sendable {
     }
 
     /// Save a single model using the provided store and transaction
+    ///
+    /// Uses FDBDataStore's IndexMaintenanceService for full index maintenance
+    /// including aggregations and uniqueness constraints.
+    /// Handles Polymorphable dual-write at this layer.
     internal func saveModel(
         _ model: any Persistable,
         store: FDBDataStore,
@@ -554,24 +580,24 @@ public final class FDBContext: Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        // Serialize using Protobuf (encoder reused across all models)
-        let data = try encoder.encode(model)
+        // Serialize using Protobuf
+        let data = Array(try encoder.encode(model))
 
+        // Build key
         let typeSubspace = store.itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Check for existing record (for index updates)
+        // Get existing record for diff-based index update
         let oldData = try await transaction.getValue(for: key, snapshot: false)
 
-        // Save the record
-        transaction.setValue(Array(data), for: key)
+        // Write record
+        transaction.setValue(data, for: key)
 
-        // Update indexes
-        try await updateIndexes(
+        // Update indexes via IndexMaintenanceService (full support including aggregations)
+        try await store.indexMaintenanceService.updateIndexesUntyped(
             oldData: oldData,
             newModel: model,
             id: idTuple,
-            store: store,
             transaction: transaction
         )
 
@@ -579,7 +605,7 @@ public final class FDBContext: Sendable {
         // also save to the polymorphic directory
         try await saveDualWriteIfNeeded(
             model: model,
-            data: Array(data),
+            data: data,
             idTuple: idTuple,
             transaction: transaction
         )
@@ -626,6 +652,9 @@ public final class FDBContext: Sendable {
     }
 
     /// Delete a single model using the provided store and transaction
+    ///
+    /// Uses FDBDataStore's IndexMaintenanceService for full index cleanup.
+    /// Handles Polymorphable dual-delete at this layer.
     internal func deleteModel(
         _ model: any Persistable,
         store: FDBDataStore,
@@ -636,20 +665,20 @@ public final class FDBContext: Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
+        // Build key
         let typeSubspace = store.itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first
-        try await updateIndexes(
+        // Remove index entries first via IndexMaintenanceService
+        try await store.indexMaintenanceService.updateIndexesUntyped(
             oldData: nil,
             newModel: nil,
             id: idTuple,
-            store: store,
             transaction: transaction,
             deletingModel: model
         )
 
-        // Delete the record
+        // Delete record
         transaction.clear(key: key)
 
         // Dual delete: If type conforms to Polymorphable and has its own directory,
@@ -706,172 +735,6 @@ public final class FDBContext: Sendable {
             return tupleElement
         }
         throw FDBRuntimeError.internalError("ID for \(typeName) must conform to TupleElement")
-    }
-
-    /// Update indexes for a model change
-    private func updateIndexes(
-        oldData: [UInt8]?,
-        newModel: (any Persistable)?,
-        id: Tuple,
-        store: FDBDataStore,
-        transaction: any TransactionProtocol,
-        deletingModel: (any Persistable)? = nil
-    ) async throws {
-        let modelType: any Persistable.Type
-        if let newModel = newModel {
-            modelType = type(of: newModel)
-        } else if let deletingModel = deletingModel {
-            modelType = type(of: deletingModel)
-        } else {
-            return
-        }
-
-        let indexDescriptors = modelType.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        for descriptor in indexDescriptors {
-            let indexSubspaceForIndex = store.indexSubspace.subspace(descriptor.name)
-            let keyPathCount = descriptor.keyPaths.count
-
-            // Clear old index entries if updating
-            if oldData != nil {
-                try await clearIndexEntriesForId(
-                    indexSubspace: indexSubspaceForIndex,
-                    id: id,
-                    transaction: transaction
-                )
-            }
-
-            // Remove old entries for delete
-            if let deletingModel = deletingModel {
-                let oldValues = extractIndexValues(from: deletingModel, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    // Use buildIndexKeys to handle array fields
-                    let oldIndexKeys = buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: oldValues,
-                        id: id,
-                        keyPathCount: keyPathCount
-                    )
-                    for key in oldIndexKeys {
-                        transaction.clear(key: key)
-                    }
-                }
-            }
-
-            // Add new index entries
-            if let newModel = newModel {
-                let newValues = extractIndexValues(from: newModel, keyPaths: descriptor.keyPaths)
-                if !newValues.isEmpty {
-                    // Use buildIndexKeys to handle array fields (creates separate keys for each element)
-                    let newIndexKeys = buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: newValues,
-                        id: id,
-                        keyPathCount: keyPathCount
-                    )
-                    for key in newIndexKeys {
-                        transaction.setValue([], for: key)
-                    }
-                }
-            }
-        }
-    }
-
-    /// Clear all index entries for a given ID
-    private func clearIndexEntriesForId(
-        indexSubspace: Subspace,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let (begin, end) = indexSubspace.range()
-        // Use wantAll to minimize round-trips for full index scan
-        let sequence = transaction.getRange(
-            from: begin,
-            to: end,
-            snapshot: false,
-            streamingMode: .wantAll
-        )
-
-        for try await (key, _) in sequence {
-            if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace),
-               extractedId.pack() == id.pack() {
-                transaction.clear(key: key)
-            }
-        }
-    }
-
-    /// Extract ID from an index key
-    private func extractIDFromIndexKey(_ key: [UInt8], subspace: Subspace) -> Tuple? {
-        // Quick check: verify key belongs to this subspace before attempting unpack
-        guard subspace.contains(key) else { return nil }
-
-        do {
-            let tuple = try subspace.unpack(key)
-            if tuple.count >= 2, let lastElement = tuple[tuple.count - 1] {
-                return Tuple([lastElement])
-            } else if tuple.count == 1, let element = tuple[0] {
-                return Tuple([element])
-            }
-        } catch {}
-        return nil
-    }
-
-    /// Extract index values from a model
-    private func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
-    }
-
-    /// Build index key (single key with all values)
-    private func buildIndexKey(subspace: Subspace, values: [any TupleElement], id: Tuple) -> [UInt8] {
-        var elements: [any TupleElement] = values
-        for i in 0..<id.count {
-            if let element = id[i] {
-                elements.append(element)
-            }
-        }
-        return subspace.pack(Tuple(elements))
-    }
-
-    /// Build index keys (handles array fields by creating separate keys for each element)
-    ///
-    /// For single-field indexes on array types (e.g., To-Many FK fields like `[String]`),
-    /// creates one key per array element. This enables reverse lookups like
-    /// "find all customers who have order O001".
-    ///
-    /// Example:
-    /// - Field `orderIDs = ["O001", "O002"]` with keyPathCount=1 produces:
-    ///   - Key: `[subspace]["O001"][id]`
-    ///   - Key: `[subspace]["O002"][id]`
-    ///
-    /// For composite indexes (multiple fields), all values go into a single key.
-    private func buildIndexKeys(
-        subspace: Subspace,
-        values: [any TupleElement],
-        id: Tuple,
-        keyPathCount: Int
-    ) -> [[UInt8]] {
-        // For single-field indexes with multiple values, create separate keys for each value
-        // This handles array-typed fields (e.g., [String] for To-Many relationships)
-        let isSingleFieldArrayIndex = keyPathCount == 1 && values.count > 1
-
-        if isSingleFieldArrayIndex {
-            // Array field: create one key per element
-            var keys: [[UInt8]] = []
-            for value in values {
-                var elements: [any TupleElement] = [value]
-                for i in 0..<id.count {
-                    if let element = id[i] {
-                        elements.append(element)
-                    }
-                }
-                keys.append(subspace.pack(Tuple(elements)))
-            }
-            return keys
-        } else {
-            // Scalar/composite field: single key with all values
-            return [buildIndexKey(subspace: subspace, values: values, id: id)]
-        }
     }
 
     // MARK: - Rollback

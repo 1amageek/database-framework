@@ -156,7 +156,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with SumIndexKind")
     func testSumIndexKind() throws {
-        let kind = SumIndexKind<TestUser>(groupBy: [\.department], value: \.salary)
+        let kind = SumIndexKind(groupBy: [\TestUser.department], value: \TestUser.salary)
 
         let descriptor = IndexDescriptor(
             name: "Employee_salary_by_dept",
@@ -170,7 +170,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MinIndexKind")
     func testMinIndexKind() throws {
-        let kind = MinIndexKind<TestUser>(groupBy: [\.region], value: \.price)
+        let kind = MinIndexKind(groupBy: [\TestUser.region], value: \TestUser.price)
 
         let descriptor = IndexDescriptor(
             name: "Product_min_price_by_region",
@@ -183,7 +183,7 @@ struct IndexDescriptorTests {
 
     @Test("IndexDescriptor with MaxIndexKind")
     func testMaxIndexKind() throws {
-        let kind = MaxIndexKind<TestUser>(groupBy: [\.region], value: \.price)
+        let kind = MaxIndexKind(groupBy: [\TestUser.region], value: \TestUser.price)
 
         let descriptor = IndexDescriptor(
             name: "Product_max_price_by_region",

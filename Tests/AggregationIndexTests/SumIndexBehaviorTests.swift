@@ -77,7 +77,7 @@ private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: SumIndexMaintainer<SumTestSale>
+    let maintainer: SumIndexMaintainer<SumTestSale, Double>
 
     init(indexName: String = "SumTestSale_category_amount") throws {
         self.database = try FDBClient.openDatabase()
@@ -88,7 +88,7 @@ private struct TestContext {
         // Expression: category + amount (grouping + sum value)
         let index = Index(
             name: indexName,
-            kind: SumIndexKind<SumTestSale>(groupBy: [\.category], value: \.amount),
+            kind: SumIndexKind<SumTestSale, Double>(groupBy: [\.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "category"),
                 FieldKeyExpression(fieldName: "amount")
@@ -97,7 +97,7 @@ private struct TestContext {
             itemTypes: Set(["SumTestSale"])
         )
 
-        self.maintainer = SumIndexMaintainer<SumTestSale>(
+        self.maintainer = SumIndexMaintainer<SumTestSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -143,7 +143,7 @@ struct SumIndexBehaviorTests {
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as SumTestSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -169,7 +169,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -196,7 +196,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -224,7 +224,7 @@ struct SumIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as SumTestSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -237,7 +237,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale,
-                newItem: nil,
+                newItem: nil as SumTestSale?,
                 transaction: transaction
             )
         }
@@ -258,8 +258,8 @@ struct SumIndexBehaviorTests {
 
         // Insert both
         try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(oldItem: nil, newItem: sale1, transaction: transaction)
-            try await ctx.maintainer.updateIndex(oldItem: nil, newItem: sale2, transaction: transaction)
+            try await ctx.maintainer.updateIndex(oldItem: nil as SumTestSale?, newItem: sale1, transaction: transaction)
+            try await ctx.maintainer.updateIndex(oldItem: nil as SumTestSale?, newItem: sale2, transaction: transaction)
         }
 
         let sumBefore = try await ctx.getSum(for: "Electronics")
@@ -269,7 +269,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: sale1,
-                newItem: nil,
+                newItem: nil as SumTestSale?,
                 transaction: transaction
             )
         }
@@ -292,7 +292,7 @@ struct SumIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as SumTestSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -324,7 +324,7 @@ struct SumIndexBehaviorTests {
         // Insert
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
-                oldItem: nil,
+                oldItem: nil as SumTestSale?,
                 newItem: sale,
                 transaction: transaction
             )
@@ -369,7 +369,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -397,7 +397,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -427,7 +427,7 @@ struct SumIndexBehaviorTests {
         try await ctx.database.withTransaction { transaction in
             for sale in sales {
                 try await ctx.maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )
@@ -467,7 +467,7 @@ struct SumIndexBehaviorTests {
         // Expression: region + category + amount
         let index = Index(
             name: "SumTestSale_region_category_amount",
-            kind: SumIndexKind<SumTestSale>(groupBy: [\.region, \.category], value: \.amount),
+            kind: SumIndexKind<SumTestSale, Double>(groupBy: [\.region, \.category], value: \.amount),
             rootExpression: ConcatenateKeyExpression(children: [
                 FieldKeyExpression(fieldName: "region"),
                 FieldKeyExpression(fieldName: "category"),
@@ -477,7 +477,7 @@ struct SumIndexBehaviorTests {
             itemTypes: Set(["SumTestSale"])
         )
 
-        let maintainer = SumIndexMaintainer<SumTestSale>(
+        let maintainer = SumIndexMaintainer<SumTestSale, Double>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id")
@@ -493,7 +493,7 @@ struct SumIndexBehaviorTests {
         try await database.withTransaction { transaction in
             for sale in sales {
                 try await maintainer.updateIndex(
-                    oldItem: nil,
+                    oldItem: nil as SumTestSale?,
                     newItem: sale,
                     transaction: transaction
                 )

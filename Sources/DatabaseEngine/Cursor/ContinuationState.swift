@@ -331,6 +331,11 @@ internal struct OperatorContinuationState: Sendable {
 // MARK: - Plan Fingerprint
 
 /// Utility for computing plan fingerprints
+///
+/// Uses `DeterministicHasher` instead of Swift's `Hasher` because fingerprints
+/// are persisted in continuation tokens and must be consistent across:
+/// - Process restarts
+/// - Different server instances
 internal struct PlanFingerprint {
     /// Compute fingerprint from plan components
     ///
@@ -344,15 +349,10 @@ internal struct PlanFingerprint {
         indexNames: [String],
         sortFields: [String]
     ) -> [UInt8] {
-        var hasher = Hasher()
+        var hasher = DeterministicHasher()
         hasher.combine(operatorDescription)
-        for name in indexNames.sorted() {
-            hasher.combine(name)
-        }
-        for field in sortFields {
-            hasher.combine(field)
-        }
-        let hash = hasher.finalize()
-        return withUnsafeBytes(of: hash) { Array($0) }
+        hasher.combine(indexNames.sorted())
+        hasher.combine(sortFields)
+        return hasher.finalizeToBytes()
     }
 }

@@ -9,7 +9,11 @@ import Core
 import DatabaseEngine
 import FoundationDB
 
-/// Maintainer for TIME_WINDOW_LEADERBOARD indexes
+/// Maintainer for TIME_WINDOW_LEADERBOARD indexes with compile-time type safety
+///
+/// **Type-Safe Design**:
+/// - `Score` type parameter preserves the score type at compile time
+/// - Query results preserve the original Score type
 ///
 /// **Functionality**:
 /// - Time-windowed rankings (hourly, daily, weekly, etc.)
@@ -43,7 +47,7 @@ import FoundationDB
 /// **Window IDs**:
 /// Windows are identified by `floor(timestamp / windowDuration)`.
 /// For daily windows, this gives sequential day numbers since epoch.
-public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Comparable & Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
     // MARK: - Properties
 
     /// Index definition
@@ -207,7 +211,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         return Int64.max - score
     }
 
-    /// Extract score from item
+    /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
         // The last field in keyPaths is the score field
         guard let keyPaths = index.keyPaths, let scoreKeyPath = keyPaths.last else {
@@ -224,16 +228,52 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
             throw IndexError.invalidConfiguration("Score field value is nil")
         }
 
-        // Convert to Int64
-        if let intVal = first as? Int64 {
-            return intVal
-        } else if let intVal = first as? Int {
-            return Int64(intVal)
-        } else if let doubleVal = first as? Double {
-            return Int64(doubleVal)
-        }
+        // Type-safe extraction based on Score type
+        return try extractScoreValue(from: first)
+    }
 
-        throw IndexError.invalidConfiguration("Score field must be numeric")
+    /// Extract score value from tuple element (type-safe)
+    private func extractScoreValue(from element: any TupleElement) throws -> Int64 {
+        switch Score.self {
+        case is Int64.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration("Expected Int64, got \(type(of: element))")
+            }
+            return value
+
+        case is Int.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration("Expected Int (as Int64), got \(type(of: element))")
+            }
+            return value
+
+        case is Int32.Type:
+            guard let value = element as? Int64 else {
+                throw IndexError.invalidConfiguration("Expected Int32 (as Int64), got \(type(of: element))")
+            }
+            return value
+
+        case is Double.Type:
+            guard let value = element as? Double else {
+                throw IndexError.invalidConfiguration("Expected Double, got \(type(of: element))")
+            }
+            return Int64(value)
+
+        case is Float.Type:
+            guard let value = element as? Double else {
+                throw IndexError.invalidConfiguration("Expected Float (as Double), got \(type(of: element))")
+            }
+            return Int64(value)
+
+        default:
+            // Fallback: try converting from known numeric types
+            if let value = element as? Int64 { return value }
+            if let value = element as? Int { return Int64(value) }
+            if let value = element as? Double { return Int64(value) }
+            throw IndexError.invalidConfiguration(
+                "Cannot convert \(type(of: element)) to Int64 for leaderboard score"
+            )
+        }
     }
 
     /// Extract grouping fields from item (all fields except the last which is score)

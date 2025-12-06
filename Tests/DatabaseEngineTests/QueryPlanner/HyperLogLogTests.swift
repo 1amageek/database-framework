@@ -87,9 +87,30 @@ struct HyperLogLogTests {
         let estimated = hll.cardinality()
         let error = abs(Double(estimated) - Double(targetCount)) / Double(targetCount)
 
-        // For p=14, standard error is ~0.81%, allow 3% for test stability
-        // (probabilistic algorithm can occasionally exceed 2 standard deviations)
-        #expect(error < 0.03, "Estimated \(estimated), expected ~\(targetCount), error: \(error * 100)%")
+        // For p=14, standard error is ~0.81%, allow 2% (about 2.5 standard deviations)
+        // With deterministic MurmurHash3, this test is reproducible.
+        #expect(error < 0.02, "Estimated \(estimated), expected ~\(targetCount), error: \(error * 100)%")
+    }
+
+    @Test("HyperLogLog should produce deterministic results")
+    func testDeterministic() {
+        // Run the same computation multiple times - should produce identical results
+        // This verifies we're not using Swift's randomized Hasher
+        var results: [Int64] = []
+
+        for _ in 0..<5 {
+            var hll = HyperLogLogPP()
+            for i in 0..<1000 {
+                hll.add(i)
+            }
+            results.append(hll.cardinality())
+        }
+
+        // All results should be identical
+        let first = results[0]
+        for result in results {
+            #expect(result == first, "Results should be deterministic: got \(result), expected \(first)")
+        }
     }
 
     // MARK: - Different Value Types

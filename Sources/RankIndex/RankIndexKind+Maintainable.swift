@@ -6,7 +6,6 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
 import Rank
@@ -18,13 +17,17 @@ import Rank
 
 extension RankIndexKind: IndexKindMaintainable {
     /// Create index maintainer for rank indexes
+    ///
+    /// This bridges `RankIndexKind<Root, Score>` (metadata) with `RankIndexMaintainer<Item, Score>` (runtime).
+    /// The `Score` type parameter is preserved at compile time for type-safe queries.
     public func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item> {
-        return RankIndexMaintainer<Item>(
+        // Score type is preserved from RankIndexKind<Root, Score>
+        return RankIndexMaintainer<Item, Score>(
             index: index,
             bucketSize: bucketSize,
             subspace: subspace.subspace(index.name),
