@@ -300,9 +300,35 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
+    /// Find the index descriptor using kindIdentifier and fieldName
+    ///
+    /// This approach:
+    /// 1. Filters by kindIdentifier ("vector") for efficiency
+    /// 2. Matches by fieldName within the kind
+    private func findIndexDescriptor() -> IndexDescriptor? {
+        T.indexDescriptors.first { descriptor in
+            // 1. Filter by kindIdentifier
+            guard descriptor.kindIdentifier == VectorIndexKind<T>.identifier else {
+                return false
+            }
+            // 2. Match by fieldName
+            guard let kind = descriptor.kind as? VectorIndexKind<T> else {
+                return false
+            }
+            return kind.fieldNames.contains(fieldName)
+        }
+    }
+
     /// Build the index name based on type and field
+    ///
+    /// Uses IndexDescriptor lookup for reliable index name resolution.
+    /// Falls back to conventional name format if descriptor not found.
     private func buildIndexName() -> String {
-        return "\(T.persistableType)_\(fieldName)_vector"
+        if let descriptor = findIndexDescriptor() {
+            return descriptor.name
+        }
+        // Fallback to conventional format
+        return "\(T.persistableType)_vector_\(fieldName)"
     }
 }
 

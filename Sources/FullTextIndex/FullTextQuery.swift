@@ -188,9 +188,28 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
+    /// Find the index descriptor using kindIdentifier and fieldName
+    private func findIndexDescriptor() -> IndexDescriptor? {
+        T.indexDescriptors.first { descriptor in
+            guard descriptor.kindIdentifier == FullTextIndexKind<T>.identifier else {
+                return false
+            }
+            guard let kind = descriptor.kind as? FullTextIndexKind<T> else {
+                return false
+            }
+            return kind.fieldNames.contains(fieldName)
+        }
+    }
+
     /// Build the index name based on type and field
+    ///
+    /// Uses IndexDescriptor lookup for reliable index name resolution.
     private func buildIndexName() -> String {
-        return "\(T.persistableType)_\(fieldName)_fulltext"
+        if let descriptor = findIndexDescriptor() {
+            return descriptor.name
+        }
+        // Fallback to conventional format
+        return "\(T.persistableType)_fulltext_\(fieldName)"
     }
 }
 

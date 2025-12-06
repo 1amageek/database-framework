@@ -546,6 +546,223 @@ public enum IndexQueryError: Error, CustomStringConvertible {
     }
 }
 
+// MARK: - Fusion Support Methods
+
+extension IndexQueryContext {
+
+    // MARK: - Item Fetching by String IDs
+
+    /// Fetch items by string IDs (for Fusion)
+    ///
+    /// - Parameters:
+    ///   - type: The persistable type
+    ///   - ids: Array of ID strings
+    /// - Returns: Array of items
+    public func fetchItemsByStringIds<T: Persistable>(
+        type: T.Type,
+        ids: [String]
+    ) async throws -> [T] {
+        // Try to fetch using the ID type
+        var results: [T] = []
+        for idString in ids {
+            // Try String ID directly
+            if let item = try await context.model(for: idString, as: type) {
+                results.append(item)
+                continue
+            }
+            // Try Int64 ID
+            if let intId = Int64(idString), let item = try await context.model(for: intId, as: type) {
+                results.append(item)
+                continue
+            }
+            // Try Int ID
+            if let intId = Int(idString), let item = try await context.model(for: intId, as: type) {
+                results.append(item)
+            }
+        }
+        return results
+    }
+
+    // MARK: - Scalar Index Search
+
+    /// Execute a scalar index equality search (for Fusion Filter)
+    ///
+    /// - Parameters:
+    ///   - type: The persistable type
+    ///   - indexName: Name of the scalar index
+    ///   - fieldName: Field name being searched
+    ///   - value: Value to match
+    /// - Returns: Array of matching items
+    public func executeScalarIndexSearch<T: Persistable>(
+        type: T.Type,
+        indexName: String,
+        fieldName: String,
+        value: any Sendable & Hashable
+    ) async throws -> [T] {
+        let typeSubspace = try await indexSubspace(for: type)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        return try await context.container.database.withTransaction { transaction in
+            // Build the key for this value
+            let valueSubspace: Subspace
+            if let stringValue = value as? String {
+                valueSubspace = indexSubspace.subspace(stringValue)
+            } else if let intValue = value as? Int {
+                valueSubspace = indexSubspace.subspace(Int64(intValue))
+            } else if let int64Value = value as? Int64 {
+                valueSubspace = indexSubspace.subspace(int64Value)
+            } else if let boolValue = value as? Bool {
+                valueSubspace = indexSubspace.subspace(boolValue ? 1 : 0)
+            } else {
+                // Fallback: use string representation
+                valueSubspace = indexSubspace.subspace("\(value)")
+            }
+
+            // Scan for all items with this value
+            var itemIds: [Tuple] = []
+            let range = transaction.getRange(
+                from: FDB.KeySelector.firstGreaterOrEqual(valueSubspace.prefix),
+                to: FDB.KeySelector.firstGreaterOrEqual(incrementKey(valueSubspace.prefix)),
+                snapshot: true
+            )
+
+            for try await (key, _) in range {
+                // Extract primary key from index key
+                if let unpacked = try? valueSubspace.unpack(key), !unpacked.isEmpty {
+                    itemIds.append(Tuple(unpacked))
+                }
+            }
+
+            return try await self.fetchItems(ids: itemIds, type: type)
+        }
+    }
+
+    /// Execute a scalar index range search (for Fusion Filter)
+    ///
+    /// - Parameters:
+    ///   - type: The persistable type
+    ///   - indexName: Name of the scalar index
+    ///   - fieldName: Field name being searched
+    ///   - min: Minimum value (nil for no lower bound)
+    ///   - max: Maximum value (nil for no upper bound)
+    ///   - minInclusive: Whether min is inclusive
+    ///   - maxInclusive: Whether max is inclusive
+    /// - Returns: Array of matching items
+    public func executeScalarRangeSearch<T: Persistable>(
+        type: T.Type,
+        indexName: String,
+        fieldName: String,
+        min: (any Sendable)?,
+        max: (any Sendable)?,
+        minInclusive: Bool,
+        maxInclusive: Bool
+    ) async throws -> [T] {
+        let typeSubspace = try await indexSubspace(for: type)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        return try await context.container.database.withTransaction { transaction in
+            // Build range keys
+            let beginKey: [UInt8]
+            let endKey: [UInt8]
+
+            if let minValue = min {
+                let minSubspace = self.subspaceForValue(indexSubspace, value: minValue)
+                if minInclusive {
+                    beginKey = minSubspace.prefix
+                } else {
+                    beginKey = self.incrementKey(minSubspace.prefix)
+                }
+            } else {
+                beginKey = indexSubspace.prefix
+            }
+
+            if let maxValue = max {
+                let maxSubspace = self.subspaceForValue(indexSubspace, value: maxValue)
+                if maxInclusive {
+                    endKey = self.incrementKey(maxSubspace.prefix)
+                } else {
+                    endKey = maxSubspace.prefix
+                }
+            } else {
+                endKey = self.incrementKey(indexSubspace.prefix)
+            }
+
+            // Scan range
+            var itemIds: [Tuple] = []
+            let range = transaction.getRange(
+                from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
+                to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in range {
+                // Extract primary key from index key
+                if let unpacked = try? indexSubspace.unpack(key), unpacked.count >= 2 {
+                    // Skip the value element (first), take the rest as primary key
+                    var pkElements: [any TupleElement] = []
+                    for i in 1..<unpacked.count {
+                        if let element = unpacked[i] {
+                            pkElements.append(element)
+                        }
+                    }
+                    if !pkElements.isEmpty {
+                        itemIds.append(Tuple(pkElements))
+                    }
+                }
+            }
+
+            return try await self.fetchItems(ids: itemIds, type: type)
+        }
+    }
+
+    // MARK: - Fetch All Items
+
+    /// Fetch all items of a type (expensive, use with caution)
+    ///
+    /// - Parameter type: The persistable type
+    /// - Returns: Array of all items
+    public func fetchAllItems<T: Persistable>(type: T.Type) async throws -> [T] {
+        let store = try await context.container.store(for: type)
+        return try await store.fetchAll(type)
+    }
+
+    // MARK: - Private Helpers
+
+    private func subspaceForValue(_ base: Subspace, value: any Sendable) -> Subspace {
+        if let stringValue = value as? String {
+            return base.subspace(stringValue)
+        } else if let intValue = value as? Int {
+            return base.subspace(Int64(intValue))
+        } else if let int64Value = value as? Int64 {
+            return base.subspace(int64Value)
+        } else if let doubleValue = value as? Double {
+            return base.subspace(doubleValue)
+        } else if let floatValue = value as? Float {
+            return base.subspace(Double(floatValue))
+        } else {
+            return base.subspace("\(value)")
+        }
+    }
+
+    private func incrementKey(_ key: [UInt8]) -> [UInt8] {
+        var result = key
+        if result.isEmpty {
+            result.append(0x00)
+        } else {
+            var i = result.count - 1
+            while i >= 0 {
+                if result[i] < 0xFF {
+                    result[i] += 1
+                    return result
+                }
+                i -= 1
+            }
+            result.append(0x00)
+        }
+        return result
+    }
+}
+
 // MARK: - FDBContext Extension
 
 extension FDBContext {

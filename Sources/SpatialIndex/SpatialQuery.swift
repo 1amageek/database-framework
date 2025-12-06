@@ -143,9 +143,28 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         return results.map { $0.item }
     }
 
+    /// Find the index descriptor using kindIdentifier and fieldName
+    private func findIndexDescriptor() -> IndexDescriptor? {
+        T.indexDescriptors.first { descriptor in
+            guard descriptor.kindIdentifier == SpatialIndexKind<T>.identifier else {
+                return false
+            }
+            guard let kind = descriptor.kind as? SpatialIndexKind<T> else {
+                return false
+            }
+            return kind.fieldNames.contains(fieldName)
+        }
+    }
+
     /// Build the index name based on type and field
+    ///
+    /// Uses IndexDescriptor lookup for reliable index name resolution.
     private func buildIndexName() -> String {
-        return "\(T.persistableType)_\(fieldName)_spatial"
+        if let descriptor = findIndexDescriptor() {
+            return descriptor.name
+        }
+        // Fallback to conventional format
+        return "\(T.persistableType)_spatial_\(fieldName)"
     }
 
     /// Extract GeoPoint from item using Persistable dynamicMember subscript
