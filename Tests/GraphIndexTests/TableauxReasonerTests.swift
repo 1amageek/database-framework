@@ -746,3 +746,147 @@ struct TableauxReasonerBlockingTests {
         #expect(!result.isSatisfiable, "Blocking should not hide clashes")
     }
 }
+
+// MARK: - Regularity Check Tests
+
+@Suite("TableauxReasoner Regularity Check", .serialized)
+struct TableauxReasonerRegularityTests {
+
+    @Test("Regular ontology passes check")
+    func regularOntologyPasses() {
+        var ontology = OWLOntology(iri: "http://test.org/regular")
+
+        // A regular ontology with simple roles
+        ontology.axioms.append(.subClassOf(
+            sub: .named("ex:Dog"),
+            sup: .named("ex:Animal")
+        ))
+
+        let reasoner = TableauxReasoner(ontology: ontology)
+
+        #expect(reasoner.isRegular)
+        #expect(reasoner.regularityViolations.isEmpty)
+    }
+
+    @Test("Transitive role in cardinality detected")
+    func transitiveInCardinalityDetected() {
+        var ontology = OWLOntology(iri: "http://test.org/irregular")
+
+        // Make hasAncestor transitive
+        ontology.axioms.append(.transitiveObjectProperty("ex:hasAncestor"))
+
+        // Use transitive role in cardinality - OWL DL violation!
+        ontology.axioms.append(.subClassOf(
+            sub: .named("ex:Person"),
+            sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
+        ))
+
+        let reasoner = TableauxReasoner(ontology: ontology)
+
+        #expect(!reasoner.isRegular)
+        #expect(!reasoner.regularityViolations.isEmpty)
+
+        // Should find transitive in cardinality violation
+        let hasTransitiveViolation = reasoner.regularityViolations.contains { violation in
+            if case .transitiveInCardinality = violation {
+                return true
+            }
+            return false
+        }
+        #expect(hasTransitiveViolation, "Should detect transitive role in cardinality")
+    }
+
+    @Test("Reasoning returns unknown on regularity violation when configured")
+    func returnsUnknownOnViolation() {
+        var ontology = OWLOntology(iri: "http://test.org/irregular")
+
+        // Make hasAncestor transitive
+        ontology.axioms.append(.transitiveObjectProperty("ex:hasAncestor"))
+
+        // Use transitive role in cardinality - OWL DL violation!
+        ontology.axioms.append(.subClassOf(
+            sub: .named("ex:Person"),
+            sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
+        ))
+
+        // Default configuration: abortOnRegularityViolations = true
+        let reasoner = TableauxReasoner(ontology: ontology)
+
+        let result = reasoner.checkSatisfiability(.named("ex:Person"))
+
+        #expect(result.isUnknown, "Should return unknown when ontology has regularity violations")
+        #expect(result.status == .unknown)
+    }
+
+    @Test("Reasoning continues when abortOnRegularityViolations is false")
+    func continuesWhenNotAborting() {
+        var ontology = OWLOntology(iri: "http://test.org/irregular")
+
+        // Make hasAncestor transitive
+        ontology.axioms.append(.transitiveObjectProperty("ex:hasAncestor"))
+
+        // Use transitive role in cardinality - OWL DL violation!
+        ontology.axioms.append(.subClassOf(
+            sub: .named("ex:Person"),
+            sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
+        ))
+
+        // Configure to continue despite violations
+        let config = TableauxReasoner.Configuration(
+            maxExpansionSteps: 1000,
+            checkRegularity: true,
+            abortOnRegularityViolations: false
+        )
+        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+
+        let result = reasoner.checkSatisfiability(.thing)
+
+        // Should not be unknown - reasoning proceeded
+        #expect(!result.isUnknown, "Should not be unknown when continuing despite violations")
+        #expect(result.isSatisfiable, "Thing should be satisfiable")
+    }
+
+    @Test("Regularity check can be disabled")
+    func regularityCheckCanBeDisabled() {
+        var ontology = OWLOntology(iri: "http://test.org/irregular")
+
+        // Make hasAncestor transitive
+        ontology.axioms.append(.transitiveObjectProperty("ex:hasAncestor"))
+
+        // Use transitive role in cardinality - OWL DL violation!
+        ontology.axioms.append(.subClassOf(
+            sub: .named("ex:Person"),
+            sup: .maxCardinality(property: "ex:hasAncestor", n: 10, filler: nil)
+        ))
+
+        // Disable regularity checking
+        let config = TableauxReasoner.Configuration(
+            checkRegularity: false
+        )
+        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+
+        // No violations stored since checking was disabled
+        #expect(reasoner.regularityViolations.isEmpty)
+        #expect(reasoner.isRegular) // isRegular = violations.isEmpty
+
+        // Reasoning proceeds normally
+        let result = reasoner.checkSatisfiability(.thing)
+        #expect(result.isSatisfiable)
+    }
+
+    @Test("Configuration with custom maxExpansionSteps")
+    func customMaxExpansionSteps() {
+        let ontology = OWLOntology(iri: "http://test.org/config")
+
+        let config = TableauxReasoner.Configuration(
+            maxExpansionSteps: 500,
+            checkRegularity: false,
+            abortOnRegularityViolations: false
+        )
+        let reasoner = TableauxReasoner(ontology: ontology, configuration: config)
+
+        // Basic functionality still works
+        let result = reasoner.checkSatisfiability(.thing)
+        #expect(result.isSatisfiable)
+    }
+}

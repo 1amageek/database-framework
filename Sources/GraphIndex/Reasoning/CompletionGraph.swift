@@ -59,12 +59,20 @@ public struct Edge: Hashable, Sendable {
 
 // MARK: - Trail Action
 
+/// Saved processed flags for undo
+struct ProcessedFlags: Sendable {
+    let intersections: Set<OWLClassExpression>
+    let unions: Set<OWLClassExpression>
+    let existentials: Set<OWLClassExpression>
+    let universals: Set<OWLClassExpression>
+}
+
 /// Actions that can be undone during backtracking
 enum TrailAction: Sendable {
     case addedConcept(node: NodeID, concept: OWLClassExpression)
     case addedEdge(edge: Edge)
     case createdNode(id: NodeID)
-    case mergedNodes(survivor: NodeID, merged: NodeID, mergedConcepts: Set<OWLClassExpression>, mergedEdges: Set<Edge>)
+    case mergedNodes(survivor: NodeID, merged: NodeID, mergedConcepts: Set<OWLClassExpression>, mergedEdges: Set<Edge>, survivorFlags: ProcessedFlags)
     case blocked(node: NodeID)
     case unblocked(node: NodeID)
     case addedDataValue(node: NodeID, property: String, value: OWLLiteral)
@@ -379,9 +387,30 @@ public final class CompletionGraph: @unchecked Sendable {
             survivorNode.dataValues[prop, default: []].formUnion(values)
         }
 
-        // Record action for undo
+        // Save survivor's processed flags for undo
+        let survivorFlags = ProcessedFlags(
+            intersections: survivorNode.processedIntersections,
+            unions: survivorNode.processedUnions,
+            existentials: survivorNode.processedExistentials,
+            universals: survivorNode.processedUniversals
+        )
+
+        // CRITICAL: Clear processed flags on survivor after merge
+        // The merged concepts may require re-evaluation of rules that were
+        // already applied. For example:
+        // - New intersections from merged node need to be expanded
+        // - New universal constraints may apply to existing successors
+        // - The combination of concepts may enable new inferences
+        // Reference: Horrocks & Sattler (2007), Section 4.2 - Merging in ≤-rule
+        survivorNode.processedIntersections.removeAll()
+        survivorNode.processedUnions.removeAll()
+        survivorNode.processedExistentials.removeAll()
+        survivorNode.processedUniversals.removeAll()
+
+        // Record action for undo (includes saved flags for restoration)
         trail.append(.mergedNodes(survivor: survivor, merged: merged,
-                                  mergedConcepts: mergedConcepts, mergedEdges: mergedEdges))
+                                  mergedConcepts: mergedConcepts, mergedEdges: mergedEdges,
+                                  survivorFlags: survivorFlags))
 
         // Remove merged node
         nodes.removeValue(forKey: merged)
@@ -527,7 +556,7 @@ public final class CompletionGraph: @unchecked Sendable {
             nodes.removeValue(forKey: id)
             nominals.remove(id)
 
-        case .mergedNodes(let survivor, let merged, let mergedConcepts, let mergedEdges):
+        case .mergedNodes(let survivor, let merged, let mergedConcepts, let mergedEdges, let survivorFlags):
             // Recreate merged node
             let mergedNode = CompletionNode(id: merged)
             mergedNode.concepts = mergedConcepts
@@ -553,6 +582,14 @@ public final class CompletionGraph: @unchecked Sendable {
             // Remove concepts from survivor that came from merged
             for concept in mergedConcepts {
                 nodes[survivor]?.concepts.remove(concept)
+            }
+
+            // Restore survivor's processed flags
+            if let survivorNode = nodes[survivor] {
+                survivorNode.processedIntersections = survivorFlags.intersections
+                survivorNode.processedUnions = survivorFlags.unions
+                survivorNode.processedExistentials = survivorFlags.existentials
+                survivorNode.processedUniversals = survivorFlags.universals
             }
 
             if merged.isNominalNode {

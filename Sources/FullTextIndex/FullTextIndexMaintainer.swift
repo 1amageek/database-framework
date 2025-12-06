@@ -28,9 +28,20 @@ public let fullTextMaxTermBytes: Int = 8000
 /// Key: [indexSubspace]["terms"][term][primaryKey]
 /// Value: Tuple(position1, position2, ...) or '' (no positions)
 ///
-/// // Document metadata (for ranking)
+/// // Document metadata (for BM25 ranking)
 /// Key: [indexSubspace]["docs"][primaryKey]
-/// Value: Tuple(termCount)
+/// Value: Tuple(uniqueTermCount, docLength)
+///
+/// // BM25 corpus statistics
+/// Key: [indexSubspace]["stats"]["N"]
+/// Value: Int64 (total document count)
+///
+/// Key: [indexSubspace]["stats"]["totalLength"]
+/// Value: Int64 (sum of all document lengths)
+///
+/// // Document frequency per term (for IDF)
+/// Key: [indexSubspace]["df"][term]
+/// Value: Int64 (number of documents containing term)
 /// ```
 ///
 /// **Usage**:
@@ -55,6 +66,12 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // Subspaces
     private let termsSubspace: Subspace
     private let docsSubspace: Subspace
+    private let statsSubspace: Subspace
+    private let dfSubspace: Subspace
+
+    // BM25 statistics keys
+    private let statsNKey: [UInt8]
+    private let statsTotalLengthKey: [UInt8]
 
     public init(
         index: Index,
@@ -74,6 +91,10 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.minTermLength = minTermLength
         self.termsSubspace = subspace.subspace("terms")
         self.docsSubspace = subspace.subspace("docs")
+        self.statsSubspace = subspace.subspace("stats")
+        self.dfSubspace = subspace.subspace("df")
+        self.statsNKey = statsSubspace.pack(Tuple("N"))
+        self.statsTotalLengthKey = statsSubspace.pack(Tuple("totalLength"))
     }
 
     public func updateIndex(
@@ -81,33 +102,45 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws {
-        // Remove old index entries
+        // Remove old index entries and update BM25 statistics
         if let oldItem = oldItem {
             let oldId = try DataAccess.extractId(from: oldItem, using: idExpression)
             let oldText = try extractText(from: oldItem)
             let oldTokens = tokenize(oldText)
+            let oldDocLength = oldTokens.count
 
             // Group by truncated term to match how keys were stored
-            var seenTerms: Set<String> = []
+            var oldTermPositions: [String: [Int]] = [:]
             for token in oldTokens {
                 let safeTerm = truncateTerm(token.term)
-                if !seenTerms.contains(safeTerm) {
-                    let termKey = try buildTermKey(term: token.term, id: oldId)
-                    transaction.clear(key: termKey)
-                    seenTerms.insert(safeTerm)
-                }
+                oldTermPositions[safeTerm, default: []].append(token.position)
+            }
+
+            // Remove term entries
+            for term in oldTermPositions.keys {
+                let termKey = try buildTermKey(term: term, id: oldId)
+                transaction.clear(key: termKey)
+
+                // Decrement df for this term (BM25)
+                let dfKey = dfSubspace.pack(Tuple(term))
+                transaction.atomicOp(key: dfKey, param: int64ToBytes(-1), mutationType: .add)
             }
 
             // Remove document metadata
             let docKey = docsSubspace.pack(oldId)
             transaction.clear(key: docKey)
+
+            // Decrement BM25 corpus statistics
+            transaction.atomicOp(key: statsNKey, param: int64ToBytes(-1), mutationType: .add)
+            transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
         }
 
-        // Add new index entries
+        // Add new index entries and update BM25 statistics
         if let newItem = newItem {
             let newId = try DataAccess.extractId(from: newItem, using: idExpression)
             let newText = try extractText(from: newItem)
             let newTokens = tokenize(newText)
+            let newDocLength = newTokens.count
 
             // Group tokens by term to collect positions
             var termPositions: [String: [Int]] = [:]
@@ -116,23 +149,36 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 termPositions[safeTerm, default: []].append(token.position)
             }
 
+            // Add term entries
             for (term, positions) in termPositions {
                 let termKey = try buildTermKey(term: term, id: newId)
 
                 if storePositions {
+                    // Store positions for phrase search support
                     let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
                     let value = Tuple(positionElements).pack()
                     transaction.setValue(value, for: termKey)
                 } else {
-                    transaction.setValue([], for: termKey)
+                    // Store term frequency (tf) for BM25 scoring
+                    // Without this, all terms would be treated as tf=1
+                    let tfValue = Tuple(Int64(positions.count)).pack()
+                    transaction.setValue(tfValue, for: termKey)
                 }
+
+                // Increment df for this term (BM25)
+                let dfKey = dfSubspace.pack(Tuple(term))
+                transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
             }
 
-            // Store document metadata
+            // Store document metadata: (uniqueTermCount, docLength)
             let docKey = docsSubspace.pack(newId)
-            let termCount = Int64(termPositions.count)
-            let docValue = Tuple(termCount).pack()
+            let uniqueTermCount = Int64(termPositions.count)
+            let docValue = Tuple(uniqueTermCount, Int64(newDocLength)).pack()
             transaction.setValue(docValue, for: docKey)
+
+            // Increment BM25 corpus statistics
+            transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
+            transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(newDocLength)), mutationType: .add)
         }
     }
 
@@ -143,6 +189,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws {
         let text = try extractText(from: item)
         let tokens = tokenize(text)
+        let docLength = tokens.count
 
         // Group tokens by term to collect positions (using truncated terms)
         var termPositions: [String: [Int]] = [:]
@@ -155,19 +202,31 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             let termKey = try buildTermKey(term: term, id: id)
 
             if storePositions {
+                // Store positions for phrase search support
                 let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
                 let value = Tuple(positionElements).pack()
                 transaction.setValue(value, for: termKey)
             } else {
-                transaction.setValue([], for: termKey)
+                // Store term frequency (tf) for BM25 scoring
+                // Without this, all terms would be treated as tf=1
+                let tfValue = Tuple(Int64(positions.count)).pack()
+                transaction.setValue(tfValue, for: termKey)
             }
+
+            // Increment df for this term (BM25)
+            let dfKey = dfSubspace.pack(Tuple(term))
+            transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
         }
 
-        // Store document metadata
+        // Store document metadata: (uniqueTermCount, docLength)
         let docKey = docsSubspace.pack(id)
-        let termCount = Int64(termPositions.count)
-        let docValue = Tuple(termCount).pack()
+        let uniqueTermCount = Int64(termPositions.count)
+        let docValue = Tuple(uniqueTermCount, Int64(docLength)).pack()
         transaction.setValue(docValue, for: docKey)
+
+        // Increment BM25 corpus statistics
+        transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
+        transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(docLength)), mutationType: .add)
     }
 
     /// Compute expected index keys for this item
@@ -349,9 +408,9 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for docElements in candidateDocs {
             let docId = Tuple(docElements)
 
-            // Build all term keys upfront
+            // Build all term keys upfront using same subspace structure as indexing
             let termKeys: [(index: Int, key: FDB.Bytes)] = terms.enumerated().map { (index, term) in
-                (index, termsSubspace.pack(Tuple(term, docId)))
+                (index, termsSubspace.subspace(term).pack(docId))
             }
 
             // Fetch all term positions concurrently using TaskGroup
@@ -561,9 +620,13 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Build and validate term key
+    ///
+    /// Key structure: [termsSubspace][term][id]
+    /// Using subspace nesting ensures consistent key format for indexing and search.
     private func buildTermKey(term: String, id: Tuple) throws -> FDB.Bytes {
         let safeTerm = truncateTerm(term)
-        let key = termsSubspace.pack(Tuple(safeTerm, id))
+        let termSubspace = termsSubspace.subspace(safeTerm)
+        let key = termSubspace.pack(id)
         try validateKeySize(key)
         return key
     }
@@ -576,5 +639,209 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
         let packed = Tuple(elements).pack()
         return Data(packed).base64EncodedString()
+    }
+
+    /// Convert Int64 to little-endian bytes for atomic operations
+    private func int64ToBytes(_ value: Int64) -> [UInt8] {
+        var v = value
+        return withUnsafeBytes(of: &v) { Array($0) }
+    }
+
+    /// Convert little-endian bytes to Int64
+    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
+        guard bytes.count >= 8 else { return 0 }
+        return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
+    }
+
+    // MARK: - BM25 Statistics
+
+    /// Get BM25 corpus statistics
+    ///
+    /// - Parameter transaction: FDB transaction
+    /// - Returns: BM25 statistics (N, totalLength, avgDL)
+    public func getBM25Statistics(
+        transaction: any TransactionProtocol
+    ) async throws -> BM25Statistics {
+        // Read N (total document count)
+        let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
+        let n: Int64 = nValue.map { bytesToInt64($0) } ?? 0
+
+        // Read totalLength
+        let lengthValue = try await transaction.getValue(for: statsTotalLengthKey, snapshot: true)
+        let totalLength: Int64 = lengthValue.map { bytesToInt64($0) } ?? 0
+
+        return BM25Statistics(totalDocuments: n, totalLength: totalLength)
+    }
+
+    /// Get document frequency for a term
+    ///
+    /// Uses the same tokenization pipeline as indexing to ensure consistency.
+    /// For example, if stemming is enabled, "running" will be stemmed to "run"
+    /// before looking up the document frequency.
+    ///
+    /// - Parameters:
+    ///   - term: The term (raw, will be tokenized)
+    ///   - transaction: FDB transaction
+    /// - Returns: Number of documents containing the term
+    public func getDocumentFrequency(
+        term: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Int64 {
+        // Tokenize the term using the same pipeline as indexing
+        let tokens = tokenize(term)
+        guard let firstToken = tokens.first else { return 0 }
+        let safeTerm = truncateTerm(firstToken.term)
+        return try await getDocumentFrequencyForNormalizedTerm(safeTerm, transaction: transaction)
+    }
+
+    /// Get document frequency for an already-normalized term
+    ///
+    /// Internal helper used when terms have already been processed through the tokenization pipeline.
+    ///
+    /// - Parameters:
+    ///   - normalizedTerm: The normalized/tokenized term
+    ///   - transaction: FDB transaction
+    /// - Returns: Number of documents containing the term
+    private func getDocumentFrequencyForNormalizedTerm(
+        _ normalizedTerm: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Int64 {
+        let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
+        let value = try await transaction.getValue(for: dfKey, snapshot: true)
+        return value.map { bytesToInt64($0) } ?? 0
+    }
+
+    /// Get document metadata (term count and document length)
+    ///
+    /// - Parameters:
+    ///   - id: Document ID
+    ///   - transaction: FDB transaction
+    /// - Returns: Tuple of (uniqueTermCount, docLength), or nil if not found
+    public func getDocumentMetadata(
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> (uniqueTermCount: Int64, docLength: Int64)? {
+        let docKey = docsSubspace.pack(id)
+        guard let value = try await transaction.getValue(for: docKey, snapshot: true) else {
+            return nil
+        }
+        let tuple = try Tuple.unpack(from: value)
+        guard tuple.count >= 2,
+              let termCount = tuple[0] as? Int64,
+              let docLength = tuple[1] as? Int64 else {
+            // Legacy format: only termCount
+            if let termCount = tuple[0] as? Int64 {
+                return (uniqueTermCount: termCount, docLength: 0)
+            }
+            return nil
+        }
+        return (uniqueTermCount: termCount, docLength: docLength)
+    }
+
+    // MARK: - BM25 Scored Search
+
+    /// Search for documents with BM25 scores
+    ///
+    /// Internal method used by FullTextQueryBuilder.executeWithScores().
+    /// External callers should use the query builder API instead.
+    ///
+    /// - Parameters:
+    ///   - terms: Search terms
+    ///   - matchMode: AND or OR mode
+    ///   - bm25Params: BM25 parameters
+    ///   - transaction: FDB transaction
+    ///   - limit: Maximum results (nil for unlimited)
+    /// - Returns: Array of (id, score) sorted by score descending
+    internal func searchWithScores(
+        terms: [String],
+        matchMode: TextMatchMode = .all,
+        bm25Params: BM25Parameters = .default,
+        transaction: any TransactionProtocol,
+        limit: Int? = nil
+    ) async throws -> [(id: Tuple, score: Double)] {
+        guard !terms.isEmpty else { return [] }
+
+        // Get corpus statistics
+        let stats = try await getBM25Statistics(transaction: transaction)
+        guard stats.totalDocuments > 0 else { return [] }
+
+        let scorer = BM25Scorer(params: bm25Params, statistics: stats)
+
+        // Normalize search terms using the same tokenization pipeline as indexing
+        // This ensures stemming, n-gram, or other transformations are applied consistently
+        let normalizedTerms: [String] = terms.flatMap { term in
+            tokenize(term).map { truncateTerm($0.term) }
+        }
+
+        // Get document frequencies for all terms (already normalized, use internal helper)
+        var documentFrequencies: [String: Int64] = [:]
+        for term in normalizedTerms {
+            documentFrequencies[term] = try await getDocumentFrequencyForNormalizedTerm(term, transaction: transaction)
+        }
+
+        // Find matching documents
+        let matchingDocs: [[any TupleElement]]
+        switch matchMode {
+        case .all:
+            matchingDocs = try await searchTermsAND(terms, transaction: transaction)
+        case .any:
+            matchingDocs = try await searchTermsOR(terms, transaction: transaction)
+        case .phrase:
+            matchingDocs = try await searchPhrase(terms.joined(separator: " "), transaction: transaction)
+        }
+
+        // Calculate BM25 scores for each document
+        var scoredResults: [(id: Tuple, score: Double)] = []
+
+        for docElements in matchingDocs {
+            let docId = Tuple(docElements)
+
+            // Get document metadata
+            guard let metadata = try await getDocumentMetadata(id: docId, transaction: transaction) else {
+                continue
+            }
+
+            // Get term frequencies in this document
+            var termFrequencies: [String: Int] = [:]
+            for term in normalizedTerms {
+                let termSubspace = termsSubspace.subspace(term)
+                let termKey = termSubspace.pack(docId)
+                if let value = try await transaction.getValue(for: termKey, snapshot: true) {
+                    if storePositions {
+                        // Count positions as term frequency
+                        let positionTuple = try Tuple.unpack(from: value)
+                        termFrequencies[term] = positionTuple.count
+                    } else {
+                        // Read stored term frequency
+                        let tfTuple = try Tuple.unpack(from: value)
+                        if let tf = tfTuple.first as? Int64 {
+                            termFrequencies[term] = Int(tf)
+                        } else {
+                            // Fallback for legacy data without tf
+                            termFrequencies[term] = 1
+                        }
+                    }
+                }
+            }
+
+            // Calculate BM25 score
+            let score = scorer.score(
+                termFrequencies: termFrequencies,
+                documentFrequencies: documentFrequencies,
+                docLength: Int(metadata.docLength)
+            )
+
+            scoredResults.append((id: docId, score: score))
+        }
+
+        // Sort by score descending
+        scoredResults.sort { $0.score > $1.score }
+
+        // Apply limit
+        if let limit = limit {
+            return Array(scoredResults.prefix(limit))
+        }
+
+        return scoredResults
     }
 }

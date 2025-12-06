@@ -48,14 +48,49 @@ public final class TableauxReasoner: @unchecked Sendable {
 
     // MARK: - Types
 
+    /// Status of satisfiability check
+    public enum SatisfiabilityStatus: Sendable {
+        /// Expression is satisfiable (model found)
+        case satisfiable
+        /// Expression is unsatisfiable (clash found, all branches exhausted)
+        case unsatisfiable
+        /// Result unknown (timeout, resource limit reached)
+        case unknown
+    }
+
     /// Result of a satisfiability check
     public struct SatisfiabilityResult: Sendable {
-        public let isSatisfiable: Bool
+        /// The satisfiability status
+        public let status: SatisfiabilityStatus
+
+        /// Convenience property for backward compatibility
+        /// Returns true only for definite satisfiability, false otherwise
+        public var isSatisfiable: Bool {
+            status == .satisfiable
+        }
+
+        /// Returns true only for definite unsatisfiability
+        public var isUnsatisfiable: Bool {
+            status == .unsatisfiable
+        }
+
+        /// Returns true if the result is unknown (timeout/resource limit)
+        public var isUnknown: Bool {
+            status == .unknown
+        }
+
         public let clash: ClashInfo?
         public let statistics: Statistics
 
+        public init(status: SatisfiabilityStatus, clash: ClashInfo? = nil, statistics: Statistics) {
+            self.status = status
+            self.clash = clash
+            self.statistics = statistics
+        }
+
+        /// Convenience initializer for backward compatibility
         public init(isSatisfiable: Bool, clash: ClashInfo? = nil, statistics: Statistics) {
-            self.isSatisfiable = isSatisfiable
+            self.status = isSatisfiable ? .satisfiable : .unsatisfiable
             self.clash = clash
             self.statistics = statistics
         }
@@ -73,11 +108,40 @@ public final class TableauxReasoner: @unchecked Sendable {
         public init() {}
     }
 
+    /// Configuration for the reasoner
+    public struct Configuration: Sendable {
+        /// Maximum expansion steps (safety limit)
+        public let maxExpansionSteps: Int
+
+        /// Whether to check OWL DL regularity before reasoning
+        /// When enabled, the reasoner will validate that the ontology
+        /// conforms to OWL DL restrictions for decidability.
+        /// Default: true (recommended for safety)
+        public let checkRegularity: Bool
+
+        /// Whether to abort on regularity violations
+        /// When true, reasoning returns `.unknown` if violations exist.
+        /// When false, reasoning continues but may not terminate.
+        /// Default: true (recommended for safety)
+        public let abortOnRegularityViolations: Bool
+
+        public init(
+            maxExpansionSteps: Int = 100000,
+            checkRegularity: Bool = true,
+            abortOnRegularityViolations: Bool = true
+        ) {
+            self.maxExpansionSteps = maxExpansionSteps
+            self.checkRegularity = checkRegularity
+            self.abortOnRegularityViolations = abortOnRegularityViolations
+        }
+    }
+
     // MARK: - Properties
 
     private let ontology: OWLOntology
     private let roleHierarchy: RoleHierarchy
     private let classHierarchy: ClassHierarchy
+    private let configuration: Configuration
 
     /// TBox constraints in NNF form
     private let tboxConstraints: [OWLClassExpression]
@@ -85,27 +149,57 @@ public final class TableauxReasoner: @unchecked Sendable {
     /// Property chains from RBox
     private let propertyChains: [(chain: [String], implies: String)]
 
-    /// Maximum expansion steps (safety limit)
-    private let maxExpansionSteps: Int
+    /// Regularity violations (populated if checkRegularity is enabled)
+    ///
+    /// - Note: This array is only populated when `configuration.checkRegularity` is true.
+    ///   When regularity checking is disabled, this will always be empty.
+    public private(set) var regularityViolations: [OWLDLRegularityChecker.Violation] = []
+
+    /// Whether the ontology passes OWL DL regularity check
+    ///
+    /// - Important: When `configuration.checkRegularity` is false, this property
+    ///   always returns `true` because no violations are computed. This does NOT
+    ///   guarantee the ontology is actually OWL DL compliant—it simply means
+    ///   the check was skipped.
+    ///
+    /// To ensure an ontology is truly regular, either:
+    /// - Use the default configuration (checkRegularity = true), or
+    /// - Manually call `OWLOntology.checkOWLDLRegularity()` before creating the reasoner
+    public var isRegular: Bool { regularityViolations.isEmpty }
 
     // MARK: - Initialization
 
-    /// Initialize reasoner with ontology
+    /// Initialize reasoner with ontology and configuration
     ///
     /// - Parameters:
     ///   - ontology: The OWL ontology to reason over
-    ///   - maxExpansionSteps: Maximum expansion steps (default: 100000)
-    public init(ontology: OWLOntology, maxExpansionSteps: Int = 100000) {
+    ///   - configuration: Reasoner configuration (default: standard settings)
+    public init(ontology: OWLOntology, configuration: Configuration = Configuration()) {
         self.ontology = ontology
         self.roleHierarchy = RoleHierarchy(ontology: ontology)
         self.classHierarchy = ClassHierarchy(ontology: ontology)
-        self.maxExpansionSteps = maxExpansionSteps
+        self.configuration = configuration
 
         // Precompute TBox constraints
         self.tboxConstraints = Self.computeTBoxConstraints(from: ontology)
 
         // Extract property chains
         self.propertyChains = Self.extractPropertyChains(from: ontology, roleHierarchy: roleHierarchy)
+
+        // Perform regularity check if enabled
+        if configuration.checkRegularity {
+            var checker = OWLDLRegularityChecker()
+            self.regularityViolations = checker.check(ontology)
+        }
+    }
+
+    /// Initialize reasoner with ontology (convenience)
+    ///
+    /// - Parameters:
+    ///   - ontology: The OWL ontology to reason over
+    ///   - maxExpansionSteps: Maximum expansion steps (default: 100000)
+    public convenience init(ontology: OWLOntology, maxExpansionSteps: Int) {
+        self.init(ontology: ontology, configuration: Configuration(maxExpansionSteps: maxExpansionSteps))
     }
 
     /// Compute TBox constraints in NNF form
@@ -177,6 +271,12 @@ public final class TableauxReasoner: @unchecked Sendable {
     public func checkSatisfiability(_ classExpr: OWLClassExpression) -> SatisfiabilityResult {
         var stats = Statistics()
 
+        // Check regularity violations before reasoning
+        if configuration.abortOnRegularityViolations && !regularityViolations.isEmpty {
+            // Return unknown - ontology violates OWL DL and may not terminate
+            return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
+        }
+
         // Create completion graph
         let graph = CompletionGraph(roleHierarchy: roleHierarchy, classHierarchy: classHierarchy)
 
@@ -201,7 +301,7 @@ public final class TableauxReasoner: @unchecked Sendable {
     /// Run the Tableaux expansion algorithm
     private func runExpansion(graph: CompletionGraph, stats: inout Statistics) -> SatisfiabilityResult {
 
-        while stats.expansionSteps < maxExpansionSteps {
+        while stats.expansionSteps < configuration.maxExpansionSteps {
             stats.expansionSteps += 1
 
             // Phase 1: Update blocking
@@ -283,8 +383,8 @@ public final class TableauxReasoner: @unchecked Sendable {
             }
         }
 
-        // Timeout - treat as satisfiable (open world)
-        return SatisfiabilityResult(isSatisfiable: true, clash: nil, statistics: stats)
+        // Timeout - result unknown (reached expansion limit)
+        return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
     }
 
     /// Apply all deterministic rules

@@ -76,6 +76,45 @@ public struct IndexQueryContext: Sendable {
         return try await context.model(for: idElement, as: type)
     }
 
+    /// Get the item subspace for a type (for transaction-scoped operations)
+    ///
+    /// This returns the subspace where items of the given type are stored.
+    /// Use this when you need to fetch items within an existing transaction
+    /// to maintain snapshot consistency.
+    ///
+    /// - Parameter type: The persistable type
+    /// - Returns: Subspace for items of this type
+    public func itemSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
+        let store = try await context.container.store(for: type)
+        guard let fdbStore = store as? FDBDataStore else {
+            throw IndexQueryError.unsupportedStore
+        }
+        return fdbStore.itemSubspace
+    }
+
+    /// Fetch item by ID within a transaction
+    ///
+    /// Use this method when you need to fetch an item within an existing
+    /// transaction to maintain snapshot consistency.
+    ///
+    /// - Parameters:
+    ///   - id: The item ID (as Tuple)
+    ///   - type: The item type
+    ///   - transaction: The transaction to use
+    /// - Returns: The item if found
+    public func fetchItem<T: Persistable>(
+        id: Tuple,
+        type: T.Type,
+        transaction: any TransactionProtocol
+    ) async throws -> T? {
+        let itemSubspace = try await itemSubspace(for: type)
+        let key = itemSubspace.subspace(T.persistableType).pack(id)
+        guard let data = try await transaction.getValue(for: key, snapshot: true) else {
+            return nil
+        }
+        return try DataAccess.deserialize(data)
+    }
+
     /// Batch fetch items by their IDs using optimized BatchFetcher
     ///
     /// This method is more efficient than `fetchItems` for large result sets
@@ -489,6 +528,21 @@ extension FDBDataStore {
             result.append(0x00)
         }
         return result
+    }
+}
+
+// MARK: - IndexQueryError
+
+/// Errors that can occur during index query operations
+public enum IndexQueryError: Error, CustomStringConvertible {
+    /// The data store type is not supported for this operation
+    case unsupportedStore
+
+    public var description: String {
+        switch self {
+        case .unsupportedStore:
+            return "Unsupported data store type for index query operation"
+        }
     }
 }
 

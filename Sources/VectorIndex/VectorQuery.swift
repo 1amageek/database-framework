@@ -4,6 +4,8 @@
 import Foundation
 import DatabaseEngine
 import Core
+import FoundationDB
+import Vector
 
 // MARK: - Vector Query Builder
 
@@ -13,12 +15,21 @@ import Core
 /// ```swift
 /// import VectorIndex
 ///
+/// // Basic search
 /// let similar = try await context.findSimilar(Product.self)
 ///     .vector(\.embedding, dimensions: 128)
 ///     .query(queryVector, k: 10)
 ///     .metric(.cosine)
 ///     .execute()
 /// // Returns: [(item: Product, distance: Double)]
+///
+/// // Filtered search (ACORN algorithm)
+/// let filtered = try await context.findSimilar(Product.self)
+///     .vector(\.embedding, dimensions: 128)
+///     .query(queryVector, k: 10)
+///     .filter { product in product.category == "electronics" }
+///     .acorn(expansionFactor: 3)
+///     .execute()
 /// ```
 public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
@@ -27,6 +38,8 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private var queryVector: [Float]?
     private var k: Int = 10
     private var distanceMetric: VectorDistanceMetric = .cosine
+    private var filterPredicate: (@Sendable (T) async throws -> Bool)?
+    private var acornParams: ACORNParameters = .default
 
     internal init(queryContext: IndexQueryContext, fieldName: String, dimensions: Int) {
         self.queryContext = queryContext
@@ -57,7 +70,95 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    // MARK: - ACORN Filter API
+
+    /// Add a filter predicate for ACORN filtered search
+    ///
+    /// Uses the ACORN algorithm (Approximate Containment Queries Over Real-Value
+    /// Navigable Networks) to efficiently filter results during graph traversal.
+    ///
+    /// **Reference**: Patel et al., "ACORN: Performant and Predicate-Agnostic Search
+    /// Over Vector Embeddings and Structured Data", SIGMOD 2024
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let results = try await context.findSimilar(Product.self)
+    ///     .vector(\.embedding, dimensions: 128)
+    ///     .query(queryVector, k: 10)
+    ///     .filter { product in
+    ///         product.category == "electronics" && product.price < 1000
+    ///     }
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameter predicate: Filter predicate (must return true for item to be included)
+    /// - Returns: Updated query builder
+    public func filter(_ predicate: @escaping @Sendable (T) -> Bool) -> Self {
+        var copy = self
+        copy.filterPredicate = { item in predicate(item) }
+        return copy
+    }
+
+    /// Add an async filter predicate for ACORN filtered search
+    ///
+    /// - Parameter predicate: Async filter predicate
+    /// - Returns: Updated query builder
+    public func filter(_ predicate: @escaping @Sendable (T) async throws -> Bool) -> Self {
+        var copy = self
+        copy.filterPredicate = predicate
+        return copy
+    }
+
+    /// Add a type-safe equality filter
+    ///
+    /// Convenience method for simple equality filters.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let results = try await context.findSimilar(Product.self)
+    ///     .vector(\.embedding, dimensions: 128)
+    ///     .query(queryVector, k: 10)
+    ///     .filter(\.category, equals: "electronics")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the field
+    ///   - value: Value to match
+    /// - Returns: Updated query builder
+    public func filter<V: Equatable & Sendable>(_ keyPath: KeyPath<T, V> & Sendable, equals value: V) -> Self {
+        filter { item in item[keyPath: keyPath] == value }
+    }
+
+    /// Set ACORN parameters for filtered search
+    ///
+    /// - Parameter expansionFactor: ef expansion multiplier (default: 2)
+    /// - Returns: Updated query builder
+    public func acorn(expansionFactor: Int) -> Self {
+        var copy = self
+        copy.acornParams = ACORNParameters(expansionFactor: expansionFactor)
+        return copy
+    }
+
+    /// Set ACORN parameters for filtered search
+    ///
+    /// - Parameters:
+    ///   - expansionFactor: ef expansion multiplier (default: 2)
+    ///   - maxPredicateEvaluations: Maximum predicate evaluations (nil for unlimited)
+    /// - Returns: Updated query builder
+    public func acorn(expansionFactor: Int = 2, maxPredicateEvaluations: Int?) -> Self {
+        var copy = self
+        copy.acornParams = ACORNParameters(
+            expansionFactor: expansionFactor,
+            maxPredicateEvaluations: maxPredicateEvaluations
+        )
+        return copy
+    }
+
     /// Execute the vector similarity search
+    ///
+    /// If a filter predicate is set, uses ACORN filtered search.
+    /// Otherwise, uses standard HNSW search.
     ///
     /// - Returns: Array of (item, distance) tuples sorted by distance
     /// - Throws: Error if search fails or query vector not set
@@ -72,6 +173,16 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = buildIndexName()
 
+        // If filter is set, use ACORN filtered search
+        if let predicate = filterPredicate {
+            return try await executeWithFilter(
+                indexName: indexName,
+                queryVector: vector,
+                predicate: predicate
+            )
+        }
+
+        // Standard search without filter
         return try await queryContext.executeVectorSearch(
             type: T.self,
             indexName: indexName,
@@ -80,6 +191,113 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             dimensions: dimensions,
             metric: distanceMetric
         )
+    }
+
+    /// Execute filtered vector search using ACORN algorithm
+    private func executeWithFilter(
+        indexName: String,
+        queryVector: [Float],
+        predicate: @escaping @Sendable (T) async throws -> Bool
+    ) async throws -> [(item: T, distance: Double)] {
+        // Find the index descriptor to get configuration
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? VectorIndexKind<T> else {
+            throw VectorQueryError.indexNotFound(indexName)
+        }
+
+        // Find the vector index configuration to check if HNSW is configured
+        // Configurations are stored in the container, keyed by index name
+        let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
+        let vectorConfig = configs.first { config in
+            type(of: config).kindIdentifier == VectorIndexKind<T>.identifier
+        } as? _VectorIndexConfiguration
+
+        // Get HNSW parameters if configured
+        let hnswParams: VectorHNSWParameters
+        if let vectorConfig = vectorConfig {
+            switch vectorConfig.algorithm {
+            case .hnsw(let params):
+                hnswParams = params
+            case .flat:
+                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. Configure the index with .hnsw() algorithm.")
+            }
+        } else {
+            // No explicit config - default is flat, which doesn't support ACORN
+            throw VectorQueryError.filterNotSupported("ACORN filtering requires HNSW index. Add VectorIndexConfiguration with .hnsw() algorithm.")
+        }
+
+        // Build subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace: Subspace
+        if let subspaceKey = vectorConfig?.subspaceKey {
+            indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
+        } else {
+            indexSubspace = typeSubspace.subspace(indexName)
+        }
+
+        return try await queryContext.withTransaction { transaction in
+            // Create the HNSW maintainer
+            let index = Index(
+                name: indexName,
+                kind: kind,
+                rootExpression: FieldKeyExpression(fieldName: self.fieldName),
+                keyPaths: indexDescriptor.keyPaths
+            )
+
+            let maintainer = HNSWIndexMaintainer<T>(
+                index: index,
+                dimensions: self.dimensions,
+                metric: kind.metric,
+                subspace: indexSubspace,
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                parameters: HNSWParameters(
+                    m: hnswParams.m,
+                    efConstruction: hnswParams.efConstruction,
+                    efSearch: hnswParams.efSearch
+                )
+            )
+
+            // Create fetch function for ACORN
+            let fetchItem: @Sendable (Tuple, any TransactionProtocol) async throws -> T? = { primaryKey, tx in
+                // Fetch item using IndexQueryContext
+                let items = try await self.queryContext.fetchItems(ids: [primaryKey], type: T.self)
+                return items.first
+            }
+
+            // Execute filtered search
+            let results = try await maintainer.searchWithFilter(
+                queryVector: queryVector,
+                k: self.k,
+                predicate: predicate,
+                fetchItem: fetchItem,
+                acornParams: self.acornParams,
+                transaction: transaction
+            )
+
+            // Fetch items for results
+            let ids = results.map { Tuple($0.primaryKey) }
+            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self)
+
+            // Create ID to item map for efficient lookup
+            var idToItem: [String: T] = [:]
+            for item in items {
+                if let id = item.id as? any TupleElement {
+                    let key = Data(Tuple(id).pack()).base64EncodedString()
+                    idToItem[key] = item
+                }
+            }
+
+            // Combine with distances
+            var finalResults: [(item: T, distance: Double)] = []
+            for result in results {
+                let key = Data(Tuple(result.primaryKey).pack()).base64EncodedString()
+                if let item = idToItem[key] {
+                    finalResults.append((item: item, distance: result.distance))
+                }
+            }
+
+            return finalResults
+        }
     }
 
     /// Build the index name based on type and field
@@ -167,6 +385,9 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
+    /// Filter not supported for this index type
+    case filterNotSupported(String)
+
     public var description: String {
         switch self {
         case .noQueryVector:
@@ -175,6 +396,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Vector dimension mismatch: expected \(expected), got \(actual)"
         case .indexNotFound(let name):
             return "Vector index not found: \(name)"
+        case .filterNotSupported(let reason):
+            return "Filter not supported: \(reason)"
         }
     }
 }

@@ -5,11 +5,95 @@ This document describes the design for advanced search features:
 2. **ACORN Filtered Search** - Predicate-aware vector search
 3. **Fusion Query** - Multi-source result combination (future)
 
+## SPM Module Architecture
+
+```
+database-kit (client-safe, no FDB dependency)
+└── Core, Vector, FullText, etc.  (IndexKind definitions)
+
+database-framework (server-only, FDB dependency)
+├── DatabaseEngine                 # Core engine, no index-specific knowledge
+│   ├── IndexQueryContext          # Generic query operations
+│   └── IndexMaintainer            # Protocol only
+│
+├── FullTextIndex                  # Depends on: DatabaseEngine
+│   ├── FullTextIndexMaintainer    # + BM25 statistics, scored search
+│   ├── FullTextQuery              # + executeWithScores(), bm25()
+│   ├── BM25Parameters             # NEW
+│   └── BM25Scorer                 # NEW
+│
+├── VectorIndex                    # Depends on: DatabaseEngine
+│   ├── HNSWIndexMaintainer        # + searchWithFilter()
+│   ├── VectorQuery                # + filter(), acorn()
+│   └── ACORNParameters            # NEW
+│
+└── Database                       # Re-exports all modules
+```
+
+**Key Constraint**: `DatabaseEngine` cannot depend on any index module.
+All feature-specific code (BM25, ACORN) must reside in the respective index module.
+
 ## References
 
 - **BM25**: Robertson & Zaragoza, "The Probabilistic Relevance Framework: BM25 and Beyond", Foundations and Trends in Information Retrieval, 2009
 - **ACORN**: Patel et al., "ACORN: Performant and Predicate-Agnostic Search Over Vector Embeddings and Structured Data", SIGMOD 2024 ([arXiv:2403.04871](https://arxiv.org/abs/2403.04871))
 - **RRF**: Cormack et al., "Reciprocal Rank Fusion outperforms Condorcet and individual Rank Learning Methods", SIGIR 2009
+
+## Quick Start
+
+### BM25 Scored Search
+
+```swift
+import FullTextIndex
+
+// Search with BM25 ranking
+let ranked = try await context.search(Article.self)
+    .fullText(\.content)
+    .terms(["swift", "concurrency"])
+    .bm25(k1: 1.2, b: 0.75)  // Optional: custom parameters
+    .executeWithScores()
+// Returns: [(item: Article, score: Double)] sorted by BM25 score
+```
+
+### ACORN Filtered Vector Search
+
+```swift
+import VectorIndex
+
+// Filtered similarity search using ACORN algorithm
+let results = try await context.findSimilar(Product.self)
+    .vector(\.embedding, dimensions: 384)
+    .query(queryVector, k: 10)
+    .filter { product in
+        product.category == "electronics" && product.price < 1000
+    }
+    .acorn(expansionFactor: 3)  // Optional: higher = better recall
+    .execute()
+// Returns: [(item: Product, distance: Double)] - only matching items
+
+// KeyPath equality filter (convenience)
+let results = try await context.findSimilar(Product.self)
+    .vector(\.embedding, dimensions: 384)
+    .query(queryVector, k: 10)
+    .filter(\.category, equals: "electronics")
+    .execute()
+```
+
+**Note**: ACORN filtering requires HNSW index. Configure with `VectorIndexConfiguration`:
+
+```swift
+let container = try FDBContainer(
+    for: schema,
+    configuration: FDBConfiguration(
+        indexConfigurations: [
+            VectorIndexConfiguration<Product>(
+                keyPath: \.embedding,
+                algorithm: .hnsw(.default)
+            )
+        ]
+    )
+)
+```
 
 ---
 
@@ -67,12 +151,23 @@ All statistics use FDB atomic operations for concurrent safety:
 
 ### File Structure
 
+**Important**: All BM25-related code resides in the `FullTextIndex` module.
+`DatabaseEngine` has no knowledge of BM25 (SPM dependency constraint).
+
 ```
-Sources/FullTextIndex/
-├── FullTextIndexMaintainer.swift  # Modified: maintain BM25 statistics
-├── FullTextQuery.swift            # Modified: add executeWithScores()
-├── BM25Parameters.swift           # New: k1, b parameters
-└── BM25Scorer.swift               # New: BM25 calculation logic
+Sources/FullTextIndex/              # Depends on: DatabaseEngine
+├── FullTextIndexMaintainer.swift   # Modified: maintain BM25 statistics, scored search
+├── FullTextQuery.swift             # Modified: add executeWithScores(), bm25()
+├── FullTextIndexKind+Maintainable.swift  # Unchanged
+├── BM25Parameters.swift            # New: k1, b parameters
+└── BM25Scorer.swift                # New: BM25 calculation logic
+
+Sources/DatabaseEngine/             # No changes for BM25
+└── QueryPlanner/
+    └── IndexQueryContext.swift     # Provides generic methods only:
+                                    # - withTransaction()
+                                    # - indexSubspace(for:)
+                                    # - fetchItems()
 ```
 
 ### API Design
@@ -170,6 +265,63 @@ let rankedArticles = try await context.search(Article.self)
     .terms(["swift", "concurrency"])
     .bm25(k1: 1.5, b: 0.8)
     .executeWithScores()
+```
+
+#### Query Builder Implementation
+
+The query builder uses `IndexQueryContext` for generic operations, but calls
+`FullTextIndexMaintainer` directly for BM25-specific logic (within the module).
+
+```swift
+// FullTextIndex/FullTextQuery.swift
+public struct FullTextQueryBuilder<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+    private let fieldName: String
+    private var searchTerms: [String] = []
+    private var bm25Params: BM25Parameters = .default
+
+    /// Set BM25 parameters
+    public func bm25(k1: Double = 1.2, b: Double = 0.75) -> Self {
+        var copy = self
+        copy.bm25Params = BM25Parameters(k1: k1, b: b)
+        return copy
+    }
+
+    /// Execute with BM25 scores
+    public func executeWithScores() async throws -> [(item: T, score: Double)] {
+        guard !searchTerms.isEmpty else { return [] }
+
+        let indexName = buildIndexName()
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Use generic withTransaction from IndexQueryContext
+        return try await queryContext.withTransaction { transaction in
+            // Create maintainer (FullTextIndex module internal)
+            let maintainer = FullTextIndexMaintainer<T>(
+                index: ...,
+                subspace: indexSubspace,
+                ...
+            )
+
+            // Call BM25-specific search (within FullTextIndex module)
+            let scoredResults = try await maintainer.searchWithScores(
+                terms: self.searchTerms,
+                bm25Params: self.bm25Params,
+                transaction: transaction
+            )
+
+            // Fetch items
+            let items = try await self.queryContext.fetchItems(
+                ids: scoredResults.map(\.id),
+                type: T.self
+            )
+
+            // Combine items with scores
+            return self.combineWithScores(items: items, scoredResults: scoredResults)
+        }
+    }
+}
 ```
 
 ### Implementation Notes
@@ -336,12 +488,20 @@ but not directly connected through matching nodes.
 
 ### File Structure
 
+**Important**: All ACORN-related code resides in the `VectorIndex` module.
+`DatabaseEngine` has no knowledge of ACORN (SPM dependency constraint).
+
 ```
-Sources/VectorIndex/
-├── HNSWIndexMaintainer.swift  # Modified: add searchWithFilter()
-├── VectorQuery.swift          # Modified: add .filter() API
-├── ACORNSearch.swift          # New: ACORN search logic
-└── PredicateEvaluator.swift   # New: predicate evaluation strategies
+Sources/VectorIndex/                    # Depends on: DatabaseEngine
+├── HNSWIndexMaintainer.swift           # Modified: add searchWithFilter(), searchLayerWithFilter()
+├── VectorQuery.swift                   # Modified: add .filter(), .acorn() API
+├── VectorIndexKind+Maintainable.swift  # Unchanged
+├── ACORNParameters.swift               # New: expansion factor, max evaluations
+└── FlatVectorIndexMaintainer.swift     # Unchanged (ACORN is HNSW-specific)
+
+Sources/DatabaseEngine/                 # No changes for ACORN
+└── QueryPlanner/
+    └── IndexQueryContext.swift         # Provides generic methods only
 ```
 
 ### API Design
@@ -411,6 +571,89 @@ public enum PredicateStrategy<Item: Persistable>: Sendable {
 
     /// Combine multiple strategies with OR
     case or([PredicateStrategy<Item>])
+}
+```
+
+#### Query Builder Implementation
+
+The query builder uses `IndexQueryContext` for generic operations, but calls
+`HNSWIndexMaintainer` directly for ACORN-specific logic (within the module).
+
+```swift
+// VectorIndex/VectorQuery.swift
+public struct VectorQueryBuilder<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+    private let fieldName: String
+    private let dimensions: Int
+    private var queryVector: [Float]?
+    private var k: Int = 10
+    private var filterPredicate: (@Sendable (T) async throws -> Bool)?
+    private var acornParams: ACORNParameters = .default
+
+    /// Add filter predicate (enables ACORN search)
+    public func filter(_ predicate: @escaping @Sendable (T) -> Bool) -> Self {
+        var copy = self
+        copy.filterPredicate = { item in predicate(item) }
+        return copy
+    }
+
+    /// Add KeyPath equality filter (convenience)
+    public func filter<V: Equatable & Sendable>(
+        _ keyPath: KeyPath<T, V>,
+        equals value: V
+    ) -> Self {
+        filter { item in item[keyPath: keyPath] == value }
+    }
+
+    /// Set ACORN parameters
+    public func acorn(expansionFactor: Int = 2) -> Self {
+        var copy = self
+        copy.acornParams = ACORNParameters(expansionFactor: expansionFactor)
+        return copy
+    }
+
+    /// Execute search
+    public func execute() async throws -> [(item: T, distance: Double)] {
+        guard let vector = queryVector else {
+            throw VectorQueryError.noQueryVector
+        }
+
+        let indexName = buildIndexName()
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        return try await queryContext.withTransaction { transaction in
+            // Create HNSW maintainer (VectorIndex module internal)
+            let maintainer = HNSWIndexMaintainer<T>(
+                index: ...,
+                subspace: indexSubspace,
+                ...
+            )
+
+            let results: [(primaryKey: [any TupleElement], distance: Double)]
+
+            if let predicate = self.filterPredicate {
+                // ACORN filtered search
+                results = try await maintainer.searchWithFilter(
+                    queryVector: vector,
+                    k: self.k,
+                    predicate: predicate,
+                    acornParams: self.acornParams,
+                    transaction: transaction
+                )
+            } else {
+                // Standard HNSW search
+                results = try await maintainer.search(
+                    queryVector: vector,
+                    k: self.k,
+                    transaction: transaction
+                )
+            }
+
+            // Fetch items and combine with distances
+            return try await self.fetchAndCombine(results: results)
+        }
+    }
 }
 ```
 
@@ -693,30 +936,38 @@ extension FullTextQueryBuilder: FusionCompatibleQuery {
 
 ## Implementation Plan
 
-### Phase 1: BM25 (FullTextIndex)
+### SPM Module Constraints
 
-| Task | Description |
-|------|-------------|
-| 1.1 | Create `BM25Parameters.swift` |
-| 1.2 | Create `BM25Scorer.swift` |
-| 1.3 | Add BM25 storage (df, N, totalLength) to `FullTextIndexMaintainer` |
-| 1.4 | Update `updateIndex()` to maintain BM25 statistics |
-| 1.5 | Add `executeWithScores()` to `FullTextQueryBuilder` |
-| 1.6 | Add `.bm25()` parameter method to query builder |
-| 1.7 | Write unit tests |
-| 1.8 | Update `IndexQueryContext.executeFullTextSearch()` for scored variant |
+- `DatabaseEngine` cannot depend on `FullTextIndex` or `VectorIndex`
+- All feature-specific code must reside in the respective index module
+- `IndexQueryContext` provides only generic operations (no BM25/ACORN knowledge)
 
-### Phase 2: ACORN (VectorIndex)
+### Phase 1: BM25 (FullTextIndex module only) - ✅ COMPLETED
 
-| Task | Description |
-|------|-------------|
-| 2.1 | Create `ACORNParameters.swift` |
-| 2.2 | Add `searchWithFilter()` to `HNSWIndexMaintainer` |
-| 2.3 | Add `searchLayerWithFilter()` private method |
-| 2.4 | Add `.filter()` API to `VectorQueryBuilder` |
-| 2.5 | Create `PredicateEvaluator.swift` (optional optimization) |
-| 2.6 | Write unit tests |
-| 2.7 | Update `IndexQueryContext.executeVectorSearch()` for filtered variant |
+| Task | Description | File | Status |
+|------|-------------|------|--------|
+| 1.1 | Create BM25 parameters struct | `HighlightConfig.swift` | ✅ |
+| 1.2 | Create BM25 scorer | `BM25Scorer.swift` | ✅ |
+| 1.3 | Add BM25 subspaces (stats, df) | `FullTextIndexMaintainer.swift` | ✅ |
+| 1.4 | Update `updateIndex()` for BM25 statistics | `FullTextIndexMaintainer.swift` | ✅ |
+| 1.5 | Add `searchWithScores()` method | `FullTextIndexMaintainer.swift` | ✅ |
+| 1.6 | Add `getBM25Statistics()` method | `FullTextIndexMaintainer.swift` | ✅ |
+| 1.7 | Add `.bm25()` builder method | `FullTextQuery.swift` | ✅ |
+| 1.8 | Add `executeWithScores()` method | `FullTextQuery.swift` | ✅ |
+| 1.9 | Write unit tests | `FullTextIndexTests/` | ⬜ |
+
+### Phase 2: ACORN (VectorIndex module only) - ✅ COMPLETED
+
+| Task | Description | File | Status |
+|------|-------------|------|--------|
+| 2.1 | Create ACORN parameters struct | `ACORNParameters.swift` | ✅ |
+| 2.2 | Add `searchWithFilter()` public method | `HNSWIndexMaintainer.swift` | ✅ |
+| 2.3 | Add `searchLayerWithFilter()` private method | `HNSWIndexMaintainer.swift` | ✅ |
+| 2.4 | Use fetchItem callback (not internal helper) | `HNSWIndexMaintainer.swift` | ✅ |
+| 2.5 | Add `.filter()` builder method | `VectorQuery.swift` | ✅ |
+| 2.6 | Add `.acorn()` builder method | `VectorQuery.swift` | ✅ |
+| 2.7 | Update `execute()` for filtered search | `VectorQuery.swift` | ✅ |
+| 2.8 | Write unit tests | `VectorIndexTests/` | ⬜ |
 
 ### Phase 3: Fusion (Future)
 

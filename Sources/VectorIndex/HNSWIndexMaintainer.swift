@@ -1101,3 +1101,214 @@ extension HNSWIndexMaintainer {
         return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
     }
 }
+
+// MARK: - ACORN Filtered Search
+
+extension HNSWIndexMaintainer {
+
+    /// Search with predicate filter (ACORN-1 algorithm)
+    ///
+    /// ACORN (Approximate Containment Queries Over Real-Value Navigable Networks)
+    /// enables efficient filtered vector search over HNSW graphs.
+    ///
+    /// **Algorithm**: During graph traversal, predicates are evaluated on candidates.
+    /// Non-matching nodes are still used for graph traversal (to maintain connectivity)
+    /// but are not added to the result set.
+    ///
+    /// **Reference**: Patel et al., "ACORN: Performant and Predicate-Agnostic Search
+    /// Over Vector Embeddings and Structured Data", SIGMOD 2024
+    ///
+    /// - Parameters:
+    ///   - queryVector: Query vector for similarity search
+    ///   - k: Number of nearest neighbors to return
+    ///   - predicate: Filter predicate (item must satisfy to be included in results)
+    ///   - fetchItem: Function to fetch item by primary key (provided by caller)
+    ///   - acornParams: ACORN parameters (expansion factor, max evaluations)
+    ///   - searchParams: HNSW search parameters (ef)
+    ///   - transaction: FDB transaction
+    /// - Returns: Array of (primaryKey, distance) for items passing the predicate
+    public func searchWithFilter(
+        queryVector: [Float],
+        k: Int,
+        predicate: @escaping @Sendable (Item) async throws -> Bool,
+        fetchItem: @escaping @Sendable (Tuple, any TransactionProtocol) async throws -> Item?,
+        acornParams: ACORNParameters = .default,
+        searchParams: HNSWSearchParameters = HNSWSearchParameters(),
+        transaction: any TransactionProtocol
+    ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
+        guard queryVector.count == dimensions else {
+            throw VectorIndexError.dimensionMismatch(
+                expected: dimensions,
+                actual: queryVector.count
+            )
+        }
+
+        guard k > 0 else {
+            throw VectorIndexError.invalidArgument("k must be positive")
+        }
+
+        // Get entry point - return empty if graph not built
+        guard let entryPointPK = try await getEntryPoint(transaction: transaction) else {
+            return []
+        }
+
+        let entryMetadata = try await getNodeMetadata(primaryKey: entryPointPK, transaction: transaction)!
+        let currentLevel = entryMetadata.level
+
+        // Expand ef based on ACORN parameters
+        let expandedEf = max(k, searchParams.ef) * acornParams.expansionFactor
+
+        // Create vector cache for this search operation
+        let vectorCache = VectorCache()
+
+        // Phase 1: Greedy search from top to layer 1 (no filtering at upper layers)
+        var entryPoints = [entryPointPK]
+        for level in stride(from: currentLevel, through: 1, by: -1) {
+            let nearest = try await searchLayer(
+                queryVector: queryVector,
+                entryPoints: entryPoints,
+                ef: 1,
+                level: level,
+                transaction: transaction,
+                cache: vectorCache
+            )
+            entryPoints = [nearest[0].primaryKey]
+        }
+
+        // Phase 2: Filtered search at layer 0 with expanded ef
+        // Pass k separately so result heap can guarantee k results capacity
+        let candidates = try await searchLayerWithFilter(
+            queryVector: queryVector,
+            entryPoints: entryPoints,
+            k: k,
+            ef: expandedEf,
+            level: 0,
+            predicate: predicate,
+            fetchItem: fetchItem,
+            acornParams: acornParams,
+            transaction: transaction,
+            cache: vectorCache
+        )
+
+        // Return top k with primaryKey converted to array
+        return candidates.prefix(k).compactMap { candidate -> (primaryKey: [any TupleElement], distance: Double)? in
+            guard let elements = try? Tuple.unpack(from: candidate.primaryKey.pack()) else {
+                return nil
+            }
+            return (primaryKey: elements, distance: candidate.distance)
+        }
+    }
+
+    /// Search layer with predicate evaluation (ACORN-1)
+    ///
+    /// Key difference from standard searchLayer:
+    /// - All neighbors are added to candidates (for graph connectivity)
+    /// - Only predicate-passing neighbors are added to results
+    ///
+    /// - Parameters:
+    ///   - k: Minimum number of results to return (result heap capacity)
+    ///   - ef: Expanded ef for traversal (controls exploration breadth)
+    private func searchLayerWithFilter(
+        queryVector: [Float],
+        entryPoints: [Tuple],
+        k: Int,
+        ef: Int,
+        level: Int,
+        predicate: @escaping @Sendable (Item) async throws -> Bool,
+        fetchItem: @escaping @Sendable (Tuple, any TransactionProtocol) async throws -> Item?,
+        acornParams: ACORNParameters,
+        transaction: any TransactionProtocol,
+        cache: VectorCache?
+    ) async throws -> [(primaryKey: Tuple, distance: Double)] {
+        var visited = Set<Tuple>()
+        var candidates = CandidateHeap<Tuple>()
+        // Result heap sized to max(k, ef) to guarantee we can return k results
+        // while still benefiting from expanded ef for exploration
+        var result = ResultHeap<Tuple>(k: max(k, ef))
+        var predicateEvaluations = 0
+
+        // Initialize with entry points
+        // Entry points are evaluated for predicate too
+        for entryPK in entryPoints {
+            visited.insert(entryPK)
+
+            let entryVector = try await loadVectorCached(
+                primaryKey: entryPK,
+                transaction: transaction,
+                cache: cache
+            )
+            let distance = calculateDistance(queryVector, entryVector)
+
+            // Always add to candidates (for graph traversal)
+            candidates.insert((primaryKey: entryPK, distance: distance))
+
+            // Evaluate predicate on entry point
+            if let item = try await fetchItem(entryPK, transaction) {
+                predicateEvaluations += 1
+                let passes = try await predicate(item)
+
+                // Only add to results if predicate passes
+                if passes {
+                    result.insert((primaryKey: entryPK, distance: distance))
+                }
+            }
+        }
+
+        // Greedy search with predicate filtering
+        while !candidates.isEmpty {
+            guard let current = candidates.pop() else { break }
+
+            // Termination check (based on result heap, not candidates)
+            if result.isFull, let worst = result.worst, current.distance > worst.distance {
+                break
+            }
+
+            let neighbors = try await getNeighbors(
+                primaryKey: current.primaryKey,
+                level: level,
+                transaction: transaction
+            )
+
+            for neighborPK in neighbors {
+                if visited.contains(neighborPK) { continue }
+                visited.insert(neighborPK)
+
+                guard let neighborVector = try? await loadVectorCached(
+                    primaryKey: neighborPK,
+                    transaction: transaction,
+                    cache: cache
+                ) else { continue }
+
+                let distance = calculateDistance(queryVector, neighborVector)
+
+                // Determine if this neighbor should be explored
+                let shouldExplore = !result.isFull || (result.worst.map { distance < $0.distance } ?? true)
+
+                // Always add to candidates for graph connectivity
+                // (even non-matching nodes help reach matching nodes)
+                if shouldExplore {
+                    candidates.insert((primaryKey: neighborPK, distance: distance))
+                }
+
+                // ACORN: Predicate evaluation for results
+                if let maxEvals = acornParams.maxPredicateEvaluations,
+                   predicateEvaluations >= maxEvals {
+                    continue  // Skip predicate eval if budget exhausted
+                }
+
+                // Fetch item and evaluate predicate
+                if let item = try await fetchItem(neighborPK, transaction) {
+                    predicateEvaluations += 1
+                    let passes = try await predicate(item)
+
+                    // Only add to results if predicate passes
+                    if passes && shouldExplore {
+                        result.insert((primaryKey: neighborPK, distance: distance))
+                    }
+                }
+            }
+        }
+
+        return result.toSortedArray()
+    }
+}
