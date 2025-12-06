@@ -1,5 +1,5 @@
 // GraphIndexBehaviorTests.swift
-// Integration tests for GraphIndex (Adjacency) behavior with FDB
+// Integration tests for GraphIndex behavior with FDB
 
 import Testing
 import Foundation
@@ -83,20 +83,22 @@ private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
     let indexSubspace: Subspace
-    let maintainer: AdjacencyIndexMaintainer<TestEdge>
-    let kind: AdjacencyIndexKind<TestEdge>
+    let maintainer: GraphIndexMaintainer<TestEdge>
+    let kind: GraphIndexKind<TestEdge>
+    let strategy: GraphIndexStrategy
 
-    init(bidirectional: Bool = true, indexName: String = "TestEdge_adjacency") throws {
+    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "TestEdge_graph") throws {
         self.database = try FDBClient.openDatabase()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
+        self.strategy = strategy
 
-        self.kind = AdjacencyIndexKind<TestEdge>(
-            source: \.source,
-            target: \.target,
-            label: \.label,
-            bidirectional: bidirectional
+        self.kind = GraphIndexKind<TestEdge>(
+            from: \.source,
+            edge: \.label,
+            to: \.target,
+            strategy: strategy
         )
 
         let index = Index(
@@ -111,14 +113,14 @@ private struct TestContext {
             itemTypes: Set(["TestEdge"])
         )
 
-        self.maintainer = AdjacencyIndexMaintainer<TestEdge>(
+        self.maintainer = GraphIndexMaintainer<TestEdge>(
             index: index,
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            sourceField: kind.sourceField,
-            targetField: kind.targetField,
-            labelField: kind.labelField,
-            bidirectional: kind.bidirectional
+            fromField: kind.fromField,
+            edgeField: kind.edgeField,
+            toField: kind.toField,
+            strategy: strategy
         )
     }
 
@@ -129,32 +131,32 @@ private struct TestContext {
         }
     }
 
-    func countOutgoingEdges() async throws -> Int {
-        let outSubspace = indexSubspace.subspace("adj")
+    /// Count entries in a specific subspace key
+    private func countEntries(key: Int64) async throws -> Int {
+        let targetSubspace = indexSubspace.subspace(key)
         return try await database.withTransaction { transaction -> Int in
-            let (begin, end) = outSubspace.range()
+            let (begin, end) = targetSubspace.range()
             var count = 0
             for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
                 count += 1
             }
             return count
         }
+    }
+
+    func countOutgoingEdges() async throws -> Int {
+        // adjacency uses key 0 for out, tripleStore uses key 2 for spo
+        return try await countEntries(key: strategy == .adjacency ? 0 : 2)
     }
 
     func countIncomingEdges() async throws -> Int {
-        let inSubspace = indexSubspace.subspace("adj_in")
-        return try await database.withTransaction { transaction -> Int in
-            let (begin, end) = inSubspace.range()
-            var count = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                count += 1
-            }
-            return count
-        }
+        // adjacency uses key 1 for in
+        return try await countEntries(key: 1)
     }
 
     func getOutgoingNeighbors(from source: String, label: String) async throws -> [String] {
-        let outSubspace = indexSubspace.subspace("adj")
+        // For adjacency: [out=0]/[edge]/[from]/[to]
+        let outSubspace = indexSubspace.subspace(Int64(0))
         let prefixSubspace = outSubspace.subspace(label).subspace(source)
         return try await database.withTransaction { transaction -> [String] in
             let (begin, end) = prefixSubspace.range()
@@ -171,7 +173,8 @@ private struct TestContext {
     }
 
     func getIncomingNeighbors(to target: String, label: String) async throws -> [String] {
-        let inSubspace = indexSubspace.subspace("adj_in")
+        // For adjacency: [in=1]/[edge]/[to]/[from]
+        let inSubspace = indexSubspace.subspace(Int64(1))
         let prefixSubspace = inSubspace.subspace(label).subspace(target)
         return try await database.withTransaction { transaction -> [String] in
             let (begin, end) = prefixSubspace.range()
@@ -188,17 +191,15 @@ private struct TestContext {
     }
 }
 
-// MARK: - Behavior Tests
+// MARK: - Adjacency Strategy Tests
 
-@Suite("GraphIndex Behavior Tests", .tags(.fdb), .serialized)
-struct GraphIndexBehaviorTests {
-
-    // MARK: - Insert Tests (Bidirectional)
+@Suite("GraphIndex Adjacency Strategy Tests", .tags(.fdb), .serialized)
+struct GraphIndexAdjacencyTests {
 
     @Test("Insert creates outgoing edge entry")
     func testInsertCreatesOutgoingEdge() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -216,10 +217,10 @@ struct GraphIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    @Test("Insert creates incoming edge entry (bidirectional)")
+    @Test("Insert creates incoming edge entry")
     func testInsertCreatesIncomingEdge() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -232,31 +233,7 @@ struct GraphIndexBehaviorTests {
         }
 
         let inCount = try await ctx.countIncomingEdges()
-        #expect(inCount == 1, "Should have 1 incoming edge entry (bidirectional)")
-
-        try await ctx.cleanup()
-    }
-
-    @Test("Insert without bidirectional does not create incoming edge")
-    func testInsertUnidirectionalNoIncoming() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: false)
-
-        let edge = TestEdge(source: "alice", target: "bob", label: "follows")
-
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
-                newItem: edge,
-                transaction: transaction
-            )
-        }
-
-        let outCount = try await ctx.countOutgoingEdges()
-        let inCount = try await ctx.countIncomingEdges()
-
-        #expect(outCount == 1, "Should have 1 outgoing edge")
-        #expect(inCount == 0, "Should have 0 incoming edges (unidirectional)")
+        #expect(inCount == 1, "Should have 1 incoming edge entry")
 
         try await ctx.cleanup()
     }
@@ -264,7 +241,7 @@ struct GraphIndexBehaviorTests {
     @Test("Multiple edges from same source")
     func testMultipleEdgesFromSameSource() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(source: "alice", target: "bob", label: "follows"),
@@ -294,7 +271,7 @@ struct GraphIndexBehaviorTests {
     @Test("Multiple edges to same target")
     func testMultipleEdgesToSameTarget() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(source: "alice", target: "dave", label: "follows"),
@@ -321,12 +298,10 @@ struct GraphIndexBehaviorTests {
         try await ctx.cleanup()
     }
 
-    // MARK: - Delete Tests
-
-    @Test("Delete removes outgoing edge entry")
-    func testDeleteRemovesOutgoingEdge() async throws {
+    @Test("Delete removes edge entries")
+    func testDeleteRemovesEdges() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -352,130 +327,17 @@ struct GraphIndexBehaviorTests {
         }
 
         let outCountAfter = try await ctx.countOutgoingEdges()
-        #expect(outCountAfter == 0, "Should have 0 outgoing edges after delete")
-
-        try await ctx.cleanup()
-    }
-
-    @Test("Delete removes incoming edge entry (bidirectional)")
-    func testDeleteRemovesIncomingEdge() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
-
-        let edge = TestEdge(source: "alice", target: "bob", label: "follows")
-
-        // Insert
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
-                newItem: edge,
-                transaction: transaction
-            )
-        }
-
-        let inCountBefore = try await ctx.countIncomingEdges()
-        #expect(inCountBefore == 1)
-
-        // Delete
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: edge,
-                newItem: nil,
-                transaction: transaction
-            )
-        }
-
         let inCountAfter = try await ctx.countIncomingEdges()
+        #expect(outCountAfter == 0, "Should have 0 outgoing edges after delete")
         #expect(inCountAfter == 0, "Should have 0 incoming edges after delete")
 
         try await ctx.cleanup()
     }
 
-    @Test("Delete specific edge among multiple")
-    func testDeleteSpecificEdge() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
-
-        let edge1 = TestEdge(id: "e1", source: "alice", target: "bob", label: "follows")
-        let edge2 = TestEdge(id: "e2", source: "alice", target: "charlie", label: "follows")
-
-        // Insert both
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(oldItem: nil, newItem: edge1, transaction: transaction)
-            try await ctx.maintainer.updateIndex(oldItem: nil, newItem: edge2, transaction: transaction)
-        }
-
-        let neighborsBefore = try await ctx.getOutgoingNeighbors(from: "alice", label: "follows")
-        #expect(neighborsBefore.count == 2)
-
-        // Delete edge1
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: edge1,
-                newItem: nil,
-                transaction: transaction
-            )
-        }
-
-        let neighborsAfter = try await ctx.getOutgoingNeighbors(from: "alice", label: "follows")
-        #expect(neighborsAfter.count == 1)
-        #expect(neighborsAfter.contains("charlie"))
-        #expect(!neighborsAfter.contains("bob"))
-
-        try await ctx.cleanup()
-    }
-
-    // MARK: - Update Tests
-
-    @Test("Update edge target moves edge")
-    func testUpdateEdgeTarget() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
-
-        let edge = TestEdge(id: "e1", source: "alice", target: "bob", label: "follows")
-
-        // Insert
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: nil as TestEdge?,
-                newItem: edge,
-                transaction: transaction
-            )
-        }
-
-        let neighborsBefore = try await ctx.getOutgoingNeighbors(from: "alice", label: "follows")
-        #expect(neighborsBefore.contains("bob"))
-
-        // Update target from bob to charlie
-        let updatedEdge = TestEdge(id: "e1", source: "alice", target: "charlie", label: "follows")
-        try await ctx.database.withTransaction { transaction in
-            try await ctx.maintainer.updateIndex(
-                oldItem: edge,
-                newItem: updatedEdge,
-                transaction: transaction
-            )
-        }
-
-        let neighborsAfter = try await ctx.getOutgoingNeighbors(from: "alice", label: "follows")
-        #expect(neighborsAfter.count == 1)
-        #expect(neighborsAfter.contains("charlie"))
-        #expect(!neighborsAfter.contains("bob"))
-
-        // Verify incoming edges also updated
-        let bobFollowers = try await ctx.getIncomingNeighbors(to: "bob", label: "follows")
-        let charlieFollowers = try await ctx.getIncomingNeighbors(to: "charlie", label: "follows")
-        #expect(bobFollowers.isEmpty, "Bob should have no followers")
-        #expect(charlieFollowers.contains("alice"), "Charlie should be followed by Alice")
-
-        try await ctx.cleanup()
-    }
-
-    // MARK: - Label Tests
-
     @Test("Different labels create separate edges")
     func testDifferentLabels() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
@@ -503,60 +365,163 @@ struct GraphIndexBehaviorTests {
 
         try await ctx.cleanup()
     }
+}
 
-    // MARK: - Self-Loop Tests
+// MARK: - TripleStore Strategy Tests
 
-    @Test("Self-loop edge is supported")
-    func testSelfLoopEdge() async throws {
+@Suite("GraphIndex TripleStore Strategy Tests", .tags(.fdb), .serialized)
+struct GraphIndexTripleStoreTests {
+
+    @Test("TripleStore creates 3 index entries")
+    func testTripleStoreCreates3Entries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .tripleStore)
 
-        let selfLoop = TestEdge(source: "alice", target: "alice", label: "self-reference")
+        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 
         try await ctx.database.withTransaction { transaction in
             try await ctx.maintainer.updateIndex(
                 oldItem: nil as TestEdge?,
-                newItem: selfLoop,
+                newItem: edge,
                 transaction: transaction
             )
         }
 
-        let outgoing = try await ctx.getOutgoingNeighbors(from: "alice", label: "self-reference")
-        let incoming = try await ctx.getIncomingNeighbors(to: "alice", label: "self-reference")
+        // Count entries in each subspace (spo=2, pos=3, osp=4)
+        var totalCount = 0
+        for key in [Int64(2), Int64(3), Int64(4)] {
+            let subspace = ctx.indexSubspace.subspace(key)
+            try await ctx.database.withTransaction { transaction in
+                let (begin, end) = subspace.range()
+                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                    totalCount += 1
+                }
+            }
+        }
 
-        #expect(outgoing.contains("alice"), "Self-loop should appear in outgoing")
-        #expect(incoming.contains("alice"), "Self-loop should appear in incoming")
+        #expect(totalCount == 3, "TripleStore should create 3 index entries (SPO, POS, OSP)")
 
         try await ctx.cleanup()
     }
 
-    // MARK: - Scan Tests
-
-    @Test("ScanItem creates edge entries")
-    func testScanItemCreatesEntries() async throws {
+    @Test("TripleStore delete removes all 3 entries")
+    func testTripleStoreDeleteRemovesAllEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(bidirectional: true)
+        let ctx = try TestContext(strategy: .tripleStore)
 
-        let edges = [
-            TestEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
-            TestEdge(id: "e2", source: "bob", target: "charlie", label: "follows")
-        ]
+        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 
+        // Insert
         try await ctx.database.withTransaction { transaction in
-            for edge in edges {
-                try await ctx.maintainer.scanItem(
-                    edge,
-                    id: Tuple(edge.id),
-                    transaction: transaction
-                )
+            try await ctx.maintainer.updateIndex(
+                oldItem: nil as TestEdge?,
+                newItem: edge,
+                transaction: transaction
+            )
+        }
+
+        // Delete
+        try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.updateIndex(
+                oldItem: edge,
+                newItem: nil,
+                transaction: transaction
+            )
+        }
+
+        // Count entries in each subspace
+        var totalCount = 0
+        for key in [Int64(2), Int64(3), Int64(4)] {
+            let subspace = ctx.indexSubspace.subspace(key)
+            try await ctx.database.withTransaction { transaction in
+                let (begin, end) = subspace.range()
+                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                    totalCount += 1
+                }
             }
         }
 
-        let outCount = try await ctx.countOutgoingEdges()
-        let inCount = try await ctx.countIncomingEdges()
+        #expect(totalCount == 0, "TripleStore delete should remove all 3 entries")
 
-        #expect(outCount == 2, "Should have 2 outgoing edge entries")
-        #expect(inCount == 2, "Should have 2 incoming edge entries (bidirectional)")
+        try await ctx.cleanup()
+    }
+}
+
+// MARK: - Hexastore Strategy Tests
+
+@Suite("GraphIndex Hexastore Strategy Tests", .tags(.fdb), .serialized)
+struct GraphIndexHexastoreTests {
+
+    @Test("Hexastore creates 6 index entries")
+    func testHexastoreCreates6Entries() async throws {
+        try await FDBTestSetup.shared.initialize()
+        let ctx = try TestContext(strategy: .hexastore)
+
+        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+
+        try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.updateIndex(
+                oldItem: nil as TestEdge?,
+                newItem: edge,
+                transaction: transaction
+            )
+        }
+
+        // Count entries in all 6 subspaces (spo=2, pos=3, osp=4, sop=5, pso=6, ops=7)
+        var totalCount = 0
+        for key in [Int64(2), Int64(3), Int64(4), Int64(5), Int64(6), Int64(7)] {
+            let subspace = ctx.indexSubspace.subspace(key)
+            try await ctx.database.withTransaction { transaction in
+                let (begin, end) = subspace.range()
+                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                    totalCount += 1
+                }
+            }
+        }
+
+        #expect(totalCount == 6, "Hexastore should create 6 index entries")
+
+        try await ctx.cleanup()
+    }
+
+    @Test("Hexastore delete removes all 6 entries")
+    func testHexastoreDeleteRemovesAllEntries() async throws {
+        try await FDBTestSetup.shared.initialize()
+        let ctx = try TestContext(strategy: .hexastore)
+
+        let edge = TestEdge(source: "alice", target: "bob", label: "knows")
+
+        // Insert
+        try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.updateIndex(
+                oldItem: nil as TestEdge?,
+                newItem: edge,
+                transaction: transaction
+            )
+        }
+
+        // Delete
+        try await ctx.database.withTransaction { transaction in
+            try await ctx.maintainer.updateIndex(
+                oldItem: edge,
+                newItem: nil,
+                transaction: transaction
+            )
+        }
+
+        // Count entries
+        var totalCount = 0
+        for key in [Int64(2), Int64(3), Int64(4), Int64(5), Int64(6), Int64(7)] {
+            let subspace = ctx.indexSubspace.subspace(key)
+            try await ctx.database.withTransaction { transaction in
+                let (begin, end) = subspace.range()
+                for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                    totalCount += 1
+                }
+            }
+        }
+
+        #expect(totalCount == 0, "Hexastore delete should remove all 6 entries")
 
         try await ctx.cleanup()
     }

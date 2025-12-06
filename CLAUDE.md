@@ -107,7 +107,7 @@ Subspace keys are single characters for storage efficiency. Use `SubspaceKey.ite
 
 ## Implemented Features
 
-### Index Types (13 types)
+### Index Types (12 types)
 
 | Index | Module | Description |
 |-------|--------|-------------|
@@ -117,12 +117,91 @@ Subspace keys are single characters for storage efficiency. Use `SubspaceKey.ite
 | Spatial | `SpatialIndex` | Geographic queries (Geohash, Morton Code, S2 cells) |
 | Rank | `RankIndex` | Leaderboard-style ranking with position queries |
 | Permuted | `PermutedIndex` | Permutation-based multi-field queries |
-| Graph | `GraphIndex` | Graph traversal with adjacency index |
-| Triple | `TripleIndex` | RDF/semantic triple storage (subject-predicate-object) |
+| Graph | `GraphIndex` | Unified graph/RDF index with multiple strategies (see below) |
 | Aggregation | `AggregationIndex` | Materialized aggregations (Count, Sum, Min/Max, Average) |
 | Version | `VersionIndex` | Temporal versioning with FDB versionstamps |
 | Bitmap | `BitmapIndex` | Set membership queries using Roaring Bitmaps |
 | Leaderboard | `LeaderboardIndex` | Time-windowed leaderboards |
+
+### GraphIndex (Unified Graph/RDF Index)
+
+GraphIndex provides a unified solution for both general graph edges and RDF triples with configurable storage strategies.
+
+**Terminology Mapping**:
+```
+Graph terms:  Source  --[Label]------>  Target
+RDF terms:    Subject --[Predicate]-->  Object
+Unified:      From    --[Edge]------->  To
+```
+
+**Storage Strategies** (`GraphIndexStrategy`):
+
+| Strategy | Indexes | Write Cost | Use Case |
+|----------|---------|------------|----------|
+| `adjacency` | 2 (out/in) | Low | Social graphs, simple traversal |
+| `tripleStore` | 3 (SPO/POS/OSP) | Medium | RDF/knowledge graphs, SPARQL-like queries |
+| `hexastore` | 6 (all permutations) | High | Read-heavy workloads, all query patterns optimal |
+
+**Usage Examples**:
+```swift
+// RDF triple store
+@Persistable
+struct Statement {
+    var subject: String
+    var predicate: String
+    var object: String
+
+    #Index<Statement>(type: GraphIndexKind.rdf(
+        subject: \.subject,
+        predicate: \.predicate,
+        object: \.object,
+        strategy: .tripleStore
+    ))
+}
+
+// Social graph (follows)
+@Persistable
+struct Follow {
+    var follower: String
+    var followee: String
+
+    #Index<Follow>(type: GraphIndexKind.adjacency(
+        source: \.follower,
+        target: \.followee
+    ))
+}
+
+// High-performance knowledge graph
+@Persistable
+struct KnowledgeTriple {
+    var entity: String
+    var relation: String
+    var value: String
+
+    #Index<KnowledgeTriple>(type: GraphIndexKind.knowledgeGraph(
+        entity: \.entity,
+        relation: \.relation,
+        value: \.value
+    ))
+}
+```
+
+**Query Patterns by Strategy**:
+```
+adjacency (2-index):
+  [out]/[edge]/[from]/[to]     - outgoing edges
+  [in]/[edge]/[to]/[from]      - incoming edges
+
+tripleStore (3-index):
+  [spo]/[from]/[edge]/[to]     - S??, SP?, SPO queries
+  [pos]/[edge]/[to]/[from]     - ?P?, ?PO queries
+  [osp]/[to]/[from]/[edge]     - ??O queries
+
+hexastore (6-index):
+  All 6 permutations for optimal single-index scan on any pattern
+```
+
+**Reference**: Weiss, C., Karras, P., & Bernstein, A. (2008). "Hexastore: sextuple indexing for semantic web data management" VLDB Endowment, 1(1), 1008-1019.
 
 ### Online Indexing
 

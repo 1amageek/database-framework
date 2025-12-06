@@ -1,7 +1,7 @@
 // GraphTraverser.swift
-// GraphIndexLayer - Graph traversal API for adjacency indexes
+// GraphIndex - Graph traversal API for graph indexes (adjacency strategy)
 //
-// Provides efficient graph traversal operations using adjacency indexes.
+// Provides efficient graph traversal operations using graph indexes.
 
 import Foundation
 import Core
@@ -25,8 +25,7 @@ import Graph
 /// ```swift
 /// let traverser = GraphTraverser<Edge>(
 ///     database: database,
-///     subspace: indexSubspace,
-///     kind: AdjacencyIndexKind(...)
+///     subspace: indexSubspace
 /// )
 ///
 /// // Find direct neighbors
@@ -93,7 +92,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     ///
     /// - Parameters:
     ///   - database: FDB database connection
-    ///   - subspace: Index subspace (same as used by AdjacencyIndexMaintainer)
+    ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace
@@ -101,8 +100,9 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
         self.database = database
         self.subspace = subspace
         // Cache subspaces at initialization
-        self.outgoingSubspace = subspace.subspace("adj")
-        self.incomingSubspace = subspace.subspace("adj_in")
+        // Use integer keys matching GraphIndexMaintainer: 0=out, 1=in
+        self.outgoingSubspace = subspace.subspace(Int64(0))
+        self.incomingSubspace = subspace.subspace(Int64(1))
     }
 
     // MARK: - 1-Hop Queries
