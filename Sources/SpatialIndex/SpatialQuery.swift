@@ -148,17 +148,10 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         return "\(T.persistableType)_\(fieldName)_spatial"
     }
 
-    /// Extract GeoPoint from item using reflection
+    /// Extract GeoPoint from item using Persistable dynamicMember subscript
     private func extractGeoPoint(from item: T) -> GeoPoint? {
-        let mirror = Mirror(reflecting: item)
-        for child in mirror.children {
-            if child.label == fieldName {
-                if let point = child.value as? GeoPoint {
-                    return point
-                }
-            }
-        }
-        return nil
+        guard let value = item[dynamicMember: fieldName] else { return nil }
+        return value as? GeoPoint
     }
 }
 

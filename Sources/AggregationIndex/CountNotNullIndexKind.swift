@@ -24,6 +24,7 @@ extension CountNotNullIndexKind: IndexKindMaintainable {
             index: index,
             subspace: subspace.subspace(index.name),
             idExpression: idExpression,
+            groupByFieldNames: groupByFieldNames,
             valueFieldName: valueFieldName
         )
     }

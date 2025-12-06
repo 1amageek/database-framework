@@ -544,15 +544,8 @@ public final class RecordPreloadCache<Item: Persistable>: Sendable {
     // MARK: - Helpers
 
     private func cacheKey(for item: Item) -> String {
-        // Use the item's ID as cache key
-        let mirror = Mirror(reflecting: item)
-        for child in mirror.children {
-            if child.label == "id" {
-                return "\(child.value)"
-            }
-        }
-        // Fallback to description
-        return "\(item)"
+        // Use the item's ID as cache key - Persistable guarantees id property
+        return "\(item.id)"
     }
 
     private func estimateSize(_ item: Item) -> Int {

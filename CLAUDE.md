@@ -609,3 +609,100 @@ subspace.subspace("nodes")
 // ✅ 推奨: 整数キー（効率的）
 subspace.subspace(SubspaceKey.nodes.rawValue)  // enum SubspaceKey: Int64
 ```
+
+### Persistable フィールドアクセス（Mirror禁止）
+
+**重要**: `Persistable`型のフィールドアクセスには`Mirror`を使用しない。`Persistable`プロトコルは動的フィールドアクセスのためのインターフェースを提供している。
+
+**Persistableが提供するフィールドアクセス機能**:
+
+```swift
+@dynamicMemberLookup
+public protocol Persistable {
+    // 動的フィールドアクセス（フィールド名でアクセス）
+    subscript(dynamicMember member: String) -> (any Sendable)? { get }
+
+    // KeyPathからフィールド名への変換
+    static func fieldName(for keyPath: KeyPath<Self, Value>) -> String
+    static func fieldName(for keyPath: PartialKeyPath<Self>) -> String
+    static func fieldName(for keyPath: AnyKeyPath) -> String
+
+    // 直接プロパティアクセス
+    var id: ID { get }
+    static var allFields: [String] { get }
+}
+```
+
+**正しいパターン**:
+
+```swift
+// ✅ 良い例: dynamicMember subscript を使用
+func extractField<T: Persistable>(from item: T, fieldName: String) -> Any? {
+    return item[dynamicMember: fieldName]
+}
+
+// ✅ 良い例: 直接プロパティアクセス
+func getCacheKey<T: Persistable>(for item: T) -> String {
+    return "\(item.id)"  // Persistable.id を直接使用
+}
+
+// ✅ 良い例: DataAccess.extractField を使用（ネストされたフィールドもサポート）
+let values = try DataAccess.extractField(from: item, keyPath: "address.city")
+
+// ❌ 悪い例: Mirror を使用
+func extractField<T: Persistable>(from item: T, fieldName: String) -> Any? {
+    let mirror = Mirror(reflecting: item)
+    for child in mirror.children {
+        if child.label == fieldName {
+            return child.value
+        }
+    }
+    return nil
+}
+```
+
+**DataAccess の使用**:
+
+`DataAccess`クラスはフィールドアクセスの統一インターフェースを提供する：
+
+```swift
+// 単一フィールド抽出（ネストされたフィールドもサポート）
+let values = try DataAccess.extractField(from: item, keyPath: "email")
+let nested = try DataAccess.extractField(from: item, keyPath: "address.city")
+
+// KeyPath経由のフィールド抽出（型安全）
+let values = try DataAccess.extractFieldsUsingKeyPaths(from: item, keyPaths: [keyPath])
+
+// インデックスフィールド評価（keyPaths優先、expression fallback）
+let values = try DataAccess.evaluateIndexFields(
+    from: item,
+    keyPaths: index.keyPaths,
+    expression: index.rootExpression
+)
+```
+
+**Mirrorが許容されるケース**:
+
+以下の場合のみMirrorの使用を許容する：
+
+1. **非Persistable型のネストされた構造体へのアクセス**:
+   ```swift
+   // 例: User.address.city で Address が Persistable でない場合
+   @Persistable struct User {
+       var address: Address  // Address は通常の struct
+   }
+   struct Address {  // Persistable ではない
+       var city: String
+   }
+   ```
+   この場合、`address`までは`dynamicMember`でアクセスし、`city`はMirrorでアクセスする必要がある。
+   （DataAccess.extractNestedField がこのパターンを実装）
+
+2. **コレクション型の判定**（`displayStyle == .collection`）
+
+3. **Any型からの値抽出**（型情報が完全に失われている場合）
+
+**禁止事項**:
+- ❌ `Persistable`型のトップレベルフィールドへのMirrorアクセス
+- ❌ `item.id`の代わりにMirrorで"id"フィールドを探す
+- ❌ フィールド名がわかっている場合のMirror走査

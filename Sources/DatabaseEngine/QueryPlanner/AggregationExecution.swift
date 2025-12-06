@@ -460,12 +460,24 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
     }
 
     /// Extract any field value from an item
+    ///
+    /// Uses Persistable's dynamicMember subscript for first-level access,
+    /// then falls back to Mirror for nested non-Persistable types.
     private func extractFieldValue(from item: T, field: String) -> Any? {
         // Handle nested field paths (e.g., "address.city")
         let components = field.split(separator: ".").map(String.init)
+        guard let firstComponent = components.first else { return nil }
 
-        var current: Any = item
-        for component in components {
+        // First level: use Persistable's dynamicMember subscript
+        guard let firstValue = item[dynamicMember: firstComponent] else { return nil }
+
+        if components.count == 1 {
+            return firstValue
+        }
+
+        // Nested levels: use Mirror for non-Persistable types
+        var current: Any = firstValue
+        for component in components.dropFirst() {
             let currentMirror = Mirror(reflecting: current)
             guard let child = currentMirror.children.first(where: { $0.label == component }) else {
                 return nil

@@ -29,6 +29,10 @@ import FoundationDB
 /// - Delete with null value: No change
 /// - Update null→non-null: Increment count
 /// - Update non-null→null: Decrement count
+///
+/// **Field Access**:
+/// Uses `DataAccess.extractField` for both grouping fields and value field,
+/// which properly supports nested fields (e.g., "address.city", "user.profile.email").
 public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMaintainer {
     // MARK: - Properties
 
@@ -36,7 +40,10 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    /// The field name to check for null
+    /// Field names for grouping (supports nested fields via dot notation)
+    public let groupByFieldNames: [String]
+
+    /// The field name to check for null (supports nested fields via dot notation)
     public let valueFieldName: String
 
     // MARK: - Initialization
@@ -45,11 +52,13 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
+        groupByFieldNames: [String],
         valueFieldName: String
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
+        self.groupByFieldNames = groupByFieldNames
         self.valueFieldName = valueFieldName
     }
 
@@ -103,7 +112,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        guard !(try isValueNull(in: item)) else { return }
+        guard !isValueNull(in: item) else { return }
 
         let groupingValues = try evaluateGroupingFields(from: item)
         let key = try buildGroupingKey(groupingValues)
@@ -114,7 +123,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        guard !(try isValueNull(in: item)) else { return [] }
+        guard !isValueNull(in: item) else { return [] }
 
         let groupingValues = try evaluateGroupingFields(from: item)
         return [try buildGroupingKey(groupingValues)]
@@ -150,39 +159,47 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
 
         let groupingValues = try evaluateGroupingFields(from: item)
         let groupingKey = try buildGroupingKey(groupingValues)
-        let isNull = try isValueNull(in: item)
+        let isNull = isValueNull(in: item)
 
         return NullCheckData(groupingKey: groupingKey, isNull: isNull)
     }
 
+    /// Evaluate grouping fields from item using DataAccess
+    ///
+    /// Uses `DataAccess.extractField` which properly handles:
+    /// - Top-level fields (e.g., "category", "status")
+    /// - Nested fields (e.g., "address.city", "user.profile.name")
+    ///
+    /// All grouping fields must be non-null; throws if any is null.
+    ///
+    /// - Parameter item: The item to extract grouping fields from
+    /// - Returns: Array of tuple elements representing grouping values
+    /// - Throws: `DataAccessError.nilValueCannotBeIndexed` if any grouping field is null
     private func evaluateGroupingFields(from item: Item) throws -> [any TupleElement] {
-        guard let keyPaths = index.keyPaths else { return [] }
-        let groupingKeyPaths = keyPaths.dropLast()
-
-        return try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: Array(groupingKeyPaths),
-            expression: index.rootExpression
-        )
+        var result: [any TupleElement] = []
+        for fieldName in groupByFieldNames {
+            let values = try DataAccess.extractField(from: item, keyPath: fieldName)
+            result.append(contentsOf: values)
+        }
+        return result
     }
 
-    private func isValueNull(in item: Item) throws -> Bool {
-        guard index.keyPaths?.last != nil else {
-            throw IndexError.invalidConfiguration("CountNotNull index requires at least one field")
+    /// Check if the value field is null
+    ///
+    /// Uses `DataAccess.extractField` which properly handles nested fields.
+    /// Catches `nilValueCannotBeIndexed` error to determine null status.
+    ///
+    /// - Parameter item: The item to check
+    /// - Returns: `true` if value field is null, `false` otherwise
+    private func isValueNull(in item: Item) -> Bool {
+        do {
+            _ = try DataAccess.extractField(from: item, keyPath: valueFieldName)
+            return false  // Value exists (not null)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return true   // Value is null
+        } catch {
+            // Field not found or other errors - treat as null
+            return true
         }
-
-        let mirror = Mirror(reflecting: item)
-
-        for child in mirror.children {
-            if child.label == valueFieldName {
-                let valueMirror = Mirror(reflecting: child.value)
-                if valueMirror.displayStyle == .optional {
-                    return valueMirror.children.isEmpty
-                }
-                return false
-            }
-        }
-
-        return true
     }
 }

@@ -1296,23 +1296,35 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         }
     }
 
-    /// Get field value from model using KeyPath or reflection
+    /// Get field value from model using KeyPath or dynamicMember subscript
     private func getFieldValue(from model: T, keyPath: AnyKeyPath, fieldName: String) -> Any? {
         // Try to use the KeyPath directly if possible
         if let typedKeyPath = keyPath as? PartialKeyPath<T> {
             return model[keyPath: typedKeyPath]
         }
 
-        // Fallback to Mirror-based reflection for nested fields
-        return getFieldValueByReflection(from: model, fieldName: fieldName)
+        // Fallback to dynamicMember-based access for nested fields
+        return getFieldValueByDynamicMember(from: model, fieldName: fieldName)
     }
 
-    /// Get field value using Mirror reflection (supports dot notation for nested fields)
-    private func getFieldValueByReflection(from object: Any, fieldName: String) -> Any? {
+    /// Get field value using Persistable's dynamicMember subscript
+    ///
+    /// Uses dynamicMember for first-level access (Persistable requirement),
+    /// then falls back to Mirror for nested non-Persistable types.
+    private func getFieldValueByDynamicMember(from model: T, fieldName: String) -> Any? {
         let components = fieldName.split(separator: ".").map(String.init)
-        var current: Any = object
+        guard let firstComponent = components.first else { return nil }
 
-        for component in components {
+        // First level: use Persistable's dynamicMember subscript
+        guard let firstValue = model[dynamicMember: firstComponent] else { return nil }
+
+        if components.count == 1 {
+            return firstValue
+        }
+
+        // Nested levels: use Mirror for non-Persistable types
+        var current: Any = firstValue
+        for component in components.dropFirst() {
             let mirror = Mirror(reflecting: current)
             guard let child = mirror.children.first(where: { $0.label == component }) else {
                 return nil
