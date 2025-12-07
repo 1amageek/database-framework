@@ -12,7 +12,7 @@ extension IndexQueryContext {
     /// ```swift
     /// let results = try await context.fuse(Product.self) {
     ///     context.indexQueryContext.similar(Product.self, \.embedding, dimensions: 384)
-    ///         .query(queryVector, k: 100)
+    ///         .nearest(to: queryVector, k: 100)
     /// }
     /// .execute()
     /// ```

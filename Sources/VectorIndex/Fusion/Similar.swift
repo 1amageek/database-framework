@@ -18,8 +18,8 @@ import Vector
 /// **Usage**:
 /// ```swift
 /// let results = try await context.fuse(Product.self) {
-///     Similar(\.embedding, dimensions: 384, context: context.indexQueryContext)
-///         .query(queryVector, k: 100)
+///     Similar(\.embedding, dimensions: 384)
+///         .nearest(to: queryVector, k: 100)
 ///         .metric(.cosine)
 /// }
 /// .execute()
@@ -47,7 +47,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     /// **Usage**:
     /// ```swift
     /// context.fuse(Product.self) {
-    ///     Similar(\.embedding, dimensions: 384).query(vector, k: 100)
+    ///     Similar(\.embedding, dimensions: 384).nearest(to: vector, k: 100)
     /// }
     /// ```
     public init(_ keyPath: KeyPath<T, [Float]>, dimensions: Int) {
@@ -111,13 +111,13 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Configuration
 
-    /// Set the query vector and k
+    /// Find nearest neighbors to a query vector
     ///
     /// - Parameters:
-    ///   - vector: The query vector
+    ///   - vector: The query vector to find neighbors for
     ///   - k: Number of nearest neighbors to return
     /// - Returns: Updated query
-    public func query(_ vector: [Float], k: Int) -> Self {
+    public func nearest(to vector: [Float], k: Int) -> Self {
         var copy = self
         copy.queryVector = vector
         copy.k = k
