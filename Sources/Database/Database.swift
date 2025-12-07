@@ -12,6 +12,7 @@
 @_exported import RankIndex
 @_exported import PermutedIndex
 @_exported import GraphIndex
-@_exported import TripleIndex
 @_exported import AggregationIndex
 @_exported import VersionIndex
+@_exported import BitmapIndex
+@_exported import LeaderboardIndex

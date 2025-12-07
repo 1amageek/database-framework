@@ -6,7 +6,6 @@
 
 import Foundation
 import Synchronization
-import Vector
 
 // MARK: - ProductQuantizer
 

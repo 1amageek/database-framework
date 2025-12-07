@@ -7,7 +7,7 @@ import FoundationDB
 import Core
 import TestSupport
 @testable import DatabaseEngine
-@testable import FilterIndex
+@testable import BitmapIndex
 
 // MARK: - Test Model
 
@@ -34,15 +34,13 @@ struct BitmapTestUser: Persistable {
         [
             IndexDescriptor(
                 name: "BitmapTestUser_bitmap_status",
-                kind: BitmapIndexKind<BitmapTestUser>(field: \.status),
-                fieldNames: ["status"],
-                rootExpression: FieldKeyExpression(fieldName: "status")
+                keyPaths: [\BitmapTestUser.status],
+                kind: BitmapIndexKind<BitmapTestUser>(field: \.status)
             ),
             IndexDescriptor(
                 name: "BitmapTestUser_bitmap_role",
-                kind: BitmapIndexKind<BitmapTestUser>(field: \.role),
-                fieldNames: ["role"],
-                rootExpression: FieldKeyExpression(fieldName: "role")
+                keyPaths: [\BitmapTestUser.role],
+                kind: BitmapIndexKind<BitmapTestUser>(field: \.role)
             )
         ]
     }
@@ -116,8 +114,7 @@ private struct BitmapTestContext {
         self.maintainer = BitmapIndexMaintainer<BitmapTestUser>(
             index: index,
             subspace: indexSubspace,
-            idExpression: FieldKeyExpression(fieldName: "id"),
-            fieldKeyPath: \BitmapTestUser.status
+            idExpression: FieldKeyExpression(fieldName: "id")
         )
     }
 
@@ -164,12 +161,20 @@ struct BitmapFusionUnitTests {
         let statusIndex = descriptors.first { $0.name.contains("status") }
         #expect(statusIndex != nil)
         #expect(statusIndex?.kindIdentifier == "bitmap")
-        #expect(statusIndex?.fieldNames.contains("status") == true)
+        if let kind = statusIndex?.kind as? Core.BitmapIndexKind<BitmapTestUser> {
+            #expect(kind.fieldNames.contains("status"))
+        } else {
+            Issue.record("Expected BitmapIndexKind")
+        }
 
         let roleIndex = descriptors.first { $0.name.contains("role") }
         #expect(roleIndex != nil)
         #expect(roleIndex?.kindIdentifier == "bitmap")
-        #expect(roleIndex?.fieldNames.contains("role") == true)
+        if let kind = roleIndex?.kind as? Core.BitmapIndexKind<BitmapTestUser> {
+            #expect(kind.fieldNames.contains("role"))
+        } else {
+            Issue.record("Expected BitmapIndexKind")
+        }
     }
 
     @Test("ScoredResult initialization")

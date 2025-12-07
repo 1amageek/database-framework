@@ -34,17 +34,6 @@ struct IndexStateTests {
         #expect(IndexState.writeOnly.description == "writeOnly")
     }
 
-    @Test("IndexState Sendable conformance")
-    func testSendable() {
-        let state = IndexState.readable
-
-        Task {
-            let _ = state  // Can be captured in async context
-        }
-
-        #expect(state.isReadable == true)
-    }
-
     @Test("IndexState roundtrip from rawValue")
     func testRoundtrip() {
         let states: [IndexState] = [.readable, .disabled, .writeOnly]

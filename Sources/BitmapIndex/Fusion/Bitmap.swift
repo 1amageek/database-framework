@@ -25,7 +25,7 @@ import FoundationDB
 /// // OR query
 /// let results = try await context.fuse(User.self) {
 ///     Bitmap(\.status, in: ["active", "pending"])
-///     Similar(\.embedding, dimensions: 384).query(vector, k: 100)
+///     Similar(\.embedding, dimensions: 384).nearest(to: vector, k: 100)
 /// }
 /// .execute()
 /// ```
@@ -137,10 +137,10 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     /// Find the index descriptor using kindIdentifier and fieldName
     private func findIndexDescriptor() -> IndexDescriptor? {
         T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == BitmapIndexKind<T>.identifier else {
+            guard descriptor.kindIdentifier == Core.BitmapIndexKind<T>.identifier else {
                 return false
             }
-            guard let kind = descriptor.kind as? BitmapIndexKind<T> else {
+            guard let kind = descriptor.kind as? Core.BitmapIndexKind<T> else {
                 return false
             }
             return kind.fieldNames.contains(fieldName)
@@ -160,38 +160,47 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Execute bitmap query
-        var results: [T]
+        // Get index subspace using public API
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
 
-        switch predicate {
-        case .equals(let value):
-            results = try await queryContext.executeBitmapSearch(
-                type: T.self,
-                indexName: indexName,
-                fieldValues: [convertToTupleElement(value)]
-            )
-
-        case .in(let values):
-            // OR query across multiple values
-            var allResults: [T] = []
-            var seen: Set<String> = []
-
-            for value in values {
-                let matches = try await queryContext.executeBitmapSearch(
-                    type: T.self,
-                    indexName: indexName,
-                    fieldValues: [convertToTupleElement(value)]
+        // Execute bitmap query within transaction
+        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+            switch self.predicate {
+            case .equals(let value):
+                let fieldValues = [self.convertToTupleElement(value)]
+                return try await self.readBitmapPrimaryKeys(
+                    fieldValues: fieldValues,
+                    indexSubspace: indexSubspace,
+                    transaction: transaction
                 )
-                for item in matches {
-                    let id = "\(item.id)"
-                    if !seen.contains(id) {
-                        seen.insert(id)
-                        allResults.append(item)
+
+            case .in(let values):
+                // OR query across multiple values
+                var allPks: [Tuple] = []
+                var seen: Set<Data> = []
+
+                for value in values {
+                    let fieldValues = [self.convertToTupleElement(value)]
+                    let pks = try await self.readBitmapPrimaryKeys(
+                        fieldValues: fieldValues,
+                        indexSubspace: indexSubspace,
+                        transaction: transaction
+                    )
+                    for pk in pks {
+                        let pkData = Data(pk.pack())
+                        if !seen.contains(pkData) {
+                            seen.insert(pkData)
+                            allPks.append(pk)
+                        }
                     }
                 }
+                return allPks
             }
-            results = allResults
         }
+
+        // Fetch items by primary keys
+        var results = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
 
         // Filter to candidates if provided
         if let candidateIds = candidates {
@@ -200,6 +209,43 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
 
         // All matching items get score 1.0 (pass/fail filter)
         return results.map { ScoredResult(item: $0, score: 1.0) }
+    }
+
+    // MARK: - Bitmap Index Reading
+
+    /// Read primary keys from bitmap index
+    ///
+    /// Index structure:
+    /// - `[indexSubspace]["data"][fieldValue]` -> RoaringBitmap of sequential IDs
+    /// - `[indexSubspace]["ids"][seqId]` -> primary key bytes
+    private func readBitmapPrimaryKeys(
+        fieldValues: [any TupleElement],
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        let dataSubspace = indexSubspace.subspace("data")
+        let idsSubspace = indexSubspace.subspace("ids")
+
+        // Get bitmap for field values
+        let bitmapKey = dataSubspace.pack(Tuple(fieldValues))
+        guard let bitmapBytes = try await transaction.getValue(for: bitmapKey) else {
+            return []
+        }
+
+        // Deserialize bitmap
+        let bitmap = try RoaringBitmap.deserialize(Data(bitmapBytes))
+
+        // Convert sequential IDs to primary keys
+        var primaryKeys: [Tuple] = []
+        for seqId in bitmap.toArray() {
+            let idKey = idsSubspace.pack(Tuple(Int(seqId)))
+            if let pkBytes = try await transaction.getValue(for: idKey) {
+                let pkElements = try Tuple.unpack(from: pkBytes)
+                primaryKeys.append(Tuple(pkElements))
+            }
+        }
+
+        return primaryKeys
     }
 
     /// Convert value to TupleElement for bitmap lookup

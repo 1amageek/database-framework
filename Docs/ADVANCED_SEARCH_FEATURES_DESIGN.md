@@ -2725,3 +2725,390 @@ struct QuantizationBenchmarks {
 | 1536 | 192 | 8 | 192 bytes |
 
 **Rule**: `M = dimensions / 8` is a good starting point (8-dim subvectors)
+
+---
+
+## 6. Additional Specifications (Review Feedback)
+
+This section addresses additional specifications requested during design review.
+
+### 6.1 Multi-Vector Storage Format Diagram
+
+The following diagram illustrates the storage layout for multi-vector documents (e.g., ColBERT-style token embeddings):
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        Multi-Vector Storage Format                           │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  Document: "How to cook pasta" (4 token embeddings, 128 dims each)          │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  [indexSubspace]/multivec/doc/[docId]/                               │    │
+│  │  ├── count                        → Int64(4)                         │    │
+│  │  └── vectors/                                                        │    │
+│  │      ├── [chunk_0]  (if total size ≤ 100KB)                         │    │
+│  │      │   └── [[128 floats], [128 floats], [128 floats], [128 floats]]│    │
+│  │      │                                                               │    │
+│  │      └── [chunk_0], [chunk_1], ... (if total size > 100KB)          │    │
+│  │          Each chunk ≤ 90KB                                           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │  [indexSubspace]/multivec/flat/[docId]/[vecIdx]                      │    │
+│  │  For brute-force / HNSW search                                       │    │
+│  │                                                                       │    │
+│  │  ├── [docId]/0  → [128 floats] ("how")                               │    │
+│  │  ├── [docId]/1  → [128 floats] ("to")                                │    │
+│  │  ├── [docId]/2  → [128 floats] ("cook")                              │    │
+│  │  └── [docId]/3  → [128 floats] ("pasta")                             │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                                                              │
+│  Constraints:                                                                │
+│  ├── maxVectorsPerDoc: 512 (configurable)                                   │
+│  ├── Single vector size: dimensions × 4 bytes (e.g., 128 × 4 = 512 bytes)  │
+│  ├── Max doc vectors size: 512 × 512 = 256KB → chunked into 3 parts        │
+│  └── FDB value limit: 100KB → chunk threshold: 90KB (with margin)           │
+│                                                                              │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Key Encoding Format
+
+```swift
+/// Multi-vector key structure
+enum MultiVectorKey {
+    /// Document-level metadata
+    /// Key: [subspace]["multivec"]["doc"][docId]["count"]
+    /// Value: Int64 (number of vectors)
+    case count(docId: Tuple)
+
+    /// Chunked vector storage (for documents with many vectors)
+    /// Key: [subspace]["multivec"]["doc"][docId]["vectors"][chunkId]
+    /// Value: [[Float]] encoded as Protobuf or MessagePack
+    case vectorChunk(docId: Tuple, chunkId: Int64)
+
+    /// Flattened index for search
+    /// Key: [subspace]["multivec"]["flat"][docId][vecIdx]
+    /// Value: [Float] (single vector)
+    case flatVector(docId: Tuple, vecIdx: Int64)
+}
+```
+
+### 6.2 Reciprocal Rank Fusion (RRF)
+
+Add RRF as an additional fusion method for hybrid search:
+
+```swift
+/// Extended score normalization with RRF
+public enum ScoreNormalization: Sendable {
+    /// Min-max normalization to [0, 1]
+    case minMax
+
+    /// Z-score normalization
+    case zScore
+
+    /// Percentile-based (robust to outliers)
+    case percentile
+
+    /// Reciprocal Rank Fusion (RRF)
+    /// Reference: Cormack et al., "Reciprocal Rank Fusion outperforms
+    ///            Condorcet and individual Rank Learning Methods", SIGIR 2009
+    /// Formula: RRF(d) = Σ 1/(k + rank_i(d))
+    /// - k: smoothing constant (default: 60)
+    case reciprocalRankFusion(k: Int = 60)
+
+    /// No normalization (raw scores)
+    case none
+}
+
+/// RRF implementation
+public struct ReciprocalRankFusion {
+    private let k: Int
+
+    public init(k: Int = 60) {
+        self.k = k
+    }
+
+    /// Fuse multiple ranked lists using RRF
+    /// - Parameter rankedLists: Array of ranked document lists (docId, score)
+    /// - Returns: Fused ranking sorted by RRF score descending
+    public func fuse(
+        rankedLists: [[(docId: String, score: Float)]]
+    ) -> [(docId: String, rrfScore: Float)] {
+        var rrfScores: [String: Float] = [:]
+
+        for rankedList in rankedLists {
+            for (rank, (docId, _)) in rankedList.enumerated() {
+                // RRF formula: 1 / (k + rank)
+                // rank is 0-indexed, so add 1 for 1-indexed rank
+                let contribution = 1.0 / Float(k + rank + 1)
+                rrfScores[docId, default: 0] += contribution
+            }
+        }
+
+        return rrfScores
+            .map { (docId: $0.key, rrfScore: $0.value) }
+            .sorted { $0.rrfScore > $1.rrfScore }
+    }
+}
+```
+
+#### When to Use RRF vs Weighted Fusion
+
+| Method | Best For | Pros | Cons |
+|--------|----------|------|------|
+| **Weighted Fusion** | Known score distributions | Tunable weights | Requires score calibration |
+| **RRF (k=60)** | Unknown/incomparable scores | Score-agnostic, robust | Ignores score magnitudes |
+| **Min-Max** | Bounded score ranges | Simple, intuitive | Sensitive to outliers |
+
+### 6.3 Stopword Change Impact Matrix
+
+Clarify when reindexing is required after stopword configuration changes:
+
+```
+┌────────────────────────────────────────────────────────────────────────────┐
+│                   Stopword Change Impact Matrix                             │
+├────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Change Type              │ Reindex Required? │ Workaround                 │
+│  ─────────────────────────┼───────────────────┼────────────────────────────│
+│  Add stopwords            │ ❌ No             │ Filter at query time       │
+│  (e.g., add "the")        │                   │ Index still works          │
+│  ─────────────────────────┼───────────────────┼────────────────────────────│
+│  Remove stopwords         │ ✅ Yes            │ No workaround              │
+│  (e.g., remove "the")     │                   │ Terms not in index         │
+│  ─────────────────────────┼───────────────────┼────────────────────────────│
+│  Change default set       │ ⚠️ Partial        │ Depends on direction       │
+│  (english → german)       │                   │ (add-only: no, else: yes)  │
+│  ─────────────────────────┼───────────────────┼────────────────────────────│
+│  Add field override       │ ❌ No             │ Query-time filter          │
+│  (body: .english)         │                   │                            │
+│  ─────────────────────────┼───────────────────┼────────────────────────────│
+│  Remove field override    │ ⚠️ Maybe          │ If more restrictive: no    │
+│  (body: .none → default)  │                   │ If less restrictive: yes   │
+│                                                                             │
+└────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### Automatic Reindex Detection
+
+```swift
+/// Detect if reindex is required for stopword change
+public struct StopwordChangeAnalyzer {
+    /// Analyze change impact
+    public func analyzeChange(
+        oldConfig: StopwordConfig,
+        newConfig: StopwordConfig,
+        fields: [String]
+    ) -> ChangeImpact {
+        var requiresReindex: [String] = []
+        var queryTimeOnly: [String] = []
+
+        for field in fields {
+            let oldStopwords = oldConfig.stopwords(for: field).words
+            let newStopwords = newConfig.stopwords(for: field).words
+
+            let removed = oldStopwords.subtracting(newStopwords)
+            let added = newStopwords.subtracting(oldStopwords)
+
+            if !removed.isEmpty {
+                // Removed stopwords = terms missing from index
+                requiresReindex.append(field)
+            } else if !added.isEmpty {
+                // Added stopwords = can filter at query time
+                queryTimeOnly.append(field)
+            }
+        }
+
+        return ChangeImpact(
+            requiresReindex: requiresReindex,
+            queryTimeOnly: queryTimeOnly
+        )
+    }
+}
+
+public struct ChangeImpact {
+    /// Fields that require full reindex
+    public let requiresReindex: [String]
+
+    /// Fields that can be handled at query time
+    public let queryTimeOnly: [String]
+
+    /// Whether any reindex is needed
+    public var needsReindex: Bool { !requiresReindex.isEmpty }
+}
+```
+
+### 6.4 Incremental Quantizer Re-training
+
+Define workflow for updating quantizers without full rebuild:
+
+```swift
+/// Incremental re-training strategy
+public enum RetrainingStrategy: Sendable {
+    /// Full retrain on all data
+    case full
+
+    /// Incremental update with new samples
+    /// Reference: Based on online k-means concepts
+    case incremental(
+        /// New samples to incorporate
+        newSampleWeight: Float,  // 0.0-1.0, how much weight for new samples
+        /// Minimum samples before triggering retrain
+        minNewSamples: Int
+    )
+
+    /// Decay-based update (older samples less important)
+    case decayBased(
+        /// Decay factor per time window
+        decayFactor: Float  // e.g., 0.9 = 10% decay per window
+    )
+}
+
+/// Quantizer re-training workflow
+public struct QuantizerRetrainer {
+    let strategy: RetrainingStrategy
+
+    /// Check if retraining is needed
+    public func shouldRetrain(
+        currentMetrics: TrainingMetrics,
+        recentQueryPerformance: QueryPerformance
+    ) -> RetrainDecision {
+        // Trigger conditions:
+        // 1. Recall degradation > 5%
+        // 2. Reconstruction error increased > 20%
+        // 3. Manual trigger
+        // 4. Scheduled (e.g., weekly)
+
+        if recentQueryPerformance.recallAt10 < 0.90 {
+            return .required(reason: .recallDegradation)
+        }
+
+        if currentMetrics.reconstructionError > baselineError * 1.2 {
+            return .required(reason: .errorIncrease)
+        }
+
+        return .notNeeded
+    }
+
+    /// Execute retraining with zero-downtime
+    public func retrain(
+        container: FDBContainer,
+        indexName: String,
+        sampleSize: Int
+    ) async throws {
+        // 1. Sample vectors from current index
+        let samples = try await sampleVectors(count: sampleSize)
+
+        // 2. Train new quantizer version
+        let newQuantizer = try await trainQuantizer(samples: samples)
+
+        // 3. Store new codebook with version bump
+        let newVersion = try await storeNewCodebook(newQuantizer)
+
+        // 4. Begin dual-write period (old + new codes)
+        try await enableDualWrite(oldVersion: currentVersion, newVersion: newVersion)
+
+        // 5. Background re-encode existing vectors
+        let reencoder = BackgroundReencoder(
+            batchSize: 1000,
+            throttle: .adaptive
+        )
+        try await reencoder.reencode(
+            from: currentVersion,
+            to: newVersion
+        )
+
+        // 6. Switch to new version
+        try await switchActiveVersion(to: newVersion)
+
+        // 7. Cleanup old version (optional, keep for rollback)
+        // try await deleteOldCodebook(version: oldVersion)
+    }
+}
+
+public enum RetrainDecision {
+    case required(reason: RetrainReason)
+    case notNeeded
+    case scheduled(date: Date)
+}
+
+public enum RetrainReason {
+    case recallDegradation
+    case errorIncrease
+    case manual
+    case scheduled
+    case dataDrift
+}
+```
+
+#### Monitoring Dashboard Metrics
+
+```swift
+/// Quantizer health metrics for monitoring
+public struct QuantizerHealthMetrics: Codable {
+    /// Current codebook version
+    let version: Int64
+
+    /// Training timestamp
+    let trainedAt: Date
+
+    /// Days since last training
+    var daysSinceTraining: Int {
+        Calendar.current.dateComponents([.day], from: trainedAt, to: Date()).day ?? 0
+    }
+
+    /// Recent query performance
+    let recallAt10: Double
+    let recallAt100: Double
+
+    /// Reconstruction error trend
+    let reconstructionError: Double
+    let reconstructionErrorBaseline: Double
+    let reconstructionErrorTrend: Trend  // .stable, .increasing, .decreasing
+
+    /// Alert thresholds
+    public func alerts() -> [Alert] {
+        var alerts: [Alert] = []
+
+        if recallAt10 < 0.90 {
+            alerts.append(.critical("Recall@10 below 90%: \(recallAt10)"))
+        }
+
+        if daysSinceTraining > 30 {
+            alerts.append(.warning("Codebook not retrained in \(daysSinceTraining) days"))
+        }
+
+        if reconstructionErrorTrend == .increasing {
+            alerts.append(.warning("Reconstruction error trending up"))
+        }
+
+        return alerts
+    }
+}
+```
+
+---
+
+## Summary of Review Feedback Addressed
+
+| Review Point | Section | Status |
+|--------------|---------|--------|
+| Codebook versioning and rollout | 5.1 | ✅ Complete |
+| A/B rollout for quantization | 5.1 | ✅ Complete |
+| Field-specific stopwords | 5.2 | ✅ Complete |
+| Stopword version management | 5.2 + 6.3 | ✅ Enhanced |
+| Multi-vector + BM25 hybrid scoring | 5.3 | ✅ Complete |
+| RRF scoring method | 6.2 | ✅ Added |
+| BlockMaxWAND safety | 5.4 | ✅ Complete |
+| Floating-point handling | 5.4 | ✅ Complete |
+| Test plan for correctness | 5.4 | ✅ Complete |
+| FDB size limits and chunking | 5.5 | ✅ Complete |
+| Subspace layout diagram | 5.5 | ✅ Complete |
+| Write batching and retry | 5.5 | ✅ Complete |
+| Evaluation metrics and benchmarks | 5.6 | ✅ Complete |
+| PQ/SQ/BQ selection guidelines | 5.7 | ✅ Complete |
+| Multi-vector storage format diagram | 6.1 | ✅ Added |
+| Stopword reindex requirements | 6.3 | ✅ Added |
+| Incremental re-training workflow | 6.4 | ✅ Added |

@@ -18,17 +18,17 @@ import FoundationDB
 /// ```swift
 /// let results = try await context.fuse(GameScore.self) {
 ///     // Get top 100 from leaderboard
-///     Leaderboard(\.score).topK(100)
+///     Leaderboard(\.score).top(100)
 ///
 ///     // Combine with user preferences
-///     Similar(\.playerProfile, dimensions: 128).query(userVector, k: 50)
+///     Similar(\.playerProfile, dimensions: 128).nearest(to: userVector, k: 50)
 /// }
 /// .algorithm(.rrf())
 /// .execute()
 ///
 /// // With grouping (e.g., by region)
 /// let results = try await context.fuse(GameScore.self) {
-///     Leaderboard(\.score, groupBy: \.region).topK(50).group("asia")
+///     Leaderboard(\.score, groupBy: \.region).top(50).group("asia")
 /// }
 /// .execute()
 /// ```
@@ -51,7 +51,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     /// **Usage**:
     /// ```swift
     /// context.fuse(GameScore.self) {
-    ///     Leaderboard(\.score).topK(100)
+    ///     Leaderboard(\.score).top(100)
     /// }
     /// ```
     public init(_ scoreKeyPath: KeyPath<T, Int>) {
@@ -87,7 +87,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ///
     /// **Usage**:
     /// ```swift
-    /// Leaderboard(\.score, groupBy: \.region).topK(50).group("asia")
+    /// Leaderboard(\.score, groupBy: \.region).top(50).group("asia")
     /// ```
     public init<G: Sendable & Hashable>(
         _ scoreKeyPath: KeyPath<T, Int64>,
@@ -141,7 +141,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     ///
     /// - Parameter count: Number of top entries (default: 100)
     /// - Returns: Updated query
-    public func topK(_ count: Int) -> Self {
+    public func top(_ count: Int) -> Self {
         var copy = self
         copy.k = count
         return copy
@@ -172,11 +172,15 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
     /// Find the index descriptor for leaderboard
     private func findIndexDescriptor() -> IndexDescriptor? {
         T.indexDescriptors.first { descriptor in
-            guard descriptor.kindIdentifier == "time_window_leaderboard" else {
+            // Use type-safe identifier from TimeWindowLeaderboardIndexKind
+            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T, Int64>.identifier else {
                 return false
             }
-            // Check if score field matches
-            return descriptor.fieldNames.contains(scoreFieldName)
+            // Check if score field matches via kind's fieldNames
+            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> else {
+                return false
+            }
+            return kind.fieldNames.contains(scoreFieldName)
         }
     }
 
@@ -193,36 +197,129 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
 
         let indexName = descriptor.name
 
-        // Build grouping array
-        var grouping: [any TupleElement]? = nil
-        if let gv = groupValue {
-            grouping = [gv]
+        // Get index subspace using public API
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute leaderboard query within transaction
+        let topKResults: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
+            try await self.readTopK(
+                indexSubspace: indexSubspace,
+                k: self.k,
+                grouping: self.groupValue.map { [$0] },
+                windowId: self.windowId,
+                transaction: transaction
+            )
         }
 
-        // Execute leaderboard query
-        let leaderboardResults = try await queryContext.executeLeaderboardSearch(
-            type: T.self,
-            indexName: indexName,
-            k: k,
-            grouping: grouping,
-            windowId: windowId
-        )
+        // Fetch items by primary keys
+        var items = try await queryContext.fetchItems(ids: topKResults.map(\.pk), type: T.self)
 
         // Filter to candidates if provided
-        var filteredResults = leaderboardResults
         if let candidateIds = candidates {
-            filteredResults = leaderboardResults.filter { result in
-                candidateIds.contains("\(result.item.id)")
+            items = items.filter { candidateIds.contains("\($0.id)") }
+        }
+
+        // Match items with their leaderboard scores
+        var leaderboardResults: [(item: T, score: Int64)] = []
+        for item in items {
+            // Find matching pk in topKResults
+            for result in topKResults {
+                if let pkId = result.pk[0] as? String, "\(item.id)" == pkId {
+                    leaderboardResults.append((item: item, score: result.score))
+                    break
+                } else if let pkId = result.pk[0] as? Int64, "\(item.id)" == "\(pkId)" {
+                    leaderboardResults.append((item: item, score: result.score))
+                    break
+                }
             }
         }
 
-        // Convert leaderboard rank to score
+        // Sort by leaderboard score descending
+        leaderboardResults.sort { $0.score > $1.score }
+
+        // Convert leaderboard rank to fusion score
         // Rank 1 (top) gets highest score, lower ranks get lower scores
-        let count = Double(filteredResults.count)
-        return filteredResults.enumerated().map { index, result in
+        let count = Double(leaderboardResults.count)
+        return leaderboardResults.enumerated().map { index, result in
             // Higher rank (lower index) = higher score
             let score = count > 1 ? 1.0 - Double(index) / (count - 1) : 1.0
             return ScoredResult(item: result.item, score: score)
         }
+    }
+
+    // MARK: - Leaderboard Index Reading
+
+    /// Read top K entries from leaderboard index
+    ///
+    /// Index structure:
+    /// - `[indexSubspace]["window"][windowId][groupKey...][invertedScore][primaryKey]` -> empty
+    ///
+    /// Score inversion: `invertedScore = Int64.max - score` for descending order
+    private func readTopK(
+        indexSubspace: Subspace,
+        k: Int,
+        grouping: [any TupleElement]?,
+        windowId: Int64?,
+        transaction: any TransactionProtocol
+    ) async throws -> [(pk: Tuple, score: Int64)] {
+        // Calculate current window ID if not specified
+        let effectiveWindowId = windowId ?? {
+            // Default window duration for daily (most common)
+            // Actual window type would be in the index kind, but we use a reasonable default
+            let now = Date()
+            let timestamp = Int64(now.timeIntervalSince1970)
+            return timestamp / 86400  // Daily window (24 * 60 * 60)
+        }()
+
+        let windowSubspace = indexSubspace.subspace("window")
+
+        // Build range prefix
+        var prefixElements: [any TupleElement] = [effectiveWindowId]
+        if let g = grouping {
+            prefixElements.append(contentsOf: g)
+        }
+
+        let rangeStart = windowSubspace.pack(Tuple(prefixElements))
+        let rangeEnd = windowSubspace.pack(Tuple(prefixElements + [Int64.max]))
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(rangeStart),
+            endSelector: .firstGreaterOrEqual(rangeEnd),
+            snapshot: true
+        )
+
+        var results: [(pk: Tuple, score: Int64)] = []
+        var count = 0
+        let groupingCount = grouping?.count ?? 0
+
+        for try await (key, _) in sequence {
+            guard windowSubspace.contains(key), count < k else { break }
+
+            let keyTuple = try windowSubspace.unpack(key)
+
+            // Extract inverted score and primary key
+            // Key structure: windowId, [grouping...], invertedScore, [pk...]
+            let invertedScoreIndex = 1 + groupingCount
+
+            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
+                continue
+            }
+
+            let score = Int64.max - invertedScore
+
+            // Extract primary key (remaining elements)
+            var pkElements: [any TupleElement] = []
+            for i in (invertedScoreIndex + 1)..<keyTuple.count {
+                if let elem = keyTuple[i] {
+                    pkElements.append(elem)
+                }
+            }
+
+            results.append((pk: Tuple(pkElements), score: score))
+            count += 1
+        }
+
+        return results
     }
 }

@@ -184,20 +184,150 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 candidateIds: candidateIds
             )
         } else {
-            // No candidates - standard kNN search
-            searchResults = try await queryContext.executeVectorSearch(
-                type: T.self,
+            // No candidates - standard kNN search via index
+            searchResults = try await executeVectorSearch(
                 indexName: indexName,
                 queryVector: vector,
-                k: k,
-                dimensions: dimensions,
-                metric: metric
+                k: k
             )
         }
 
         // Convert distance to score using min-max normalization
         // This handles both positive distances (euclidean, cosine) and negative distances (dotProduct)
         return normalizeDistancesToScores(searchResults)
+    }
+
+    // MARK: - Vector Index Reading
+
+    /// Execute vector search by reading index directly
+    ///
+    /// Index structure (Flat/HNSW shared):
+    /// - Key: `[indexSubspace][primaryKey]`
+    /// - Value: `Tuple(Float, Float, ..., Float)`
+    private func executeVectorSearch(
+        indexName: String,
+        queryVector: [Float],
+        k: Int
+    ) async throws -> [(item: T, distance: Double)] {
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute search within transaction
+        let primaryKeysWithDistances: [(pk: Tuple, distance: Double)] = try await queryContext.withTransaction { transaction in
+            try await self.searchVectors(
+                queryVector: queryVector,
+                k: k,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        let items = try await queryContext.fetchItems(ids: primaryKeysWithDistances.map(\.pk), type: T.self)
+
+        // Match items with distances
+        var results: [(item: T, distance: Double)] = []
+        for item in items {
+            // Find matching pk in results
+            for result in primaryKeysWithDistances {
+                if let pkId = result.pk[0] as? String, "\(item.id)" == pkId {
+                    results.append((item: item, distance: result.distance))
+                    break
+                } else if let pkId = result.pk[0] as? Int64, "\(item.id)" == "\(pkId)" {
+                    results.append((item: item, distance: result.distance))
+                    break
+                }
+            }
+        }
+
+        // Sort by distance
+        return results.sorted { $0.distance < $1.distance }
+    }
+
+    /// Search vectors using brute-force scan
+    ///
+    /// Algorithm:
+    /// 1. Scan all vectors in the index
+    /// 2. Calculate distance to query vector
+    /// 3. Keep top-k smallest distances using min-heap
+    private func searchVectors(
+        queryVector: [Float],
+        k: Int,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [(pk: Tuple, distance: Double)] {
+        let (begin, end) = indexSubspace.range()
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(begin),
+            endSelector: .firstGreaterOrEqual(end),
+            snapshot: true
+        )
+
+        var results: [(pk: Tuple, distance: Double)] = []
+
+        for try await (key, value) in sequence {
+            // Skip HNSW metadata keys
+            if let keyStr = String(data: Data(key), encoding: .utf8),
+               keyStr.contains("hnsw") {
+                continue
+            }
+
+            // Decode primary key
+            guard indexSubspace.contains(key),
+                  let keyTuple = try? indexSubspace.unpack(key) else {
+                continue
+            }
+
+            // Decode vector
+            guard let vectorTuple = try? Tuple.unpack(from: value) else {
+                continue
+            }
+
+            var vector: [Float] = []
+            vector.reserveCapacity(dimensions)
+            var isValid = true
+
+            for i in 0..<dimensions {
+                guard i < vectorTuple.count else {
+                    isValid = false
+                    break
+                }
+
+                let element = vectorTuple[i]
+                let floatValue: Float
+                if let f = element as? Float {
+                    floatValue = f
+                } else if let d = element as? Double {
+                    floatValue = Float(d)
+                } else if let i64 = element as? Int64 {
+                    floatValue = Float(i64)
+                } else if let i = element as? Int {
+                    floatValue = Float(i)
+                } else {
+                    isValid = false
+                    break
+                }
+
+                vector.append(floatValue)
+            }
+
+            guard isValid else { continue }
+
+            // Calculate distance
+            let distance = computeDistance(queryVector, vector)
+
+            // Insert into results (simple heap would be better for large k)
+            results.append((pk: keyTuple, distance: distance))
+        }
+
+        // Sort by distance and take top k
+        results.sort { $0.distance < $1.distance }
+        if results.count > k {
+            results = Array(results.prefix(k))
+        }
+
+        return results
     }
 
     /// Normalize distances to scores [0, 1] where higher is better
@@ -270,13 +400,10 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 max(k * 10, candidateIds.count / 2, k + 2000, sqrtScaled)
             )
 
-            var results = try await queryContext.executeVectorSearch(
-                type: T.self,
+            var results = try await executeVectorSearch(
                 indexName: indexName,
                 queryVector: queryVector,
-                k: expandedK,
-                dimensions: dimensions,
-                metric: metric
+                k: expandedK
             )
 
             // Filter to candidates

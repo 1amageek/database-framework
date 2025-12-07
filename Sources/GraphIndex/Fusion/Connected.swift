@@ -22,7 +22,7 @@ import FoundationDB
 ///     Connected(\.name)
 ///         .from("Alice")
 ///         .via("knows")
-///         .maxHops(2)
+///         .hops(2)
 ///
 ///     // Combined with text search
 ///     Search(\.bio).terms(["engineer"])
@@ -138,11 +138,11 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Set maximum number of hops for traversal
     ///
-    /// - Parameter hops: Maximum hops (default: 1)
+    /// - Parameter count: Maximum hops (default: 1)
     /// - Returns: Updated query
-    public func maxHops(_ hops: Int) -> Self {
+    public func hops(_ count: Int) -> Self {
         var copy = self
-        copy.maxHopCount = max(1, hops)
+        copy.maxHopCount = max(1, count)
         return copy
     }
 
@@ -167,8 +167,8 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             guard let kind = descriptor.kind as? GraphIndexKind<T> else {
                 return false
             }
-            // Match by source field or any graph index
-            return kind.fieldNames.contains(fieldName) || true
+            // Match by source field
+            return kind.fieldNames.contains(fieldName)
         }
     }
 
@@ -227,8 +227,19 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             )
         }
 
-        // Use GraphTraverser or direct index scan
-        // For now, implement simple BFS-style traversal
+        // Get index subspace using public API
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
+
+        // Get graph strategy from descriptor
+        let strategy: GraphIndexStrategy
+        if let kind = descriptor.kind as? GraphIndexKind<T> {
+            strategy = kind.strategy
+        } else {
+            strategy = .adjacency  // Default
+        }
+
+        // BFS traversal
         var visited: Set<String> = []
         var results: [ConnectedNode] = []
         var frontier: [(node: String, hops: Int)] = []
@@ -255,12 +266,15 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
                 continue
             }
 
-            // Find neighbors
-            let neighbors = try await findNeighbors(
-                node: currentNode,
-                indexName: descriptor.name,
-                direction: direction
-            )
+            // Find neighbors within transaction
+            let neighbors = try await queryContext.withTransaction { transaction in
+                try await self.findNeighbors(
+                    node: currentNode,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction
+                )
+            }
 
             for neighbor in neighbors {
                 if !visited.contains(neighbor) {
@@ -273,20 +287,220 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         return results
     }
 
+    // MARK: - Graph Index Reading
+
+    /// Subspace keys for graph index storage (matches GraphIndexMaintainer)
+    private enum GraphSubspaceKey: Int64 {
+        case out = 0    // Outgoing edges: [out]/[edge]/[from]/[to]
+        case `in` = 1   // Incoming edges: [in]/[edge]/[to]/[from]
+        case spo = 2    // Subject-Predicate-Object: [spo]/[from]/[edge]/[to]
+        case pos = 3    // Predicate-Object-Subject: [pos]/[edge]/[to]/[from]
+        case osp = 4    // Object-Subject-Predicate: [osp]/[to]/[from]/[edge]
+    }
+
     /// Find neighbors of a node via graph index
     private func findNeighbors(
         node: String,
-        indexName: String,
-        direction: Direction
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol
     ) async throws -> [String] {
-        try await queryContext.executeGraphNeighbors(
-            type: T.self,
-            indexName: indexName,
-            node: node,
-            edgeType: edgeType,
-            direction: direction == .outgoing ? .outgoing :
-                       direction == .incoming ? .incoming : .both
-        )
+        var results: Set<String> = []
+
+        switch direction {
+        case .outgoing:
+            let outNeighbors = try await queryOutgoingEdges(
+                transaction: transaction,
+                subspace: indexSubspace,
+                strategy: strategy,
+                from: node
+            )
+            results.formUnion(outNeighbors)
+
+        case .incoming:
+            let inNeighbors = try await queryIncomingEdges(
+                transaction: transaction,
+                subspace: indexSubspace,
+                strategy: strategy,
+                to: node
+            )
+            results.formUnion(inNeighbors)
+
+        case .both:
+            let outNeighbors = try await queryOutgoingEdges(
+                transaction: transaction,
+                subspace: indexSubspace,
+                strategy: strategy,
+                from: node
+            )
+            let inNeighbors = try await queryIncomingEdges(
+                transaction: transaction,
+                subspace: indexSubspace,
+                strategy: strategy,
+                to: node
+            )
+            results.formUnion(outNeighbors)
+            results.formUnion(inNeighbors)
+        }
+
+        return Array(results)
+    }
+
+    /// Query outgoing edges from a node
+    private func queryOutgoingEdges(
+        transaction: any TransactionProtocol,
+        subspace: Subspace,
+        strategy: GraphIndexStrategy,
+        from: String
+    ) async throws -> [String] {
+        var results: [String] = []
+
+        switch strategy {
+        case .adjacency:
+            // Key format: [out]/[edge]/[from]/[to]
+            let outSubspace = subspace.subspace(GraphSubspaceKey.out.rawValue)
+            if let edge = edgeType {
+                let edgeFromSubspace = outSubspace.subspace(edge).subspace(from)
+                let (beginKey, endKey) = edgeFromSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? edgeFromSubspace.unpack(key),
+                       let to = unpacked[0] as? String {
+                        results.append(to)
+                    }
+                }
+            } else {
+                // Scan all edge types for this from node
+                let (beginKey, endKey) = outSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? outSubspace.unpack(key),
+                       unpacked.count >= 3,
+                       let fromNode = unpacked[1] as? String,
+                       let to = unpacked[2] as? String,
+                       fromNode == from {
+                        results.append(to)
+                    }
+                }
+            }
+
+        case .tripleStore, .hexastore:
+            // Key format: [spo]/[from]/[edge]/[to]
+            let spoSubspace = subspace.subspace(GraphSubspaceKey.spo.rawValue)
+            let fromSubspace = spoSubspace.subspace(from)
+            if let edge = edgeType {
+                let edgeSubspace = fromSubspace.subspace(edge)
+                let (beginKey, endKey) = edgeSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? edgeSubspace.unpack(key),
+                       let to = unpacked[0] as? String {
+                        results.append(to)
+                    }
+                }
+            } else {
+                let (beginKey, endKey) = fromSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? fromSubspace.unpack(key),
+                       unpacked.count >= 2,
+                       let to = unpacked[1] as? String {
+                        results.append(to)
+                    }
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Query incoming edges to a node
+    private func queryIncomingEdges(
+        transaction: any TransactionProtocol,
+        subspace: Subspace,
+        strategy: GraphIndexStrategy,
+        to: String
+    ) async throws -> [String] {
+        var results: [String] = []
+
+        switch strategy {
+        case .adjacency:
+            // Key format: [in]/[edge]/[to]/[from]
+            let inSubspace = subspace.subspace(GraphSubspaceKey.`in`.rawValue)
+            if let edge = edgeType {
+                let edgeToSubspace = inSubspace.subspace(edge).subspace(to)
+                let (beginKey, endKey) = edgeToSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? edgeToSubspace.unpack(key),
+                       let from = unpacked[0] as? String {
+                        results.append(from)
+                    }
+                }
+            } else {
+                let (beginKey, endKey) = inSubspace.range()
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+                for try await (key, _) in stream {
+                    if let unpacked = try? inSubspace.unpack(key),
+                       unpacked.count >= 3,
+                       let toNode = unpacked[1] as? String,
+                       let from = unpacked[2] as? String,
+                       toNode == to {
+                        results.append(from)
+                    }
+                }
+            }
+
+        case .tripleStore, .hexastore:
+            // Key format: [osp]/[to]/[from]/[edge]
+            let ospSubspace = subspace.subspace(GraphSubspaceKey.osp.rawValue)
+            let toSubspace = ospSubspace.subspace(to)
+            let (beginKey, endKey) = toSubspace.range()
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for try await (key, _) in stream {
+                if let unpacked = try? toSubspace.unpack(key),
+                   unpacked.count >= 2,
+                   let from = unpacked[0] as? String {
+                    if let edge = edgeType {
+                        if let edgeValue = unpacked[1] as? String, edgeValue == edge {
+                            results.append(from)
+                        }
+                    } else {
+                        results.append(from)
+                    }
+                }
+            }
+        }
+
+        return results
     }
 
     /// Fetch items by their node field values

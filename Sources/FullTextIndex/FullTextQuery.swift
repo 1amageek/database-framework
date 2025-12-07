@@ -88,13 +88,171 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         let indexName = buildIndexName()
 
-        return try await queryContext.executeFullTextSearch(
-            type: T.self,
-            indexName: indexName,
-            terms: searchTerms,
-            matchMode: matchMode,
-            limit: fetchLimit
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute search within transaction
+        let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchFullText(
+                terms: self.searchTerms,
+                matchMode: self.matchMode,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        var items = try await queryContext.fetchItems(ids: matchingIds, type: T.self)
+
+        // Apply limit if specified
+        if let limit = fetchLimit, items.count > limit {
+            items = Array(items.prefix(limit))
+        }
+
+        return items
+    }
+
+    /// Search full-text index and return matching IDs
+    private func searchFullText(
+        terms: [String],
+        matchMode: TextMatchMode,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        let termsSubspace = indexSubspace.subspace("terms")
+
+        // Normalize terms
+        let normalizedTerms = terms.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+
+        // Get matching document IDs based on match mode
+        let matchingIds: [[any TupleElement]]
+        switch matchMode {
+        case .all:
+            matchingIds = try await searchTermsAND(
+                normalizedTerms,
+                termsSubspace: termsSubspace,
+                transaction: transaction
+            )
+        case .any:
+            matchingIds = try await searchTermsOR(
+                normalizedTerms,
+                termsSubspace: termsSubspace,
+                transaction: transaction
+            )
+        case .phrase:
+            matchingIds = try await searchTermsAND(
+                normalizedTerms,
+                termsSubspace: termsSubspace,
+                transaction: transaction
+            )
+        }
+
+        return matchingIds.map { Tuple($0) }
+    }
+
+    /// Search for documents containing all terms (AND query)
+    private func searchTermsAND(
+        _ terms: [String],
+        termsSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        guard !terms.isEmpty else { return [] }
+
+        var intersection: Set<String>? = nil
+        var idToElements: [String: [any TupleElement]] = [:]
+
+        for term in terms {
+            let results = try await searchTerm(
+                term,
+                termsSubspace: termsSubspace,
+                transaction: transaction
+            )
+            var currentSet: Set<String> = []
+
+            for elements in results {
+                let idKey = elementsToStableKey(elements)
+                currentSet.insert(idKey)
+
+                if intersection == nil || intersection!.contains(idKey) {
+                    idToElements[idKey] = elements
+                }
+            }
+
+            if let prev = intersection {
+                intersection = prev.intersection(currentSet)
+                if intersection!.isEmpty {
+                    return []
+                }
+            } else {
+                intersection = currentSet
+            }
+        }
+
+        guard let finalIntersection = intersection else { return [] }
+        return finalIntersection.compactMap { idToElements[$0] }
+    }
+
+    /// Search for documents containing any term (OR query)
+    private func searchTermsOR(
+        _ terms: [String],
+        termsSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        guard !terms.isEmpty else { return [] }
+
+        var idToElements: [String: [any TupleElement]] = [:]
+
+        for term in terms {
+            let results = try await searchTerm(
+                term,
+                termsSubspace: termsSubspace,
+                transaction: transaction
+            )
+
+            for elements in results {
+                let idKey = elementsToStableKey(elements)
+                idToElements[idKey] = elements
+            }
+        }
+
+        return Array(idToElements.values)
+    }
+
+    /// Search for documents containing a term
+    private func searchTerm(
+        _ term: String,
+        termsSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        let termSubspace = termsSubspace.subspace(term)
+        let (begin, end) = termSubspace.range()
+
+        var results: [[any TupleElement]] = []
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(begin),
+            endSelector: .firstGreaterOrEqual(end),
+            snapshot: true
         )
+
+        for try await (key, _) in sequence {
+            guard termSubspace.contains(key) else { break }
+
+            guard let keyTuple = try? termSubspace.unpack(key),
+                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+                continue
+            }
+            results.append(elements)
+        }
+
+        return results
+    }
+
+    /// Convert TupleElements to a stable key
+    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
+        let packed = Tuple(elements).pack()
+        return Data(packed).base64EncodedString()
     }
 
     /// Execute the full-text search with BM25 scores

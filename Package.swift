@@ -187,7 +187,11 @@ let package = Package(
                 "DatabaseEngine",
                 "ScalarIndex",
                 "RelationshipIndex",
+                "BitmapIndex",
+                "LeaderboardIndex",
+                "GraphIndex",
                 "TestSupport",
+                .product(name: "Graph", package: "database-kit"),
             ],
             exclude: ["IndexTestDesign.md"],
             linkerSettings: [

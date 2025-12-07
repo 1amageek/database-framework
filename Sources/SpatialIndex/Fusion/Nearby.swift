@@ -17,7 +17,7 @@ import Spatial
 /// **Usage**:
 /// ```swift
 /// let results = try await context.fuse(Store.self) {
-///     Nearby(\.location, context: context.indexQueryContext)
+///     Nearby(\.location)
 ///         .within(radiusKm: 5, of: userLocation)
 /// }
 /// .execute()
@@ -171,30 +171,47 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             )
         }
 
+        // Get index level from kind
+        let level: Int
+        if let kind = descriptor.kind as? SpatialIndexKind<T> {
+            level = kind.level
+        } else {
+            level = 15 // Default S2 level
+        }
+
         let indexName = descriptor.name
 
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
         // Execute spatial search
-        var results = try await queryContext.executeSpatialSearch(
-            type: T.self,
-            indexName: indexName,
-            constraint: constraint,
-            limit: nil
-        )
+        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchSpatial(
+                constraint: constraint,
+                level: level,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
 
         // Filter to candidates if provided
         if let candidateIds = candidates {
-            results = results.filter { candidateIds.contains("\($0.id)") }
+            items = items.filter { candidateIds.contains("\($0.id)") }
         }
 
         // Calculate distance scores
         guard let ref = referencePoint else {
-            return results.map { ScoredResult(item: $0, score: 1.0) }
+            return items.map { ScoredResult(item: $0, score: 1.0) }
         }
 
         let refPoint = GeoPoint(ref.latitude, ref.longitude)
 
         // Extract locations and calculate distances
-        let itemsWithDistance: [(item: T, distance: Double)] = results.compactMap { item in
+        let itemsWithDistance: [(item: T, distance: Double)] = items.compactMap { item in
             guard let location = item[dynamicMember: fieldName] as? GeoPoint else {
                 return nil
             }
@@ -204,11 +221,97 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
         // Normalize distance to score (closer = higher score)
         guard let maxDist = itemsWithDistance.map(\.distance).max(), maxDist > 0 else {
-            return results.map { ScoredResult(item: $0, score: 1.0) }
+            return items.map { ScoredResult(item: $0, score: 1.0) }
         }
 
         return itemsWithDistance
             .map { ScoredResult(item: $0.item, score: 1.0 - $0.distance / maxDist) }
             .sorted { $0.score > $1.score }
+    }
+
+    // MARK: - Spatial Index Reading
+
+    /// Index structure:
+    /// - Key: `[indexSubspace][spatialCode][primaryKey]`
+    /// - Value: empty
+
+    /// Search spatial index
+    private func searchSpatial(
+        constraint: SpatialConstraint,
+        level: Int,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        // Get covering cells based on constraint type
+        let coveringCells: [UInt64]
+        switch constraint.type {
+        case .withinDistance(let center, let radiusMeters):
+            coveringCells = S2Geometry.getCoveringCells(
+                latitude: center.latitude,
+                longitude: center.longitude,
+                radiusMeters: radiusMeters,
+                level: level
+            )
+        case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
+            coveringCells = S2Geometry.getCoveringCellsForBox(
+                minLat: minLat,
+                minLon: minLon,
+                maxLat: maxLat,
+                maxLon: maxLon,
+                level: level
+            )
+        case .withinPolygon(let points):
+            // Get bounding box of polygon for covering cells
+            let lats = points.map { $0.latitude }
+            let lons = points.map { $0.longitude }
+            coveringCells = S2Geometry.getCoveringCellsForBox(
+                minLat: lats.min() ?? 0,
+                minLon: lons.min() ?? 0,
+                maxLat: lats.max() ?? 0,
+                maxLon: lons.max() ?? 0,
+                level: level
+            )
+        }
+
+        var results: [Tuple] = []
+        var seenIds: Set<String> = []
+
+        for cellId in coveringCells {
+            let cellTuple = Tuple(cellId)
+            let cellSubspace = indexSubspace.subspace(cellTuple)
+            let (begin, end) = cellSubspace.range()
+
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterOrEqual(end),
+                snapshot: true
+            )
+
+            for try await (key, _) in sequence {
+                guard cellSubspace.contains(key) else { break }
+
+                // Extract primary key from the key
+                guard let keyTuple = try? cellSubspace.unpack(key),
+                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+                    continue
+                }
+
+                // Deduplicate (same item may appear in multiple cells)
+                let idKey = elementsToStableKey(elements)
+                if !seenIds.contains(idKey) {
+                    seenIds.insert(idKey)
+                    results.append(Tuple(elements))
+                }
+            }
+        }
+
+        return results
+    }
+
+    // MARK: - Helpers
+
+    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
+        let packed = Tuple(elements).pack()
+        return Data(packed).base64EncodedString()
     }
 }

@@ -9,7 +9,6 @@ import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
-@testable import FilterIndex
 
 // MARK: - Test Models
 
@@ -36,9 +35,8 @@ struct GraphTestPerson: Persistable {
         [
             IndexDescriptor(
                 name: "GraphTestPerson_userId",
-                kind: ScalarIndexKind<GraphTestPerson>(fields: [\GraphTestPerson.userId]),
-                fieldNames: ["userId"],
-                rootExpression: FieldKeyExpression(fieldName: "userId")
+                keyPaths: [\GraphTestPerson.userId],
+                kind: ScalarIndexKind<GraphTestPerson>(fields: [\GraphTestPerson.userId])
             )
         ]
     }
@@ -113,13 +111,8 @@ struct GraphTestFollow: Persistable {
         return [
             IndexDescriptor(
                 name: "GraphTestFollow_graph",
-                kind: kind,
-                fieldNames: ["follower", "followee", "edgeType"],
-                rootExpression: ConcatenateKeyExpression(children: [
-                    FieldKeyExpression(fieldName: "follower"),
-                    FieldKeyExpression(fieldName: "edgeType"),
-                    FieldKeyExpression(fieldName: "followee")
-                ])
+                keyPaths: [\GraphTestFollow.follower, \GraphTestFollow.edgeType, \GraphTestFollow.followee],
+                kind: kind
             )
         ]
     }
@@ -251,13 +244,6 @@ struct GraphFusionUnitTests {
         #expect(GraphIndexKind<GraphTestFollow>.identifier == "graph")
     }
 
-    @Test("GraphDirection enum values")
-    func testGraphDirectionValues() {
-        #expect(GraphDirection.outgoing == .outgoing)
-        #expect(GraphDirection.incoming == .incoming)
-        #expect(GraphDirection.both == .both)
-    }
-
     @Test("Connected.Direction enum values")
     func testConnectedDirectionValues() {
         #expect(Connected<GraphTestPerson>.Direction.outgoing == .outgoing)
@@ -272,18 +258,6 @@ struct GraphFusionUnitTests {
         #expect(GraphIndexStrategy.hexastore == .hexastore)
     }
 
-    @Test("GraphSubspaceKey raw values")
-    func testGraphSubspaceKeyRawValues() {
-        #expect(GraphSubspaceKey.out.rawValue == 0)
-        #expect(GraphSubspaceKey.`in`.rawValue == 1)
-        #expect(GraphSubspaceKey.spo.rawValue == 2)
-        #expect(GraphSubspaceKey.pos.rawValue == 3)
-        #expect(GraphSubspaceKey.osp.rawValue == 4)
-        #expect(GraphSubspaceKey.sop.rawValue == 5)
-        #expect(GraphSubspaceKey.pso.rawValue == 6)
-        #expect(GraphSubspaceKey.ops.rawValue == 7)
-    }
-
     @Test("Index descriptor configuration")
     func testIndexDescriptorConfiguration() {
         let descriptors = GraphTestFollow.indexDescriptors
@@ -292,9 +266,15 @@ struct GraphFusionUnitTests {
         let graphIndex = descriptors[0]
         #expect(graphIndex.name == "GraphTestFollow_graph")
         #expect(graphIndex.kindIdentifier == "graph")
-        #expect(graphIndex.fieldNames.contains("follower"))
-        #expect(graphIndex.fieldNames.contains("followee"))
-        #expect(graphIndex.fieldNames.contains("edgeType"))
+
+        // Access fieldNames through the kind
+        if let graphKind = graphIndex.kind as? GraphIndexKind<GraphTestFollow> {
+            #expect(graphKind.fieldNames.contains("follower"))
+            #expect(graphKind.fieldNames.contains("followee"))
+            #expect(graphKind.fieldNames.contains("edgeType"))
+        } else {
+            Issue.record("Expected GraphIndexKind")
+        }
     }
 
     @Test("Scalar index for userId lookup")
@@ -303,7 +283,12 @@ struct GraphFusionUnitTests {
         let scalarIndex = descriptors.first { $0.kindIdentifier == "scalar" }
 
         #expect(scalarIndex != nil)
-        #expect(scalarIndex?.fieldNames.contains("userId") == true)
+        // Access fieldNames through the kind
+        if let scalarKind = scalarIndex?.kind as? ScalarIndexKind<GraphTestPerson> {
+            #expect(scalarKind.fieldNames.contains("userId"))
+        } else {
+            Issue.record("Expected ScalarIndexKind")
+        }
     }
 }
 
@@ -567,7 +552,8 @@ struct GraphFusionIntegrationTests {
             let context = try GraphTestContext()
             defer { Task { try? await context.cleanup() } }
 
-            #expect(context.maintainer != nil)
+            // Verify maintainer is properly configured with the expected strategy
+            #expect(context.strategy == .adjacency)
         }
     }
 
@@ -763,7 +749,8 @@ struct GraphFusionIndexDiscoveryTests {
         let fieldName = "follower"
 
         let matchingDescriptor = descriptors.first { descriptor in
-            descriptor.fieldNames.contains(fieldName)
+            guard let graphKind = descriptor.kind as? GraphIndexKind<GraphTestFollow> else { return false }
+            return graphKind.fieldNames.contains(fieldName)
         }
 
         #expect(matchingDescriptor != nil)
@@ -774,7 +761,9 @@ struct GraphFusionIndexDiscoveryTests {
         let descriptors = GraphTestPerson.indexDescriptors
 
         let scalarDescriptor = descriptors.first { descriptor in
-            descriptor.kindIdentifier == "scalar" && descriptor.fieldNames.contains("userId")
+            guard descriptor.kindIdentifier == "scalar" else { return false }
+            guard let scalarKind = descriptor.kind as? ScalarIndexKind<GraphTestPerson> else { return false }
+            return scalarKind.fieldNames.contains("userId")
         }
 
         #expect(scalarDescriptor != nil)

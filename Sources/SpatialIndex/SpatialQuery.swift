@@ -4,6 +4,8 @@
 import Foundation
 import DatabaseEngine
 import Core
+import FoundationDB
+import Spatial
 
 // MARK: - Spatial Query Builder
 
@@ -106,14 +108,42 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.noConstraint
         }
 
-        let indexName = buildIndexName()
+        // Find index descriptor
+        guard let descriptor = findIndexDescriptor() else {
+            throw SpatialQueryError.indexNotFound(buildIndexName())
+        }
 
-        let items = try await queryContext.executeSpatialSearch(
-            type: T.self,
-            indexName: indexName,
-            constraint: constraint,
-            limit: fetchLimit
-        )
+        // Get index level from kind
+        let level: Int
+        if let kind = descriptor.kind as? SpatialIndexKind<T> {
+            level = kind.level
+        } else {
+            level = 15 // Default S2 level
+        }
+
+        let indexName = descriptor.name
+
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute spatial search
+        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchSpatial(
+                constraint: constraint,
+                level: level,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+
+        // Apply limit if specified
+        if let limit = fetchLimit, items.count > limit {
+            items = Array(items.prefix(limit))
+        }
 
         // Calculate distances if we have a reference point and ordering is requested
         if shouldOrderByDistance, let ref = referencePoint {
@@ -132,6 +162,91 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
         // Return items without distance calculation
         return items.map { (item: $0, distance: nil) }
+    }
+
+    // MARK: - Spatial Index Reading
+
+    /// Search spatial index
+    ///
+    /// Index structure:
+    /// - Key: `[indexSubspace][spatialCode][primaryKey]`
+    /// - Value: empty
+    private func searchSpatial(
+        constraint: SpatialConstraint,
+        level: Int,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        // Get covering cells based on constraint type
+        let coveringCells: [UInt64]
+        switch constraint.type {
+        case .withinDistance(let center, let radiusMeters):
+            coveringCells = S2Geometry.getCoveringCells(
+                latitude: center.latitude,
+                longitude: center.longitude,
+                radiusMeters: radiusMeters,
+                level: level
+            )
+        case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
+            coveringCells = S2Geometry.getCoveringCellsForBox(
+                minLat: minLat,
+                minLon: minLon,
+                maxLat: maxLat,
+                maxLon: maxLon,
+                level: level
+            )
+        case .withinPolygon(let points):
+            // Get bounding box of polygon for covering cells
+            let lats = points.map { $0.latitude }
+            let lons = points.map { $0.longitude }
+            coveringCells = S2Geometry.getCoveringCellsForBox(
+                minLat: lats.min() ?? 0,
+                minLon: lons.min() ?? 0,
+                maxLat: lats.max() ?? 0,
+                maxLon: lons.max() ?? 0,
+                level: level
+            )
+        }
+
+        var results: [Tuple] = []
+        var seenIds: Set<String> = []
+
+        for cellId in coveringCells {
+            let cellTuple = Tuple(cellId)
+            let cellSubspace = indexSubspace.subspace(cellTuple)
+            let (begin, end) = cellSubspace.range()
+
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(begin),
+                endSelector: .firstGreaterOrEqual(end),
+                snapshot: true
+            )
+
+            for try await (key, _) in sequence {
+                guard cellSubspace.contains(key) else { break }
+
+                // Extract primary key from the key
+                guard let keyTuple = try? cellSubspace.unpack(key),
+                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+                    continue
+                }
+
+                // Deduplicate (same item may appear in multiple cells)
+                let idKey = elementsToStableKey(elements)
+                if !seenIds.contains(idKey) {
+                    seenIds.insert(idKey)
+                    results.append(Tuple(elements))
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Convert TupleElements to a stable key for deduplication
+    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
+        let packed = Tuple(elements).pack()
+        return Data(packed).base64EncodedString()
     }
 
     /// Execute and return only items (without distance)

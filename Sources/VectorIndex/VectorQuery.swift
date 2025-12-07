@@ -158,7 +158,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// Execute the vector similarity search
     ///
     /// If a filter predicate is set, uses ACORN filtered search.
-    /// Otherwise, uses standard HNSW search.
+    /// Otherwise, uses HNSW or Flat search based on index configuration.
     ///
     /// - Returns: Array of (item, distance) tuples sorted by distance
     /// - Throws: Error if search fails or query vector not set
@@ -182,15 +182,136 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             )
         }
 
-        // Standard search without filter
-        return try await queryContext.executeVectorSearch(
-            type: T.self,
+        // Standard search without filter - use HNSW or Flat based on configuration
+        return try await executeVectorSearch(
             indexName: indexName,
             queryVector: vector,
-            k: k,
-            dimensions: dimensions,
-            metric: distanceMetric
+            k: k
         )
+    }
+
+    /// Execute vector search using HNSW or Flat algorithm based on configuration
+    ///
+    /// **Algorithm Selection**:
+    /// 1. Look up VectorIndexConfiguration for this index
+    /// 2. If `.hnsw` algorithm: use HNSWIndexMaintainer.search()
+    /// 3. Otherwise (`.flat` or no config): use FlatVectorIndexMaintainer.search()
+    private func executeVectorSearch(
+        indexName: String,
+        queryVector: [Float],
+        k: Int
+    ) async throws -> [(item: T, distance: Double)] {
+        // Find the index descriptor to get VectorIndexKind
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? VectorIndexKind<T> else {
+            throw VectorQueryError.indexNotFound(indexName)
+        }
+
+        // Check for VectorIndexConfiguration
+        let configs = queryContext.context.container.indexConfigurations[indexName] ?? []
+        let vectorConfig = configs.first { config in
+            type(of: config).kindIdentifier == VectorIndexKind<T>.identifier
+        } as? _VectorIndexConfiguration
+
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace: Subspace
+        if let subspaceKey = vectorConfig?.subspaceKey {
+            indexSubspace = typeSubspace.subspace(indexName).subspace(subspaceKey)
+        } else {
+            indexSubspace = typeSubspace.subspace(indexName)
+        }
+
+        // Execute search using appropriate maintainer
+        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] = try await queryContext.withTransaction { transaction in
+            // Create index for maintainer
+            let index = Index(
+                name: indexName,
+                kind: kind,
+                rootExpression: FieldKeyExpression(fieldName: self.fieldName),
+                keyPaths: indexDescriptor.keyPaths
+            )
+
+            // Select algorithm based on configuration
+            if let vectorConfig = vectorConfig {
+                switch vectorConfig.algorithm {
+                case .hnsw(let hnswParams):
+                    // Use HNSW search
+                    let params = HNSWParameters(
+                        m: hnswParams.m,
+                        efConstruction: hnswParams.efConstruction,
+                        efSearch: hnswParams.efSearch
+                    )
+                    let maintainer = HNSWIndexMaintainer<T>(
+                        index: index,
+                        dimensions: self.dimensions,
+                        metric: kind.metric,
+                        subspace: indexSubspace,
+                        idExpression: FieldKeyExpression(fieldName: "id"),
+                        parameters: params
+                    )
+                    // Use efSearch >= k for good recall
+                    let searchParams = HNSWSearchParameters(ef: max(k, hnswParams.efSearch))
+                    return try await maintainer.search(
+                        queryVector: queryVector,
+                        k: k,
+                        searchParams: searchParams,
+                        transaction: transaction
+                    )
+
+                case .flat:
+                    // Use flat search
+                    let maintainer = FlatVectorIndexMaintainer<T>(
+                        index: index,
+                        dimensions: self.dimensions,
+                        metric: kind.metric,
+                        subspace: indexSubspace,
+                        idExpression: FieldKeyExpression(fieldName: "id")
+                    )
+                    return try await maintainer.search(
+                        queryVector: queryVector,
+                        k: k,
+                        transaction: transaction
+                    )
+                }
+            } else {
+                // Default: flat scan (safe, exact, no config required)
+                let maintainer = FlatVectorIndexMaintainer<T>(
+                    index: index,
+                    dimensions: self.dimensions,
+                    metric: kind.metric,
+                    subspace: indexSubspace,
+                    idExpression: FieldKeyExpression(fieldName: "id")
+                )
+                return try await maintainer.search(
+                    queryVector: queryVector,
+                    k: k,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Convert primary keys to Tuple for fetchItems
+        let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
+
+        // Fetch items by primary keys
+        let items = try await queryContext.fetchItems(ids: tuples, type: T.self)
+
+        // Match items with distances
+        var results: [(item: T, distance: Double)] = []
+        for item in items {
+            for result in primaryKeysWithDistances {
+                if let pkId = result.primaryKey.first as? String, "\(item.id)" == pkId {
+                    results.append((item: item, distance: result.distance))
+                    break
+                } else if let pkId = result.primaryKey.first as? Int64, "\(item.id)" == "\(pkId)" {
+                    results.append((item: item, distance: result.distance))
+                    break
+                }
+            }
+        }
+
+        return results.sorted { $0.distance < $1.distance }
     }
 
     /// Execute filtered vector search using ACORN algorithm

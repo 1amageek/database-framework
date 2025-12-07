@@ -17,8 +17,8 @@ import FoundationDB
 /// **Usage**:
 /// ```swift
 /// let results = try await context.fuse(Product.self) {
-///     Filter(\.category, equals: "electronics", context: context.indexQueryContext)
-///     Search(\.description, context: context.indexQueryContext).terms(["wireless"])
+///     Filter(\.category, equals: "electronics")
+///     Search(\.description).terms(["wireless"])
 /// }
 /// .execute()
 /// ```
@@ -319,54 +319,26 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         switch predicate {
         case .equals(let value):
-            // Try to find scalar index
-            if let descriptor = findIndexDescriptor() {
-                results = try await queryContext.executeScalarIndexSearch(
-                    type: T.self,
-                    indexName: descriptor.name,
-                    fieldName: fieldName,
-                    value: value
-                )
-            } else {
-                // Fallback: use generic scalar index name format
-                let indexName = "\(T.persistableType)_\(fieldName)"
-                results = try await queryContext.executeScalarIndexSearch(
-                    type: T.self,
-                    indexName: indexName,
-                    fieldName: fieldName,
-                    value: value
-                )
-            }
+            results = try await executeEqualitySearch(value: value)
 
         case .in(let values):
             // Union of equality searches
             var allResults: [T] = []
-            let indexName = findIndexDescriptor()?.name ?? "\(T.persistableType)_\(fieldName)"
-            for value in values {
-                let matches = try await queryContext.executeScalarIndexSearch(
-                    type: T.self,
-                    indexName: indexName,
-                    fieldName: fieldName,
-                    value: value
-                )
-                allResults.append(contentsOf: matches)
-            }
-            // Deduplicate
             var seen: Set<String> = []
-            results = allResults.filter { item in
-                let id = "\(item.id)"
-                if seen.contains(id) { return false }
-                seen.insert(id)
-                return true
+            for value in values {
+                let matches = try await executeEqualitySearch(value: value)
+                for item in matches {
+                    let id = "\(item.id)"
+                    if !seen.contains(id) {
+                        seen.insert(id)
+                        allResults.append(item)
+                    }
+                }
             }
+            results = allResults
 
         case .range(let min, let max, let minInclusive, let maxInclusive):
-            // Range scan using scalar index
-            let indexName = findIndexDescriptor()?.name ?? "\(T.persistableType)_\(fieldName)"
-            results = try await queryContext.executeScalarRangeSearch(
-                type: T.self,
-                indexName: indexName,
-                fieldName: fieldName,
+            results = try await executeRangeSearch(
                 min: min,
                 max: max,
                 minInclusive: minInclusive,
@@ -391,5 +363,253 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         // All matching items get score 1.0 (pass/fail filter)
         return results.map { ScoredResult(item: $0, score: 1.0) }
+    }
+
+    // MARK: - Scalar Index Reading
+
+    /// Index structure:
+    /// - Key: `[indexSubspace][fieldValue][primaryKey]`
+    /// - Value: empty
+
+    /// Execute equality search using scalar index
+    private func executeEqualitySearch(value: any Sendable & Hashable) async throws -> [T] {
+        guard let descriptor = findIndexDescriptor() else {
+            // Fallback to full scan with filter
+            let allItems = try await queryContext.fetchAllItems(type: T.self)
+            return allItems.filter { item in
+                guard let fieldValue = item[dynamicMember: fieldName] else { return false }
+                return "\(fieldValue)" == "\(value)"
+            }
+        }
+
+        let indexName = descriptor.name
+
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute search within transaction
+        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchScalarEquals(
+                value: value,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+    }
+
+    /// Execute range search using scalar index
+    private func executeRangeSearch(
+        min: (any Sendable)?,
+        max: (any Sendable)?,
+        minInclusive: Bool,
+        maxInclusive: Bool
+    ) async throws -> [T] {
+        guard let descriptor = findIndexDescriptor() else {
+            // Fallback to full scan with filter
+            let allItems = try await queryContext.fetchAllItems(type: T.self)
+            return allItems.filter { item in
+                guard let fieldValue = item[dynamicMember: fieldName] else { return false }
+                return matchesRange(fieldValue, min: min, max: max, minInclusive: minInclusive, maxInclusive: maxInclusive)
+            }
+        }
+
+        let indexName = descriptor.name
+
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute search within transaction
+        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchScalarRange(
+                min: min,
+                max: max,
+                minInclusive: minInclusive,
+                maxInclusive: maxInclusive,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch items by primary keys
+        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+    }
+
+    /// Search scalar index for equality
+    private func searchScalarEquals(
+        value: any Sendable & Hashable,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        let tupleValue = convertToTupleElement(value)
+        let valueSubspace = indexSubspace.subspace(tupleValue)
+        let (begin, end) = valueSubspace.range()
+
+        var results: [Tuple] = []
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(begin),
+            endSelector: .firstGreaterOrEqual(end),
+            snapshot: true
+        )
+
+        for try await (key, _) in sequence {
+            guard valueSubspace.contains(key) else { break }
+
+            guard let keyTuple = try? valueSubspace.unpack(key),
+                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+                continue
+            }
+            results.append(Tuple(elements))
+        }
+
+        return results
+    }
+
+    /// Search scalar index for range
+    private func searchScalarRange(
+        min: (any Sendable)?,
+        max: (any Sendable)?,
+        minInclusive: Bool,
+        maxInclusive: Bool,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        // Build range selectors
+        let beginKey: [UInt8]
+        let endKey: [UInt8]
+
+        if let minValue = min {
+            let minTuple = convertToTupleElement(minValue)
+            let packed = indexSubspace.pack(Tuple(minTuple))
+            if minInclusive {
+                beginKey = packed
+            } else {
+                beginKey = incrementKey(packed)
+            }
+        } else {
+            beginKey = indexSubspace.prefix
+        }
+
+        if let maxValue = max {
+            let maxTuple = convertToTupleElement(maxValue)
+            let packed = indexSubspace.pack(Tuple(maxTuple))
+            if maxInclusive {
+                endKey = incrementKey(packed)
+            } else {
+                endKey = packed
+            }
+        } else {
+            endKey = incrementKey(indexSubspace.prefix)
+        }
+
+        var results: [Tuple] = []
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        for try await (key, _) in sequence {
+            guard indexSubspace.contains(key) else { break }
+
+            guard let keyTuple = try? indexSubspace.unpack(key) else {
+                continue
+            }
+
+            // Key structure: [fieldValue][primaryKey]
+            // We need to extract the primary key (last element(s))
+            guard keyTuple.count >= 2 else { continue }
+
+            // Assume single primary key element for now
+            var pkElements: [any TupleElement] = []
+            for i in 1..<keyTuple.count {
+                if let elem = keyTuple[i] {
+                    pkElements.append(elem)
+                }
+            }
+
+            results.append(Tuple(pkElements))
+        }
+
+        return results
+    }
+
+    // MARK: - Helpers
+
+    /// Convert value to TupleElement for index lookup
+    private func convertToTupleElement(_ value: any Sendable) -> any TupleElement {
+        switch value {
+        case let v as String: return v
+        case let v as Int: return v
+        case let v as Int64: return v
+        case let v as Int32: return Int(v)
+        case let v as Int16: return Int(v)
+        case let v as Int8: return Int(v)
+        case let v as UInt: return Int(v)
+        case let v as UInt64: return Int64(v)
+        case let v as UInt32: return Int(v)
+        case let v as Double: return v
+        case let v as Float: return Double(v)
+        case let v as Bool: return v
+        default:
+            return String(describing: value)
+        }
+    }
+
+    /// Check if a value matches the range predicate
+    private func matchesRange(
+        _ value: Any,
+        min: (any Sendable)?,
+        max: (any Sendable)?,
+        minInclusive: Bool,
+        maxInclusive: Bool
+    ) -> Bool {
+        // Convert to comparable string for simple comparison
+        let valueStr = "\(value)"
+
+        if let minVal = min {
+            let minStr = "\(minVal)"
+            if minInclusive {
+                if valueStr < minStr { return false }
+            } else {
+                if valueStr <= minStr { return false }
+            }
+        }
+
+        if let maxVal = max {
+            let maxStr = "\(maxVal)"
+            if maxInclusive {
+                if valueStr > maxStr { return false }
+            } else {
+                if valueStr >= maxStr { return false }
+            }
+        }
+
+        return true
+    }
+
+    /// Increment the last byte of a key (for range end)
+    private func incrementKey(_ key: [UInt8]) -> [UInt8] {
+        var result = key
+        if result.isEmpty {
+            result.append(0x00)
+        } else {
+            var i = result.count - 1
+            while i >= 0 {
+                if result[i] < 0xFF {
+                    result[i] += 1
+                    return result
+                }
+                i -= 1
+            }
+            result.append(0x00)
+        }
+        return result
     }
 }

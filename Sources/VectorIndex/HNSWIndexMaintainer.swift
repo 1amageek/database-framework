@@ -217,11 +217,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 throw VectorIndexError.graphTooLarge(maxLevel: -1)
             }
 
-            // Secondary check: max level (for backward compatibility)
-            let currentMaxLevel = try await getMaxLevel(transaction: transaction)
-            if currentMaxLevel >= 2 {
-                throw VectorIndexError.graphTooLarge(maxLevel: currentMaxLevel)
-            }
+            // Note: We no longer check maxLevel as a constraint.
+            // HNSW level assignment is probabilistic (P(level=l) = 1/M_L^l where M_L ≈ ln(M)).
+            // With M=16, a graph with just 20 nodes has ~80% chance of reaching level 2.
+            // The node count check above is sufficient for FDB transaction limits.
 
             // Small graph - allow inline insertion
             let primaryKey = try DataAccess.extractId(from: newItem, using: idExpression)
