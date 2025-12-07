@@ -1,4 +1,4 @@
-// FDBContext+Relationship.swift
+// RelationshipQuery.swift
 // RelationshipIndex - Relationship query API for FDBContext
 //
 // Provides SwiftData-like relationship loading API with index-optimized queries.

@@ -262,7 +262,8 @@ struct BitmapFusionIntegrationTests {
             defer { Task { try? await context.cleanup() } }
 
             // Verify maintainer is created with correct configuration
-            #expect(context.maintainer != nil)
+            // (maintainer is non-optional, so we verify it's the expected type)
+            #expect(type(of: context.maintainer) == BitmapIndexMaintainer<BitmapTestUser>.self)
         }
     }
 
@@ -492,7 +493,7 @@ struct BitmapFusionDeduplicationTests {
         let user1 = BitmapTestUser(id: "user-001", name: "Alice", status: "active", role: "admin")
 
         // User appears in results for both "active" and "admin" queries
-        var allResults = [user1, user1]  // Duplicate
+        let allResults = [user1, user1]  // Duplicate
 
         var seen: Set<String> = []
         let deduplicated = allResults.filter { item in

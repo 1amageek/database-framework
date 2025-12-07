@@ -105,7 +105,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     // MARK: - Pattern Delegation
 
     /// Set from/subject pattern
-    public func from(_ value: any TupleElement) -> Self {
+    public func from(_ value: String) -> Self {
         var copy = self
         copy = ReasoningGraphQueryBuilder(base: base.from(value), reasoner: reasoner)
         copy.includeInferred = includeInferred
@@ -117,7 +117,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     }
 
     /// Set edge/predicate pattern
-    public func edge(_ value: any TupleElement) -> Self {
+    public func edge(_ value: String) -> Self {
         var copy = self
         copy = ReasoningGraphQueryBuilder(base: base.edge(value), reasoner: reasoner)
         copy.includeInferred = includeInferred
@@ -129,7 +129,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     }
 
     /// Set to/object pattern
-    public func to(_ value: any TupleElement) -> Self {
+    public func to(_ value: String) -> Self {
         var copy = self
         copy = ReasoningGraphQueryBuilder(base: base.to(value), reasoner: reasoner)
         copy.includeInferred = includeInferred
@@ -225,7 +225,7 @@ extension GraphQueryBuilder {
     ///     .withTransitiveClosure()
     ///     .execute()
     /// ```
-    public func withReasoning(_ reasoner: OWLReasoner) -> ReasoningGraphQueryBuilder<Item> {
+    public func withReasoning(_ reasoner: OWLReasoner) -> ReasoningGraphQueryBuilder<T> {
         ReasoningGraphQueryBuilder(base: self, reasoner: reasoner)
     }
 }

@@ -416,6 +416,301 @@ Each index module follows this pattern:
 └── ScalarIndexMaintainer.swift     // struct ScalarIndexMaintainer<Item>: IndexMaintainer
 ```
 
+### Index Implementation Pattern (詳細規定)
+
+インデックスモジュールは**書き込み（維持）**と**読み取り（クエリ）**の2つの責務を持つ。
+
+#### モジュール構成
+
+```
+Sources/{IndexName}Index/
+├── {IndexName}IndexKind+Maintainable.swift  # IndexKindMaintainable conformance
+├── {IndexName}IndexMaintainer.swift         # IndexMaintainer 実装 + search()
+├── {IndexName}Query.swift                   # FDBContext extension + QueryBuilder
+├── {IndexName}IndexConfiguration.swift      # ランタイム設定（オプション）
+└── Fusion/                                  # Fusion API 対応（オプション）
+    └── {IndexName}FusionQuery.swift
+```
+
+#### 1. IndexMaintainer プロトコル（書き込み側）
+
+```swift
+public protocol IndexMaintainer<Item>: Sendable {
+    associatedtype Item: Persistable
+
+    /// データ変更時にインデックスを更新
+    /// - oldItem: 削除/更新前のアイテム (nil = 新規挿入)
+    /// - newItem: 挿入/更新後のアイテム (nil = 削除)
+    func updateIndex(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any TransactionProtocol
+    ) async throws
+
+    /// バッチ構築時に単一アイテムをインデックス
+    func scanItem(
+        _ item: Item,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws
+
+    /// スクラバー検証用: 期待されるインデックスキーを計算
+    func computeIndexKeys(for item: Item, id: Tuple) async throws -> [FDB.Bytes]
+
+    /// カスタムビルド戦略（HNSW等の特殊なインデックス用）
+    var customBuildStrategy: (any IndexBuildStrategy<Item>)? { get }
+}
+```
+
+**実装規約**:
+```swift
+public struct MyIndexMaintainer<Item: Persistable>: IndexMaintainer {
+
+    public func updateIndex(oldItem: Item?, newItem: Item?, transaction: any TransactionProtocol) async throws {
+        // 1. 旧エントリ削除
+        if let old = oldItem {
+            let keys = try buildIndexKeys(for: old)
+            for key in keys { transaction.clear(key: key) }
+        }
+        // 2. 新エントリ追加
+        if let new = newItem {
+            let keys = try buildIndexKeys(for: new)
+            for key in keys { transaction.setValue(value, for: key) }
+        }
+    }
+
+    // search() はプロトコル外だが、各Maintainerで実装必須
+    public func search(..., transaction: any TransactionProtocol) async throws -> [Result] {
+        // インデックスを読み取り、結果を返す
+    }
+}
+```
+
+#### 2. Query Builder パターン（読み取り側）
+
+**全体フロー**:
+```
+FDBContext.{queryMethod}()     ← Entry Point (extension で追加)
+    ↓
+{Index}EntryPoint<T>           ← フィールド/オプション選択
+    ↓
+{Index}QueryBuilder<T>         ← パラメータ設定 (Fluent API)
+    ↓
+execute()                      ← IndexQueryContext 経由で実行
+    ↓
+Maintainer.search()            ← インデックス読み取り
+    ↓
+queryContext.fetchItems()      ← Primary Key → Item 変換
+```
+
+**FDBContext Extension (Entry Point)**:
+```swift
+// {IndexName}Query.swift
+
+extension FDBContext {
+    /// {IndexName} のクエリを開始
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// import {IndexName}Index
+    ///
+    /// let results = try await context.{queryMethod}(MyType.self)
+    ///     .{field}(\\.myField)
+    ///     .{parameter}(value)
+    ///     .execute()
+    /// ```
+    public func {queryMethod}<T: Persistable>(_ type: T.Type) -> {Index}EntryPoint<T> {
+        {Index}EntryPoint(queryContext: indexQueryContext)
+    }
+}
+```
+
+**Entry Point**:
+```swift
+public struct {Index}EntryPoint<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+
+    internal init(queryContext: IndexQueryContext) {
+        self.queryContext = queryContext
+    }
+
+    /// フィールドを指定して QueryBuilder を返す
+    public func {field}(_ keyPath: KeyPath<T, FieldType>) -> {Index}QueryBuilder<T> {
+        {Index}QueryBuilder(
+            queryContext: queryContext,
+            fieldName: T.fieldName(for: keyPath)
+        )
+    }
+}
+```
+
+**Query Builder**:
+```swift
+public struct {Index}QueryBuilder<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+    private let fieldName: String
+    private var param1: Type1?
+    private var param2: Type2 = defaultValue
+
+    internal init(queryContext: IndexQueryContext, fieldName: String) {
+        self.queryContext = queryContext
+        self.fieldName = fieldName
+    }
+
+    // Fluent API: 各メソッドは Self を返す
+    public func {parameter}(_ value: Type) -> Self {
+        var copy = self
+        copy.param1 = value
+        return copy
+    }
+
+    /// クエリを実行
+    public func execute() async throws -> [T] {
+        // 1. インデックスサブスペースを取得
+        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
+            .subspace(indexName)
+
+        // 2. トランザクション内で検索実行
+        let primaryKeys = try await queryContext.withTransaction { transaction in
+            // Maintainer の search() を呼び出し
+            return try await maintainer.search(..., transaction: transaction)
+        }
+
+        // 3. Primary Key から Item をフェッチ
+        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+    }
+}
+```
+
+#### 3. IndexQueryContext の使用
+
+`IndexQueryContext` はクエリ実行に必要なストレージアクセスを提供:
+
+```swift
+public struct IndexQueryContext: Sendable {
+    public let context: FDBContext
+
+    /// インデックスサブスペースを取得
+    public func indexSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace
+
+    /// トランザクション内で処理を実行
+    public func withTransaction<R: Sendable>(
+        _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
+    ) async throws -> R
+
+    /// Primary Key から Item をフェッチ
+    public func fetchItems<T: Persistable>(ids: [Tuple], type: T.Type) async throws -> [T]
+
+    /// Schema 情報へのアクセス
+    public var schema: Schema { context.container.schema }
+}
+```
+
+**アクセス方法**:
+```swift
+// FDBContext から取得
+let queryContext = context.indexQueryContext
+```
+
+#### 4. 命名規約
+
+| コンポーネント | 命名パターン | 例 |
+|--------------|-------------|-----|
+| Entry Point メソッド | `context.{動詞}(Type.self)` | `findSimilar`, `search`, `nearby`, `rank` |
+| Entry Point 型 | `{Index}EntryPoint<T>` | `VectorEntryPoint`, `FullTextEntryPoint` |
+| Query Builder 型 | `{Index}QueryBuilder<T>` | `VectorQueryBuilder`, `SpatialQueryBuilder` |
+| Maintainer 型 | `{Algorithm}IndexMaintainer<T>` | `HNSWIndexMaintainer`, `FlatVectorIndexMaintainer` |
+| Error 型 | `{Index}QueryError` | `VectorQueryError`, `SpatialQueryError` |
+
+#### 5. 完全な実装例
+
+```swift
+// Sources/MyIndex/MyQuery.swift
+
+import Foundation
+import DatabaseEngine
+import Core
+import FoundationDB
+
+// MARK: - Entry Point
+
+public struct MyEntryPoint<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+
+    internal init(queryContext: IndexQueryContext) {
+        self.queryContext = queryContext
+    }
+
+    public func field(_ keyPath: KeyPath<T, String>) -> MyQueryBuilder<T> {
+        MyQueryBuilder(queryContext: queryContext, fieldName: T.fieldName(for: keyPath))
+    }
+}
+
+// MARK: - Query Builder
+
+public struct MyQueryBuilder<T: Persistable>: Sendable {
+    private let queryContext: IndexQueryContext
+    private let fieldName: String
+    private var searchValue: String?
+    private var limit: Int = 100
+
+    internal init(queryContext: IndexQueryContext, fieldName: String) {
+        self.queryContext = queryContext
+        self.fieldName = fieldName
+    }
+
+    public func value(_ v: String) -> Self {
+        var copy = self
+        copy.searchValue = v
+        return copy
+    }
+
+    public func limit(_ n: Int) -> Self {
+        var copy = self
+        copy.limit = n
+        return copy
+    }
+
+    public func execute() async throws -> [T] {
+        guard let value = searchValue else {
+            throw MyQueryError.noSearchValue
+        }
+
+        let indexName = "\(T.persistableType)_my_\(fieldName)"
+        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
+            .subspace(indexName)
+
+        let ids: [Tuple] = try await queryContext.withTransaction { tx in
+            // インデックスを読み取り
+            let range = indexSubspace.subspace(value).range
+            var results: [Tuple] = []
+            for try await (key, _) in tx.getRange(range: range) {
+                if let tuple = try? Tuple(fromPackedBytes: key) {
+                    results.append(tuple)
+                }
+            }
+            return results
+        }
+
+        return try await queryContext.fetchItems(ids: ids, type: T.self)
+    }
+}
+
+// MARK: - FDBContext Extension
+
+extension FDBContext {
+    public func myQuery<T: Persistable>(_ type: T.Type) -> MyEntryPoint<T> {
+        MyEntryPoint(queryContext: indexQueryContext)
+    }
+}
+
+// MARK: - Error
+
+public enum MyQueryError: Error {
+    case noSearchValue
+}
+```
+
 ### Testing Pattern
 
 Tests use a shared singleton for FDB initialization to avoid "API version may be set only once" errors:
