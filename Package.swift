@@ -24,6 +24,7 @@ let package = Package(
     ],
     dependencies: [
         .package(path: "../database-kit"),
+        .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
             branch: "feature/directory-layer"
@@ -62,6 +63,7 @@ let package = Package(
                 .product(name: "Vector", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "SwiftHNSW", package: "swift-hnsw"),
             ]
         ),
         .target(

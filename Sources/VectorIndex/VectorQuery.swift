@@ -194,8 +194,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     ///
     /// **Algorithm Selection**:
     /// 1. Look up VectorIndexConfiguration for this index
-    /// 2. If `.hnsw` algorithm: use HNSWIndexMaintainer.search()
-    /// 3. Otherwise (`.flat` or no config): use FlatVectorIndexMaintainer.search()
+    /// 2. If `.auto`: count vectors and select appropriate algorithm
+    /// 3. If `.hnsw`: use HNSWIndexMaintainer.search()
+    /// 4. Otherwise (`.flat` or no config): use FlatVectorIndexMaintainer.search()
     private func executeVectorSearch(
         indexName: String,
         queryVector: [Float],
@@ -232,50 +233,70 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 keyPaths: indexDescriptor.keyPaths
             )
 
-            // Select algorithm based on configuration
+            // Resolve algorithm (handle .auto case)
+            let resolvedAlgorithm: VectorAlgorithm
             if let vectorConfig = vectorConfig {
                 switch vectorConfig.algorithm {
-                case .hnsw(let hnswParams):
-                    // Use HNSW search
-                    let params = HNSWParameters(
-                        m: hnswParams.m,
-                        efConstruction: hnswParams.efConstruction,
-                        efSearch: hnswParams.efSearch
-                    )
-                    let maintainer = HNSWIndexMaintainer<T>(
-                        index: index,
-                        dimensions: self.dimensions,
-                        metric: kind.metric,
-                        subspace: indexSubspace,
-                        idExpression: FieldKeyExpression(fieldName: "id"),
-                        parameters: params
-                    )
-                    // Use efSearch >= k for good recall
-                    let searchParams = HNSWSearchParameters(ef: max(k, hnswParams.efSearch))
-                    return try await maintainer.search(
-                        queryVector: queryVector,
-                        k: k,
-                        searchParams: searchParams,
+                case .auto(let autoParams):
+                    // Count vectors to determine algorithm
+                    let vectorCount = try await self.countVectors(
+                        indexSubspace: indexSubspace,
                         transaction: transaction
                     )
-
-                case .flat:
-                    // Use flat search
-                    let maintainer = FlatVectorIndexMaintainer<T>(
-                        index: index,
-                        dimensions: self.dimensions,
-                        metric: kind.metric,
-                        subspace: indexSubspace,
-                        idExpression: FieldKeyExpression(fieldName: "id")
+                    resolvedAlgorithm = autoParams.selectAlgorithm(
+                        vectorCount: vectorCount,
+                        dimensions: self.dimensions
                     )
-                    return try await maintainer.search(
-                        queryVector: queryVector,
-                        k: k,
-                        transaction: transaction
-                    )
+                case .flat, .hnsw:
+                    resolvedAlgorithm = vectorConfig.algorithm
                 }
             } else {
-                // Default: flat scan (safe, exact, no config required)
+                resolvedAlgorithm = .flat
+            }
+
+            // Execute search with resolved algorithm
+            switch resolvedAlgorithm {
+            case .auto:
+                // Should not happen after resolution, fall back to flat
+                let maintainer = FlatVectorIndexMaintainer<T>(
+                    index: index,
+                    dimensions: self.dimensions,
+                    metric: kind.metric,
+                    subspace: indexSubspace,
+                    idExpression: FieldKeyExpression(fieldName: "id")
+                )
+                return try await maintainer.search(
+                    queryVector: queryVector,
+                    k: k,
+                    transaction: transaction
+                )
+
+            case .hnsw(let hnswParams):
+                // Use HNSW search
+                let params = HNSWParameters(
+                    m: hnswParams.m,
+                    efConstruction: hnswParams.efConstruction,
+                    efSearch: hnswParams.efSearch
+                )
+                let maintainer = HNSWIndexMaintainer<T>(
+                    index: index,
+                    dimensions: self.dimensions,
+                    metric: kind.metric,
+                    subspace: indexSubspace,
+                    idExpression: FieldKeyExpression(fieldName: "id"),
+                    parameters: params
+                )
+                // Use efSearch >= k for good recall
+                let searchParams = HNSWSearchParameters(ef: max(k, hnswParams.efSearch))
+                return try await maintainer.search(
+                    queryVector: queryVector,
+                    k: k,
+                    searchParams: searchParams,
+                    transaction: transaction
+                )
+
+            case .flat:
+                // Use flat search
                 let maintainer = FlatVectorIndexMaintainer<T>(
                     index: index,
                     dimensions: self.dimensions,
@@ -314,6 +335,30 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return results.sorted { $0.distance < $1.distance }
     }
 
+    /// Count vectors in the index for auto algorithm selection
+    private func countVectors(
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        let (begin, end) = indexSubspace.range()
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(begin),
+            endSelector: .firstGreaterOrEqual(end),
+            snapshot: true
+        )
+
+        var count = 0
+        for try await _ in sequence {
+            count += 1
+            // Early exit if we have enough to determine algorithm
+            // (only need to know if > flatThreshold or > hnswThreshold)
+            if count > 100_000 {
+                break
+            }
+        }
+        return count
+    }
+
     /// Execute filtered vector search using ACORN algorithm
     private func executeWithFilter(
         indexName: String,
@@ -337,14 +382,18 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         let hnswParams: VectorHNSWParameters
         if let vectorConfig = vectorConfig {
             switch vectorConfig.algorithm {
+            case .auto(let autoParams):
+                // For auto mode with filtering, we use HNSW parameters since ACORN requires HNSW
+                // The user must ensure dataset is large enough that auto would select HNSW
+                hnswParams = autoParams.hnswParameters
             case .hnsw(let params):
                 hnswParams = params
             case .flat:
                 throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. Configure the index with .hnsw() algorithm.")
             }
         } else {
-            // No explicit config - default is flat, which doesn't support ACORN
-            throw VectorQueryError.filterNotSupported("ACORN filtering requires HNSW index. Add VectorIndexConfiguration with .hnsw() algorithm.")
+            // No explicit config - default is auto, but filtering requires explicit HNSW
+            throw VectorQueryError.filterNotSupported("ACORN filtering requires HNSW index. Add VectorIndexConfiguration with .hnsw() or .auto() algorithm.")
         }
 
         // Build subspace

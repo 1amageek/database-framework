@@ -58,9 +58,15 @@ extension VectorIndexKind: IndexKindMaintainable {
             indexSubspace = subspace.subspace(index.name)
         }
 
-        // Check if HNSW algorithm is requested
+        // Check algorithm selection
         if let vectorConfig = matchingConfig {
             switch vectorConfig.algorithm {
+            case .auto:
+                // Auto mode: Use flat maintainer for storage (universal format)
+                // Query layer handles algorithm selection based on dataset size
+                // This ensures data can be queried with any algorithm
+                break
+
             case .flat:
                 // Explicit flat selection - use flat maintainer
                 break

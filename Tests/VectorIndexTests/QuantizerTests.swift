@@ -17,81 +17,52 @@ struct ProductQuantizerTests {
 
     @Test("PQ initialization with valid parameters")
     func testInitialization() {
-        let config = PQConfig(numSubquantizers: 4, numCentroids: 16)
-        let pq = ProductQuantizer(config: config, dimensions: 32)
+        // dimensions=32, m=4 subquantizers, nbits=4 (16 centroids)
+        let pq = ProductQuantizer(dimensions: 32, m: 4, nbits: 4)
 
         #expect(pq.dimensions == 32)
-        #expect(pq.numSubquantizers == 4)
-        #expect(pq.numCentroids == 16)
-        #expect(pq.codeSize == 4)
+        #expect(pq.m == 4)
+        #expect(pq.nbits == 4)
+        #expect(pq.ksub == 16)  // 2^4 = 16 centroids
+        #expect(pq.dsub == 8)   // 32 / 4 = 8 dimensions per subvector
         #expect(!pq.isTrained)
     }
 
     // MARK: - Training
 
     @Test("PQ training produces codebook")
-    func testTraining() async throws {
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 8,
-            trainingSampleSize: 100,
-            kmeansIterations: 5
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 16)
+    func testTraining() {
+        // dimensions=16, m=4 subquantizers, nbits=3 (8 centroids)
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
 
-        try await pq.train(vectors: trainingVectors)
+        // train() returns a NEW trained ProductQuantizer
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
-        #expect(pq.isTrained)
-    }
-
-    @Test("PQ training fails with empty vectors")
-    func testTrainingEmptyVectors() async {
-        let config = PQConfig(numSubquantizers: 4, numCentroids: 8)
-        let pq = ProductQuantizer(config: config, dimensions: 16)
-
-        await #expect(throws: QuantizerError.self) {
-            try await pq.train(vectors: [])
-        }
-    }
-
-    @Test("PQ training fails with dimension mismatch")
-    func testTrainingDimensionMismatch() async {
-        let config = PQConfig(numSubquantizers: 4, numCentroids: 8)
-        let pq = ProductQuantizer(config: config, dimensions: 16)
-
-        let wrongDimVectors = [[Float](repeating: 0, count: 8)]
-
-        await #expect(throws: QuantizerError.self) {
-            try await pq.train(vectors: wrongDimVectors)
-        }
+        #expect(trainedPQ.isTrained)
+        #expect(!pq.isTrained)  // Original remains untrained
     }
 
     // MARK: - Encoding/Decoding
 
     @Test("PQ encode and decode round-trip")
-    func testEncodeDecode() async throws {
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 16,
-            trainingSampleSize: 100,
-            kmeansIterations: 10
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 16)
+    func testEncodeDecode() {
+        // dimensions=16, m=4, nbits=4 (16 centroids)
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 4)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
         let original = trainingVectors[0]
-        let code = try pq.encode(original)
-        let reconstructed = try pq.decode(code)
+        let code = trainedPQ.encode(original)
+        let reconstructed = trainedPQ.decode(code)
 
-        #expect(code.count == 4)
+        #expect(code.count == 4)  // m bytes
         #expect(reconstructed.count == 16)
 
         var mse: Float = 0
@@ -104,47 +75,30 @@ struct ProductQuantizerTests {
         #expect(mse < 1.0, "MSE should be bounded: \(mse)")
     }
 
-    @Test("PQ encode fails when not trained")
-    func testEncodeNotTrained() {
-        let config = PQConfig(numSubquantizers: 4, numCentroids: 8)
-        let pq = ProductQuantizer(config: config, dimensions: 16)
-
-        let vector = [Float](repeating: 0, count: 16)
-
-        #expect(throws: QuantizerError.self) {
-            _ = try pq.encode(vector)
-        }
-    }
-
     // MARK: - Distance Computation
 
     @Test("PQ ADC distance computation")
-    func testADCDistance() async throws {
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 16,
-            trainingSampleSize: 100,
-            kmeansIterations: 10
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 16)
+    func testADCDistance() {
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 4)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
         let query = trainingVectors[0]
-        let code = try pq.encode(trainingVectors[1])
+        let code = trainedPQ.encode(trainingVectors[1])
 
-        let prepared = try pq.prepareQuery(query)
-        let distance = pq.distanceWithPrepared(prepared, code: code)
+        // Use computeDistanceTable for ADC
+        let distanceTable = trainedPQ.computeDistanceTable(query)
+        let distance = trainedPQ.computeDistanceADC(table: distanceTable, codes: code)
 
         #expect(distance >= 0, "Distance should be non-negative")
         #expect(distance.isFinite, "Distance should be finite")
     }
 
     @Test("PQ reconstruction error is bounded")
-    func testReconstructionError() async throws {
+    func testReconstructionError() {
         // Product Quantization approximates vectors using centroids.
         // The reconstruction error (distance between original and quantized)
         // depends on: number of subquantizers, centroids, and data distribution.
@@ -153,23 +107,17 @@ struct ProductQuantizerTests {
         // - Each 4-dim subvector is approximated by its nearest centroid
         // - Expected error grows with subspace dimensionality
         // - Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search"
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 16,
-            trainingSampleSize: 100,
-            kmeansIterations: 10
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 16)
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 4)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
         let vector = trainingVectors[0]
-        let code = try pq.encode(vector)
-        let prepared = try pq.prepareQuery(vector)
-        let distance = pq.distanceWithPrepared(prepared, code: code)
+        let code = trainedPQ.encode(vector)
+        let distanceTable = trainedPQ.computeDistanceTable(vector)
+        let distance = trainedPQ.computeDistanceADC(table: distanceTable, codes: code)
 
         // Reconstruction error bounds for this configuration:
         // - Max possible error: sqrt(16 * 4) = 8.0 (if every subvector is maximally wrong)
@@ -182,74 +130,82 @@ struct ProductQuantizerTests {
     // MARK: - Serialization
 
     @Test("PQ serialize and deserialize")
-    func testSerialization() async throws {
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 8,
-            trainingSampleSize: 100,
-            kmeansIterations: 5
-        )
-        let pq1 = ProductQuantizer(config: config, dimensions: 16)
+    func testSerialization() {
+        let pq1 = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq1.train(vectors: trainingVectors)
+        let trainedPQ1 = pq1.train(vectors: trainingVectors)
 
-        let data = try pq1.serialize()
+        let data = trainedPQ1.serializeCodebooks()
 
-        let pq2 = ProductQuantizer(config: config, dimensions: 16)
-        try pq2.deserialize(from: data)
+        guard let trainedPQ2 = ProductQuantizer.deserializeCodebooks(data) else {
+            Issue.record("Failed to deserialize codebooks")
+            return
+        }
 
-        #expect(pq2.isTrained)
+        #expect(trainedPQ2.isTrained)
 
         let vector = trainingVectors[0]
-        let code1 = try pq1.encode(vector)
-        let code2 = try pq2.encode(vector)
+        let code1 = trainedPQ1.encode(vector)
+        let code2 = trainedPQ2.encode(vector)
 
         #expect(code1 == code2)
     }
 
-    @Test("PQ deserialize fails with wrong dimensions")
-    func testDeserializeWrongDimensions() async throws {
-        let config = PQConfig(numSubquantizers: 4, numCentroids: 8)
-        let pq1 = ProductQuantizer(config: config, dimensions: 16)
+    // MARK: - Residual Encoding
+
+    @Test("PQ residual encoding for IVFPQ-style usage")
+    func testResidualEncoding() {
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 4)
 
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq1.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
-        let data = try pq1.serialize()
+        let vector = trainingVectors[0]
+        let centroid = [Float](repeating: 0, count: 16)  // Simulate cluster centroid
 
-        let pq2 = ProductQuantizer(config: config, dimensions: 32)
-
-        #expect(throws: QuantizerError.self) {
-            try pq2.deserialize(from: data)
-        }
+        let residualCode = trainedPQ.encodeResidual(vector, centroid: centroid)
+        #expect(residualCode.count == 4)  // m bytes
     }
 
-    // MARK: - k-means++ Edge Cases
+    // MARK: - k-means Edge Cases
 
-    @Test("k-means++ handles identical vectors")
-    func testKMeansPlusPlusIdenticalVectors() async throws {
-        let config = PQConfig(
-            numSubquantizers: 2,
-            numCentroids: 16,
-            trainingSampleSize: 50,
-            kmeansIterations: 3
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 8)
+    @Test("k-means handles identical vectors")
+    func testKMeansIdenticalVectors() {
+        let pq = ProductQuantizer(dimensions: 8, m: 2, nbits: 4)
 
         let identicalVectors = (0..<50).map { _ in
             [Float](repeating: 1.0, count: 8)
         }
 
-        try await pq.train(vectors: identicalVectors)
-        #expect(pq.isTrained)
+        let trainedPQ = pq.train(vectors: identicalVectors)
+        #expect(trainedPQ.isTrained)
 
-        let code = try pq.encode(identicalVectors[0])
+        let code = trainedPQ.encode(identicalVectors[0])
         #expect(code.count == 2)
+    }
+
+    // MARK: - Codebook Access
+
+    @Test("PQ codebook accessor")
+    func testCodebookAccessor() {
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
+
+        let trainingVectors = (0..<100).map { _ in
+            (0..<16).map { _ in Float.random(in: -1...1) }
+        }
+        let trainedPQ = pq.train(vectors: trainingVectors)
+
+        let codebook0 = trainedPQ.getCodebook(0)
+        // ksub=8 centroids, dsub=4 dimensions each
+        #expect(codebook0.count == 8 * 4)
+
+        let allCodebooks = trainedPQ.getAllCodebooks()
+        #expect(allCodebooks.count == 4)  // m subquantizers
     }
 }
 
@@ -646,32 +602,6 @@ struct QuantizerConstantsTests {
 
 @Suite("QuantizerEvaluator Tests")
 struct QuantizerEvaluatorTests {
-
-    @Test("Evaluate PQ metrics")
-    func testEvaluatePQ() async throws {
-        let config = PQConfig(
-            numSubquantizers: 4,
-            numCentroids: 16,
-            trainingSampleSize: 100,
-            kmeansIterations: 10
-        )
-        let pq = ProductQuantizer(config: config, dimensions: 16)
-
-        let trainingVectors = (0..<100).map { _ in
-            (0..<16).map { _ in Float.random(in: -1...1) }
-        }
-        try await pq.train(vectors: trainingVectors)
-
-        let testVectors = (0..<50).map { _ in
-            (0..<16).map { _ in Float.random(in: -1...1) }
-        }
-
-        let metrics = try QuantizerEvaluator.evaluate(pq, on: testVectors)
-
-        #expect(metrics.sampleSize == 50)
-        #expect(metrics.reconstructionError >= 0)
-        #expect(metrics.compressionRatio > 1)
-    }
 
     @Test("Evaluate SQ compression ratio")
     func testEvaluateSQCompression() async throws {

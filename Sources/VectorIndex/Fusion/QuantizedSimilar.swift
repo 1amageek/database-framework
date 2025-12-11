@@ -24,7 +24,7 @@ import Vector
 /// **Usage**:
 /// ```swift
 /// // Train quantizer first
-/// var pq = ProductQuantizer(config: .forDimensions(384), dimensions: 384)
+/// var pq = ConfigurablePQ(config: .forDimensions(384), dimensions: 384)
 /// try await pq.train(vectors: sampleVectors)
 ///
 /// // Search using quantized vectors

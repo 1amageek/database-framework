@@ -58,11 +58,10 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 ///     var embedding: [Float]
 /// }
 ///
-/// // Configure HNSW with PQ compression at runtime
+/// // Configure HNSW at runtime
 /// let config = VectorIndexConfiguration<Product>(
 ///     keyPath: \.embedding,
-///     algorithm: .hnsw(.default),
-///     quantization: .pq(.default)
+///     algorithm: .hnsw(.default)
 /// )
 ///
 /// let container = try FDBContainer(
@@ -81,11 +80,6 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 /// - 100% recall required
 /// - Memory-constrained environments
 /// - Development/testing
-///
-/// **When to use Quantization**:
-/// - Large datasets (>100K vectors)
-/// - Memory-constrained environments
-/// - Acceptable recall loss (typically 1-5% for PQ, <1% for SQ)
 ///
 /// **Note**: `@unchecked Sendable` is used because `KeyPath` is immutable and thread-safe.
 public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfiguration, @unchecked Sendable {
@@ -128,12 +122,12 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     ///
     /// - Parameters:
     ///   - keyPath: KeyPath to the vector field
-    ///   - algorithm: Search algorithm to use (default: .flat)
+    ///   - algorithm: Search algorithm to use (default: .auto)
     ///   - quantization: Quantization method (default: .none)
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         keyPath: KeyPath<Model, [Float]>,
-        algorithm: VectorAlgorithm = .flat,
+        algorithm: VectorAlgorithm = .auto(.default),
         quantization: QuantizationConfig = .none,
         subspaceKey: String? = nil
     ) {
@@ -167,6 +161,10 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
 
 /// Vector search algorithm selection
 ///
+/// **Auto (default)**: Automatic selection based on dataset size
+/// - <1K vectors → Flat (exact, no overhead)
+/// - >=1K vectors → HNSW (fast approximate)
+///
 /// **Flat**: Brute-force linear scan
 /// - Time complexity: O(n)
 /// - Space complexity: O(1) extra
@@ -179,11 +177,102 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
 /// - Recall: ~95-99% (approximate)
 /// - Best for: >10K vectors, speed matters
 public enum VectorAlgorithm: Sendable {
+    /// Automatic algorithm selection
+    ///
+    /// Selects the best algorithm based on dataset characteristics:
+    /// - Small datasets (<flatThreshold): Flat for exact results
+    /// - Larger datasets (>=flatThreshold): HNSW for fast approximate search
+    ///
+    /// **This is the recommended default for most use cases.**
+    case auto(VectorAutoParameters)
+
     /// Flat scan (brute-force, exact results)
     case flat
 
     /// HNSW graph (approximate, fast)
     case hnsw(VectorHNSWParameters)
+
+    /// Default algorithm: auto with default parameters
+    public static var `default`: VectorAlgorithm { .auto(.default) }
+}
+
+// MARK: - Auto Selection Parameters
+
+/// Parameters for automatic algorithm selection
+///
+/// **Thresholds**:
+/// - `flatThreshold`: Use Flat for datasets smaller than this (default: 1000)
+/// - Above `flatThreshold`: Use HNSW
+///
+/// **Selection Logic**:
+/// ```
+/// if vectorCount < flatThreshold:
+///     return Flat (exact, fast for small data)
+/// else:
+///     return HNSW (fast approximate)
+/// ```
+public struct VectorAutoParameters: Sendable, Codable, Hashable {
+    /// Threshold below which Flat algorithm is used (default: 1000)
+    ///
+    /// For datasets smaller than this, brute-force search is fast enough
+    /// and provides exact results.
+    public let flatThreshold: Int
+
+    /// HNSW parameters to use when HNSW is selected
+    public let hnswParameters: VectorHNSWParameters
+
+    /// Create custom auto selection parameters
+    ///
+    /// - Parameters:
+    ///   - flatThreshold: Use Flat below this count (default: 1000)
+    ///   - hnswParameters: HNSW parameters (default: .default)
+    public init(
+        flatThreshold: Int = 1000,
+        hnswParameters: VectorHNSWParameters = .default
+    ) {
+        precondition(flatThreshold > 0, "flatThreshold must be positive")
+
+        self.flatThreshold = flatThreshold
+        self.hnswParameters = hnswParameters
+    }
+
+    /// Default parameters
+    ///
+    /// - flatThreshold: 1000
+    /// - hnswParameters: .default
+    public static let `default` = VectorAutoParameters()
+
+    /// High recall parameters (prefer accuracy over speed)
+    ///
+    /// - flatThreshold: 5000 (use exact search for larger datasets)
+    /// - hnswParameters: .highRecall
+    public static let highRecall = VectorAutoParameters(
+        flatThreshold: 5000,
+        hnswParameters: .highRecall
+    )
+
+    /// Fast parameters (prefer speed over accuracy)
+    ///
+    /// - flatThreshold: 500 (switch to approximate earlier)
+    /// - hnswParameters: .fast
+    public static let fast = VectorAutoParameters(
+        flatThreshold: 500,
+        hnswParameters: .fast
+    )
+
+    /// Select the appropriate algorithm based on vector count
+    ///
+    /// - Parameters:
+    ///   - vectorCount: Current number of vectors in the index
+    ///   - dimensions: Vector dimensions (unused, kept for API compatibility)
+    /// - Returns: The selected algorithm
+    public func selectAlgorithm(vectorCount: Int, dimensions: Int) -> VectorAlgorithm {
+        if vectorCount < flatThreshold {
+            return .flat
+        } else {
+            return .hnsw(hnswParameters)
+        }
+    }
 }
 
 // MARK: - HNSW Parameters
@@ -200,10 +289,6 @@ public enum VectorAlgorithm: Sendable {
 /// - **efSearch**: Size of dynamic candidate list during search (default: 50)
 ///   - Range: k to 500 (must be >= k, the number of results)
 ///   - Higher → better recall, slower search
-///
-/// **⚠️ FDB Transaction Limit**:
-/// HNSW inline indexing is limited to ~500 nodes due to FDB's ~10K operation limit.
-/// For larger indexes, use OnlineIndexer batch processing.
 ///
 /// **Presets**:
 /// - `.default`: Balanced (m=16, efConstruction=200, efSearch=50)

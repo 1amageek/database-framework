@@ -120,7 +120,7 @@ public struct QuantizedVectorWriter<T: Persistable, Q: VectorQuantizer>: @unchec
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw CodebookTrainerError.indexNotFound(field: fieldName)
+            throw VectorIndexError.invalidArgument("Vector index not found for field '\(fieldName)'")
         }
 
         let indexName = descriptor.name
@@ -268,7 +268,7 @@ public struct QuantizedVectorWriter<T: Persistable, Q: VectorQuantizer>: @unchec
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw CodebookTrainerError.indexNotFound(field: fieldName)
+            throw VectorIndexError.invalidArgument("Vector index not found for field '\(fieldName)'")
         }
 
         let indexName = descriptor.name
@@ -303,7 +303,7 @@ public struct QuantizedVectorWriter<T: Persistable, Q: VectorQuantizer>: @unchec
     ) async throws {
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw CodebookTrainerError.indexNotFound(field: fieldName)
+            throw VectorIndexError.invalidArgument("Vector index not found for field '\(fieldName)'")
         }
 
         let indexName = descriptor.name

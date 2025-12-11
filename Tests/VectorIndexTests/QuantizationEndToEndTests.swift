@@ -5,7 +5,7 @@
 // 1. Insert vectors into FDB
 // 2. Train quantizer on inserted data
 // 3. Build quantized index (write to /q/ subspace)
-// 4. Search using QuantizedSimilar
+// 4. Search using quantized codes
 // 5. Verify correct results are returned
 
 import Testing
@@ -183,20 +183,17 @@ struct QuantizedVectorWriterTests {
         let countBefore = try await ctx.countQuantizedEntries()
         #expect(countBefore == 0, "Should have 0 quantized entries before build")
 
-        // Train quantizer
-        let pq = ProductQuantizer(
-            config: PQConfig(numSubquantizers: 4, numCentroids: 8, trainingSampleSize: 50, kmeansIterations: 5),
-            dimensions: 16
-        )
+        // Train quantizer with new API: dimensions=16, m=4 subquantizers, nbits=3 (8 centroids)
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
         let trainingVectors = products.map(\.embedding)
-        try await pq.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
-        #expect(pq.isTrained, "Quantizer should be trained")
+        #expect(trainedPQ.isTrained, "Quantizer should be trained")
 
         // Build quantized index by directly writing to /q/ subspace
         try await ctx.database.withTransaction { transaction in
             for product in products {
-                let code = try pq.encode(product.embedding)
+                let code = trainedPQ.encode(product.embedding)
                 let key = ctx.quantizedSubspace.pack(Tuple(product.id))
                 let elements: [any TupleElement] = code.map { Int64($0) as any TupleElement }
                 let value = Tuple(elements).pack()
@@ -234,17 +231,14 @@ struct QuantizedVectorWriterTests {
 
         let allProducts = cluster1Products + cluster2Products
 
-        // Train quantizer on the data
-        let pq = ProductQuantizer(
-            config: PQConfig(numSubquantizers: 4, numCentroids: 8, trainingSampleSize: 50, kmeansIterations: 10),
-            dimensions: 16
-        )
-        try await pq.train(vectors: allProducts.map(\.embedding))
+        // Train quantizer on the data (dimensions=16, m=4, nbits=3 for 8 centroids)
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
+        let trainedPQ = pq.train(vectors: allProducts.map(\.embedding))
 
         // Write quantized codes to /q/
         var codes: [(id: String, code: [UInt8])] = []
         for product in allProducts {
-            let code = try pq.encode(product.embedding)
+            let code = trainedPQ.encode(product.embedding)
             codes.append((id: product.id, code: code))
         }
 
@@ -259,7 +253,7 @@ struct QuantizedVectorWriterTests {
 
         // Search using ADC
         let queryVector = cluster1Center  // Query for cluster 1
-        let prepared = try pq.prepareQuery(queryVector)
+        let distanceTable = trainedPQ.computeDistanceTable(queryVector)
 
         var results: [(id: String, distance: Float)] = []
         try await ctx.database.withTransaction { transaction in
@@ -270,14 +264,14 @@ struct QuantizedVectorWriterTests {
                       let codeTuple = try? Tuple.unpack(from: value) else { continue }
 
                 var code: [UInt8] = []
-                for i in 0..<pq.codeSize {
+                for i in 0..<trainedPQ.m {
                     guard i < codeTuple.count,
                           let byte = codeTuple[i] as? Int64 else { break }
                     code.append(UInt8(clamping: byte))
                 }
-                guard code.count == pq.codeSize else { continue }
+                guard code.count == trainedPQ.m else { continue }
 
-                let distance = pq.distanceWithPrepared(prepared, code: code)
+                let distance = trainedPQ.computeDistanceADC(table: distanceTable, codes: code)
                 results.append((id: id, distance: distance))
             }
         }
@@ -293,45 +287,39 @@ struct QuantizedVectorWriterTests {
     }
 }
 
-// MARK: - CodebookTrainer Persistence Tests
+// MARK: - Serialization Persistence Tests
 
-@Suite("CodebookTrainer Persistence Tests", .tags(.fdb), .serialized)
-struct CodebookTrainerPersistenceTests {
+@Suite("Quantizer Serialization Tests", .serialized)
+struct QuantizerSerializationTests {
 
     @Test("Codebook round-trip: save and load preserves trained state")
-    func testCodebookRoundTrip() async throws {
+    func testCodebookRoundTrip() {
         // Test that a trained quantizer can be serialized and deserialized
-        let pq = ProductQuantizer(
-            config: PQConfig(numSubquantizers: 4, numCentroids: 8, trainingSampleSize: 50, kmeansIterations: 5),
-            dimensions: 16
-        )
+        let pq = ProductQuantizer(dimensions: 16, m: 4, nbits: 3)
 
         // Train with random data
         let trainingVectors = (0..<100).map { _ in
             (0..<16).map { _ in Float.random(in: -1...1) }
         }
-        try await pq.train(vectors: trainingVectors)
+        let trainedPQ = pq.train(vectors: trainingVectors)
 
-        #expect(pq.isTrained)
+        #expect(trainedPQ.isTrained)
 
         // Serialize
-        let serialized = try pq.serialize()
+        let serialized = trainedPQ.serializeCodebooks()
         #expect(!serialized.isEmpty, "Serialized codebook should not be empty")
 
-        // Create new quantizer and deserialize
-        let pq2 = ProductQuantizer(
-            config: PQConfig(numSubquantizers: 4, numCentroids: 8),
-            dimensions: 16
-        )
-        #expect(!pq2.isTrained)
-
-        try pq2.deserialize(from: serialized)
-        #expect(pq2.isTrained, "Deserialized quantizer should be trained")
+        // Deserialize to new quantizer
+        guard let restoredPQ = ProductQuantizer.deserializeCodebooks(serialized) else {
+            Issue.record("Failed to deserialize codebook")
+            return
+        }
+        #expect(restoredPQ.isTrained, "Deserialized quantizer should be trained")
 
         // Verify the codebooks produce similar results
         let testVector = (0..<16).map { _ in Float.random(in: -1...1) }
-        let code1 = try pq.encode(testVector)
-        let code2 = try pq2.encode(testVector)
+        let code1 = trainedPQ.encode(testVector)
+        let code2 = restoredPQ.encode(testVector)
 
         #expect(code1 == code2, "Same vector should produce same code from original and restored quantizer")
     }
@@ -369,7 +357,7 @@ struct CodebookTrainerPersistenceTests {
 struct QuantizationRecallTests {
 
     @Test("PQ distance ordering is monotonic for simple vectors")
-    func testPQDistanceOrdering() async throws {
+    func testPQDistanceOrdering() {
         // This test verifies that PQ preserves distance ordering for well-separated vectors
         // We use deterministic, well-separated vectors to avoid randomness issues
         let dimensions = 16
@@ -383,23 +371,21 @@ struct QuantizationRecallTests {
         }
 
         // Train PQ with enough centroids to capture the structure
-        let pq = ProductQuantizer(
-            config: PQConfig(numSubquantizers: 4, numCentroids: 16, trainingSampleSize: 20, kmeansIterations: 20),
-            dimensions: dimensions
-        )
-        try await pq.train(vectors: vectors)
+        // dimensions=16, m=4 subquantizers, nbits=4 (16 centroids)
+        let pq = ProductQuantizer(dimensions: dimensions, m: 4, nbits: 4)
+        let trainedPQ = pq.train(vectors: vectors)
 
         // Encode all vectors
-        let codes = try vectors.map { try pq.encode($0) }
+        let codes = vectors.map { trainedPQ.encode($0) }
 
         // Query from v[0] (origin) - distances should roughly increase with index
         let queryVector = vectors[0]
-        let prepared = try pq.prepareQuery(queryVector)
+        let distanceTable = trainedPQ.computeDistanceTable(queryVector)
 
         var results: [(idx: Int, distance: Float)] = []
         for (idx, code) in codes.enumerated() {
             if idx == 0 { continue }
-            let distance = pq.distanceWithPrepared(prepared, code: code)
+            let distance = trainedPQ.computeDistanceADC(table: distanceTable, codes: code)
             results.append((idx: idx, distance: distance))
         }
         results.sort { $0.distance < $1.distance }
@@ -412,8 +398,8 @@ struct QuantizationRecallTests {
         #expect(overlap >= 3, "At least 3 of top-5 should be from indices 1-5 (got \(overlap))")
 
         // Verify that v[1] is closer than v[19] in the quantized space
-        let dist1 = pq.distanceWithPrepared(prepared, code: codes[1])
-        let dist19 = pq.distanceWithPrepared(prepared, code: codes[19])
+        let dist1 = trainedPQ.computeDistanceADC(table: distanceTable, codes: codes[1])
+        let dist19 = trainedPQ.computeDistanceADC(table: distanceTable, codes: codes[19])
         #expect(dist1 < dist19, "v[1] should be closer to v[0] than v[19]")
     }
 }
