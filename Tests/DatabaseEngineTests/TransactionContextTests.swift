@@ -48,15 +48,15 @@ struct TransactionContextTests {
 
         return FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        try await context.deleteAll(TransactionTestUser.self)
-        try await context.deleteAll(TransactionTestProduct.self)
-        try await context.save()
+        let directoryLayer = DirectoryLayer(database: container.database)
+        try? await directoryLayer.remove(path: ["test", "txcontext", "users"])
+        try? await directoryLayer.remove(path: ["test", "txcontext", "products"])
     }
 
     // MARK: - TransactionConfiguration Tests

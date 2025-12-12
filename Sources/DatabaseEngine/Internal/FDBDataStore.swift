@@ -39,6 +39,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Indexes subspace: [subspace]/indexes/
     let indexSubspace: Subspace
 
+    /// Blobs subspace: [subspace]/blobs/ - for large value chunks
+    let blobsSubspace: Subspace
+
     /// Metadata subspace: [subspace]/_metadata/
     let metadataSubspace: Subspace
 
@@ -72,6 +75,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.securityDelegate = securityDelegate
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
+        self.blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
         self.indexStateManager = IndexStateManager(database: database, subspace: subspace, logger: logger)
         self.violationTracker = UniquenessViolationTracker(
@@ -109,20 +113,16 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         do {
             let results: [T] = try await database.withTransaction { transaction in
-                var results: [T] = []
-                // Use .wantAll for full table scan - aggressive prefetch reduces round-trips
-                let sequence = transaction.getRange(
-                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                    to: FDB.KeySelector.firstGreaterOrEqual(end),
-                    limit: 0,  // unlimited
-                    reverse: false,
-                    snapshot: true,
-                    streamingMode: .wantAll
+                // Use ItemStorage for proper handling of large values
+                let storage = ItemStorage(
+                    transaction: transaction,
+                    blobsSubspace: self.blobsSubspace
                 )
+                var results: [T] = []
 
-                for try await (_, value) in sequence {
-                    // Use Protobuf deserialization via DataAccess
-                    let model: T = try DataAccess.deserialize(value)
+                // ItemStorage.scan handles both inline and external (split) values transparently
+                for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+                    let model: T = try DataAccess.deserialize(data)
                     results.append(model)
                 }
                 return results
@@ -146,7 +146,11 @@ internal final class FDBDataStore: DataStore, Sendable {
         let key = typeSubspace.pack(keyTuple)
 
         let result: T? = try await database.withTransaction { transaction in
-            guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
+            )
+            guard let bytes = try await storage.read(for: key) else {
                 return nil
             }
 
@@ -526,9 +530,13 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keys = ids.map { typeSubspace.pack($0) }
 
         return try await database.withTransaction { transaction in
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
+            )
             var results: [T] = []
             for key in keys {
-                if let bytes = try await transaction.getValue(for: key, snapshot: true) {
+                if let bytes = try await storage.read(for: key) {
                     let model: T = try DataAccess.deserialize(bytes)
                     results.append(model)
                 }
@@ -820,17 +828,23 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
+        // Use ItemStorage for large value handling (stores chunks in blobs subspace)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
+
         // Check for existing record (for index updates)
         let oldModel: T?
-        if let existingBytes = try await transaction.getValue(for: key, snapshot: false) {
+        if let existingBytes = try await storage.read(for: key) {
             // Use Protobuf deserialization via DataAccess
             oldModel = try DataAccess.deserialize(existingBytes)
         } else {
             oldModel = nil
         }
 
-        // Save the record
-        transaction.setValue(data, for: key)
+        // Save the record (handles compression + external storage for >90KB)
+        try await storage.write(data, for: key)
 
         // Update indexes via IndexMaintenanceService
         try await indexMaintenanceService.updateIndexes(oldModel: oldModel, newModel: model, id: idTuple, transaction: transaction)
@@ -878,8 +892,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Remove index entries first via IndexMaintenanceService
         try await indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
 
-        // Delete the record
-        transaction.clear(key: key)
+        // Delete the record (handles external blob chunks)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
+        try await storage.delete(for: key)
     }
 
     /// Delete model by ID
@@ -889,8 +907,13 @@ internal final class FDBDataStore: DataStore, Sendable {
         let key = typeSubspace.pack(idTuple)
 
         try await database.withTransaction { transaction in
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
+            )
+
             // Load the model first for index cleanup
-            if let bytes = try await transaction.getValue(for: key, snapshot: false) {
+            if let bytes = try await storage.read(for: key) {
                 // Use Protobuf deserialization via DataAccess
                 let model: T = try DataAccess.deserialize(bytes)
 
@@ -898,8 +921,8 @@ internal final class FDBDataStore: DataStore, Sendable {
                 try await self.indexMaintenanceService.updateIndexes(oldModel: model, newModel: nil as T?, id: idTuple, transaction: transaction)
             }
 
-            // Delete the record
-            transaction.clear(key: key)
+            // Delete the record (handles external blob chunks)
+            try await storage.delete(for: key)
         }
     }
 
@@ -1005,14 +1028,18 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Check for existing record
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
+        // Use ItemStorage for large value handling (stores chunks in blobs subspace)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
 
-        // Security evaluation: CREATE or UPDATE
-        if let oldData = oldData {
-            // Update - need to deserialize old model for security evaluation
-            let oldModel = try DataAccess.deserializeAny(Array(oldData), as: modelType)
-            try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
+        // Check for existing record and deserialize for security evaluation and index update
+        var oldModel: (any Persistable)?
+        if let oldData = try await storage.read(for: key) {
+            // Update - deserialize old model (used for both security and index update)
+            oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
+            try securityDelegate?.evaluateUpdate(oldModel!, newResource: model)
         } else {
             // Create
             try securityDelegate?.evaluateCreate(model)
@@ -1021,12 +1048,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Serialize using Protobuf (encoder reused across all models)
         let data = Array(try encoder.encode(model))
 
-        // Save the record
-        transaction.setValue(data, for: key)
+        // Save the record (handles compression + external storage for >90KB)
+        try await storage.write(data, for: key)
 
-        // Update indexes via IndexMaintenanceService
+        // Update indexes via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldData: oldData,
+            oldModel: oldModel,
             newModel: model,
             id: idTuple,
             transaction: transaction
@@ -1034,37 +1061,6 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Return serialized data for dual-write optimization
         return SerializedModel(model: model, data: data, idTuple: idTuple)
-    }
-
-    /// Save model without type parameter (for internal use without security)
-    private func saveModelUntyped(
-        _ model: any Persistable,
-        transaction: any TransactionProtocol,
-        encoder: ProtobufEncoder
-    ) async throws {
-        let persistableType = type(of: model).persistableType
-        let validatedID = try validateID(model.id, for: persistableType)
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
-
-        // Serialize using Protobuf (encoder reused across all models)
-        let data = try encoder.encode(model)
-
-        let typeSubspace = itemSubspace.subspace(persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        // Check for existing record (for index updates)
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
-
-        // Save the record
-        transaction.setValue(Array(data), for: key)
-
-        // Update indexes via IndexMaintenanceService
-        try await indexMaintenanceService.updateIndexesUntyped(
-            oldData: oldData,
-            newModel: model,
-            id: idTuple,
-            transaction: transaction
-        )
     }
 
     /// Delete model without type parameter (for batch operations)
@@ -1079,17 +1075,20 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first via IndexMaintenanceService
+        // Remove index entries first via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldData: nil,
+            oldModel: model,
             newModel: nil,
             id: idTuple,
-            transaction: transaction,
-            deletingModel: model
+            transaction: transaction
         )
 
-        // Delete the record
-        transaction.clear(key: key)
+        // Delete the record (handles external blob chunks)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
+        try await storage.delete(for: key)
     }
 
     // MARK: - Predicate Evaluation
@@ -1240,6 +1239,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 transaction: transaction,
                 itemSubspace: self.itemSubspace,
                 indexSubspace: self.indexSubspace,
+                blobsSubspace: self.blobsSubspace,
                 indexMaintenanceService: self.indexMaintenanceService,
                 securityDelegate: self.securityDelegate
             )

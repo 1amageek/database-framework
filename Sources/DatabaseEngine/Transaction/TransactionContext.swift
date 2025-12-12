@@ -56,6 +56,7 @@ public final class TransactionContext: @unchecked Sendable {
     private struct ResolvedSubspaces {
         let itemSubspace: Subspace
         let indexSubspace: Subspace
+        let blobsSubspace: Subspace
     }
 
     // MARK: - Initialization
@@ -88,7 +89,8 @@ public final class TransactionContext: @unchecked Sendable {
         let subspace = try await container.resolveDirectory(for: type)
         let resolved = ResolvedSubspaces(
             itemSubspace: subspace.subspace(SubspaceKey.items),
-            indexSubspace: subspace.subspace(SubspaceKey.indexes)
+            indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            blobsSubspace: subspace.subspace(SubspaceKey.blobs)
         )
 
         // Cache for reuse within this transaction
@@ -118,7 +120,12 @@ public final class TransactionContext: @unchecked Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        guard let bytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
+        // Use ItemStorage with snapshot semantics properly propagated
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: subspaces.blobsSubspace
+        )
+        guard let bytes = try await storage.read(for: key, snapshot: snapshot) else {
             return nil
         }
 
@@ -173,12 +180,18 @@ public final class TransactionContext: @unchecked Sendable {
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
+        // Use ItemStorage for large value handling (stores chunks in blobs subspace)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: subspaces.blobsSubspace
+        )
+
         // Get existing record for diff-based index update
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
+        let oldData = try await storage.read(for: key)
         let oldModel: T? = oldData.flatMap { try? DataAccess.deserialize($0) }
 
-        // Write record
-        transaction.setValue(data, for: key)
+        // Write record (handles compression + external storage for >90KB)
+        try await storage.write(data, for: key)
 
         // Update scalar indexes using diff-based approach
         try await updateScalarIndexes(
@@ -212,8 +225,12 @@ public final class TransactionContext: @unchecked Sendable {
             indexSubspace: subspaces.indexSubspace
         )
 
-        // Delete record
-        transaction.clear(key: key)
+        // Delete record (handles external blob chunks)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: subspaces.blobsSubspace
+        )
+        try await storage.delete(for: key)
     }
 
     // MARK: - Private: Scalar Index Maintenance

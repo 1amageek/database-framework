@@ -53,6 +53,9 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     /// Subspace where index data is stored ([I]/)
     private let indexSubspace: Subspace
 
+    /// Subspace where blob chunks are stored ([B]/)
+    private let blobsSubspace: Subspace
+
     /// Item type name
     private let itemType: String
 
@@ -84,6 +87,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - itemType: Type name of items to index
     ///   - targets: Index build targets (index + maintainer pairs)
     ///   - stateManager: Index state manager
@@ -93,6 +97,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String,
         targets: [IndexBuildTarget<Item>],
         stateManager: IndexStateManager,
@@ -102,6 +107,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         self.database = database
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
+        self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.targets = targets
         self.stateManager = stateManager
@@ -219,19 +225,22 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
-                    // Use limit + .iterator for efficient batch processing
-                    // limit ensures server-side cutoff, .iterator adapts to transaction limits
-                    let sequence = transaction.getRange(
-                        from: .firstGreaterOrEqual(bounds.begin),
-                        to: .firstGreaterOrEqual(bounds.end),
-                        limit: self.batchSize,
-                        snapshot: false,
-                        streamingMode: .iterator
+                    // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
+                    let storage = ItemStorage(
+                        transaction: transaction,
+                        blobsSubspace: self.blobsSubspace
                     )
 
-                    for try await (key, value) in sequence {
-                        // Deserialize item once
-                        let item: Item = try DataAccess.deserialize(value)
+                    let scanSequence = storage.scan(
+                        begin: bounds.begin,
+                        end: bounds.end,
+                        snapshot: false,
+                        limit: self.batchSize
+                    )
+
+                    for try await (key, data) in scanSequence {
+                        // Deserialize item once from decompressed data
+                        let item: Item = try DataAccess.deserialize(data)
                         let id = try itemTypeSubspace.unpack(key)
 
                         // Call all maintainers for this item

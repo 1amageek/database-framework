@@ -22,6 +22,7 @@ public struct SecurityError: Error, Sendable, CustomStringConvertible {
         case create
         case update
         case delete
+        case admin
     }
 
     /// The operation that was attempted

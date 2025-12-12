@@ -45,4 +45,12 @@ public enum SubspaceKey {
     ///
     /// Layout: `[subspace]/M/[key]`
     public static let metadata = "M"
+
+    /// Blobs subspace key - stores large value chunks
+    ///
+    /// Large values (>90KB) are split into chunks and stored here,
+    /// keeping the items subspace clean for range scans.
+    ///
+    /// Layout: `[subspace]/B/[typeName]/[id]/[chunkIndex]`
+    public static let blobs = "B"
 }

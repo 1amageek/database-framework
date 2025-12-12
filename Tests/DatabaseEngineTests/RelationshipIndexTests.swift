@@ -41,18 +41,46 @@ struct RTestOrder {
 // MARK: - Test Helpers
 
 /// Enable all indexes for a Persistable type to readable state
-/// Skips if already enabled to avoid state transition errors
+/// Handles race conditions from parallel test suite execution
 private func enableAllIndexes<T: Persistable>(container: FDBContainer, for type: T.Type) async throws {
     let store = try await container.store(for: type) as! FDBDataStore
     for descriptor in T.indexDescriptors {
-        let currentState = try await store.indexStateManager.state(of: descriptor.name)
-        if currentState == .disabled {
-            try await store.indexStateManager.enable(descriptor.name)
-            try await store.indexStateManager.makeReadable(descriptor.name)
-        } else if currentState == .writeOnly {
-            try await store.indexStateManager.makeReadable(descriptor.name)
+        // Retry loop to handle race conditions between parallel test suites
+        var attempts = 0
+        let maxAttempts = 3
+
+        while attempts < maxAttempts {
+            attempts += 1
+            let currentState = try await store.indexStateManager.state(of: descriptor.name)
+
+            switch currentState {
+            case .disabled:
+                do {
+                    try await store.indexStateManager.enable(descriptor.name)
+                    try await store.indexStateManager.makeReadable(descriptor.name)
+                    break // Success
+                } catch let error as IndexStateError {
+                    // Another test suite may have enabled it concurrently
+                    if case .invalidTransition = error, attempts < maxAttempts {
+                        continue // Retry with fresh state read
+                    }
+                    throw error
+                }
+            case .writeOnly:
+                do {
+                    try await store.indexStateManager.makeReadable(descriptor.name)
+                    break // Success
+                } catch let error as IndexStateError {
+                    if case .invalidTransition = error, attempts < maxAttempts {
+                        continue
+                    }
+                    throw error
+                }
+            case .readable:
+                break // Already enabled
+            }
+            break // Exit retry loop on success
         }
-        // If already readable, skip
     }
 }
 
@@ -200,7 +228,8 @@ struct RelationshipIndexUpdateTests {
 
         let container = FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
 
         // Enable all indexes for testing
@@ -389,7 +418,8 @@ struct RelationshipQueryTests {
 
         let container = FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
 
         // Enable all indexes for testing
@@ -477,7 +507,8 @@ struct SnapshotTests {
 
         let container = FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
 
         // Enable all indexes for testing
@@ -880,7 +911,8 @@ struct ToManyRelationshipIndexUpdateTests {
 
         let container = FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
 
         // Enable all indexes for testing

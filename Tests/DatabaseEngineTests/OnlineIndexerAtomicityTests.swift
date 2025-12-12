@@ -27,6 +27,7 @@ struct OnlineIndexerAtomicityTests {
         let testSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
+        let blobsSubspace: Subspace
 
         init() throws {
             self.database = try FDBClient.openDatabase()
@@ -34,6 +35,7 @@ struct OnlineIndexerAtomicityTests {
             self.testSubspace = Subspace(prefix: Tuple("test", "atomicity", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")
             self.indexSubspace = testSubspace.subspace("I")
+            self.blobsSubspace = testSubspace.subspace("B")
         }
 
         func cleanup() async throws {
@@ -50,10 +52,11 @@ struct OnlineIndexerAtomicityTests {
                 let batchEnd = min(batchStart + batchSize, players.count)
                 let batch = Array(players[batchStart..<batchEnd])
                 try await database.withTransaction { tx in
+                    let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace)
                     for player in batch {
                         let key = itemSubspace.subspace(Player.persistableType).pack(Tuple(player.id))
                         let value = try DataAccess.serialize(player)
-                        tx.setValue(value, for: key)
+                        try await storage.write(value, for: key)
                     }
                 }
             }
@@ -64,191 +67,203 @@ struct OnlineIndexerAtomicityTests {
 
     @Test("Progress is consistent with indexed data")
     func testProgressConsistencyWithIndexedData() async throws {
-        let ctx = try TestContext()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let ctx = try TestContext()
 
-        let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 50)
-        try await ctx.insertPlayers(players)
+            let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 50)
+            try await ctx.insertPlayers(players)
 
-        let index = TestIndex.create(name: "consistency_idx")
-        let maintainer = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index.name
-        )
+            let index = TestIndex.create(name: "consistency_idx")
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: ctx.indexSubspace,
+                indexName: index.name
+            )
 
-        let stateManager = IndexStateManager(
-            database: ctx.database,
-            subspace: ctx.indexSubspace.subspace("_meta")
-        )
+            let stateManager = IndexStateManager(
+                database: ctx.database,
+                subspace: ctx.indexSubspace.subspace("_meta")
+            )
 
-        try await stateManager.enable(index.name)
+            try await stateManager.enable(index.name)
 
-        let indexer = OnlineIndexer(
-            database: ctx.database,
-            itemSubspace: ctx.itemSubspace,
-            indexSubspace: ctx.indexSubspace,
-            itemType: Player.persistableType,
-            index: index,
-            indexMaintainer: maintainer,
-            indexStateManager: stateManager,
-            batchSize: 15
-        )
+            let indexer = OnlineIndexer(
+                database: ctx.database,
+                itemSubspace: ctx.itemSubspace,
+                indexSubspace: ctx.indexSubspace,
+                blobsSubspace: ctx.blobsSubspace,
+                itemType: Player.persistableType,
+                index: index,
+                indexMaintainer: maintainer,
+                indexStateManager: stateManager,
+                batchSize: 15
+            )
 
-        try await indexer.buildIndex(clearFirst: true)
+            try await indexer.buildIndex(clearFirst: true)
 
-        // Verify all items were indexed exactly once
-        #expect(maintainer.getUniqueProcessedCount() == players.count)
-        #expect(maintainer.getTotalProcessCount() == players.count)
-        #expect(maintainer.getDuplicateProcessedIds().isEmpty)
+            // Verify all items were indexed exactly once
+            #expect(maintainer.getUniqueProcessedCount() == players.count)
+            #expect(maintainer.getTotalProcessCount() == players.count)
+            #expect(maintainer.getDuplicateProcessedIds().isEmpty)
 
-        try await ctx.cleanup()
+            try await ctx.cleanup()
+        }
     }
 
     @Test("MultiTarget progress is atomic across all indexes")
     func testMultiTargetAtomicProgress() async throws {
-        let ctx = try TestContext()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let ctx = try TestContext()
 
-        let players = LargeTestDataGenerator.generatePlayers(count: 75, nameLength: 50)
-        try await ctx.insertPlayers(players)
+            let players = LargeTestDataGenerator.generatePlayers(count: 75, nameLength: 50)
+            try await ctx.insertPlayers(players)
 
-        let index1 = TestIndex.create(name: "atomic_idx_1")
-        let index2 = TestIndex.create(name: "atomic_idx_2")
+            let index1 = TestIndex.create(name: "atomic_idx_1")
+            let index2 = TestIndex.create(name: "atomic_idx_2")
 
-        let maintainer1 = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index1.name
-        )
-        let maintainer2 = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index2.name
-        )
+            let maintainer1 = CountingIndexMaintainer<Player>(
+                indexSubspace: ctx.indexSubspace,
+                indexName: index1.name
+            )
+            let maintainer2 = CountingIndexMaintainer<Player>(
+                indexSubspace: ctx.indexSubspace,
+                indexName: index2.name
+            )
 
-        let stateManager = IndexStateManager(
-            database: ctx.database,
-            subspace: ctx.indexSubspace.subspace("_meta")
-        )
+            let stateManager = IndexStateManager(
+                database: ctx.database,
+                subspace: ctx.indexSubspace.subspace("_meta")
+            )
 
-        let targets = [
-            IndexBuildTarget(index: index1, maintainer: maintainer1),
-            IndexBuildTarget(index: index2, maintainer: maintainer2),
-        ]
+            let targets = [
+                IndexBuildTarget(index: index1, maintainer: maintainer1),
+                IndexBuildTarget(index: index2, maintainer: maintainer2),
+            ]
 
-        let indexer = MultiTargetOnlineIndexer(
-            database: ctx.database,
-            itemSubspace: ctx.itemSubspace,
-            indexSubspace: ctx.indexSubspace,
-            itemType: Player.persistableType,
-            targets: targets,
-            stateManager: stateManager,
-            batchSize: 20
-        )
+            let indexer = MultiTargetOnlineIndexer(
+                database: ctx.database,
+                itemSubspace: ctx.itemSubspace,
+                indexSubspace: ctx.indexSubspace,
+                blobsSubspace: ctx.blobsSubspace,
+                itemType: Player.persistableType,
+                targets: targets,
+                stateManager: stateManager,
+                batchSize: 20
+            )
 
-        try await indexer.buildIndexes(clearFirst: true)
+            try await indexer.buildIndexes(clearFirst: true)
 
-        // Both indexes should have processed exactly the same items
-        let processedIds1 = maintainer1.getAllProcessedIds()
-        let processedIds2 = maintainer2.getAllProcessedIds()
+            // Both indexes should have processed exactly the same items
+            let processedIds1 = maintainer1.getAllProcessedIds()
+            let processedIds2 = maintainer2.getAllProcessedIds()
 
-        #expect(processedIds1 == processedIds2)
-        #expect(processedIds1.count == players.count)
-        #expect(maintainer1.getDuplicateProcessedIds().isEmpty)
-        #expect(maintainer2.getDuplicateProcessedIds().isEmpty)
+            #expect(processedIds1 == processedIds2)
+            #expect(processedIds1.count == players.count)
+            #expect(maintainer1.getDuplicateProcessedIds().isEmpty)
+            #expect(maintainer2.getDuplicateProcessedIds().isEmpty)
 
-        try await ctx.cleanup()
+            try await ctx.cleanup()
+        }
     }
 
     @Test("RangeSet progress is saved atomically with work")
     func testRangeSetAtomicProgress() async throws {
-        let ctx = try TestContext()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let ctx = try TestContext()
 
-        let batchSize = 10
-        let players = LargeTestDataGenerator.generateForBatchTesting(
-            batchSize: batchSize,
-            batches: 5,
-            remainder: 3
-        )
-        try await ctx.insertPlayers(players)
+            let batchSize = 10
+            let players = LargeTestDataGenerator.generateForBatchTesting(
+                batchSize: batchSize,
+                batches: 5,
+                remainder: 3
+            )
+            try await ctx.insertPlayers(players)
 
-        let index = TestIndex.create(name: "rangeset_idx")
-        let maintainer = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index.name
-        )
+            let index = TestIndex.create(name: "rangeset_idx")
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: ctx.indexSubspace,
+                indexName: index.name
+            )
 
-        let stateManager = IndexStateManager(
-            database: ctx.database,
-            subspace: ctx.indexSubspace.subspace("_meta")
-        )
+            let stateManager = IndexStateManager(
+                database: ctx.database,
+                subspace: ctx.indexSubspace.subspace("_meta")
+            )
 
-        try await stateManager.enable(index.name)
+            try await stateManager.enable(index.name)
 
-        let indexer = OnlineIndexer(
-            database: ctx.database,
-            itemSubspace: ctx.itemSubspace,
-            indexSubspace: ctx.indexSubspace,
-            itemType: Player.persistableType,
-            index: index,
-            indexMaintainer: maintainer,
-            indexStateManager: stateManager,
-            batchSize: batchSize
-        )
+            let indexer = OnlineIndexer(
+                database: ctx.database,
+                itemSubspace: ctx.itemSubspace,
+                indexSubspace: ctx.indexSubspace,
+                blobsSubspace: ctx.blobsSubspace,
+                itemType: Player.persistableType,
+                index: index,
+                indexMaintainer: maintainer,
+                indexStateManager: stateManager,
+                batchSize: batchSize
+            )
 
-        try await indexer.buildIndex(clearFirst: true)
+            try await indexer.buildIndex(clearFirst: true)
 
-        // Verify no duplicates across batch boundaries
-        let duplicates = maintainer.getDuplicateProcessedIds()
-        #expect(duplicates.isEmpty, "Found duplicates: \(duplicates)")
+            // Verify no duplicates across batch boundaries
+            let duplicates = maintainer.getDuplicateProcessedIds()
+            #expect(duplicates.isEmpty, "Found duplicates: \(duplicates)")
 
-        // Verify all items processed
-        #expect(maintainer.getUniqueProcessedCount() == players.count)
+            // Verify all items processed
+            #expect(maintainer.getUniqueProcessedCount() == players.count)
 
-        try await ctx.cleanup()
+            try await ctx.cleanup()
+        }
     }
 
     @Test("Progress cleared after successful completion")
     func testProgressClearedAfterCompletion() async throws {
-        let ctx = try TestContext()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let ctx = try TestContext()
 
-        let players = LargeTestDataGenerator.generatePlayers(count: 25, nameLength: 50)
-        try await ctx.insertPlayers(players)
+            let players = LargeTestDataGenerator.generatePlayers(count: 25, nameLength: 50)
+            try await ctx.insertPlayers(players)
 
-        let index = TestIndex.create(name: "clear_progress_idx")
-        let maintainer = CountingIndexMaintainer<Player>(
-            indexSubspace: ctx.indexSubspace,
-            indexName: index.name
-        )
+            let index = TestIndex.create(name: "clear_progress_idx")
+            let maintainer = CountingIndexMaintainer<Player>(
+                indexSubspace: ctx.indexSubspace,
+                indexName: index.name
+            )
 
-        let stateManager = IndexStateManager(
-            database: ctx.database,
-            subspace: ctx.indexSubspace.subspace("_meta")
-        )
+            let stateManager = IndexStateManager(
+                database: ctx.database,
+                subspace: ctx.indexSubspace.subspace("_meta")
+            )
 
-        try await stateManager.enable(index.name)
+            try await stateManager.enable(index.name)
 
-        let indexer = OnlineIndexer(
-            database: ctx.database,
-            itemSubspace: ctx.itemSubspace,
-            indexSubspace: ctx.indexSubspace,
-            itemType: Player.persistableType,
-            index: index,
-            indexMaintainer: maintainer,
-            indexStateManager: stateManager,
-            batchSize: 5
-        )
+            let indexer = OnlineIndexer(
+                database: ctx.database,
+                itemSubspace: ctx.itemSubspace,
+                indexSubspace: ctx.indexSubspace,
+                blobsSubspace: ctx.blobsSubspace,
+                itemType: Player.persistableType,
+                index: index,
+                indexMaintainer: maintainer,
+                indexStateManager: stateManager,
+                batchSize: 5
+            )
 
-        try await indexer.buildIndex(clearFirst: true)
+            try await indexer.buildIndex(clearFirst: true)
 
-        // Verify progress key is cleared
-        let progressKey = ctx.indexSubspace
-            .subspace("_progress")
-            .pack(Tuple(index.name))
+            // Verify progress key is cleared
+            let progressKey = ctx.indexSubspace
+                .subspace("_progress")
+                .pack(Tuple(index.name))
 
-        let progressExists = try await ctx.database.withTransaction { tx in
-            let value = try await tx.getValue(for: progressKey, snapshot: false)
-            return value != nil
+            let progressExists = try await ctx.database.withTransaction { tx in
+                let value = try await tx.getValue(for: progressKey, snapshot: false)
+                return value != nil
+            }
+
+            #expect(!progressExists, "Progress should be cleared after completion")
+
+            try await ctx.cleanup()
         }
-
-        #expect(!progressExists, "Progress should be cleared after completion")
-
-        try await ctx.cleanup()
     }
 }

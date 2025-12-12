@@ -12,85 +12,27 @@ import TestSupport
 // MARK: - Test Model
 
 /// Game score model with time-windowed leaderboard index
-struct LeaderboardTestScore: Persistable {
-    typealias ID = String
-
+@Persistable
+struct LeaderboardTestScore {
+    #Directory<LeaderboardTestScore>("test", "leaderboard")
     var id: String = UUID().uuidString
     var playerId: String = ""
     var playerName: String = ""
     var score: Int64 = 0
     var region: String = "global"
 
-    static var persistableType: String { "LeaderboardTestScore" }
-    static var directoryPathComponents: [String] { ["test", "leaderboard"] }
-    static var allFields: [String] { ["id", "playerId", "playerName", "score", "region"] }
+    #Index<LeaderboardTestScore>(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+        scoreField: \.score,
+        window: .daily,
+        windowCount: 7
+    ))
 
-    static var indexDescriptors: [IndexDescriptor] {
-        [
-            IndexDescriptor(
-                name: "LeaderboardTestScore_score",
-                keyPaths: [\LeaderboardTestScore.score],
-                kind: TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
-                    scoreField: \.score,
-                    window: .daily,
-                    windowCount: 7
-                )
-            ),
-            IndexDescriptor(
-                name: "LeaderboardTestScore_region_score",
-                keyPaths: [\LeaderboardTestScore.region, \LeaderboardTestScore.score],
-                kind: TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
-                    scoreField: \.score,
-                    groupBy: [\.region],
-                    window: .daily,
-                    windowCount: 7
-                )
-            )
-        ]
-    }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "playerId": return playerId
-        case "playerName": return playerName
-        case "score": return score
-        case "region": return region
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<LeaderboardTestScore, Value>) -> String {
-        switch keyPath {
-        case \LeaderboardTestScore.id: return "id"
-        case \LeaderboardTestScore.playerId: return "playerId"
-        case \LeaderboardTestScore.playerName: return "playerName"
-        case \LeaderboardTestScore.score: return "score"
-        case \LeaderboardTestScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<LeaderboardTestScore>) -> String {
-        switch keyPath {
-        case \LeaderboardTestScore.id: return "id"
-        case \LeaderboardTestScore.playerId: return "playerId"
-        case \LeaderboardTestScore.playerName: return "playerName"
-        case \LeaderboardTestScore.score: return "score"
-        case \LeaderboardTestScore.region: return "region"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<LeaderboardTestScore> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+    #Index<LeaderboardTestScore>(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+        scoreField: \.score,
+        groupBy: [\.region],
+        window: .daily,
+        windowCount: 7
+    ))
 }
 
 // MARK: - Unit Tests (No FDB)
@@ -267,12 +209,18 @@ struct LeaderboardIntegrationTests {
         try await FDBTestSetup.shared.initialize()
         let database = try FDBClient.openDatabase()
         let schema = Schema([LeaderboardTestScore.self])
-        return FDBContainer(database: database, schema: schema)
+        return FDBContainer(database: database, schema: schema, security: .disabled)
+    }
+
+    private func cleanup(container: FDBContainer) async throws {
+        let directoryLayer = DirectoryLayer(database: container.database)
+        try? await directoryLayer.remove(path: ["test", "leaderboard"])
     }
 
     @Test("Insert and retrieve scores via FDBContext")
     func testInsertAndRetrieve() async throws {
         let container = try await createContainer()
+        try await cleanup(container: container)
         let context = container.newContext()
 
         let score = LeaderboardTestScore(
@@ -298,6 +246,7 @@ struct LeaderboardIntegrationTests {
     @Test("Multiple scores indexed correctly")
     func testMultipleScoresIndexed() async throws {
         let container = try await createContainer()
+        try await cleanup(container: container)
         let context = container.newContext()
 
         let scores = [
@@ -323,6 +272,7 @@ struct LeaderboardIntegrationTests {
     @Test("Scores with different regions")
     func testScoresWithDifferentRegions() async throws {
         let container = try await createContainer()
+        try await cleanup(container: container)
         let context = container.newContext()
 
         let asiaScore = LeaderboardTestScore(
@@ -358,6 +308,7 @@ struct LeaderboardIntegrationTests {
     @Test("Update score")
     func testUpdateScore() async throws {
         let container = try await createContainer()
+        try await cleanup(container: container)
         let context = container.newContext()
 
         var score = LeaderboardTestScore(
@@ -384,6 +335,7 @@ struct LeaderboardIntegrationTests {
     @Test("Delete score")
     func testDeleteScore() async throws {
         let container = try await createContainer()
+        try await cleanup(container: container)
         let context = container.newContext()
 
         let score = LeaderboardTestScore(

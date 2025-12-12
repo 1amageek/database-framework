@@ -603,6 +603,13 @@ public final class FDBContext: Sendable {
 
             let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
             let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+            let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
+
+            // Use ItemStorage for large value handling (stores chunks in blobs subspace)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
 
             for (serialized, _) in items {
                 let modelType = type(of: serialized.model)
@@ -610,8 +617,8 @@ public final class FDBContext: Sendable {
                 let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let polyKey = typeCodeSubspace.pack(serialized.idTuple)
 
-                // Write using pre-serialized data (no re-serialization)
-                transaction.setValue(serialized.data, for: polyKey)
+                // Write using pre-serialized data (handles compression + external storage for >90KB)
+                try await storage.write(serialized.data, for: polyKey)
             }
         }
 
@@ -621,6 +628,13 @@ public final class FDBContext: Sendable {
 
             let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
             let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+            let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
+
+            // Use ItemStorage for large value handling
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
 
             for (model, idTuple, _) in items {
                 let modelType = type(of: model)
@@ -628,7 +642,8 @@ public final class FDBContext: Sendable {
                 let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let polyKey = typeCodeSubspace.pack(idTuple)
 
-                transaction.clear(key: polyKey)
+                // Delete (handles external blob chunks)
+                try await storage.delete(for: polyKey)
             }
         }
     }
@@ -1067,10 +1082,17 @@ extension FDBContext {
         // Resolve polymorphic directory
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         var results: [any Persistable] = []
 
         try await container.database.withTransaction { transaction in
+            // Use ItemStorage.scan to properly handle external (large) values
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+
             // Scan all type codes for this protocol
             for entity in conformingEntities {
                 guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
@@ -1080,17 +1102,10 @@ extension FDBContext {
                 let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let (begin, end) = typeSubspace.range()
 
-                let sequence = transaction.getRange(
-                    from: begin,
-                    to: end,
-                    snapshot: true,
-                    streamingMode: .wantAll
-                )
-
-                for try await (_, value) in sequence {
-                    // Deserialize using the concrete type
+                // ItemStorage.scan handles both inline and external (split) values transparently
+                for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
                     let item = try self.deserializePolymorphic(
-                        bytes: Array(value),
+                        bytes: data,
                         as: codableType
                     )
                     // Security: Evaluate GET for each retrieved item
@@ -1127,10 +1142,17 @@ extension FDBContext {
 
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
         let result: (any Persistable)? = try await container.database.withTransaction { transaction in
+            // Use ItemStorage for proper handling of large values
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+
             for entity in conformingEntities {
                 guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
                 let typeCode = polyType.typeCode(for: entity.name)
@@ -1139,9 +1161,9 @@ extension FDBContext {
                 let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let key = typeSubspace.pack(idTuple)
 
-                if let value = try await transaction.getValue(for: key, snapshot: true) {
+                if let data = try await storage.read(for: key) {
                     let item = try self.deserializePolymorphic(
-                        bytes: Array(value),
+                        bytes: data,
                         as: codableType
                     )
                     return item
@@ -1210,6 +1232,7 @@ extension FDBContext {
 
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
 
         let validatedID = try item.validateIDForStorage()
@@ -1219,8 +1242,12 @@ extension FDBContext {
         let data = try DataAccess.serialize(item)
 
         // Security: Check if this is CREATE or UPDATE
-        let oldData = try await container.database.withTransaction { transaction in
-            try await transaction.getValue(for: key, snapshot: false)
+        let oldData: FDB.Bytes? = try await container.database.withTransaction { transaction in
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            return try await storage.read(for: key)
         }
         if let oldBytes = oldData {
             let oldItem: T = try DataAccess.deserialize(oldBytes)
@@ -1230,7 +1257,12 @@ extension FDBContext {
         }
 
         try await container.database.withTransaction { transaction in
-            transaction.setValue(data, for: key)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            // Save (handles compression + external storage for >90KB)
+            try await storage.write(data, for: key)
         }
     }
 
@@ -1273,21 +1305,31 @@ extension FDBContext {
 
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
 
         let idTuple = Tuple([id])
         let key = typeSubspace.pack(idTuple)
 
         // Security: Fetch existing item to evaluate DELETE permission
-        if let oldData = try await container.database.withTransaction({ transaction in
-            try await transaction.getValue(for: key, snapshot: false)
+        if let oldData: FDB.Bytes = try await container.database.withTransaction({ transaction in
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            return try await storage.read(for: key)
         }) {
             let oldItem: T = try DataAccess.deserialize(oldData)
             try container.securityDelegate?.evaluateDelete(oldItem)
         }
 
         try await container.database.withTransaction { transaction in
-            transaction.clear(key: key)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            // Delete (handles external blob chunks)
+            try await storage.delete(for: key)
         }
     }
 }

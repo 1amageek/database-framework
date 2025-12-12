@@ -97,39 +97,54 @@ public protocol ModelPersistenceHandler: Sendable {
 ### FDBPersistenceHandler Implementation
 
 ```swift
-// Sources/DatabaseEngine/FDBPersistenceHandler.swift
+// Sources/DatabaseEngine/Persistence/FDBPersistenceHandler.swift
 
 /// FDBContext を使用した ModelPersistenceHandler 実装
-internal struct FDBPersistenceHandler: ModelPersistenceHandler {
-    let context: FDBContext
+///
+/// container.store(for:) を使用してDataStoreを取得し、
+/// executeBatchInTransaction で操作を実行する。
+public struct FDBPersistenceHandler: ModelPersistenceHandler {
+    private let context: FDBContext
 
-    func save(_ model: any Persistable, transaction: any TransactionProtocol) async throws {
-        let modelType = type(of: model)
-        let subspace = try await context.container.resolveDirectory(for: modelType)
-        let store = FDBDataStore(
-            database: context.container.database,
-            subspace: subspace,
-            schema: context.container.schema
-        )
-        let encoder = ProtobufEncoder()
-        try await context.saveModel(model, store: store, transaction: transaction, encoder: encoder)
+    internal init(context: FDBContext) {
+        self.context = context
     }
 
-    func delete(_ model: any Persistable, transaction: any TransactionProtocol) async throws {
+    public func save(
+        _ model: any Persistable,
+        transaction: any TransactionProtocol
+    ) async throws {
         let modelType = type(of: model)
-        let subspace = try await context.container.resolveDirectory(for: modelType)
-        let store = FDBDataStore(
-            database: context.container.database,
-            subspace: subspace,
-            schema: context.container.schema
+        let store = try await context.container.store(for: modelType)
+        try await store.executeBatchInTransaction(
+            inserts: [model],
+            deletes: [],
+            transaction: transaction
         )
-        try await context.deleteModel(model, store: store, transaction: transaction)
     }
 
-    func load(_ typeName: String, id: Tuple, transaction: any TransactionProtocol) async throws -> (any Persistable)? {
+    public func delete(
+        _ model: any Persistable,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let modelType = type(of: model)
+        let store = try await context.container.store(for: modelType)
+        try await store.executeBatchInTransaction(
+            inserts: [],
+            deletes: [model],
+            transaction: transaction
+        )
+    }
+
+    public func load(
+        _ typeName: String,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> (any Persistable)? {
         guard let entity = context.container.schema.entities.first(where: { $0.name == typeName }) else {
             return nil
         }
+
         let subspace = try await context.container.resolveDirectory(for: entity.persistableType)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let typeSubspace = itemSubspace.subspace(typeName)
@@ -240,8 +255,14 @@ import Core
 
 extension FDBContext {
     /// Relationship ルールを適用して削除
+    ///
+    /// DataStore.withRawTransaction を使用してトランザクションを取得し、
+    /// RelationshipMaintainer を使用して削除ルールを適用する。
     public func deleteEnforcingRelationshipRules<T: Persistable>(_ model: T) async throws {
-        try await container.database.withTransaction { transaction in
+        // 任意の store から withRawTransaction を取得
+        let store = try await container.store(for: T.self)
+
+        try await store.withRawTransaction { transaction in
             let subspace = try await self.container.resolveDirectory(for: T.self)
             let indexSubspace = subspace.subspace(SubspaceKey.indexes)
             let itemSubspace = subspace.subspace(SubspaceKey.items)

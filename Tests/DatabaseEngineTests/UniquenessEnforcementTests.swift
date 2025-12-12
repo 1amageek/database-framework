@@ -52,7 +52,8 @@ struct UniquenessEnforcementTests {
 
         return FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
     }
 

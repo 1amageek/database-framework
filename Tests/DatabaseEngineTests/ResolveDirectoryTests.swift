@@ -57,7 +57,8 @@ struct ResolveDirectoryTests {
 
         return FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
     }
 
@@ -207,8 +208,8 @@ struct ResolveDirectoryTests {
 
         let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
-        let container1 = FDBContainer(database: database, schema: schema)
-        let container2 = FDBContainer(database: database, schema: schema)
+        let container1 = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container2 = FDBContainer(database: database, schema: schema, security: .disabled)
 
         let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
         let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

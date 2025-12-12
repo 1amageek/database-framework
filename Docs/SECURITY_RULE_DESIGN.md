@@ -39,20 +39,36 @@ Protocol ベースの宣言的アクセス制御システム。
 │  ┌────────────────────────────────────────────────────────────┐ │
 │  │                    DatabaseEngine                           │ │
 │  │                                                             │ │
+│  │  AuthContextKey.$current.withValue(auth) {                  │ │
+│  │      // リクエストスコープで認証情報を設定                     │ │
+│  │  }                                                          │ │
+│  │                                                             │ │
 │  │  ┌───────────────────────────────────────────────────────┐ │ │
-│  │  │                  FDBContainer                          │ │ │
-│  │  │  - securityConfiguration                               │ │ │
+│  │  │ FDBContainer (Resource Manager)                        │ │ │
+│  │  │  - securityDelegate: DataStoreSecurityDelegate?        │ │ │
+│  │  │  - schema, database                                    │ │ │
 │  │  └───────────────────────────────────────────────────────┘ │ │
 │  │           ↓                                                 │ │
-│  │  ┌─────────────────┐                                       │ │
-│  │  │ FDBContext      │ ← fetch/insert/delete/save            │ │
-│  │  │ + Auth          │                                       │ │
-│  │  └────────┬────────┘                                       │ │
+│  │  ┌───────────────────────────────────────────────────────┐ │ │
+│  │  │ FDBContext (User-Facing API)                           │ │ │
+│  │  │  - insert(), delete(), fetch(), save()                 │ │ │
+│  │  │  ❌ Does NOT handle security directly                   │ │ │
+│  │  └───────────────────────────────────────────────────────┘ │ │
 │  │           ↓                                                 │ │
-│  │  ┌─────────────────┐                                       │ │
-│  │  │ SecurityPolicy  │ ← 型ごとに実装                         │ │
-│  │  │ (Protocol)      │                                       │ │
-│  │  └─────────────────┘                                       │ │
+│  │  ┌───────────────────────────────────────────────────────┐ │ │
+│  │  │ FDBDataStore (Data Operations + Security Evaluation)   │ │ │
+│  │  │  - securityDelegate?.evaluateGet(resource)             │ │ │
+│  │  │  - securityDelegate?.evaluateCreate(resource)          │ │ │
+│  │  │  - securityDelegate?.evaluateUpdate(old, new)          │ │ │
+│  │  │  - securityDelegate?.evaluateDelete(resource)          │ │ │
+│  │  │  - securityDelegate?.evaluateList(type, limit, ...)    │ │ │
+│  │  └───────────────────────────────────────────────────────┘ │ │
+│  │           ↓                                                 │ │
+│  │  ┌───────────────────────────────────────────────────────┐ │ │
+│  │  │ DataStoreSecurityDelegate                              │ │ │
+│  │  │  - AuthContextKey.current で認証情報を取得             │ │ │
+│  │  │  - SecurityPolicy に委譲して評価                       │ │ │
+│  │  └───────────────────────────────────────────────────────┘ │ │
 │  │                                                             │ │
 │  └────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────┘
@@ -67,6 +83,16 @@ Protocol ベースの宣言的アクセス制御システム。
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### 責務分離
+
+| コンポーネント | 責務 |
+|--------------|------|
+| `FDBContainer` | リソース管理（securityDelegate 保持） |
+| `FDBContext` | ユーザー向け API（セキュリティ評価なし） |
+| `FDBDataStore` | データ操作 + セキュリティ評価の呼び出し |
+| `DataStoreSecurityDelegate` | セキュリティ評価（SecurityPolicy に委譲） |
+| `AuthContextKey` | TaskLocal で認証情報を管理 |
+
 ## モジュール配置
 
 ```
@@ -75,14 +101,14 @@ database-kit (クライアント共有)
     └── Security/
         ├── SecurityPolicy.swift       # Protocol 定義
         ├── SecurityQuery.swift        # クエリ情報
-        └── AuthContext.swift          # 認証コンテキスト
+        ├── AuthContext.swift          # 認証コンテキスト
+        └── SecurityError.swift        # エラー型
 
 database-framework (サーバー専用)
 └── DatabaseEngine/
     └── Security/
         ├── SecurityConfiguration.swift
-        ├── SecurityError.swift
-        └── FDBContext+Security.swift
+        └── DataStoreSecurityDelegate.swift  # Delegate + TaskLocal + 実装
 ```
 
 ## Core Types（database-kit）
@@ -307,179 +333,141 @@ public struct SecurityError: Error, Sendable {
 }
 ```
 
-### FDBContext + Security
+### DataStoreSecurityDelegate
 
 ```swift
-extension FDBContext {
+/// DataStore のセキュリティ評価を担当するデリゲート
+///
+/// **設計ポイント**:
+/// - DataStore が保持し、各操作前に呼び出す
+/// - 認証情報は TaskLocal (AuthContextKey.current) から取得
+/// - SecurityPolicy に委譲して評価
+public protocol DataStoreSecurityDelegate: Sendable {
+    func evaluateList<T: Persistable>(type: T.Type, limit: Int?, offset: Int?, orderBy: [String]?) throws
+    func evaluateGet(_ resource: any Persistable) throws
+    func evaluateCreate(_ resource: any Persistable) throws
+    func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws
+    func evaluateDelete(_ resource: any Persistable) throws
+    func requireAdmin(operation: String, targetType: String) throws
+}
+```
 
-    // MARK: - Public API
+### AuthContextKey（TaskLocal）
 
-    /// 認証コンテキストを設定
-    public var auth: (any AuthContext)? {
-        get { _auth }
-        set { _auth = newValue }
+```swift
+/// リクエストスコープで認証情報を管理
+///
+/// **Usage**:
+/// ```swift
+/// // リクエストハンドラで設定
+/// try await AuthContextKey.$current.withValue(userAuth) {
+///     let context = container.newContext()
+///     try await context.save()  // DataStore がセキュリティ評価時に参照
+/// }
+/// ```
+public enum AuthContextKey {
+    @TaskLocal public static var current: (any AuthContext)?
+}
+```
+
+### DefaultSecurityDelegate
+
+```swift
+/// デフォルトのセキュリティ評価実装
+public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable {
+    private let configuration: SecurityConfiguration
+
+    public init(configuration: SecurityConfiguration) {
+        self.configuration = configuration
     }
 
-    // MARK: - Internal Evaluation
+    /// TaskLocal から認証情報を取得
+    private var auth: (any AuthContext)? {
+        AuthContextKey.current
+    }
 
-    /// Get 操作のセキュリティ評価
-    internal func evaluateGetSecurity<T: SecurityPolicy>(resource: T) throws {
-        guard shouldEvaluate() else { return }
+    private var shouldEvaluate: Bool {
+        guard configuration.isEnabled else { return false }
+        guard let auth else { return true }
+        return auth.roles.isDisjoint(with: configuration.adminRoles)
+    }
 
-        guard T.allowGet(resource: resource, auth: auth) else {
+    public func evaluateGet(_ resource: any Persistable) throws {
+        guard shouldEvaluate else { return }
+        let modelType = type(of: resource)
+        guard let secureType = modelType as? any SecurityPolicy.Type else { return }
+
+        let allowed = secureType._evaluateGet(resource: resource, auth: auth)
+        guard allowed else {
             throw SecurityError(
                 operation: .get,
-                targetType: T.persistableType,
+                targetType: modelType.persistableType,
                 reason: "Access denied: get operation not allowed"
             )
         }
     }
 
-    /// List 操作のセキュリティ評価
-    ///
-    /// QueryBuilder から呼び出される。クエリパラメータを SecurityQuery に変換して評価。
-    internal func evaluateListSecurity<T: SecurityPolicy>(
-        type: T.Type,
-        limit: Int?,
-        offset: Int?,
-        orderBy: [String]?
-    ) throws {
-        guard shouldEvaluate() else { return }
-
-        let query = SecurityQuery<T>(limit: limit, offset: offset, orderBy: orderBy)
-        guard T.allowList(query: query, auth: auth) else {
-            throw SecurityError(
-                operation: .list,
-                targetType: T.persistableType,
-                reason: "Access denied: list operation not allowed"
-            )
-        }
-    }
-
-    /// Create 操作のセキュリティ評価
-    internal func evaluateCreateSecurity<T: SecurityPolicy>(newResource: T) throws {
-        guard shouldEvaluate() else { return }
-
-        guard T.allowCreate(newResource: newResource, auth: auth) else {
-            throw SecurityError(
-                operation: .create,
-                targetType: T.persistableType,
-                reason: "Access denied: create operation not allowed"
-            )
-        }
-    }
-
-    /// Update 操作のセキュリティ評価
-    internal func evaluateUpdateSecurity<T: SecurityPolicy>(resource: T, newResource: T) throws {
-        guard shouldEvaluate() else { return }
-
-        guard T.allowUpdate(resource: resource, newResource: newResource, auth: auth) else {
-            throw SecurityError(
-                operation: .update,
-                targetType: T.persistableType,
-                reason: "Access denied: update operation not allowed"
-            )
-        }
-    }
-
-    /// Delete 操作のセキュリティ評価
-    internal func evaluateDeleteSecurity<T: SecurityPolicy>(resource: T) throws {
-        guard shouldEvaluate() else { return }
-
-        guard T.allowDelete(resource: resource, auth: auth) else {
-            throw SecurityError(
-                operation: .delete,
-                targetType: T.persistableType,
-                reason: "Access denied: delete operation not allowed"
-            )
-        }
-    }
-
-    // MARK: - Private Helpers
-
-    /// 評価が必要か判定
-    private func shouldEvaluate() -> Bool {
-        // セキュリティ無効
-        guard container.securityConfiguration.isEnabled else { return false }
-
-        // Admin はスキップ
-        if isAdmin(auth) { return false }
-
-        return true
-    }
-
-    /// Admin 判定
-    ///
-    /// auth.roles と adminRoles の交差があれば Admin
-    private func isAdmin(_ auth: (any AuthContext)?) -> Bool {
-        guard let auth else { return false }
-        let adminRoles = container.securityConfiguration.adminRoles
-        return !auth.roles.isDisjoint(with: adminRoles)
-    }
+    // 他のメソッドも同様のパターン...
 }
 ```
 
-### QueryBuilder での List 評価
+### DisabledSecurityDelegate
 
 ```swift
-/// QueryBuilder は execute() 時にセキュリティ評価を呼び出す
-public struct QueryBuilder<T: Persistable> {
-    private let context: FDBContext
-    private var limitValue: Int?
-    private var offsetValue: Int?
-    private var orderByFields: [String]?
+/// セキュリティ無効（テスト専用）
+///
+/// **Warning**: 本番環境では使用禁止
+public final class DisabledSecurityDelegate: DataStoreSecurityDelegate, Sendable {
+    public init() {}
 
-    public func limit(_ n: Int) -> Self {
-        var copy = self
-        copy.limitValue = n
-        return copy
-    }
-
-    public func execute() async throws -> [T] {
-        // SecurityPolicy 準拠型の場合のみ評価
-        try context.evaluateListSecurityIfNeeded(
-            type: T.self,
-            limit: limitValue,
-            offset: offsetValue,
-            orderBy: orderByFields
-        )
-
-        // 実際のクエリ実行...
-    }
+    public func evaluateList<T: Persistable>(type: T.Type, limit: Int?, offset: Int?, orderBy: [String]?) throws {}
+    public func evaluateGet(_ resource: any Persistable) throws {}
+    public func evaluateCreate(_ resource: any Persistable) throws {}
+    public func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws {}
+    public func evaluateDelete(_ resource: any Persistable) throws {}
+    public func requireAdmin(operation: String, targetType: String) throws {}
 }
+```
 
-// FDBContext 側で型チェックを行う
-extension FDBContext {
-    /// SecurityPolicy 準拠型の場合のみ List セキュリティを評価
-    ///
-    /// Persistable 全般を受け付け、SecurityPolicy 準拠の場合のみ評価する。
-    internal func evaluateListSecurityIfNeeded<T: Persistable>(
-        type: T.Type,
-        limit: Int?,
-        offset: Int?,
-        orderBy: [String]?
-    ) throws {
-        // SecurityPolicy に準拠していない型はスキップ
-        guard let secureType = T.self as? any SecurityPolicy.Type else { return }
+### FDBDataStore でのセキュリティ呼び出し
 
-        guard shouldEvaluate() else { return }
+```swift
+// FDBDataStore 内部
+internal final class FDBDataStore: DataStore {
+    let securityDelegate: (any DataStoreSecurityDelegate)?
 
-        // プロトコル要件として定義された _evaluateList を呼び出し
-        // （プロトコル要件なので any SecurityPolicy.Type から呼び出し可能）
-        let allowed = secureType._evaluateList(
-            limit: limit,
-            offset: offset,
-            orderBy: orderBy,
-            auth: auth
-        )
+    func fetch<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws -> T? {
+        // ... データ取得 ...
 
-        guard allowed else {
-            throw SecurityError(
-                operation: .list,
-                targetType: T.persistableType,
-                reason: "Access denied: list operation not allowed"
-            )
+        // 取得後にセキュリティ評価
+        if let result = result {
+            try securityDelegate?.evaluateGet(result)
         }
+        return result
+    }
+
+    func executeBatchInTransaction(
+        inserts: [any Persistable],
+        deletes: [any Persistable],
+        transaction: any TransactionProtocol
+    ) async throws -> [SerializedModel] {
+        // Delete のセキュリティ評価
+        for model in deletes {
+            try securityDelegate?.evaluateDelete(model)
+        }
+
+        // Insert/Update のセキュリティ評価
+        for model in inserts {
+            // 既存レコードがあれば UPDATE、なければ CREATE
+            if let oldData = try await transaction.getValue(for: key, snapshot: false) {
+                let oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
+                try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
+            } else {
+                try securityDelegate?.evaluateCreate(model)
+            }
+        }
+
+        // ... データ保存 ...
     }
 }
 ```
@@ -653,16 +641,57 @@ extension Post: SecurityPolicy {
 ## 評価フロー
 
 ```
+リクエストハンドラ: AuthContextKey.$current.withValue(userAuth) { ... }
+         ↓
 context.fetch(Post.self, id: "xxx")
          ↓
 ┌────────────────────────────────────────────────────────────────┐
 │  FDBContext                                                     │
+│  → store.fetch(Post.self, id: "xxx") を呼び出し                │
+└────────────────────────────────────────────────────────────────┘
+         ↓
+┌────────────────────────────────────────────────────────────────┐
+│  FDBDataStore                                                   │
 │                                                                │
-│  1. セキュリティ有効？ → 無効ならスキップ                         │
-│  2. Admin？ → Admin ならスキップ                                │
+│  1. FoundationDB からデータ取得                                 │
+│  2. securityDelegate?.evaluateGet(result) を呼び出し           │
+└────────────────────────────────────────────────────────────────┘
+         ↓
+┌────────────────────────────────────────────────────────────────┐
+│  DefaultSecurityDelegate                                        │
+│                                                                │
+│  1. shouldEvaluate チェック                                     │
+│     - configuration.isEnabled？ → 無効ならスキップ             │
+│     - isAdmin(auth)？ → Admin ならスキップ                      │
+│  2. auth = AuthContextKey.current                              │
 │  3. Post.allowGet(resource: post, auth: auth)                  │
-│     → true: 返す                                                │
+│     → true: 処理続行                                            │
 │     → false: SecurityError を throw                            │
+│                                                                │
+└────────────────────────────────────────────────────────────────┘
+```
+
+### save() の評価フロー
+
+```
+context.insert(newPost)
+context.save()
+         ↓
+┌────────────────────────────────────────────────────────────────┐
+│  FDBContext.save()                                              │
+│  → anyStore.withRawTransaction { transaction in                │
+│        store.executeBatchInTransaction(inserts, deletes, tx)   │
+│    }                                                           │
+└────────────────────────────────────────────────────────────────┘
+         ↓
+┌────────────────────────────────────────────────────────────────┐
+│  FDBDataStore.executeBatchInTransaction()                       │
+│                                                                │
+│  1. DELETE: securityDelegate?.evaluateDelete(model)            │
+│  2. INSERT/UPDATE:                                              │
+│     - 既存データあり → securityDelegate?.evaluateUpdate(old,new)│
+│     - 新規 → securityDelegate?.evaluateCreate(model)           │
+│  3. データ保存、インデックス更新                                │
 │                                                                │
 └────────────────────────────────────────────────────────────────┘
 ```

@@ -165,6 +165,7 @@ private struct GraphTestContext {
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace
+    let blobsSubspace: Subspace
     let maintainer: GraphIndexMaintainer<GraphTestFollow>
     let strategy: GraphIndexStrategy
 
@@ -175,6 +176,7 @@ private struct GraphTestContext {
         self.subspace = Subspace(prefix: Tuple("test", "graph_fusion", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.itemsSubspace = subspace.subspace("R")
+        self.blobsSubspace = subspace.subspace("B")
 
         let kind = GraphIndexKind<GraphTestFollow>(
             from: \.follower,
@@ -223,7 +225,9 @@ private struct GraphTestContext {
                 "followee": follow.followee,
                 "edgeType": follow.edgeType
             ])
-            transaction.setValue(Array(data), for: itemKey)
+
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            try await storage.write(Array(data), for: itemKey)
 
             try await maintainer.updateIndex(
                 oldItem: nil,

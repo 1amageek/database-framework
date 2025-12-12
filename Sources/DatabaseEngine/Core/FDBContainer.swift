@@ -203,6 +203,9 @@ public final class FDBContainer: Sendable {
         for component in pathComponents {
             if let pathElement = component as? Path {
                 path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                // Support direct String values (String conforms to DirectoryPathElement)
+                path.append(stringElement)
             } else {
                 throw FDBRuntimeError.internalError(
                     "Type \(type.persistableType) has dynamic directory path (Field components). " +
@@ -244,6 +247,9 @@ public final class FDBContainer: Sendable {
         for component in pathComponents {
             if let pathElement = component as? Path {
                 path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                // Support direct String values (String conforms to DirectoryPathElement)
+                path.append(stringElement)
             } else {
                 throw FDBRuntimeError.internalError(
                     "Type \(type.persistableType) has dynamic directory path (Field components)."
@@ -626,7 +632,8 @@ extension FDBContainer {
             let dirSubspace = try await directoryLayer.createOrOpen(path: [entity.name])
             let info = MigrationStoreInfo(
                 subspace: dirSubspace.subspace,
-                indexSubspace: dirSubspace.subspace.subspace("I")
+                indexSubspace: dirSubspace.subspace.subspace(SubspaceKey.indexes),
+                blobsSubspace: dirSubspace.subspace.subspace(SubspaceKey.blobs)
             )
             registry[entity.name] = info
         }

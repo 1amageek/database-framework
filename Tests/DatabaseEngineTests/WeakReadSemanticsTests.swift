@@ -290,7 +290,7 @@ struct WeakReadSemanticsTests {
             version: Schema.Version(1, 0, 0)
         )
 
-        let container = FDBContainer(database: database, schema: schema)
+        let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
         // Container should have a ReadVersionCache
         #expect(container.readVersionCache.getCachedVersion(semantics: .relaxed) == nil)

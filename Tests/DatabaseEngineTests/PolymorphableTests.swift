@@ -200,7 +200,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Create article (has own directory - triggers dual-write)
@@ -243,7 +243,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Create and save article
@@ -294,7 +294,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Clean up any leftover data from previous test runs
@@ -350,7 +350,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Create article and report
@@ -398,7 +398,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self, TestMemo.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Create memo (not polymorphic)
@@ -447,7 +447,7 @@ struct PolymorphableFDBTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try FDBClient.openDatabase()
             let schema = Schema([TestArticle.self, TestReport.self])
-            let container = FDBContainer(database: database, schema: schema)
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
             let context = container.newContext()
 
             // Create report (no own directory - single write to polymorphic directory)

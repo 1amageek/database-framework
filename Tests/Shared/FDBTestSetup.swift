@@ -30,6 +30,7 @@ public actor FDBTestSetup {
     }
 
     private var initState: InitState = .uninitialized
+    private var didCleanupTestDirectories: Bool = false
 
     /// Queue of waiting test continuations for serialization
     private var waitingTests: [CheckedContinuation<Void, Never>] = []
@@ -43,6 +44,11 @@ public actor FDBTestSetup {
     public func initialize() async throws {
         switch initState {
         case .initialized:
+            // Best-effort cleanup may not have run yet if initialization succeeded
+            // via an in-flight continuation.
+            if !didCleanupTestDirectories {
+                await cleanupTestDirectoriesBestEffort()
+            }
             return
 
         case .failed(let error):
@@ -59,6 +65,7 @@ public actor FDBTestSetup {
 
             do {
                 try await FDBClient.initialize()
+                await cleanupTestDirectoriesBestEffort()
                 if case .initializing(let continuations) = initState {
                     initState = .initialized
                     for continuation in continuations {
@@ -78,6 +85,24 @@ public actor FDBTestSetup {
                 }
                 throw error
             }
+        }
+    }
+
+    /// Best-effort cleanup for stale local test data.
+    ///
+    /// This project intentionally dropped backward compatibility for old item formats.
+    /// If an older test run left data in FoundationDB, new tests can fail when scanning items.
+    /// We therefore delete the common `["test"]` DirectoryLayer root once per process.
+    private func cleanupTestDirectoriesBestEffort() async {
+        guard !didCleanupTestDirectories else { return }
+        didCleanupTestDirectories = true
+
+        do {
+            let database = try FDBClient.openDatabase()
+            let directoryLayer = DirectoryLayer(database: database)
+            try? await directoryLayer.remove(path: ["test"])
+        } catch {
+            // Ignore cleanup failures; tests will surface real issues.
         }
     }
 

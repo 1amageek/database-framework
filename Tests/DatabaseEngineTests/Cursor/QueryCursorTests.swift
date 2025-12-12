@@ -35,13 +35,13 @@ struct QueryCursorTests {
         let database = try FDBClient.openDatabase()
 
         let schema = Schema([PaginatedUser.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema)
+        return FDBContainer(database: database, schema: schema, security: .disabled)
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        try await context.deleteAll(PaginatedUser.self)
-        try await context.save()
+        // Use DirectoryLayer to remove the whole directory (handles old format data too)
+        let directoryLayer = DirectoryLayer(database: container.database)
+        try? await directoryLayer.remove(path: ["test", "cursor", "users"])
     }
 
     private func seedUsers(context: FDBContext, count: Int) async throws -> [PaginatedUser] {

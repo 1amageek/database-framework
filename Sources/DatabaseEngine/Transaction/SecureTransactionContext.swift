@@ -16,6 +16,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     private let transaction: any TransactionProtocol
     private let itemSubspace: Subspace
     private let indexSubspace: Subspace
+    private let blobsSubspace: Subspace
     private let indexMaintenanceService: IndexMaintenanceService
     private let securityDelegate: (any DataStoreSecurityDelegate)?
 
@@ -25,12 +26,14 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         transaction: any TransactionProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         indexMaintenanceService: IndexMaintenanceService,
         securityDelegate: (any DataStoreSecurityDelegate)?
     ) {
         self.transaction = transaction
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
+        self.blobsSubspace = blobsSubspace
         self.indexMaintenanceService = indexMaintenanceService
         self.securityDelegate = securityDelegate
     }
@@ -46,7 +49,12 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        guard let bytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
+        // Use ItemStorage with snapshot semantics properly propagated
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        guard let bytes = try await storage.read(for: key, snapshot: snapshot) else {
             return nil
         }
 
@@ -79,8 +87,14 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
+        // Use ItemStorage for large value handling (stores chunks in blobs subspace)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+
         // Get existing record for CREATE/UPDATE determination and index updates
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
+        let oldData = try await storage.read(for: key)
         let oldModel: T? = oldData.flatMap { try? DataAccess.deserialize($0) }
 
         // Security evaluation
@@ -90,9 +104,9 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
             try securityDelegate?.evaluateCreate(model)
         }
 
-        // Serialize and save
+        // Serialize and save (handles compression + external storage for >90KB)
         let data = try DataAccess.serialize(model)
-        transaction.setValue(data, for: key)
+        try await storage.write(data, for: key)
 
         // Update indexes
         try await updateScalarIndexes(oldModel: oldModel, newModel: model, id: idTuple)
@@ -111,8 +125,12 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         // Remove index entries first
         try await updateScalarIndexes(oldModel: model, newModel: nil as T?, id: idTuple)
 
-        // Delete the record
-        transaction.clear(key: key)
+        // Delete the record (handles external blob chunks)
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace
+        )
+        try await storage.delete(for: key)
     }
 
     public func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {

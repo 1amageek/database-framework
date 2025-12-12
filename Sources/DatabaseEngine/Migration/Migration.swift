@@ -79,9 +79,13 @@ public struct MigrationStoreInfo: Sendable {
     /// Index subspace for the store
     public let indexSubspace: Subspace
 
-    public init(subspace: Subspace, indexSubspace: Subspace) {
+    /// Blobs subspace for the store (large value chunks)
+    public let blobsSubspace: Subspace
+
+    public init(subspace: Subspace, indexSubspace: Subspace, blobsSubspace: Subspace) {
         self.subspace = subspace
         self.indexSubspace = indexSubspace
+        self.blobsSubspace = blobsSubspace
     }
 }
 
@@ -233,6 +237,7 @@ public struct MigrationContext: Sendable {
                 database: database,
                 itemSubspace: itemSubspace,
                 indexSubspace: info.indexSubspace,
+                blobsSubspace: info.blobsSubspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
                 batchSize: batchSize,
@@ -402,6 +407,7 @@ public struct MigrationContext: Sendable {
                 database: database,
                 itemSubspace: itemSubspace,
                 indexSubspace: info.indexSubspace,
+                blobsSubspace: info.blobsSubspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
                 batchSize: batchSize,
@@ -494,9 +500,14 @@ public struct MigrationContext: Sendable {
         let data = try encoder.encode(item)
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
         try await database.withTransaction { transaction in
-            transaction.setValue(Array(data), for: itemKey)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.write(Array(data), for: itemKey)
         }
     }
 
@@ -518,9 +529,14 @@ public struct MigrationContext: Sendable {
 
         let validatedID = try item.validateIDForStorage()
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
         try await database.withTransaction { transaction in
-            transaction.clear(key: itemKey)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace
+            )
+            try await storage.delete(for: itemKey)
         }
     }
 
@@ -543,6 +559,7 @@ public struct MigrationContext: Sendable {
         }
 
         let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
         let encoder = ProtobufEncoder()  // Reuse across all batches (Sendable)
 
         // Process in batches
@@ -552,11 +569,15 @@ public struct MigrationContext: Sendable {
 
             try await database.withTransaction { transaction in
                 try transaction.setOption(forOption: .priorityBatch)
+                let storage = ItemStorage(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
                 for item in batch {
                     let data = try encoder.encode(item)
                     let validatedID = try item.validateIDForStorage()
                     let itemKey = itemSubspace.pack(Tuple(validatedID))
-                    transaction.setValue(Array(data), for: itemKey)
+                    try await storage.write(Array(data), for: itemKey)
                 }
             }
         }
@@ -581,6 +602,7 @@ public struct MigrationContext: Sendable {
         }
 
         let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
@@ -589,10 +611,14 @@ public struct MigrationContext: Sendable {
 
             try await database.withTransaction { transaction in
                 try transaction.setOption(forOption: .priorityBatch)
+                let storage = ItemStorage(
+                    transaction: transaction,
+                    blobsSubspace: blobsSubspace
+                )
                 for item in batch {
                     let validatedID = try item.validateIDForStorage()
                     let itemKey = itemSubspace.pack(Tuple(validatedID))
-                    transaction.clear(key: itemKey)
+                    try await storage.delete(for: itemKey)
                 }
             }
         }
@@ -821,7 +847,7 @@ struct SendableDatabase: @unchecked Sendable {
 ///
 /// This struct encapsulates all the state needed for async enumeration
 /// in a Sendable-safe way.
-private struct ItemEnumerator<T: Persistable>: Sendable {
+	private struct ItemEnumerator<T: Persistable>: Sendable {
     let itemType: String
     let storeRegistry: [String: MigrationStoreInfo]
     let database: SendableDatabase
@@ -834,7 +860,7 @@ private struct ItemEnumerator<T: Persistable>: Sendable {
         self.batchSize = batchSize
     }
 
-    func makeStream() -> AsyncThrowingStream<T, Error> {
+	    func makeStream() -> AsyncThrowingStream<T, Error> {
         // Capture properties in local variables for sendability
         let itemType = self.itemType
         let storeRegistry = self.storeRegistry
@@ -852,43 +878,45 @@ private struct ItemEnumerator<T: Persistable>: Sendable {
                         return
                     }
 
-                    // Build prefix for item scanning
-                    let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
-                    let (beginKey, endKey) = itemPrefix.range()
+	                    // Build prefix for item scanning
+	                    let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+	                    let (beginKey, endKey) = itemPrefix.range()
+	                    let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-                    var lastKey: FDB.Bytes? = nil
-                    let decoder = ProtobufDecoder()
+	                    var lastKey: FDB.Bytes? = nil
+	                    let decoder = ProtobufDecoder()
 
                     while !Task.isCancelled {
                         // Capture lastKey for Sendable closure
                         let currentLastKey = lastKey
 
-                        // Each batch is a separate transaction
-                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction { transaction in
-                            try transaction.setOption(forOption: .priorityBatch)
-                            let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
+	                        // Each batch is a separate transaction
+	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction { transaction in
+	                            try transaction.setOption(forOption: .priorityBatch)
+	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
 
-                            var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
-                            // Use limit and wantAll mode for efficient batch enumeration
-                            let sequence = transaction.getRange(
-                                from: .firstGreaterOrEqual(rangeBegin),
-                                to: .firstGreaterOrEqual(endKey),
-                                limit: batchSize,
-                                snapshot: true,
-                                streamingMode: .wantAll
-                            )
+	                            let storage = ItemStorage(
+	                                transaction: transaction,
+	                                blobsSubspace: blobsSubspace
+	                            )
 
-                            for try await (key, value) in sequence {
-                                results.append((key: key, value: value))
-                            }
-                            return results
-                        }
+	                            var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+	                            for try await (key, value) in storage.scan(
+	                                begin: rangeBegin,
+	                                end: endKey,
+	                                snapshot: true,
+	                                limit: batchSize
+	                            ) {
+	                                results.append((key: key, value: value))
+	                            }
+	                            return results
+	                        }
 
-                        // Process batch and yield items
-                        for (key, value) in batch {
-                            do {
-                                let item = try decoder.decode(T.self, from: Data(value))
-                                continuation.yield(item)
+	                        // Process batch and yield items
+	                        for (key, value) in batch {
+	                            do {
+	                                let item = try decoder.decode(T.self, from: Data(value))
+	                                continuation.yield(item)
                             } catch {
                                 // Log decode error but continue processing
                                 continuation.finish(throwing: FDBRuntimeError.internalError(

@@ -133,27 +133,25 @@ internal final class IndexMaintenanceService: Sendable {
     /// Update indexes for type-erased models
     ///
     /// For batch operations where type information is erased.
-    /// Uses "clear and re-add" strategy since Protobuf is not self-describing.
+    /// Uses diff-based strategy: calculates exact keys from oldModel/newModel and applies clear/set.
     ///
     /// - Parameters:
-    ///   - oldData: Previous record data (nil for insert)
+    ///   - oldModel: Previous model (nil for insert) - should be pre-deserialized by caller
     ///   - newModel: New model (nil for delete)
     ///   - id: Primary key tuple
     ///   - transaction: Current FDB transaction
-    ///   - deletingModel: Model being deleted (for delete operations)
     func updateIndexesUntyped(
-        oldData: [UInt8]?,
+        oldModel: (any Persistable)?,
         newModel: (any Persistable)?,
         id: Tuple,
-        transaction: any TransactionProtocol,
-        deletingModel: (any Persistable)? = nil
+        transaction: any TransactionProtocol
     ) async throws {
         // Determine which model type we're working with
         let modelType: any Persistable.Type
         if let newModel = newModel {
             modelType = type(of: newModel)
-        } else if let deletingModel = deletingModel {
-            modelType = type(of: deletingModel)
+        } else if let oldModel = oldModel {
+            modelType = type(of: oldModel)
         } else {
             return  // No model to process
         }
@@ -175,18 +173,9 @@ internal final class IndexMaintenanceService: Sendable {
 
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
 
-            // For update operations (oldData exists), clear existing index entries for this ID
-            if oldData != nil {
-                try await clearIndexEntriesForId(
-                    indexSubspace: indexSubspaceForIndex,
-                    id: id,
-                    transaction: transaction
-                )
-            }
-
-            // For delete operations, extract values from the model being deleted
-            if let deletingModel = deletingModel {
-                let oldValues = Self.extractIndexValues(from: deletingModel, keyPaths: descriptor.keyPaths)
+            // Clear old index entries using efficient key calculation
+            if let oldModel = oldModel {
+                let oldValues = Self.extractIndexValues(from: oldModel, keyPaths: descriptor.keyPaths)
                 if !oldValues.isEmpty {
                     let oldIndexKeys = Self.buildIndexKeys(
                         subspace: indexSubspaceForIndex,
@@ -562,23 +551,6 @@ internal final class IndexMaintenanceService: Sendable {
     }
 
     // MARK: - Private: Helpers
-
-    private func clearIndexEntriesForId(
-        indexSubspace: Subspace,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let idCount = id.count
-        let (begin, end) = indexSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
-
-        for try await (key, _) in sequence {
-            if let extractedId = extractIDFromIndexKey(key, subspace: indexSubspace, idElementCount: idCount),
-               extractedId.pack() == id.pack() {
-                transaction.clear(key: key)
-            }
-        }
-    }
 
     /// Extract ID from index key
     ///

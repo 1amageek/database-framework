@@ -58,6 +58,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Subspace where index data is stored ([I]/)
     private let indexSubspace: Subspace
 
+    /// Subspace where blob chunks are stored ([B]/)
+    private let blobsSubspace: Subspace
+
     /// Item type name (e.g., "User", "Product")
     private let itemType: String
 
@@ -103,6 +106,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - itemType: Type name of items to index
     ///   - index: Index definition
     ///   - indexMaintainer: IndexMaintainer for this index
@@ -113,6 +117,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String,
         index: Index,
         indexMaintainer: any IndexMaintainer<Item>,
@@ -123,6 +128,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         self.database = database
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
+        self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.index = index
         self.indexMaintainer = indexMaintainer
@@ -284,20 +290,22 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
-                    // Use limit + .iterator for adaptive batching that respects transaction limits
-                    // .iterator is appropriate for write transactions (index maintenance)
-                    // Reference: FDB streaming mode documentation
-                    let sequence = transaction.getRange(
-                        from: .firstGreaterOrEqual(bounds.begin),
-                        to: .firstGreaterOrEqual(bounds.end),
-                        limit: self.batchSize,
-                        snapshot: false,
-                        streamingMode: .iterator
+                    // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
+                    let storage = ItemStorage(
+                        transaction: transaction,
+                        blobsSubspace: self.blobsSubspace
                     )
 
-                    for try await (key, value) in sequence {
-                        // Deserialize item using DataAccess static method
-                        let item: Item = try DataAccess.deserialize(value)
+                    let scanSequence = storage.scan(
+                        begin: bounds.begin,
+                        end: bounds.end,
+                        snapshot: false,
+                        limit: self.batchSize
+                    )
+
+                    for try await (key, data) in scanSequence {
+                        // Deserialize item from decompressed data
+                        let item: Item = try DataAccess.deserialize(data)
 
                         // Extract id
                         let id = try itemTypeSubspace.unpack(key)
@@ -645,18 +653,22 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
-                // Use serial streaming mode for high throughput
-                let sequence = transaction.getRange(
-                    from: .firstGreaterOrEqual(rangeBegin),
-                    to: .firstGreaterOrEqual(end),
-                    limit: self.batchSize,
-                    snapshot: false,
-                    streamingMode: .serial
+                // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
+                let storage = ItemStorage(
+                    transaction: transaction,
+                    blobsSubspace: self.blobsSubspace
                 )
 
-                for try await (key, value) in sequence {
-                    // Deserialize item
-                    let item: Item = try DataAccess.deserialize(value)
+                let scanSequence = storage.scan(
+                    begin: rangeBegin,
+                    end: end,
+                    snapshot: false,
+                    limit: self.batchSize
+                )
+
+                for try await (key, data) in scanSequence {
+                    // Deserialize item from decompressed data
+                    let item: Item = try DataAccess.deserialize(data)
 
                     // Extract id
                     let id = try itemTypeSubspace.unpack(key)
@@ -737,18 +749,22 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 let rangeBegin = currentLastKey.map { Array($0) + [0x00] } ?? begin
 
-                // Use serial streaming mode for high throughput
-                let sequence = transaction.getRange(
-                    from: .firstGreaterOrEqual(rangeBegin),
-                    to: .firstGreaterOrEqual(end),
-                    limit: self.batchSize,
-                    snapshot: false,
-                    streamingMode: .serial
+                // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
+                let storage = ItemStorage(
+                    transaction: transaction,
+                    blobsSubspace: self.blobsSubspace
                 )
 
-                for try await (key, value) in sequence {
-                    // Deserialize item
-                    let item: Item = try DataAccess.deserialize(value)
+                let scanSequence = storage.scan(
+                    begin: rangeBegin,
+                    end: end,
+                    snapshot: false,
+                    limit: self.batchSize
+                )
+
+                for try await (key, data) in scanSequence {
+                    // Deserialize item from decompressed data
+                    let item: Item = try DataAccess.deserialize(data)
 
                     // Extract id
                     let id = try itemTypeSubspace.unpack(key)

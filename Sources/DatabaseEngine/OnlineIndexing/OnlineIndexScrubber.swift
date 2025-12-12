@@ -56,6 +56,9 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Subspace where index data is stored ([I]/)
     private let indexSubspace: Subspace
 
+    /// Subspace where blob chunks are stored ([B]/)
+    private let blobsSubspace: Subspace
+
     /// Item type name (e.g., "User", "Product")
     private let itemType: String
 
@@ -103,6 +106,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - itemType: Type name of items to scrub
     ///   - index: Index definition
     ///   - indexMaintainer: IndexMaintainer for this index
@@ -111,6 +115,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String,
         index: Index,
         indexMaintainer: any IndexMaintainer<Item>,
@@ -119,6 +124,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         self.database = database
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
+        self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.index = index
         self.indexMaintainer = indexMaintainer
@@ -496,21 +502,24 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             var missingRepaired = 0
             var lastProcessedKey: FDB.Bytes? = nil
 
-            // Use limit + .iterator for efficient batch scrubbing
-            // .iterator is appropriate since we do reads/writes within the transaction
-            let sequence = transaction.getRange(
-                from: .firstGreaterOrEqual(bounds.begin),
-                to: .firstGreaterOrEqual(bounds.end),
-                limit: batchSize,
-                snapshot: false,
-                streamingMode: .iterator
+            // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
             )
 
-            for try await (key, value) in sequence {
+            let scanSequence = storage.scan(
+                begin: bounds.begin,
+                end: bounds.end,
+                snapshot: false,
+                limit: batchSize
+            )
+
+            for try await (key, data) in scanSequence {
                 itemsScanned += 1
 
-                // Deserialize item
-                let item: Item = try DataAccess.deserialize(value)
+                // Deserialize item from decompressed data
+                let item: Item = try DataAccess.deserialize(data)
 
                 // Extract id from key
                 let id = try itemTypeSubspace.unpack(key)

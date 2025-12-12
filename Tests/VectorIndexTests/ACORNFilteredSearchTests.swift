@@ -92,6 +92,7 @@ private struct ACORNTestContext {
     let maintainer: HNSWIndexMaintainer<ACORNTestProduct>
     let dimensions: Int
     let itemsSubspace: Subspace
+    let blobsSubspace: Subspace
 
     init(dimensions: Int = 4, indexName: String = "ACORNTestProduct_embedding") throws {
         self.database = try FDBClient.openDatabase()
@@ -100,6 +101,7 @@ private struct ACORNTestContext {
         self.subspace = Subspace(prefix: Tuple("test", "acorn", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
         self.itemsSubspace = subspace.subspace("R")
+        self.blobsSubspace = subspace.subspace("B")
 
         let kind = VectorIndexKind<ACORNTestProduct>(
             embedding: \.embedding,
@@ -136,11 +138,13 @@ private struct ACORNTestContext {
 
     func insertProduct(_ product: ACORNTestProduct) async throws {
         try await database.withTransaction { transaction in
-            // Store the item
+            // Store the item using ItemStorage
             let itemKey = itemsSubspace.pack(Tuple(product.id))
             let encoder = JSONEncoder()
             let itemData = try encoder.encode(product)
-            transaction.setValue([UInt8](itemData), for: itemKey)
+
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            try await storage.write([UInt8](itemData), for: itemKey)
 
             // Index the vector
             try await maintainer.updateIndex(
@@ -160,7 +164,8 @@ private struct ACORNTestContext {
     func fetchProduct(id: String) async throws -> ACORNTestProduct? {
         try await database.withTransaction { transaction in
             let itemKey = itemsSubspace.pack(Tuple(id))
-            if let data = try await transaction.getValue(for: itemKey) {
+            let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+            if let data = try await storage.read(for: itemKey) {
                 let decoder = JSONDecoder()
                 return try decoder.decode(ACORNTestProduct.self, from: Data(data))
             }
@@ -175,11 +180,12 @@ private struct ACORNTestContext {
         acornParams: ACORNParameters = .default
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await database.withTransaction { transaction in
-            // Create fetch function
+            // Create fetch function using ItemStorage for proper envelope handling
             let fetchItem: @Sendable (Tuple, any TransactionProtocol) async throws -> ACORNTestProduct? = { primaryKey, tx in
                 guard let id = primaryKey[0] as? String else { return nil }
                 let itemKey = self.itemsSubspace.pack(Tuple(id))
-                if let data = try await tx.getValue(for: itemKey) {
+                let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace)
+                if let data = try await storage.read(for: itemKey) {
                     let decoder = JSONDecoder()
                     return try decoder.decode(ACORNTestProduct.self, from: Data(data))
                 }

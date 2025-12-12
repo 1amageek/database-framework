@@ -47,16 +47,17 @@ struct FDBContextTests {
 
         return FDBContainer(
             database: database,
-            schema: schema
+            schema: schema,
+            security: .disabled
         )
     }
 
     /// Clean up test data - call at START of each test that modifies data
+    /// Uses DirectoryLayer.remove() to handle old format data
     private func cleanup(container: FDBContainer) async throws {
-        let context = container.newContext()
-        try await context.deleteAll(TestUser.self)
-        try await context.deleteAll(TestProduct.self)
-        try await context.save()
+        let directoryLayer = DirectoryLayer(database: container.database)
+        try? await directoryLayer.remove(path: ["test", "fdbcontext", "users"])
+        try? await directoryLayer.remove(path: ["test", "fdbcontext", "products"])
     }
 
     // MARK: - Autosave Tests

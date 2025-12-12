@@ -25,6 +25,7 @@ public protocol IndexBuildableEntity: Persistable {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -34,6 +35,7 @@ public protocol IndexBuildableEntity: Persistable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -51,6 +53,7 @@ extension Persistable where Self: Codable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -68,6 +71,7 @@ extension Persistable where Self: Codable {
             database: database,
             itemSubspace: itemSubspace,
             indexSubspace: indexSubspace,
+            blobsSubspace: blobsSubspace,
             itemType: Self.persistableType,
             index: index,
             indexMaintainer: indexMaintainer,
@@ -147,6 +151,7 @@ public final class IndexBuilderRegistry: Sendable {
         _ database: any DatabaseProtocol,
         _ itemSubspace: Subspace,
         _ indexSubspace: Subspace,
+        _ blobsSubspace: Subspace,
         _ index: Index,
         _ indexStateManager: IndexStateManager,
         _ batchSize: Int,
@@ -173,11 +178,12 @@ public final class IndexBuilderRegistry: Sendable {
     /// - Parameter type: The Persistable type to register
     public func register<T: Persistable & Codable>(_ type: T.Type) {
         state.withLock { state in
-            state.builders[T.persistableType] = { database, itemSubspace, indexSubspace, index, stateManager, batchSize, configurations in
+            state.builders[T.persistableType] = { database, itemSubspace, indexSubspace, blobsSubspace, index, stateManager, batchSize, configurations in
                 try await T.buildEntityIndex(
                     database: database,
                     itemSubspace: itemSubspace,
                     indexSubspace: indexSubspace,
+                    blobsSubspace: blobsSubspace,
                     index: index,
                     indexStateManager: stateManager,
                     batchSize: batchSize,
@@ -194,6 +200,7 @@ public final class IndexBuilderRegistry: Sendable {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -204,6 +211,7 @@ public final class IndexBuilderRegistry: Sendable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -218,7 +226,7 @@ public final class IndexBuilderRegistry: Sendable {
         }
 
         // Execute builder outside of lock scope (I/O should not hold lock)
-        try await builder(database, itemSubspace, indexSubspace, index, indexStateManager, batchSize, configurations)
+        try await builder(database, itemSubspace, indexSubspace, blobsSubspace, index, indexStateManager, batchSize, configurations)
     }
 
     /// Check if an entity is registered
@@ -252,6 +260,7 @@ public struct EntityIndexBuilder {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -262,6 +271,7 @@ public struct EntityIndexBuilder {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -272,6 +282,7 @@ public struct EntityIndexBuilder {
             database: database,
             itemSubspace: itemSubspace,
             indexSubspace: indexSubspace,
+            blobsSubspace: blobsSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,
@@ -286,6 +297,7 @@ public struct EntityIndexBuilder {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -296,6 +308,7 @@ public struct EntityIndexBuilder {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -305,6 +318,7 @@ public struct EntityIndexBuilder {
             database: database,
             itemSubspace: itemSubspace,
             indexSubspace: indexSubspace,
+            blobsSubspace: blobsSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,
@@ -329,6 +343,7 @@ public struct EntityIndexBuilder {
     ///   - database: Database instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
+    ///   - blobsSubspace: Subspace where blob chunks are stored
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -339,6 +354,7 @@ public struct EntityIndexBuilder {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -353,6 +369,7 @@ public struct EntityIndexBuilder {
                 database: database,
                 itemSubspace: itemSubspace,
                 indexSubspace: indexSubspace,
+                blobsSubspace: blobsSubspace,
                 index: index,
                 indexStateManager: indexStateManager,
                 batchSize: batchSize,
@@ -367,6 +384,7 @@ public struct EntityIndexBuilder {
                 database: database,
                 itemSubspace: itemSubspace,
                 indexSubspace: indexSubspace,
+                blobsSubspace: blobsSubspace,
                 index: index,
                 indexStateManager: indexStateManager,
                 batchSize: batchSize,
@@ -410,6 +428,7 @@ public protocol _EntityIndexBuildable: Persistable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -426,6 +445,7 @@ extension Persistable where Self: Codable {
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
+        blobsSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -435,6 +455,7 @@ extension Persistable where Self: Codable {
             database: database,
             itemSubspace: itemSubspace,
             indexSubspace: indexSubspace,
+            blobsSubspace: blobsSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,

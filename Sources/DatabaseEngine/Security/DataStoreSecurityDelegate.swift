@@ -140,7 +140,18 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
         orderBy: [String]?
     ) throws {
         guard shouldEvaluate else { return }
-        guard let secureType = T.self as? any SecurityPolicy.Type else { return }
+
+        guard let secureType = T.self as? any SecurityPolicy.Type else {
+            // strict モードでは SecurityPolicy 未実装を拒否
+            if configuration.strict {
+                throw SecurityError(
+                    operation: .list,
+                    targetType: T.persistableType,
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                )
+            }
+            return
+        }
 
         let allowed = secureType._evaluateList(
             limit: limit,
@@ -161,7 +172,17 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
     public func evaluateGet(_ resource: any Persistable) throws {
         guard shouldEvaluate else { return }
         let modelType = type(of: resource)
-        guard let secureType = modelType as? any SecurityPolicy.Type else { return }
+
+        guard let secureType = modelType as? any SecurityPolicy.Type else {
+            if configuration.strict {
+                throw SecurityError(
+                    operation: .get,
+                    targetType: modelType.persistableType,
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                )
+            }
+            return
+        }
 
         let allowed = secureType._evaluateGet(resource: resource, auth: auth)
 
@@ -177,7 +198,17 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
     public func evaluateCreate(_ resource: any Persistable) throws {
         guard shouldEvaluate else { return }
         let modelType = type(of: resource)
-        guard let secureType = modelType as? any SecurityPolicy.Type else { return }
+
+        guard let secureType = modelType as? any SecurityPolicy.Type else {
+            if configuration.strict {
+                throw SecurityError(
+                    operation: .create,
+                    targetType: modelType.persistableType,
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                )
+            }
+            return
+        }
 
         let allowed = secureType._evaluateCreate(newResource: resource, auth: auth)
 
@@ -193,7 +224,17 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
     public func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws {
         guard shouldEvaluate else { return }
         let modelType = type(of: newResource)
-        guard let secureType = modelType as? any SecurityPolicy.Type else { return }
+
+        guard let secureType = modelType as? any SecurityPolicy.Type else {
+            if configuration.strict {
+                throw SecurityError(
+                    operation: .update,
+                    targetType: modelType.persistableType,
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                )
+            }
+            return
+        }
 
         let allowed = secureType._evaluateUpdate(
             resource: resource,
@@ -213,7 +254,17 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
     public func evaluateDelete(_ resource: any Persistable) throws {
         guard shouldEvaluate else { return }
         let modelType = type(of: resource)
-        guard let secureType = modelType as? any SecurityPolicy.Type else { return }
+
+        guard let secureType = modelType as? any SecurityPolicy.Type else {
+            if configuration.strict {
+                throw SecurityError(
+                    operation: .delete,
+                    targetType: modelType.persistableType,
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                )
+            }
+            return
+        }
 
         let allowed = secureType._evaluateDelete(resource: resource, auth: auth)
 
@@ -229,7 +280,7 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
     public func requireAdmin(operation: String, targetType: String) throws {
         guard isAdmin || !configuration.isEnabled else {
             throw SecurityError(
-                operation: .delete,
+                operation: .admin,
                 targetType: targetType,
                 reason: "\(operation) requires admin privileges"
             )
