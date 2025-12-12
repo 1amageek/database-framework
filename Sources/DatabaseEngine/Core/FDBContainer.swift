@@ -54,6 +54,14 @@ public final class FDBContainer: Sendable {
     /// Configuration
     public let configuration: FDBConfiguration?
 
+    /// Security configuration
+    public let securityConfiguration: SecurityConfiguration
+
+    /// Security delegate for DataStore operations
+    ///
+    /// Created from securityConfiguration and uses TaskLocal for auth context.
+    public let securityDelegate: (any DataStoreSecurityDelegate)?
+
     /// Index configurations grouped by indexName
     public let indexConfigurations: [String: [any IndexConfiguration]]
 
@@ -83,15 +91,23 @@ public final class FDBContainer: Sendable {
     /// ```swift
     /// let schema = Schema([User.self, Order.self])
     /// let container = try FDBContainer(for: schema)
+    ///
+    /// // With security enabled
+    /// let secureContainer = try FDBContainer(
+    ///     for: schema,
+    ///     security: .enabled(adminRoles: ["admin"])
+    /// )
     /// ```
     ///
     /// - Parameters:
     ///   - schema: The schema defining all entities
     ///   - configuration: Optional FDBConfiguration
+    ///   - security: Security configuration (default: enabled)
     /// - Throws: Error if database connection fails
     public init(
         for schema: Schema,
-        configuration: FDBConfiguration? = nil
+        configuration: FDBConfiguration? = nil,
+        security: SecurityConfiguration = .enabled()
     ) throws {
         guard !schema.entities.isEmpty else {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
@@ -102,6 +118,10 @@ public final class FDBContainer: Sendable {
         self.database = database
         self.schema = schema
         self.configuration = configuration
+        self.securityConfiguration = security
+        self.securityDelegate = security.isEnabled
+            ? DefaultSecurityDelegate(configuration: security)
+            : nil
         self.indexConfigurations = Self.aggregateIndexConfigurations(configuration?.indexConfigurations ?? [])
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
@@ -115,11 +135,13 @@ public final class FDBContainer: Sendable {
     ///   - database: The FDB database
     ///   - schema: Schema defining entities and indexes
     ///   - configuration: Optional configuration
+    ///   - security: Security configuration (default: enabled)
     ///   - indexConfigurations: Index configurations
     public init(
         database: any DatabaseProtocol,
         schema: Schema,
         configuration: FDBConfiguration? = nil,
+        security: SecurityConfiguration = .enabled(),
         indexConfigurations: [any IndexConfiguration] = []
     ) {
         precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
@@ -127,6 +149,10 @@ public final class FDBContainer: Sendable {
         self.database = database
         self.schema = schema
         self.configuration = configuration
+        self.securityConfiguration = security
+        self.securityDelegate = security.isEnabled
+            ? DefaultSecurityDelegate(configuration: security)
+            : nil
         self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
@@ -301,7 +327,12 @@ public final class FDBContainer: Sendable {
     /// ```
     public func store<T: Persistable>(for type: T.Type) async throws -> any DataStore {
         let subspace = try await resolveDirectory(for: type)
-        return FDBDataStore(database: database, subspace: subspace, schema: schema)
+        return FDBDataStore(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            securityDelegate: securityDelegate
+        )
     }
 
     // MARK: - Polymorphic Directory Resolution

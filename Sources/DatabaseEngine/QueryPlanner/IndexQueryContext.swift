@@ -137,7 +137,10 @@ public struct IndexQueryContext: Sendable {
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
             return nil
         }
-        return try DataAccess.deserialize(data)
+        let item: T = try DataAccess.deserialize(data)
+        // Security: Evaluate GET for the retrieved item
+        try context.container.securityDelegate?.evaluateGet(item)
+        return item
     }
 
     /// Fetch items by string IDs
@@ -190,6 +193,14 @@ public struct IndexQueryContext: Sendable {
     ) async throws -> [T] {
         guard !ids.isEmpty else { return [] }
 
+        // Security: Evaluate LIST before fetching
+        try context.container.securityDelegate?.evaluateList(
+            type: type,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
+
         let store = try await context.container.store(for: type)
         guard let fdbStore = store as? FDBDataStore else {
             return try await fetchItems(ids: ids, type: type)
@@ -201,9 +212,16 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        return try await context.container.database.withTransaction { transaction in
+        let items = try await context.container.database.withTransaction { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
+
+        // Security: Evaluate GET for each fetched item
+        for item in items {
+            try context.container.securityDelegate?.evaluateGet(item)
+        }
+
+        return items
     }
 
     // MARK: - Schema Access

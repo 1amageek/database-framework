@@ -19,6 +19,10 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Configuration type for FDBDataStore
     typealias Configuration = FDBConfiguration
+
+    /// Security delegate for access control evaluation
+    let securityDelegate: (any DataStoreSecurityDelegate)?
+
     // MARK: - Properties
 
     nonisolated(unsafe) let database: any DatabaseProtocol
@@ -27,7 +31,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private let logger: Logger
 
     /// Delegate for operation callbacks (metrics, etc.)
-    private let delegate: DataStoreDelegate
+    private let metricsDelegate: DataStoreDelegate
 
     /// Items subspace: [subspace]/items/
     let itemSubspace: Subspace
@@ -57,13 +61,15 @@ internal final class FDBDataStore: DataStore, Sendable {
         subspace: Subspace,
         schema: Schema,
         logger: Logger? = nil,
-        delegate: DataStoreDelegate? = nil
+        metricsDelegate: DataStoreDelegate? = nil,
+        securityDelegate: (any DataStoreSecurityDelegate)? = nil
     ) {
         self.database = database
         self.subspace = subspace
         self.schema = schema
         self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
-        self.delegate = delegate ?? MetricsDataStoreDelegate.shared
+        self.metricsDelegate = metricsDelegate ?? MetricsDataStoreDelegate.shared
+        self.securityDelegate = securityDelegate
         self.itemSubspace = subspace.subspace(SubspaceKey.items)
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
@@ -84,6 +90,19 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch all models of a type
     func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
+        // Evaluate LIST security via delegate
+        try securityDelegate?.evaluateList(
+            type: type,
+            limit: nil,
+            offset: nil,
+            orderBy: nil
+        )
+
+        return try await fetchAllInternal(type)
+    }
+
+    /// Internal fetchAll without security evaluation (for internal use after security is already evaluated)
+    private func fetchAllInternal<T: Persistable>(_ type: T.Type) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
         let startTime = DispatchTime.now()
@@ -110,12 +129,12 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
+            metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
 
             return results
         } catch {
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
+            metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
     }
@@ -126,7 +145,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        return try await database.withTransaction { transaction in
+        let result: T? = try await database.withTransaction { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -134,6 +153,13 @@ internal final class FDBDataStore: DataStore, Sendable {
             // Use Protobuf deserialization via DataAccess
             return try DataAccess.deserialize(bytes)
         }
+
+        // Evaluate GET security via delegate after fetch
+        if let r = result {
+            try securityDelegate?.evaluateGet(r)
+        }
+
+        return result
     }
 
     /// Fetch models matching a query
@@ -143,64 +169,17 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// 2. If sorting matches an index, use index ordering
     /// 3. Fall back to full table scan + in-memory filtering if no suitable index
     func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
-        var results: [T]
+        // Evaluate LIST security via delegate
+        let orderByFields = query.sortDescriptors.map { $0.fieldName }
+        try securityDelegate?.evaluateList(
+            type: T.self,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset,
+            orderBy: orderByFields.isEmpty ? nil : orderByFields
+        )
 
-        // Combine predicates into single predicate for evaluation
-        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
-            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
-
-        // Try index-optimized fetch
-        if let predicate = combinedPredicate,
-           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: query.fetchLimit) {
-            results = indexResult.models
-
-            // If index didn't cover all predicate conditions, apply remaining filters
-            if indexResult.needsPostFiltering {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
-                }
-            }
-        } else {
-            // Fall back to full table scan
-            results = try await fetchAll(T.self)
-
-            // Apply predicate filter
-            if let predicate = combinedPredicate {
-                results = results.filter { model in
-                    evaluatePredicate(predicate, on: model)
-                }
-            }
-        }
-
-        // Apply sorting
-        if !query.sortDescriptors.isEmpty {
-            results.sort { lhs, rhs in
-                for sortDescriptor in query.sortDescriptors {
-                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
-                    if comparison != .orderedSame {
-                        switch sortDescriptor.order {
-                        case .ascending:
-                            return comparison == .orderedAscending
-                        case .descending:
-                            return comparison == .orderedDescending
-                        }
-                    }
-                }
-                return false
-            }
-        }
-
-        // Apply offset
-        if let offset = query.fetchOffset, offset > 0 {
-            results = Array(results.dropFirst(offset))
-        }
-
-        // Apply limit
-        if let limit = query.fetchLimit {
-            results = Array(results.prefix(limit))
-        }
-
-        return results
+        // Delegate to internal implementation
+        return try await fetchInternal(query)
     }
 
     // MARK: - Index-Optimized Fetch
@@ -575,6 +554,14 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// 2. If predicate matches an index, count using index scan
     /// 3. Fall back to fetch and count if no optimization possible
     func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
+        // Evaluate LIST security via delegate
+        let orderByFields = query.sortDescriptors.map { $0.fieldName }
+        try securityDelegate?.evaluateList(
+            type: T.self,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset,
+            orderBy: orderByFields.isEmpty ? nil : orderByFields
+        )
         // Combine predicates into single predicate for evaluation
         let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
             (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
@@ -591,9 +578,71 @@ internal final class FDBDataStore: DataStore, Sendable {
             return try await countUsingIndex(condition: condition, index: matchingIndex)
         }
 
-        // Otherwise, fetch and count
-        let results = try await fetch(query)
+        // Otherwise, fetch and count (security already evaluated above)
+        let results = try await fetchInternal(query)
         return results.count
+    }
+
+    /// Internal fetch without security evaluation (for internal use after security is already evaluated)
+    private func fetchInternal<T: Persistable>(_ query: Query<T>) async throws -> [T] {
+        var results: [T]
+
+        // Combine predicates into single predicate for evaluation
+        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
+            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
+
+        // Try index-optimized fetch
+        if let predicate = combinedPredicate,
+           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: query.fetchLimit) {
+            results = indexResult.models
+
+            // If index didn't cover all predicate conditions, apply remaining filters
+            if indexResult.needsPostFiltering {
+                results = results.filter { model in
+                    evaluatePredicate(predicate, on: model)
+                }
+            }
+        } else {
+            // Fall back to full table scan
+            results = try await fetchAllInternal(T.self)
+
+            // Apply predicate filter
+            if let predicate = combinedPredicate {
+                results = results.filter { model in
+                    evaluatePredicate(predicate, on: model)
+                }
+            }
+        }
+
+        // Apply sorting
+        if !query.sortDescriptors.isEmpty {
+            results.sort { lhs, rhs in
+                for sortDescriptor in query.sortDescriptors {
+                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
+                    if comparison != .orderedSame {
+                        switch sortDescriptor.order {
+                        case .ascending:
+                            return comparison == .orderedAscending
+                        case .descending:
+                            return comparison == .orderedDescending
+                        }
+                    }
+                }
+                return false
+            }
+        }
+
+        // Apply offset
+        if let offset = query.fetchOffset, offset > 0 {
+            results = Array(results.dropFirst(offset))
+        }
+
+        // Apply limit
+        if let limit = query.fetchLimit {
+            results = Array(results.prefix(limit))
+        }
+
+        return results
     }
 
     /// Count using index scan (without deserializing records)
@@ -743,14 +792,14 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didSave(itemType: T.persistableType, count: models.count, duration: duration)
+            metricsDelegate.didSave(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Saved \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didFailSave(itemType: T.persistableType, error: error, duration: duration)
+            metricsDelegate.didFailSave(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
     }
@@ -803,14 +852,14 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didDelete(itemType: T.persistableType, count: models.count, duration: duration)
+            metricsDelegate.didDelete(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Deleted \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didFailDelete(itemType: T.persistableType, error: error, duration: duration)
+            metricsDelegate.didFailDelete(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
     }
@@ -862,24 +911,19 @@ internal final class FDBDataStore: DataStore, Sendable {
         deletes: [any Persistable]
     ) async throws {
         let startTime = DispatchTime.now()
-        let encoder = ProtobufEncoder()  // Reuse across all inserts (Sendable)
 
         do {
             try await database.withTransaction { transaction in
                 try transaction.setOption(forOption: .priorityBatch)
-                // Process inserts
-                for model in inserts {
-                    try await self.saveModelUntyped(model, transaction: transaction, encoder: encoder)
-                }
-
-                // Process deletes
-                for model in deletes {
-                    try await self.deleteModelUntyped(model, transaction: transaction)
-                }
+                try await self.executeBatchInTransaction(
+                    inserts: inserts,
+                    deletes: deletes,
+                    transaction: transaction
+                )
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didExecuteBatch(insertCount: inserts.count, deleteCount: deletes.count, duration: duration)
+            metricsDelegate.didExecuteBatch(insertCount: inserts.count, deleteCount: deletes.count, duration: duration)
 
             logger.trace("Executed batch", metadata: [
                 "inserts": "\(inserts.count)",
@@ -887,12 +931,112 @@ internal final class FDBDataStore: DataStore, Sendable {
             ])
         } catch {
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-            delegate.didFailBatch(error: error, duration: duration)
+            metricsDelegate.didFailBatch(error: error, duration: duration)
             throw error
         }
     }
 
-    /// Save model without type parameter (for batch operations)
+    // MARK: - Transaction-Scoped Operations (DataStore Protocol)
+
+    /// Execute batch operations within an externally-provided transaction
+    ///
+    /// Optimized for batch processing:
+    /// - Single encoder reused across all models
+    /// - Returns serialized data for dual-write optimization
+    ///
+    /// - Parameters:
+    ///   - inserts: Models to insert or update
+    ///   - deletes: Models to delete
+    ///   - transaction: The transaction to use
+    /// - Returns: Serialized data for inserted models
+    @discardableResult
+    func executeBatchInTransaction(
+        inserts: [any Persistable],
+        deletes: [any Persistable],
+        transaction: any TransactionProtocol
+    ) async throws -> [SerializedModel] {
+        let encoder = ProtobufEncoder()
+        var serializedModels: [SerializedModel] = []
+
+        // Process deletes first (security evaluation)
+        for model in deletes {
+            try securityDelegate?.evaluateDelete(model)
+        }
+
+        // Process inserts with single encoder
+        for model in inserts {
+            let serialized = try await saveModelUntypedWithSecurityReturningData(
+                model,
+                transaction: transaction,
+                encoder: encoder
+            )
+            serializedModels.append(serialized)
+        }
+
+        // Process deletes
+        for model in deletes {
+            try await deleteModelUntyped(model, transaction: transaction)
+        }
+
+        return serializedModels
+    }
+
+    /// Execute operations within a raw transaction
+    ///
+    /// Provides raw TransactionProtocol for coordinating operations
+    /// across multiple DataStores in a single atomic transaction.
+    func withRawTransaction<T: Sendable>(
+        _ body: @Sendable @escaping (any TransactionProtocol) async throws -> T
+    ) async throws -> T {
+        return try await database.withTransaction(body)
+    }
+
+    /// Save model with security evaluation, returning serialized data for dual-write
+    private func saveModelUntypedWithSecurityReturningData(
+        _ model: any Persistable,
+        transaction: any TransactionProtocol,
+        encoder: ProtobufEncoder
+    ) async throws -> SerializedModel {
+        let modelType = type(of: model)
+        let persistableType = modelType.persistableType
+        let validatedID = try validateID(model.id, for: persistableType)
+        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
+
+        let typeSubspace = itemSubspace.subspace(persistableType)
+        let key = typeSubspace.pack(idTuple)
+
+        // Check for existing record
+        let oldData = try await transaction.getValue(for: key, snapshot: false)
+
+        // Security evaluation: CREATE or UPDATE
+        if let oldData = oldData {
+            // Update - need to deserialize old model for security evaluation
+            let oldModel = try DataAccess.deserializeAny(Array(oldData), as: modelType)
+            try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
+        } else {
+            // Create
+            try securityDelegate?.evaluateCreate(model)
+        }
+
+        // Serialize using Protobuf (encoder reused across all models)
+        let data = Array(try encoder.encode(model))
+
+        // Save the record
+        transaction.setValue(data, for: key)
+
+        // Update indexes via IndexMaintenanceService
+        try await indexMaintenanceService.updateIndexesUntyped(
+            oldData: oldData,
+            newModel: model,
+            id: idTuple,
+            transaction: transaction
+        )
+
+        // Return serialized data for dual-write optimization
+        return SerializedModel(model: model, data: data, idTuple: idTuple)
+    }
+
+    /// Save model without type parameter (for internal use without security)
     private func saveModelUntyped(
         _ model: any Persistable,
         transaction: any TransactionProtocol,
@@ -1064,6 +1208,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Clear all records of a type
     func clearAll<T: Persistable>(_ type: T.Type) async throws {
+        // Admin-only operation
+        try securityDelegate?.requireAdmin(operation: "clearAll", targetType: T.persistableType)
+
         try await database.withTransaction { transaction in
             try transaction.setOption(forOption: .priorityBatch)
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
@@ -1075,6 +1222,28 @@ internal final class FDBDataStore: DataStore, Sendable {
                 let indexRange = self.indexSubspace.subspace(descriptor.name).range()
                 transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
             }
+        }
+    }
+
+    // MARK: - Transaction Operations
+
+    /// Execute operations within a transaction
+    func withTransaction<T: Sendable>(
+        configuration: TransactionConfiguration,
+        _ operation: @Sendable (any TransactionContextProtocol) async throws -> T
+    ) async throws -> T {
+        let runner = TransactionRunner(database: database)
+
+        return try await runner.run(configuration: configuration) { transaction in
+            // Create a secure transaction context
+            let context = SecureTransactionContext(
+                transaction: transaction,
+                itemSubspace: self.itemSubspace,
+                indexSubspace: self.indexSubspace,
+                indexMaintenanceService: self.indexMaintenanceService,
+                securityDelegate: self.securityDelegate
+            )
+            return try await operation(context)
         }
     }
 }

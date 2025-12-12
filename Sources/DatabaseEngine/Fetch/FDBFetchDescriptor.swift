@@ -439,13 +439,17 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     // MARK: - Execute
 
     /// Execute the query and return results
+    ///
+    /// Security: LIST operation is evaluated by DataStore internally.
     public func execute() async throws -> [T] {
-        try await context.fetch(query)
+        return try await context.fetch(query)
     }
 
     /// Execute the query and return count
+    ///
+    /// Security: LIST operation is evaluated by DataStore internally.
     public func count() async throws -> Int {
-        try await context.fetchCount(query)
+        return try await context.fetchCount(query)
     }
 
     /// Execute the query and return first result

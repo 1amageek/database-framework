@@ -27,14 +27,12 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
         transaction: any TransactionProtocol
     ) async throws {
         let modelType = type(of: model)
-        let subspace = try await context.container.resolveDirectory(for: modelType)
-        let store = FDBDataStore(
-            database: context.container.database,
-            subspace: subspace,
-            schema: context.container.schema
+        let store = try await context.container.store(for: modelType)
+        try await store.executeBatchInTransaction(
+            inserts: [model],
+            deletes: [],
+            transaction: transaction
         )
-        let encoder = ProtobufEncoder()
-        try await context.saveModel(model, store: store, transaction: transaction, encoder: encoder)
     }
 
     public func delete(
@@ -42,13 +40,12 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
         transaction: any TransactionProtocol
     ) async throws {
         let modelType = type(of: model)
-        let subspace = try await context.container.resolveDirectory(for: modelType)
-        let store = FDBDataStore(
-            database: context.container.database,
-            subspace: subspace,
-            schema: context.container.schema
+        let store = try await context.container.store(for: modelType)
+        try await store.executeBatchInTransaction(
+            inserts: [],
+            deletes: [model],
+            transaction: transaction
         )
-        try await context.deleteModel(model, store: store, transaction: transaction)
     }
 
     public func load(

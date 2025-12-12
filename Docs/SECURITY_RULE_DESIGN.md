@@ -266,6 +266,8 @@ public extension AuthContext {
 
 ```swift
 /// セキュリティ設定
+///
+/// セキュリティはデフォルトで有効（secure by default）
 public struct SecurityConfiguration: Sendable {
     /// セキュリティ機能の有効/無効
     public let isEnabled: Bool
@@ -273,13 +275,17 @@ public struct SecurityConfiguration: Sendable {
     /// Admin として扱うロール（評価スキップ）
     public let adminRoles: Set<String>
 
-    public init(isEnabled: Bool = false, adminRoles: Set<String> = []) {
+    public init(isEnabled: Bool = true, adminRoles: Set<String> = ["admin"]) {
         self.isEnabled = isEnabled
         self.adminRoles = adminRoles
     }
 
-    public static let disabled = SecurityConfiguration(isEnabled: false)
+    /// セキュリティ無効（テスト専用）
+    ///
+    /// **Warning**: 本番環境では使用禁止
+    public static let disabled = SecurityConfiguration(isEnabled: false, adminRoles: [])
 
+    /// セキュリティ有効（デフォルト）
     public static func enabled(adminRoles: Set<String> = ["admin"]) -> SecurityConfiguration {
         SecurityConfiguration(isEnabled: true, adminRoles: adminRoles)
     }

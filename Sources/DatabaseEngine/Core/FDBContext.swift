@@ -246,46 +246,33 @@ public final class FDBContext: Sendable {
     /// - Schema has changed and old data cannot be decoded
     /// - You need efficient bulk deletion without per-record operations
     ///
+    /// **Security**: Admin-only operation. Requires admin role in auth context.
+    ///
     /// **Note**: This does NOT track deletions in the context. Changes are applied immediately.
     /// **Note**: Also clears polymorphic directory data if type conforms to Polymorphable.
     ///
     /// - Parameter type: The Persistable type to clear
+    /// - Throws: SecurityError if not admin
     public func clearAll<T: Persistable>(_ type: T.Type) async throws {
-        let subspace = try await container.resolveDirectory(for: type)
-        let itemSubspace = subspace.subspace(SubspaceKey.items)
-        let indexSubspace = subspace.subspace(SubspaceKey.indexes)
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
+        // Use DataStore.clearAll() which evaluates admin security
+        let store = try await container.store(for: type)
+        try await store.clearAll(type)
 
-        // Check if type conforms to Polymorphable and needs dual-clear
-        let polymorphicSubspace: Subspace? = try await {
-            guard let polymorphicType = T.self as? any Polymorphable.Type else {
-                return nil
-            }
+        // Also clear polymorphic directory data if applicable
+        if let polymorphicType = T.self as? any Polymorphable.Type {
             let typeDirectory = T.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
             let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
-            guard typeDirectory != polyDirectory else {
-                return nil  // Same directory, no dual-clear needed
-            }
-            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
-            let typeCode = polymorphicType.typeCode(for: T.persistableType)
-            return polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
-        }()
 
-        try await container.database.withTransaction { transaction in
-            // Clear all items for this type
-            let (itemBegin, itemEnd) = typeSubspace.range()
-            transaction.clearRange(beginKey: itemBegin, endKey: itemEnd)
+            if typeDirectory != polyDirectory {
+                // Different directory - need to clear polymorphic data too
+                let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+                let typeCode = polymorphicType.typeCode(for: T.persistableType)
+                let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
 
-            // Clear all indexes for this type
-            for descriptor in T.indexDescriptors {
-                let indexRange = indexSubspace.subspace(descriptor.name).range()
-                transaction.clearRange(beginKey: indexRange.0, endKey: indexRange.1)
-            }
-
-            // Clear polymorphic directory data if applicable
-            if let polySubspace = polymorphicSubspace {
-                let (polyBegin, polyEnd) = polySubspace.range()
-                transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
+                try await container.database.withTransaction { transaction in
+                    let (polyBegin, polyEnd) = polyItemSubspace.range()
+                    transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
+                }
             }
         }
     }
@@ -404,6 +391,8 @@ public final class FDBContext: Sendable {
         }
 
         if let inserted = pendingResult.inserted {
+            // Evaluate GET security for pending insert (not via DataStore)
+            try container.securityDelegate?.evaluateGet(inserted)
             return inserted
         }
 
@@ -411,16 +400,21 @@ public final class FDBContext: Sendable {
             return nil
         }
 
+        // DataStore.fetch() evaluates GET security internally
         let store = try await container.store(for: type)
-        return try await store.fetch(type, id: id)
+        guard let result = try await store.fetch(type, id: id) else {
+            return nil
+        }
+
+        return result
     }
 
     // MARK: - Save
 
     /// Persist all pending changes atomically
     ///
-    /// Groups models by type, resolves each type's directory, and saves all changes
-    /// in a single transaction.
+    /// All changes are persisted in a single transaction for atomicity.
+    /// Security evaluation is performed via the container's securityDelegate.
     public func save() async throws {
         enum SaveCheckResult {
             case noChanges
@@ -470,68 +464,63 @@ public final class FDBContext: Sendable {
         }
 
         do {
-            // Group models by type
-            let insertsByType = groupByType(insertsSnapshot)
-            let deletesByType = groupByType(deletesSnapshot)
-
-            // Get all unique types
+            // Group models by type for directory resolution
+            let insertsByType = Dictionary(grouping: insertsSnapshot) { type(of: $0).persistableType }
+            let deletesByType = Dictionary(grouping: deletesSnapshot) { type(of: $0).persistableType }
             let allTypes = Set(insertsByType.keys).union(deletesByType.keys)
 
-            // Create encoder once for all models (Sendable, reusable)
-            let encoder = ProtobufEncoder()
+            // Pre-resolve stores for each type via Container
+            var resolvedStores: [String: any DataStore] = [:]
+            for typeName in allTypes {
+                // Get a sample model to get the type
+                let sampleModel = insertsByType[typeName]?.first ?? deletesByType[typeName]?.first
+                guard let model = sampleModel else { continue }
 
-            // Transaction size limits (FDB max is 10MB)
-            let sizeWarningThreshold = 8_000_000  // 8MB - warn before approaching limit
-            let sizeErrorThreshold = 9_500_000   // 9.5MB - error to prevent silent failure
+                let modelType = type(of: model)
+                let store = try await container.store(for: modelType)
+                resolvedStores[typeName] = store
+            }
+            // Make immutable for Sendable closure
+            let storesByType = resolvedStores
 
-            // Execute all operations in a single transaction
-            try await container.database.withTransaction { transaction in
-                for typeName in allTypes {
-                    let typeInserts = insertsByType[typeName] ?? []
-                    let typeDeletes = deletesByType[typeName] ?? []
+            // Get any store to provide the transaction (all stores share the same database)
+            guard let anyStore = storesByType.values.first else {
+                // No stores means no operations
+                stateLock.withLock { state in state.isSaving = false }
+                return
+            }
 
-                    guard let firstModel = typeInserts.first ?? typeDeletes.first else { continue }
+            // Execute all operations in a single transaction via DataStore
+            try await anyStore.withRawTransaction { transaction in
+                var allSerializedModels: [SerializedModel] = []
 
-                    // Resolve directory for this type
-                    let modelType = type(of: firstModel)
-                    let subspace = try await self.container.resolveDirectory(for: modelType)
-
-                    // Create store for this subspace and execute operations
-                    let store = FDBDataStore(
-                        database: self.container.database,
-                        subspace: subspace,
-                        schema: self.container.schema
+                // Batch process inserts per type
+                for (typeName, models) in insertsByType {
+                    guard let store = storesByType[typeName] else { continue }
+                    let serialized = try await store.executeBatchInTransaction(
+                        inserts: models,
+                        deletes: [],
+                        transaction: transaction
                     )
-
-                    // Save inserts
-                    for model in typeInserts {
-                        try await self.saveModel(model, store: store, transaction: transaction, encoder: encoder)
-                    }
-
-                    // Monitor transaction size after processing each type
-                    let currentSize = try await transaction.getApproximateSize()
-                    if currentSize > sizeErrorThreshold {
-                        throw FDBContextError.transactionTooLarge(
-                            currentSize: currentSize,
-                            limit: 10_000_000,
-                            hint: "Consider using batch operations or reducing the number of changes per save()"
-                        )
-                    } else if currentSize > sizeWarningThreshold {
-                        self.logger.warning(
-                            "Transaction approaching size limit",
-                            metadata: [
-                                "currentSize": "\(currentSize)",
-                                "threshold": "\(sizeWarningThreshold)",
-                                "typeName": "\(typeName)"
-                            ]
-                        )
-                    }
-
-                    // Delete deletes
-                    for model in typeDeletes {
-                        try await self.deleteModel(model, store: store, transaction: transaction)
-                    }
+                    allSerializedModels.append(contentsOf: serialized)
                 }
+
+                // Batch process deletes per type
+                for (typeName, models) in deletesByType {
+                    guard let store = storesByType[typeName] else { continue }
+                    try await store.executeBatchInTransaction(
+                        inserts: [],
+                        deletes: models,
+                        transaction: transaction
+                    )
+                }
+
+                // Batch handle Polymorphable dual-write (reusing serialized data)
+                try await self.processDualWrites(
+                    serializedInserts: allSerializedModels,
+                    deletes: deletesSnapshot,
+                    transaction: transaction
+                )
             }
 
             stateLock.withLock { state in
@@ -554,187 +543,94 @@ public final class FDBContext: Sendable {
         }
     }
 
-    /// Group models by their persistableType
-    private func groupByType(_ models: [any Persistable]) -> [String: [any Persistable]] {
-        var result: [String: [any Persistable]] = [:]
-        for model in models {
-            let typeName = type(of: model).persistableType
-            result[typeName, default: []].append(model)
-        }
-        return result
-    }
+    // MARK: - Polymorphable Dual-Write Support
 
-    /// Save a single model using the provided store and transaction
+    /// Process dual-writes for Polymorphable types
     ///
-    /// Uses FDBDataStore's IndexMaintenanceService for full index maintenance
-    /// including aggregations and uniqueness constraints.
-    /// Handles Polymorphable dual-write at this layer.
-    internal func saveModel(
-        _ model: any Persistable,
-        store: FDBDataStore,
-        transaction: any TransactionProtocol,
-        encoder: ProtobufEncoder
-    ) async throws {
-        let modelType = type(of: model)
-        let persistableType = modelType.persistableType
-        let validatedID = try validateID(model.id, for: persistableType)
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
-
-        // Serialize using Protobuf
-        let data = Array(try encoder.encode(model))
-
-        // Build key
-        let typeSubspace = store.itemSubspace.subspace(persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        // Get existing record for diff-based index update
-        let oldData = try await transaction.getValue(for: key, snapshot: false)
-
-        // Write record
-        transaction.setValue(data, for: key)
-
-        // Update indexes via IndexMaintenanceService (full support including aggregations)
-        try await store.indexMaintenanceService.updateIndexesUntyped(
-            oldData: oldData,
-            newModel: model,
-            id: idTuple,
-            transaction: transaction
-        )
-
-        // Dual write: If type conforms to Polymorphable and has its own directory,
-        // also save to the polymorphic directory
-        try await saveDualWriteIfNeeded(
-            model: model,
-            data: data,
-            idTuple: idTuple,
-            transaction: transaction
-        )
-    }
-
-    /// Save to polymorphic directory if dual-write is needed
+    /// Optimized batch processing:
+    /// - Groups models by polymorphic protocol
+    /// - Resolves directories once per protocol
+    /// - Reuses pre-serialized data (no re-serialization)
     ///
-    /// Dual-write occurs when:
-    /// 1. The type conforms to a Polymorphable protocol
-    /// 2. The type has its own #Directory (different from the protocol's directory)
-    private func saveDualWriteIfNeeded(
-        model: any Persistable,
-        data: [UInt8],
-        idTuple: Tuple,
+    /// - Parameters:
+    ///   - serializedInserts: Pre-serialized insert models from DataStore
+    ///   - deletes: Models to delete
+    ///   - transaction: The transaction to use
+    private func processDualWrites(
+        serializedInserts: [SerializedModel],
+        deletes: [any Persistable],
         transaction: any TransactionProtocol
     ) async throws {
-        let modelType = type(of: model)
+        // Group by polymorphic protocol type for efficient directory resolution
+        var insertsByPolyType: [ObjectIdentifier: [(SerializedModel, any Polymorphable.Type)]] = [:]
+        var deletesByPolyType: [ObjectIdentifier: [(any Persistable, Tuple, any Polymorphable.Type)]] = [:]
 
-        // Check if type conforms to Polymorphable
-        guard let polymorphicType = modelType as? any Polymorphable.Type else {
-            return
+        // Categorize inserts
+        for serialized in serializedInserts {
+            let modelType = type(of: serialized.model)
+            guard let polymorphicType = modelType as? any Polymorphable.Type else { continue }
+
+            // Check if dual-write is needed (different directories)
+            let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            guard typeDirectory != polyDirectory else { continue }
+
+            let key = ObjectIdentifier(polymorphicType)
+            insertsByPolyType[key, default: []].append((serialized, polymorphicType))
         }
 
-        // Check if the type has its own directory (different from polymorphic shared directory)
-        let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
-        let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+        // Categorize deletes
+        for model in deletes {
+            let modelType = type(of: model)
+            guard let polymorphicType = modelType as? any Polymorphable.Type else { continue }
 
-        guard typeDirectory != polyDirectory else {
-            // Same directory, no dual-write needed
-            return
+            // Check if dual-write is needed
+            let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+            guard typeDirectory != polyDirectory else { continue }
+
+            // Compute ID tuple
+            guard let tupleElement = model.id as? any TupleElement else { continue }
+            let idTuple = (tupleElement as? Tuple) ?? Tuple([tupleElement])
+
+            let key = ObjectIdentifier(polymorphicType)
+            deletesByPolyType[key, default: []].append((model, idTuple, polymorphicType))
         }
 
-        // Resolve polymorphic directory and save
-        let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
-        let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+        // Process inserts by protocol (resolve directory once per protocol)
+        for (_, items) in insertsByPolyType {
+            guard let (_, polymorphicType) = items.first else { continue }
 
-        // Get typeCode for this type
-        let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-        let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
-        let polyKey = typeCodeSubspace.pack(idTuple)
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+            let itemSubspace = polySubspace.subspace(SubspaceKey.items)
 
-        // Save to polymorphic directory
-        transaction.setValue(data, for: polyKey)
-    }
+            for (serialized, _) in items {
+                let modelType = type(of: serialized.model)
+                let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
+                let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let polyKey = typeCodeSubspace.pack(serialized.idTuple)
 
-    /// Delete a single model using the provided store and transaction
-    ///
-    /// Uses FDBDataStore's IndexMaintenanceService for full index cleanup.
-    /// Handles Polymorphable dual-delete at this layer.
-    internal func deleteModel(
-        _ model: any Persistable,
-        store: FDBDataStore,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let modelType = type(of: model)
-        let persistableType = modelType.persistableType
-        let validatedID = try validateID(model.id, for: persistableType)
-        let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
-
-        // Build key
-        let typeSubspace = store.itemSubspace.subspace(persistableType)
-        let key = typeSubspace.pack(idTuple)
-
-        // Remove index entries first via IndexMaintenanceService
-        try await store.indexMaintenanceService.updateIndexesUntyped(
-            oldData: nil,
-            newModel: nil,
-            id: idTuple,
-            transaction: transaction,
-            deletingModel: model
-        )
-
-        // Delete record
-        transaction.clear(key: key)
-
-        // Dual delete: If type conforms to Polymorphable and has its own directory,
-        // also delete from the polymorphic directory
-        try await deleteDualWriteIfNeeded(
-            model: model,
-            idTuple: idTuple,
-            transaction: transaction
-        )
-    }
-
-    /// Delete from polymorphic directory if dual-write was used
-    ///
-    /// Dual-delete occurs when:
-    /// 1. The type conforms to a Polymorphable protocol
-    /// 2. The type has its own #Directory (different from the protocol's directory)
-    private func deleteDualWriteIfNeeded(
-        model: any Persistable,
-        idTuple: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let modelType = type(of: model)
-
-        // Check if type conforms to Polymorphable
-        guard let polymorphicType = modelType as? any Polymorphable.Type else {
-            return
+                // Write using pre-serialized data (no re-serialization)
+                transaction.setValue(serialized.data, for: polyKey)
+            }
         }
 
-        // Check if the type has its own directory (different from polymorphic shared directory)
-        let typeDirectory = modelType.directoryPathComponents.map { "\($0)" }.joined(separator: "/")
-        let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
+        // Process deletes by protocol
+        for (_, items) in deletesByPolyType {
+            guard let (_, _, polymorphicType) = items.first else { continue }
 
-        guard typeDirectory != polyDirectory else {
-            // Same directory, no dual-delete needed
-            return
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+            let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+
+            for (model, idTuple, _) in items {
+                let modelType = type(of: model)
+                let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
+                let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let polyKey = typeCodeSubspace.pack(idTuple)
+
+                transaction.clear(key: polyKey)
+            }
         }
-
-        // Resolve polymorphic directory and delete
-        let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
-        let itemSubspace = polySubspace.subspace(SubspaceKey.items)
-
-        // Get typeCode for this type
-        let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-        let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
-        let polyKey = typeCodeSubspace.pack(idTuple)
-
-        // Delete from polymorphic directory
-        transaction.clear(key: polyKey)
-    }
-
-    /// Validate ID is a TupleElement
-    private func validateID(_ id: any Sendable, for typeName: String) throws -> any TupleElement {
-        if let tupleElement = id as? any TupleElement {
-            return tupleElement
-        }
-        throw FDBRuntimeError.internalError("ID for \(typeName) must conform to TupleElement")
     }
 
     // MARK: - Rollback
@@ -1158,6 +1054,16 @@ extension FDBContext {
             )
         }
 
+        // Security: Evaluate LIST for each conforming type
+        for entity in conformingEntities {
+            try container.securityDelegate?.evaluateList(
+                type: entity.persistableType,
+                limit: nil,
+                offset: nil,
+                orderBy: nil
+            )
+        }
+
         // Resolve polymorphic directory
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
@@ -1187,6 +1093,8 @@ extension FDBContext {
                         bytes: Array(value),
                         as: codableType
                     )
+                    // Security: Evaluate GET for each retrieved item
+                    try self.container.securityDelegate?.evaluateGet(item)
                     results.append(item)
                 }
             }
@@ -1222,7 +1130,7 @@ extension FDBContext {
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
-        return try await container.database.withTransaction { transaction in
+        let result: (any Persistable)? = try await container.database.withTransaction { transaction in
             for entity in conformingEntities {
                 guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
                 let typeCode = polyType.typeCode(for: entity.name)
@@ -1241,6 +1149,13 @@ extension FDBContext {
             }
             return nil
         }
+
+        // Security: Evaluate GET for the retrieved item
+        if let item = result {
+            try container.securityDelegate?.evaluateGet(item)
+        }
+
+        return result
     }
 
     /// Deserialize bytes into a concrete Persistable type
@@ -1303,6 +1218,17 @@ extension FDBContext {
 
         let data = try DataAccess.serialize(item)
 
+        // Security: Check if this is CREATE or UPDATE
+        let oldData = try await container.database.withTransaction { transaction in
+            try await transaction.getValue(for: key, snapshot: false)
+        }
+        if let oldBytes = oldData {
+            let oldItem: T = try DataAccess.deserialize(oldBytes)
+            try container.securityDelegate?.evaluateUpdate(oldItem, newResource: item)
+        } else {
+            try container.securityDelegate?.evaluateCreate(item)
+        }
+
         try await container.database.withTransaction { transaction in
             transaction.setValue(data, for: key)
         }
@@ -1351,6 +1277,14 @@ extension FDBContext {
 
         let idTuple = Tuple([id])
         let key = typeSubspace.pack(idTuple)
+
+        // Security: Fetch existing item to evaluate DELETE permission
+        if let oldData = try await container.database.withTransaction({ transaction in
+            try await transaction.getValue(for: key, snapshot: false)
+        }) {
+            let oldItem: T = try DataAccess.deserialize(oldData)
+            try container.securityDelegate?.evaluateDelete(oldItem)
+        }
 
         try await container.database.withTransaction { transaction in
             transaction.clear(key: key)

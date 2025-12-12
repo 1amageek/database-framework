@@ -77,9 +77,11 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 
 | Type | Role |
 |------|------|
-| `FDBContainer` | SwiftData-like container managing schema, migrations, and contexts |
-| `FDBContext` | Change tracking and batch operations (insert/delete/fetch/save) |
+| `FDBContainer` | Resource manager: database, schema, securityDelegate, directory resolution |
+| `FDBDataStore` | Data operations + transaction provision (`executeBatchInTransaction`, `withRawTransaction`) |
+| `FDBContext` | User-facing API: change tracking, orchestration via DataStore |
 | `DataStore` | Storage backend protocol (default: `FDBDataStore`) |
+| `SerializedModel` | Serialized data carrier for dual-write optimization |
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
 | `OnlineIndexer` | Background index building for schema migrations |
@@ -93,6 +95,65 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `TransformingSerializer` | Compression (LZ4/zlib/LZMA/LZFSE) and encryption (AES-256-GCM) |
 | `Polymorphable` | Protocol enabling union types with shared directory and polymorphic queries |
 | `IndexStateManager` | Manages index lifecycle states (disabled/writeOnly/readable) |
+
+### Responsibility Separation
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FDBContainer (Resource Manager)                                         │
+│   - database: DatabaseProtocol                                          │
+│   - schema: Schema                                                      │
+│   - securityDelegate: DataStoreSecurityDelegate?                        │
+│   - store(for:): DataStore instance per type                            │
+│   ❌ Does NOT provide transactions                                       │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FDBDataStore (Data Operations + Transaction Provider)                   │
+│   - executeBatchInTransaction() → [SerializedModel]                     │
+│   - withRawTransaction() → coordinate multi-store operations            │
+│   - Security evaluation via securityDelegate                            │
+│   - Index maintenance                                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FDBContext (User-Facing API)                                            │
+│   - insert(), delete(), fetch()                                         │
+│   - save() → orchestrates via DataStore.withRawTransaction              │
+│   - Change tracking (insertedModels, deletedModels)                     │
+│   ❌ Does NOT access database directly                                   │
+└─────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Operation Flow (FDBContext.save)
+
+```
+FDBContext.save()
+    │
+    ├─ Group models by type
+    │
+    └─ anyStore.withRawTransaction { transaction in
+           │
+           ├─ For each type:
+           │      store.executeBatchInTransaction(inserts, deletes, transaction)
+           │          → Security evaluation
+           │          → Serialize with single encoder
+           │          → Index maintenance
+           │          → Returns [SerializedModel]
+           │
+           └─ processDualWrites(serializedInserts, deletes, transaction)
+                  → Reuse pre-serialized data (no re-serialization)
+                  → Write to polymorphic directories
+       }
+```
+
+**Optimization Points**:
+- Single transaction for all operations
+- Batch processing per type (not per-model)
+- `SerializedModel` avoids re-serialization for Polymorphable dual-write
+- Single encoder instance reused across batch
 
 ### Data Layout in FoundationDB
 
