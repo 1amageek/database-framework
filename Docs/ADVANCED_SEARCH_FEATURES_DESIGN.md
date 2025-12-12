@@ -1,10 +1,9 @@
 # Advanced Search Features Design
 
 This document describes the design for advanced search features:
-1. **Vector Quantization (PQ/SQ/BQ)** - Memory-efficient vector compression
-2. **BlockMaxWAND** - Efficient top-k BM25 retrieval
-3. **Multi-Vector Support** - Late interaction / ColBERT-style search
-4. **Stopword Filtering** - Search quality improvement
+1. **BlockMaxWAND** - Efficient top-k BM25 retrieval
+2. **Multi-Vector Support** - Late interaction / ColBERT-style search
+3. **Stopword Filtering** - Search quality improvement
 
 ## SPM Module Architecture
 
@@ -12,7 +11,6 @@ This document describes the design for advanced search features:
 database-kit (client-safe, no FDB dependency)
 ├── Core                           # Persistable, IndexKind protocols
 ├── Vector                         # VectorIndexKind, VectorMetric
-│   └── QuantizationConfig        # NEW: PQ/SQ/BQ configuration
 ├── FullText                       # FullTextIndexKind, TokenizationStrategy
 │   └── StopwordSet               # NEW: Stopword definitions
 └── ...
@@ -23,11 +21,6 @@ database-framework (server-only, FDB dependency)
 │   └── IndexMaintainer
 │
 ├── VectorIndex                    # Depends on: DatabaseEngine
-│   ├── Quantization/             # NEW: Quantizer implementations
-│   │   ├── VectorQuantizer.swift
-│   │   ├── ProductQuantizer.swift
-│   │   ├── ScalarQuantizer.swift
-│   │   └── BinaryQuantizer.swift
 │   ├── MultiVector/              # NEW: Multi-vector support
 │   │   └── MultiVectorSearcher.swift
 │   ├── HNSWIndexMaintainer.swift
@@ -44,14 +37,9 @@ database-framework (server-only, FDB dependency)
 ```
 
 **Key Constraint**: `DatabaseEngine` cannot depend on any index module.
-Configuration types (QuantizationConfig, StopwordSet) are in `database-kit` for client access.
+Configuration types (StopwordSet) are in `database-kit` for client access.
 
 ## References
-
-### Vector Quantization
-- **Product Quantization**: Jégou et al., "Product Quantization for Nearest Neighbor Search", IEEE TPAMI 2011
-- **ScaNN/Scalar Quantization**: Guo et al., "Accelerating Large-Scale Inference with Anisotropic Vector Quantization", ICML 2020
-- **Binary Quantization**: Norouzi et al., "Minimal Loss Hashing for Compact Binary Codes", ICML 2011
 
 ### BlockMaxWAND
 - **Original WAND**: Broder et al., "Efficient Query Evaluation using a Two-Level Retrieval Process", CIKM 2003
@@ -67,222 +55,460 @@ Configuration types (QuantizationConfig, StopwordSet) are in `database-kit` for 
 
 ---
 
-## 1. Vector Quantization (PQ/SQ/BQ)
+## 1. BlockMaxWAND
 
 ### Overview
 
-Vector quantization reduces memory usage by compressing high-dimensional vectors into compact codes. This enables storing larger datasets in memory while maintaining reasonable search accuracy.
+BlockMaxWAND (BMW) is an optimization for top-k BM25 retrieval that skips document blocks that cannot contribute to the top-k results.
 
-| Method | Compression Ratio | Accuracy | Use Case |
-|--------|------------------|----------|----------|
-| **Product Quantization (PQ)** | 4-32x | High | General purpose |
-| **Scalar Quantization (SQ)** | 4x | Very High | When accuracy is critical |
-| **Binary Quantization (BQ)** | 32x | Medium | Extremely large datasets |
+**Current Problem**: The existing `searchWithScores()` method retrieves ALL matching documents, then sorts by score. This is O(N) where N = number of matching documents.
+
+**Solution**: BMW maintains per-block maximum scores, enabling early termination when a block's maximum possible score is below the current k-th best score.
+
+### Algorithm
+
+```
+BlockMaxWAND Algorithm:
+
+1. Initialize:
+   - result_heap = MaxHeap(k)  // Track top-k results
+   - threshold = 0              // Minimum score to enter top-k
+
+2. For each term posting list, organize into blocks:
+   Block structure: [docIDs...] + block_max_score
+
+3. Multi-term iteration with pivot selection:
+   - Sort terms by current document position
+   - Calculate upper bound = sum of block_max_scores
+   - If upper_bound <= threshold: skip to next block (PRUNING)
+   - Else: score document, update threshold if enters top-k
+
+4. Early termination:
+   - When all remaining blocks have upper_bound <= threshold
+```
+
+### Storage Layout Changes
+
+Current inverted index structure:
+```
+[indexSubspace]["terms"][term][docId] = Tuple(tf) or Tuple(positions...)
+```
+
+New structure with block metadata:
+```
+[indexSubspace]["terms"][term]["blocks"][blockId] = BlockMetadata
+[indexSubspace]["terms"][term]["postings"][blockId][docId] = Tuple(tf)
+```
+
+Where `BlockMetadata`:
+```swift
+struct BlockMetadata: Codable {
+    let minDocId: String      // First docId in block
+    let maxDocId: String      // Last docId in block
+    let docCount: Int         // Number of documents in block
+    let maxTF: Int            // Maximum term frequency in block
+    let maxImpact: Float      // Pre-computed max BM25 contribution
+}
+```
+
+### Block Size Selection
+
+**Reference**: Ding & Suel, "Faster Top-k Document Retrieval Using Block-Max Indexes"
+
+```swift
+/// Block size configuration
+/// - Small blocks: More pruning opportunities, higher overhead
+/// - Large blocks: Less overhead, fewer pruning opportunities
+/// - Sweet spot: 64-128 documents per block
+public struct BlockMaxConfig: Sendable {
+    /// Target documents per block (default: 64)
+    public let blockSize: Int
+
+    /// Minimum documents to use BMW (default: 1000)
+    /// Below this, simple sorting may be faster
+    public let minDocsForBMW: Int
+
+    public static let `default` = BlockMaxConfig(blockSize: 64, minDocsForBMW: 1000)
+}
+```
+
+### Implementation
+
+#### PostingListBlock
+
+```swift
+// Sources/FullTextIndex/BlockMaxWAND/PostingListBlock.swift
+
+/// A block within a posting list
+public struct PostingListBlock: Sendable {
+    /// Block identifier (sequential within term)
+    public let blockId: Int
+
+    /// Document IDs in this block
+    public let docIds: [String]
+
+    /// Term frequencies for each document
+    public let termFrequencies: [Int]
+
+    /// Maximum term frequency in block
+    public let maxTF: Int
+
+    /// Pre-computed maximum BM25 impact score
+    /// Using pessimistic document length (avgDL)
+    public let maxImpact: Float
+
+    /// Check if block can contribute to top-k
+    public func canContribute(threshold: Float, idf: Float) -> Bool {
+        return maxImpact * idf > threshold
+    }
+}
+```
+
+#### BlockMaxWANDSearcher
+
+```swift
+// Sources/FullTextIndex/BlockMaxWAND/BlockMaxWANDSearcher.swift
+
+/// BlockMaxWAND searcher for efficient top-k BM25 retrieval
+public struct BlockMaxWANDSearcher: Sendable {
+    private let config: BlockMaxConfig
+    private let bm25Params: BM25Parameters
+
+    public init(config: BlockMaxConfig = .default, bm25Params: BM25Parameters = .default) {
+        self.config = config
+        self.bm25Params = bm25Params
+    }
+
+    /// Search with BlockMaxWAND optimization
+    public func search(
+        terms: [String],
+        k: Int,
+        maintainer: FullTextIndexMaintainer<some Persistable>,
+        transaction: any TransactionProtocol
+    ) async throws -> [(docId: Tuple, score: Float)] {
+        // Get corpus statistics
+        let stats = try await maintainer.getBM25Statistics(transaction: transaction)
+        guard stats.totalDocuments > 0 else { return [] }
+
+        let scorer = BM25Scorer(params: bm25Params, statistics: stats)
+
+        // Load posting list iterators with block metadata
+        var termIterators: [TermBlockIterator] = []
+        var documentFrequencies: [String: Int64] = [:]
+
+        for term in terms {
+            let df = try await maintainer.getDocumentFrequency(term: term, transaction: transaction)
+            documentFrequencies[term] = df
+
+            let iterator = try await TermBlockIterator(
+                term: term,
+                idf: scorer.idf(documentFrequency: df),
+                maintainer: maintainer,
+                transaction: transaction
+            )
+            termIterators.append(iterator)
+        }
+
+        // Result heap (min-heap by score for efficient threshold updates)
+        var resultHeap = BoundedHeap<ScoredDoc>(capacity: k)
+        var threshold: Float = 0
+
+        // Main WAND loop
+        while termIterators.allSatisfy({ !$0.exhausted }) {
+            // Sort iterators by current document
+            termIterators.sort { $0.currentDocId < $1.currentDocId }
+
+            // Find pivot: first position where cumulative upper bound > threshold
+            var cumulativeUpperBound: Float = 0
+            var pivotIdx = 0
+
+            for (idx, iterator) in termIterators.enumerated() {
+                cumulativeUpperBound += iterator.currentBlockMaxImpact
+                if cumulativeUpperBound > threshold {
+                    pivotIdx = idx
+                    break
+                }
+            }
+
+            // If no pivot found, we're done
+            if cumulativeUpperBound <= threshold {
+                break
+            }
+
+            let pivotDoc = termIterators[pivotIdx].currentDocId
+
+            // Check if all terms before pivot are at pivotDoc
+            let allAtPivot = termIterators[0..<pivotIdx].allSatisfy {
+                $0.currentDocId == pivotDoc
+            }
+
+            if allAtPivot {
+                // Score the document
+                let score = try await scoreDocument(
+                    docId: pivotDoc,
+                    termIterators: termIterators,
+                    scorer: scorer,
+                    documentFrequencies: documentFrequencies,
+                    maintainer: maintainer,
+                    transaction: transaction
+                )
+
+                if score > threshold {
+                    resultHeap.insert(ScoredDoc(docId: pivotDoc, score: score))
+                    if resultHeap.isFull {
+                        threshold = resultHeap.min!.score
+                    }
+                }
+
+                // Advance all iterators past pivotDoc
+                for i in 0...pivotIdx {
+                    try await termIterators[i].advancePast(pivotDoc)
+                }
+            } else {
+                // Advance first iterator to pivotDoc
+                try await termIterators[0].advanceTo(pivotDoc)
+            }
+        }
+
+        return resultHeap.sorted().map { ($0.docId, $0.score) }
+    }
+
+    private func scoreDocument(
+        docId: String,
+        termIterators: [TermBlockIterator],
+        scorer: BM25Scorer,
+        documentFrequencies: [String: Int64],
+        maintainer: FullTextIndexMaintainer<some Persistable>,
+        transaction: any TransactionProtocol
+    ) async throws -> Float {
+        // Get document length
+        guard let metadata = try await maintainer.getDocumentMetadata(
+            id: Tuple(docId),
+            transaction: transaction
+        ) else {
+            return 0
+        }
+
+        // Sum BM25 contributions from each term
+        var termFrequencies: [String: Int] = [:]
+        for iterator in termIterators where iterator.currentDocId == docId {
+            termFrequencies[iterator.term] = iterator.currentTF
+        }
+
+        return scorer.score(
+            termFrequencies: termFrequencies,
+            documentFrequencies: documentFrequencies,
+            docLength: Int(metadata.docLength)
+        )
+    }
+}
+
+/// Iterator over blocks of a term's posting list
+private class TermBlockIterator {
+    let term: String
+    let idf: Float
+
+    var currentBlockIdx: Int = 0
+    var currentDocIdx: Int = 0
+    var currentDocId: String = ""
+    var currentTF: Int = 0
+    var currentBlockMaxImpact: Float = 0
+    var exhausted: Bool = false
+
+    private var blocks: [PostingListBlock] = []
+
+    init(
+        term: String,
+        idf: Float,
+        maintainer: FullTextIndexMaintainer<some Persistable>,
+        transaction: any TransactionProtocol
+    ) async throws {
+        self.term = term
+        self.idf = idf
+        self.blocks = try await maintainer.loadBlocksForTerm(term, transaction: transaction)
+
+        if !blocks.isEmpty {
+            await loadCurrentBlock()
+        } else {
+            exhausted = true
+        }
+    }
+
+    func advanceTo(_ targetDocId: String) async throws {
+        while currentDocId < targetDocId && !exhausted {
+            try await advanceOne()
+        }
+    }
+
+    func advancePast(_ docId: String) async throws {
+        while currentDocId <= docId && !exhausted {
+            try await advanceOne()
+        }
+    }
+
+    private func advanceOne() async throws {
+        currentDocIdx += 1
+
+        if currentDocIdx >= blocks[currentBlockIdx].docIds.count {
+            // Move to next block
+            currentBlockIdx += 1
+            currentDocIdx = 0
+
+            if currentBlockIdx >= blocks.count {
+                exhausted = true
+                return
+            }
+        }
+
+        await loadCurrentBlock()
+    }
+
+    private func loadCurrentBlock() async {
+        let block = blocks[currentBlockIdx]
+        currentDocId = block.docIds[currentDocIdx]
+        currentTF = block.termFrequencies[currentDocIdx]
+        currentBlockMaxImpact = block.maxImpact * idf
+    }
+}
+```
+
+### Index Building with Blocks
+
+```swift
+extension FullTextIndexMaintainer {
+    /// Build block structure during index maintenance
+    func updateIndexWithBlocks(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Standard update logic...
+
+        // After adding term entries, update block metadata
+        if let newItem = newItem {
+            let newId = try DataAccess.extractId(from: newItem, using: idExpression)
+            let newTokens = tokenize(extractText(from: newItem))
+
+            var termPositions: [String: [Int]] = [:]
+            for token in newTokens {
+                termPositions[token.term, default: []].append(token.position)
+            }
+
+            for (term, positions) in termPositions {
+                let tf = positions.count
+
+                // Determine block for this document
+                let blockId = try await getOrCreateBlock(
+                    term: term,
+                    docId: newId,
+                    transaction: transaction
+                )
+
+                // Update block metadata if this TF is higher
+                try await updateBlockMaxTF(
+                    term: term,
+                    blockId: blockId,
+                    tf: tf,
+                    transaction: transaction
+                )
+            }
+        }
+    }
+}
+```
+
+### Performance Characteristics
+
+| Scenario | Current | With BMW |
+|----------|---------|----------|
+| k=10, 1M matches | O(1M) | O(k × log k) typical |
+| k=100, 1M matches | O(1M) | O(10k) typical |
+| Highly selective query | O(N) | O(N) worst case |
+| Common terms | O(N) | 10-100x speedup |
+
+**Reference**: Mallia et al. report 2-10x speedup on TREC datasets.
+
+---
+
+## 2. Multi-Vector Support
+
+### Overview
+
+Multi-vector indexing allows a single document to have multiple vector representations. This enables:
+
+1. **Late Interaction (ColBERT)**: Each document token has its own embedding
+2. **Multi-view representations**: Different aspects of the same item
+3. **Hierarchical embeddings**: Summary + detail vectors
 
 ### Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        VectorIndex Module                        │
-├─────────────────────────────────────────────────────────────────┤
-│  ┌──────────────────┐    ┌──────────────────────────────────┐  │
-│  │   Training Data  │───▶│       VectorQuantizer            │  │
-│  │   (sample)       │    │  ┌────────────────────────────┐  │  │
-│  └──────────────────┘    │  │ train(vectors: [[Float]])  │  │  │
-│                          │  │ encode(vector: [Float])    │  │  │
-│                          │  │ decode(code: [UInt8])      │  │  │
-│                          │  │ distance(query, code)      │  │  │
-│                          │  └────────────────────────────┘  │  │
-│                          └──────────────────────────────────┘  │
-│                                        │                        │
-│                    ┌───────────────────┼───────────────────┐   │
-│                    ▼                   ▼                   ▼   │
-│  ┌──────────────────┐  ┌──────────────────┐  ┌──────────────────┐
-│  │ ProductQuantizer │  │ ScalarQuantizer  │  │ BinaryQuantizer  │
-│  │ (PQ)             │  │ (SQ)             │  │ (BQ)             │
-│  └──────────────────┘  └──────────────────┘  └──────────────────┘
-└─────────────────────────────────────────────────────────────────┘
+Document "How to cook pasta"
+    │
+    ├── Token embeddings (ColBERT-style)
+    │   ├── "how"   → [0.1, 0.2, ...]
+    │   ├── "to"    → [0.3, 0.1, ...]
+    │   ├── "cook"  → [0.5, 0.4, ...]
+    │   └── "pasta" → [0.2, 0.8, ...]
+    │
+    └── Query: "pasta recipe"
+        ├── "pasta"  → [0.2, 0.7, ...]
+        └── "recipe" → [0.4, 0.3, ...]
+
+        Score = MaxSim("pasta", doc_tokens) + MaxSim("recipe", doc_tokens)
+             = max(sim("pasta", "how"), sim("pasta", "to"), ...) + ...
 ```
 
-### 1.1 Product Quantization (PQ)
-
-#### Theory
-
-PQ divides a D-dimensional vector into M subvectors of D/M dimensions each.
-Each subvector is quantized to one of K centroids (typically K=256).
+### Storage Layout
 
 ```
-Original Vector (384 dims)
-┌────────────────────────────────────────────────────────────────┐
-│  [0.1, 0.2, ..., 0.3]                                          │
-└────────────────────────────────────────────────────────────────┘
-                                    │
-                                    ▼ Split into M=48 subvectors
-┌────────┐ ┌────────┐ ┌────────┐       ┌────────┐
-│ sub_0  │ │ sub_1  │ │ sub_2  │  ...  │ sub_47 │  (8 dims each)
-└────────┘ └────────┘ └────────┘       └────────┘
-    │          │          │                │
-    ▼          ▼          ▼                ▼      Quantize to centroid ID
-   42         128         17       ...    201     (1 byte each)
-                                    │
-                                    ▼
-Compressed Code: [42, 128, 17, ..., 201]  (48 bytes vs 1536 bytes)
+[indexSubspace]["multivec"]["doc"][docId]["count"] = Int64
+[indexSubspace]["multivec"]["doc"][docId]["vectors"][vecIdx] = [Float]
+[indexSubspace]["multivec"]["flat"][docId][vecIdx] = [Float]  // For brute-force
+[indexSubspace]["multivec"]["hnsw"]["nodes"][docId][vecIdx] = HNSWNodeMetadata
 ```
 
-#### Storage Layout
-
-```
-[indexSubspace]["pq"]["codebook"][subspace_id][centroid_id] = [Float] (subvector)
-[indexSubspace]["pq"]["codes"][primaryKey] = [UInt8] (M bytes)
-[indexSubspace]["pq"]["metadata"] = PQMetadata (M, K, dims, trained)
-```
-
-#### Asymmetric Distance Computation (ADC)
-
-For efficient search, precompute distance tables:
+### Configuration (database-kit)
 
 ```swift
-// Precompute distance from query to all centroids in each subspace
-var distanceTable: [[Float]] = []  // [M][K]
-for m in 0..<M {
-    let querySubvector = query[m * subDim..<(m + 1) * subDim]
-    distanceTable[m] = codebook[m].map { centroid in
-        euclideanDistance(querySubvector, centroid)
-    }
-}
+// Sources/Vector/MultiVectorConfig.swift
 
-// Distance computation becomes table lookups
-func distance(code: [UInt8]) -> Float {
-    var dist: Float = 0
-    for m in 0..<M {
-        dist += distanceTable[m][Int(code[m])]
-    }
-    return dist
-}
-```
+/// Multi-vector index configuration
+public struct MultiVectorConfig: Sendable, Codable, Hashable {
+    /// Maximum vectors per document
+    public let maxVectorsPerDoc: Int
 
-**Complexity**: O(M) per vector vs O(D) for raw vectors
+    /// Scoring method for combining vector similarities
+    public let scoringMethod: MultiVectorScoring
 
-#### Configuration (database-kit)
+    /// Whether to normalize scores by vector count
+    public let normalizeByCount: Bool
 
-```swift
-// Sources/Vector/QuantizationConfig.swift
-
-/// Product Quantization configuration
-public struct PQConfig: Sendable, Codable, Hashable {
-    /// Number of subquantizers (subspaces)
-    /// Higher M = better accuracy, larger codes
-    /// Typical: 8-96, must divide dimensions evenly
-    public let numSubquantizers: Int
-
-    /// Number of centroids per subquantizer (default: 256)
-    /// K=256 allows 1-byte codes per subspace
-    public let numCentroids: Int
-
-    /// Training sample size (default: 10000)
-    /// More samples = better codebook, slower training
-    public let trainingSampleSize: Int
-
-    /// Number of k-means iterations (default: 25)
-    public let kmeansIterations: Int
-
-    public static let `default` = PQConfig(
-        numSubquantizers: 48,
-        numCentroids: 256,
-        trainingSampleSize: 10000,
-        kmeansIterations: 25
+    public static let `default` = MultiVectorConfig(
+        maxVectorsPerDoc: 512,
+        scoringMethod: .maxSim,
+        normalizeByCount: true
     )
+}
 
-    public init(
-        numSubquantizers: Int = 48,
-        numCentroids: Int = 256,
-        trainingSampleSize: Int = 10000,
-        kmeansIterations: Int = 25
-    ) {
-        precondition(numCentroids > 0 && numCentroids <= 256,
-                     "numCentroids must be in [1, 256]")
-        self.numSubquantizers = numSubquantizers
-        self.numCentroids = numCentroids
-        self.trainingSampleSize = trainingSampleSize
-        self.kmeansIterations = kmeansIterations
-    }
+/// Scoring methods for multi-vector search
+public enum MultiVectorScoring: String, Sendable, Codable, Hashable {
+    /// MaxSim: For each query vector, take max similarity across doc vectors
+    /// Final score = sum of maxSims
+    /// Reference: ColBERT
+    case maxSim
+
+    /// Average: Average similarity of all query-doc vector pairs
+    case average
+
+    /// Chamfer: Bidirectional max-pooling
+    /// score = avg(max_doc(sim)) + avg(max_query(sim))
+    case chamfer
 }
 ```
 
-### 1.2 Scalar Quantization (SQ)
+### VectorIndexKind Extension_CONNECT_
 
-#### Theory
-
-SQ quantizes each dimension independently to 8-bit integers.
-
-```
-Original: [0.123, -0.456, 0.789, ...]
-              │
-              ▼ Linear mapping to [0, 255]
-Quantized: [89, 23, 201, ...]  (1 byte per dimension)
-```
-
-**Compression**: 4x (float32 → uint8)
-
-#### Storage Layout
-
-```
-[indexSubspace]["sq"]["params"] = SQParams (min[], max[], scale[])
-[indexSubspace]["sq"]["codes"][primaryKey] = [UInt8] (D bytes)
-```
-
-#### Configuration (database-kit)
-
-```swift
-/// Scalar Quantization configuration
-public struct SQConfig: Sendable, Codable, Hashable {
-    /// Quantization bits (default: 8)
-    /// 8 bits = 256 levels, 4x compression
-    public let bits: Int
-
-    /// Training sample size for min/max estimation
-    public let trainingSampleSize: Int
-
-    public static let `default` = SQConfig(bits: 8, trainingSampleSize: 10000)
-
-    public init(bits: Int = 8, trainingSampleSize: Int = 10000) {
-        precondition(bits == 4 || bits == 8, "Only 4-bit and 8-bit SQ supported")
-        self.bits = bits
-        self.trainingSampleSize = trainingSampleSize
-    }
-}
-```
-
-### 1.3 Binary Quantization (BQ)
-
-#### Theory
-
-BQ converts each dimension to a single bit (sign bit).
-
-```
-Original: [0.123, -0.456, 0.789, -0.012, ...]
-              │
-              ▼ Sign: positive=1, negative=0
-Binary:    [1, 0, 1, 0, ...]  → packed into bytes
-```
-
-**Compression**: 32x (float32 → 1 bit)
-
-**Distance**: Hamming distance (XOR + popcount)
-
-#### Storage Layout
-
-```
-[indexSubspace]["bq"]["codes"][primaryKey] = [UInt64] (D/64 words)
-```
-
-#### Configuration (database-kit)
-
-```swift
-/// Binary Quantization configuration
-public struct BQConfig: Sendable, Codable, Hashable {
-    /// Rescoring factor: retrieve k * rescoringFactor candidates,
-    /// then rescore with original vectors
     public let rescoringFactor: Int
 
     public static let `default` = BQConfig(rescoringFactor: 4)

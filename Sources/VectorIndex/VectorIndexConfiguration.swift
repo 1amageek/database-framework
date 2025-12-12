@@ -2,7 +2,6 @@
 // VectorIndex - Runtime configuration for vector indexes
 //
 // Provides IndexConfiguration implementation to select HNSW vs Flat search at runtime.
-// Supports vector quantization (PQ/SQ/BQ) for memory-efficient storage.
 
 import Foundation
 import Core
@@ -25,9 +24,6 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
     /// Vector search algorithm selection
     var algorithm: VectorAlgorithm { get }
 
-    /// Vector quantization configuration
-    var quantization: QuantizationConfig { get }
-
     /// Subspace key for data isolation (inherited from IndexConfiguration)
     var subspaceKey: String? { get }
 }
@@ -36,17 +32,11 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 
 /// Runtime configuration for VectorIndexKind
 ///
-/// **Purpose**: Select vector search algorithm and quantization at container initialization.
+/// **Purpose**: Select vector search algorithm at container initialization.
 ///
 /// **Algorithm Selection**:
 /// - **Flat scan**: Default, O(n), 100% recall, no memory overhead
 /// - **HNSW**: O(log n), ~95-99% recall, requires graph in memory
-///
-/// **Quantization Selection**:
-/// - **None**: Full precision float32 (default)
-/// - **PQ**: Product Quantization, 4-32x compression, high accuracy
-/// - **SQ**: Scalar Quantization, 4x compression, very high accuracy
-/// - **BQ**: Binary Quantization, 32x compression, moderate accuracy
 ///
 /// **Usage Example**:
 /// ```swift
@@ -101,15 +91,6 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// Vector search algorithm selection
     public let algorithm: VectorAlgorithm
 
-    /// Vector quantization configuration
-    ///
-    /// Quantization compresses vectors to reduce memory usage:
-    /// - `.none`: Full precision (default)
-    /// - `.pq(config)`: Product Quantization (4-32x compression)
-    /// - `.sq(config)`: Scalar Quantization (4x compression)
-    /// - `.bq(config)`: Binary Quantization (32x compression)
-    public let quantization: QuantizationConfig
-
     /// Optional subspace key for data isolation
     ///
     /// When specified, creates a separate subspace for this configuration's data.
@@ -123,17 +104,14 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// - Parameters:
     ///   - keyPath: KeyPath to the vector field
     ///   - algorithm: Search algorithm to use (default: .auto)
-    ///   - quantization: Quantization method (default: .none)
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         keyPath: KeyPath<Model, [Float]>,
         algorithm: VectorAlgorithm = .auto(.default),
-        quantization: QuantizationConfig = .none,
         subspaceKey: String? = nil
     ) {
         self._keyPath = keyPath
         self.algorithm = algorithm
-        self.quantization = quantization
         self.subspaceKey = subspaceKey
     }
 
@@ -142,17 +120,14 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
     /// - Parameters:
     ///   - keyPath: KeyPath to the vector field
     ///   - hnswParameters: HNSW algorithm parameters
-    ///   - quantization: Quantization method (default: .none)
     ///   - subspaceKey: Optional key for subspace isolation (default: nil)
     public init(
         keyPath: KeyPath<Model, [Float]>,
         hnsw hnswParameters: VectorHNSWParameters,
-        quantization: QuantizationConfig = .none,
         subspaceKey: String? = nil
     ) {
         self._keyPath = keyPath
         self.algorithm = .hnsw(hnswParameters)
-        self.quantization = quantization
         self.subspaceKey = subspaceKey
     }
 }
