@@ -386,6 +386,86 @@ if let data = try await tx.getValue(for: key) {
 | `CommitHook` | `Transaction/CommitHook.swift` | Synchronous callbacks before commit |
 | `AsyncCommitHook` | `Transaction/AsyncCommitHook.swift` | Asynchronous callbacks before commit |
 
+### Field-Level Security
+
+Field-Level Security provides fine-grained access control at the field level within models.
+
+**Two-Package Split**:
+- **database-kit** (Core): `@Restricted` property wrapper, `FieldAccessLevel`, `RestrictedProtocol`
+- **database-framework** (DatabaseEngine): `FieldSecurityEvaluator`, `FieldSecurityError`, `FDBContext+FieldSecurity`
+
+**Model Definition** (using database-kit):
+```swift
+@Persistable
+struct Employee {
+    var id: String = ULID().ulidString
+    var name: String = ""
+
+    // Only HR and managers can read; only HR can write
+    @Restricted(read: .roles(["hr", "manager"]), write: .roles(["hr"]))
+    var salary: Double = 0
+
+    // Only HR can read/write
+    @Restricted(read: .roles(["hr"]), write: .roles(["hr"]))
+    var ssn: String = ""
+
+    // Anyone can read; only admin can write
+    @Restricted(write: .roles(["admin"]))
+    var department: String = ""
+
+    // Only authenticated users can read
+    @Restricted(read: .authenticated)
+    var internalNotes: String = ""
+}
+```
+
+**Access Levels** (`FieldAccessLevel`):
+
+| Level | Description |
+|-------|-------------|
+| `.public` | Everyone can access (default) |
+| `.authenticated` | Only authenticated users |
+| `.roles(Set<String>)` | Only users with specific roles |
+| `.custom((AuthContext) -> Bool)` | Custom predicate |
+
+**Usage with FDBContext** (using database-framework):
+```swift
+// Set auth context via TaskLocal
+try await AuthContextKey.$current.withValue(userAuth) {
+    // Secure fetch - restricted fields are masked
+    let employees = try await context.fetchSecure(Employee.self).execute()
+
+    // Secure single fetch
+    let employee = try await context.modelSecure(for: id, as: Employee.self)
+
+    // Check field access
+    let canReadSalary = context.canRead(\.salary, in: employee)
+    let canWriteSalary = context.canWrite(\.salary, in: employee)
+
+    // Get list of restricted fields
+    let unreadable = context.unreadableFields(in: employee)
+    let unwritable = context.unwritableFields(in: employee)
+
+    // Validate before write
+    try context.validateFieldWrite(original: existingEmployee, updated: modifiedEmployee)
+    context.insert(modifiedEmployee)
+    try await context.save()
+}
+```
+
+**Key Components**:
+
+| Component | Package | Description |
+|-----------|---------|-------------|
+| `FieldAccessLevel` | database-kit | Access level enum |
+| `@Restricted` | database-kit | Property wrapper for field restrictions |
+| `RestrictedProtocol` | database-kit | Protocol for runtime type identification |
+| `FieldSecurityEvaluator` | database-framework | Evaluation logic (mask, validate) |
+| `FieldSecurityError` | database-framework | Error types (readNotAllowed, writeNotAllowed) |
+| `SecureQueryExecutor` | database-framework | Query executor with automatic masking |
+
+**Limitation**: Field masking (`mask()`) is currently a no-op because Swift's reflection doesn't support property mutation. Use `unreadableFields(in:auth:)` to identify fields that should be filtered at the serialization or presentation layer.
+
 ### Dynamic Directories (Partitioned Data)
 
 Dynamic directories enable multi-tenant and partitioned data patterns by including field values in the directory path.

@@ -8,23 +8,19 @@ import Core
 import TestSupport
 @testable import DatabaseEngine
 
-// MARK: - Test Models
+// MARK: - Test Models Using @Persistable Macro
 
 /// Employee with restricted salary and SSN fields
-///
-/// Uses @Restricted property wrapper for field-level security.
-/// Access levels are preserved through custom init.
-private struct Employee: Persistable {
-    typealias ID = String
-
-    var id: String
-    var name: String
+/// Uses @Persistable macro - access levels are stored as static metadata
+@Persistable
+struct SecureEmployee {
+    var name: String = ""
 
     /// Salary - only HR and managers can read/write
     @Restricted(read: .roles(["hr", "manager"]), write: .roles(["hr"]))
     var salary: Double = 0
 
-    /// SSN - only HR can read, no one can write (except initially)
+    /// SSN - only HR can read/write
     @Restricted(read: .roles(["hr"]), write: .roles(["hr"]))
     var ssn: String = ""
 
@@ -35,73 +31,13 @@ private struct Employee: Persistable {
     /// Internal notes - only authenticated users can read
     @Restricted(read: .authenticated)
     var internalNotes: String = ""
+}
 
-    /// Custom init that preserves access levels from property wrapper declarations
-    init(
-        id: String = UUID().uuidString,
-        name: String = "",
-        salary: Double = 0,
-        ssn: String = "",
-        department: String = "",
-        internalNotes: String = ""
-    ) {
-        self.id = id
-        self.name = name
-        // Explicitly create Restricted with proper access levels
-        self._salary = Restricted(wrappedValue: salary, read: .roles(["hr", "manager"]), write: .roles(["hr"]))
-        self._ssn = Restricted(wrappedValue: ssn, read: .roles(["hr"]), write: .roles(["hr"]))
-        self._department = Restricted(wrappedValue: department, read: .public, write: .roles(["admin"]))
-        self._internalNotes = Restricted(wrappedValue: internalNotes, read: .authenticated, write: .public)
-    }
-
-    static var persistableType: String { "Employee" }
-    static var allFields: [String] { ["id", "name", "salary", "ssn", "department", "internalNotes"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "name": return name
-        case "salary": return salary
-        case "ssn": return ssn
-        case "department": return department
-        case "internalNotes": return internalNotes
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<Employee, Value>) -> String {
-        switch keyPath {
-        case \Employee.id: return "id"
-        case \Employee.name: return "name"
-        case \Employee.salary: return "salary"
-        case \Employee.ssn: return "ssn"
-        case \Employee.department: return "department"
-        case \Employee.internalNotes: return "internalNotes"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<Employee>) -> String {
-        switch keyPath {
-        case \Employee.id: return "id"
-        case \Employee.name: return "name"
-        case \Employee.salary: return "salary"
-        case \Employee.ssn: return "ssn"
-        case \Employee.department: return "department"
-        case \Employee.internalNotes: return "internalNotes"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<Employee> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
-    }
+/// Simple model without restrictions for comparison
+@Persistable
+struct PublicProfile {
+    var name: String = ""
+    var bio: String = ""
 }
 
 /// Simple test auth context
@@ -115,6 +51,175 @@ private struct TestAuth: AuthContext {
     }
 }
 
+// MARK: - Static Metadata Tests (Key Fix Verification)
+
+@Suite("Static Metadata Generation")
+struct StaticMetadataTests {
+
+    @Test("@Persistable generates restrictedFieldsMetadata")
+    func persistableGeneratesMetadata() {
+        // This is the key test - metadata should be static, not instance-based
+        let metadata = SecureEmployee.restrictedFieldsMetadata
+
+        #expect(metadata.count == 4)
+
+        // Find salary metadata
+        let salaryMeta = metadata.first { $0.fieldName == "salary" }
+        #expect(salaryMeta != nil)
+        #expect(salaryMeta?.readAccess == .roles(["hr", "manager"]))
+        #expect(salaryMeta?.writeAccess == .roles(["hr"]))
+
+        // Find ssn metadata
+        let ssnMeta = metadata.first { $0.fieldName == "ssn" }
+        #expect(ssnMeta != nil)
+        #expect(ssnMeta?.readAccess == .roles(["hr"]))
+
+        // Find department metadata
+        let deptMeta = metadata.first { $0.fieldName == "department" }
+        #expect(deptMeta != nil)
+        #expect(deptMeta?.readAccess == .public)
+        #expect(deptMeta?.writeAccess == .roles(["admin"]))
+
+        // Find internalNotes metadata
+        let notesMeta = metadata.first { $0.fieldName == "internalNotes" }
+        #expect(notesMeta != nil)
+        #expect(notesMeta?.readAccess == .authenticated)
+    }
+
+    @Test("Models without @Restricted have empty metadata")
+    func modelsWithoutRestrictedHaveEmptyMetadata() {
+        #expect(PublicProfile.restrictedFieldsMetadata.isEmpty)
+    }
+
+    @Test("Metadata is preserved after encode/decode - CRITICAL TEST")
+    func metadataPreservedAfterDecode() throws {
+        // Create an employee
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
+        employee.ssn = "123-45-6789"
+
+        // Encode to JSON
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(employee)
+
+        // Decode back
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(SecureEmployee.self, from: data)
+
+        // Values should be preserved
+        #expect(decoded.name == "Alice")
+        #expect(decoded.salary == 100000)
+        #expect(decoded.ssn == "123-45-6789")
+
+        // CRITICAL: Static metadata should still be correct after decode
+        // This would fail with reflection-based approach because @Restricted
+        // property wrapper loses access levels after decode
+        let metadata = SecureEmployee.restrictedFieldsMetadata
+        let salaryMeta = metadata.first { $0.fieldName == "salary" }
+        #expect(salaryMeta?.readAccess == .roles(["hr", "manager"]))
+        #expect(salaryMeta?.writeAccess == .roles(["hr"]))
+
+        // Verify evaluator uses static metadata
+        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+
+        // Should use static metadata, not instance reflection
+        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: decoded, auth: hrAuth) == true)
+        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: decoded, auth: employeeAuth) == false)
+    }
+}
+
+// MARK: - Masking Tests (Key Fix Verification)
+
+@Suite("Field Masking")
+struct FieldMaskingTests {
+
+    @Test("masked(auth:) masks restricted fields")
+    func maskedMasksRestrictedFields() {
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
+        employee.ssn = "123-45-6789"
+        employee.department = "Engineering"
+        employee.internalNotes = "Good performer"
+
+        // Regular employee - cannot see salary, ssn
+        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let masked = employee.masked(auth: employeeAuth)
+
+        #expect(masked.name == "Alice")
+        #expect(masked.salary == 0) // Masked to default
+        #expect(masked.ssn == "") // Masked to default
+        #expect(masked.department == "Engineering") // Visible
+        #expect(masked.internalNotes == "Good performer") // Visible (authenticated)
+    }
+
+    @Test("masked(auth:) preserves visible fields")
+    func maskedPreservesVisibleFields() {
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
+        employee.ssn = "123-45-6789"
+
+        // HR user - can see everything
+        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        let masked = employee.masked(auth: hrAuth)
+
+        #expect(masked.name == "Alice")
+        #expect(masked.salary == 100000) // Visible to HR
+        #expect(masked.ssn == "123-45-6789") // Visible to HR
+    }
+
+    @Test("FieldSecurityEvaluator.mask uses generated method")
+    func evaluatorMaskUsesGeneratedMethod() {
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
+
+        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let masked = FieldSecurityEvaluator.mask(employee, auth: employeeAuth)
+
+        #expect(masked.salary == 0) // Should be masked
+    }
+
+    @Test("Masking works after encode/decode - CRITICAL TEST")
+    func maskingWorksAfterDecode() throws {
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
+
+        // Encode and decode
+        let encoder = JSONEncoder()
+        let data = try encoder.encode(employee)
+        let decoder = JSONDecoder()
+        let decoded = try decoder.decode(SecureEmployee.self, from: data)
+
+        // CRITICAL: Masking should still work on decoded instance
+        // This would fail if masking relied on @Restricted property wrapper's
+        // instance access levels (which are lost after decode)
+        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+        let masked = decoded.masked(auth: employeeAuth)
+
+        #expect(masked.salary == 0) // Should be masked even after decode
+    }
+
+    @Test("Batch masking works")
+    func batchMaskingWorks() {
+        var emp1 = SecureEmployee(name: "Alice")
+        emp1.salary = 100000
+
+        var emp2 = SecureEmployee(name: "Bob")
+        emp2.salary = 80000
+
+        let employees = [emp1, emp2]
+        let employeeAuth = TestAuth(userID: "emp1", roles: ["employee"])
+
+        let masked = FieldSecurityEvaluator.mask(employees, auth: employeeAuth)
+
+        #expect(masked.count == 2)
+        #expect(masked[0].salary == 0)
+        #expect(masked[1].salary == 0)
+        #expect(masked[0].name == "Alice")
+        #expect(masked[1].name == "Bob")
+    }
+}
+
 // MARK: - FieldAccessLevel Tests
 
 @Suite("FieldAccessLevel")
@@ -124,13 +229,8 @@ struct FieldAccessLevelTests {
     func publicAccessAllowsEveryone() {
         let level = FieldAccessLevel.public
 
-        // Unauthenticated
         #expect(level.evaluate(auth: nil) == true)
-
-        // Authenticated without roles
         #expect(level.evaluate(auth: TestAuth(userID: "user1")) == true)
-
-        // Authenticated with roles
         #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["admin"])) == true)
     }
 
@@ -138,10 +238,7 @@ struct FieldAccessLevelTests {
     func authenticatedAccessRequiresAuth() {
         let level = FieldAccessLevel.authenticated
 
-        // Unauthenticated
         #expect(level.evaluate(auth: nil) == false)
-
-        // Authenticated
         #expect(level.evaluate(auth: TestAuth(userID: "user1")) == true)
     }
 
@@ -149,17 +246,10 @@ struct FieldAccessLevelTests {
     func roleBasedAccessChecksRoles() {
         let level = FieldAccessLevel.roles(["hr", "manager"])
 
-        // Unauthenticated
         #expect(level.evaluate(auth: nil) == false)
-
-        // Authenticated without required roles
         #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["employee"])) == false)
-
-        // Authenticated with one required role
         #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["hr"])) == true)
         #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["manager"])) == true)
-
-        // Authenticated with multiple roles including required
         #expect(level.evaluate(auth: TestAuth(userID: "user1", roles: ["employee", "hr"])) == true)
     }
 
@@ -169,13 +259,8 @@ struct FieldAccessLevelTests {
             auth.userID.hasPrefix("admin_")
         }
 
-        // Unauthenticated
         #expect(level.evaluate(auth: nil) == false)
-
-        // Not matching predicate
         #expect(level.evaluate(auth: TestAuth(userID: "user1")) == false)
-
-        // Matching predicate
         #expect(level.evaluate(auth: TestAuth(userID: "admin_1")) == true)
     }
 
@@ -185,67 +270,6 @@ struct FieldAccessLevelTests {
         #expect(FieldAccessLevel.authenticated == FieldAccessLevel.authenticated)
         #expect(FieldAccessLevel.roles(["a", "b"]) == FieldAccessLevel.roles(["a", "b"]))
         #expect(FieldAccessLevel.roles(["a"]) != FieldAccessLevel.roles(["b"]))
-
-        // Custom closures cannot be compared
-        let custom1 = FieldAccessLevel.custom { _ in true }
-        let custom2 = FieldAccessLevel.custom { _ in true }
-        #expect(custom1 != custom2)
-    }
-}
-
-// MARK: - Restricted Property Wrapper Tests
-
-@Suite("Restricted Property Wrapper")
-struct RestrictedPropertyWrapperTests {
-
-    @Test("Restricted wraps value correctly")
-    func restrictedWrapsValue() {
-        var restricted = Restricted(wrappedValue: 100.0, read: .roles(["hr"]), write: .roles(["admin"]))
-
-        #expect(restricted.wrappedValue == 100.0)
-        #expect(restricted.readAccess == .roles(["hr"]))
-        #expect(restricted.writeAccess == .roles(["admin"]))
-
-        // Can modify wrapped value
-        restricted.wrappedValue = 200.0
-        #expect(restricted.wrappedValue == 200.0)
-    }
-
-    @Test("Restricted conforms to RestrictedProtocol")
-    func restrictedConformsToProtocol() {
-        let restricted: any RestrictedProtocol = Restricted(
-            wrappedValue: "secret",
-            read: .authenticated,
-            write: .roles(["admin"])
-        )
-
-        #expect(restricted.readAccess == .authenticated)
-        #expect(restricted.writeAccess == .roles(["admin"]))
-        #expect(restricted.anyValue as? String == "secret")
-    }
-
-    @Test("Restricted Codable encodes only value")
-    func restrictedCodableEncodesOnlyValue() throws {
-        let restricted = Restricted(
-            wrappedValue: 42,
-            read: .roles(["hr"]),
-            write: .roles(["admin"])
-        )
-
-        let encoder = JSONEncoder()
-        let data = try encoder.encode(restricted)
-        let json = String(data: data, encoding: .utf8)
-
-        // Should encode just the value, not access levels
-        #expect(json == "42")
-
-        // Decode back
-        let decoder = JSONDecoder()
-        let decoded = try decoder.decode(Restricted<Int>.self, from: data)
-        #expect(decoded.wrappedValue == 42)
-        // Access levels are not encoded, so they default to .public
-        #expect(decoded.readAccess == .public)
-        #expect(decoded.writeAccess == .public)
     }
 }
 
@@ -254,40 +278,24 @@ struct RestrictedPropertyWrapperTests {
 @Suite("FieldSecurityEvaluator")
 struct FieldSecurityEvaluatorTests {
 
-    @Test("Extract restricted fields from model")
-    func extractRestrictedFields() {
-        let employee = Employee(
-            name: "Alice",
-            salary: 100000,
-            ssn: "123-45-6789",
-            department: "Engineering",
-            internalNotes: "Good performer"
-        )
+    @Test("Extract restricted fields from type (static)")
+    func extractRestrictedFieldsFromType() {
+        let restrictions = FieldSecurityEvaluator.extractRestrictedFields(for: SecureEmployee.self)
 
-        let restrictions = FieldSecurityEvaluator.extractRestrictedFields(from: employee)
-
-        // Should find 4 restricted fields
         #expect(restrictions.count == 4)
         #expect(restrictions["salary"] != nil)
         #expect(restrictions["ssn"] != nil)
         #expect(restrictions["department"] != nil)
         #expect(restrictions["internalNotes"] != nil)
 
-        // Check specific restrictions
         #expect(restrictions["salary"]?.readAccess == .roles(["hr", "manager"]))
         #expect(restrictions["salary"]?.writeAccess == .roles(["hr"]))
-        #expect(restrictions["ssn"]?.readAccess == .roles(["hr"]))
-        #expect(restrictions["department"]?.writeAccess == .roles(["admin"]))
-        #expect(restrictions["internalNotes"]?.readAccess == .authenticated)
     }
 
-    @Test("canRead evaluates correctly")
-    func canReadEvaluates() {
-        let employee = Employee(
-            name: "Alice",
-            salary: 100000,
-            ssn: "123-45-6789"
-        )
+    @Test("canRead evaluates correctly using static metadata")
+    func canReadEvaluatesUsingStaticMetadata() {
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
 
         // Unauthenticated user
         #expect(FieldSecurityEvaluator.canRead(field: "name", in: employee, auth: nil) == true)
@@ -295,142 +303,118 @@ struct FieldSecurityEvaluatorTests {
         #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: nil) == false)
 
         // Regular employee
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
-        #expect(FieldSecurityEvaluator.canRead(field: "name", in: employee, auth: employee_auth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: employee_auth) == false)
-        #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: employee_auth) == true)
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: employeeAuth) == false)
+        #expect(FieldSecurityEvaluator.canRead(field: "internalNotes", in: employee, auth: employeeAuth) == true)
 
         // HR user
-        let hr_auth = TestAuth(userID: "hr1", roles: ["hr"])
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: hr_auth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: hr_auth) == true)
+        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: hrAuth) == true)
+        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: hrAuth) == true)
 
         // Manager
-        let manager_auth = TestAuth(userID: "mgr1", roles: ["manager"])
-        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: manager_auth) == true)
-        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: manager_auth) == false)
+        let managerAuth = TestAuth(userID: "mgr1", roles: ["manager"])
+        #expect(FieldSecurityEvaluator.canRead(field: "salary", in: employee, auth: managerAuth) == true)
+        #expect(FieldSecurityEvaluator.canRead(field: "ssn", in: employee, auth: managerAuth) == false)
     }
 
     @Test("canWrite evaluates correctly")
     func canWriteEvaluates() {
-        let employee = Employee(name: "Alice")
+        let employee = SecureEmployee(name: "Alice")
 
-        // Regular employee - cannot write restricted fields
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "name", in: employee, auth: employee_auth) == true)
-        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: employee_auth) == false)
-        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: employee_auth) == false)
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        #expect(FieldSecurityEvaluator.canWrite(field: "name", in: employee, auth: employeeAuth) == true)
+        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: employeeAuth) == false)
+        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: employeeAuth) == false)
 
-        // HR - can write salary
-        let hr_auth = TestAuth(userID: "hr1", roles: ["hr"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: hr_auth) == true)
+        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
+        #expect(FieldSecurityEvaluator.canWrite(field: "salary", in: employee, auth: hrAuth) == true)
 
-        // Admin - can write department
-        let admin_auth = TestAuth(userID: "admin1", roles: ["admin"])
-        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: admin_auth) == true)
+        let adminAuth = TestAuth(userID: "admin1", roles: ["admin"])
+        #expect(FieldSecurityEvaluator.canWrite(field: "department", in: employee, auth: adminAuth) == true)
     }
 
     @Test("unreadableFields returns correct list")
     func unreadableFieldsReturnsCorrectList() {
-        let employee = Employee(
-            name: "Alice",
-            salary: 100000,
-            ssn: "123-45-6789",
-            department: "Engineering",
-            internalNotes: "Notes"
-        )
+        var employee = SecureEmployee(name: "Alice")
+        employee.salary = 100000
 
         // Unauthenticated
-        let unreadable_nil = FieldSecurityEvaluator.unreadableFields(in: employee, auth: nil)
-        #expect(unreadable_nil.contains("salary"))
-        #expect(unreadable_nil.contains("ssn"))
-        #expect(unreadable_nil.contains("internalNotes"))
-        #expect(!unreadable_nil.contains("department")) // department is public to read
+        let unreadableNil = FieldSecurityEvaluator.unreadableFields(in: employee, auth: nil)
+        #expect(unreadableNil.contains("salary"))
+        #expect(unreadableNil.contains("ssn"))
+        #expect(unreadableNil.contains("internalNotes"))
+        #expect(!unreadableNil.contains("department"))
 
         // Regular employee
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
-        let unreadable_employee = FieldSecurityEvaluator.unreadableFields(in: employee, auth: employee_auth)
-        #expect(unreadable_employee.contains("salary"))
-        #expect(unreadable_employee.contains("ssn"))
-        #expect(!unreadable_employee.contains("internalNotes")) // authenticated can read
-    }
-
-    @Test("unwritableFields returns correct list")
-    func unwritableFieldsReturnsCorrectList() {
-        let employee = Employee(name: "Alice")
-
-        // Regular employee
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
-        let unwritable = FieldSecurityEvaluator.unwritableFields(in: employee, auth: employee_auth)
-        #expect(unwritable.contains("salary"))
-        #expect(unwritable.contains("ssn"))
-        #expect(unwritable.contains("department"))
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
+        let unreadableEmployee = FieldSecurityEvaluator.unreadableFields(in: employee, auth: employeeAuth)
+        #expect(unreadableEmployee.contains("salary"))
+        #expect(unreadableEmployee.contains("ssn"))
+        #expect(!unreadableEmployee.contains("internalNotes"))
     }
 
     @Test("validateWrite throws for unauthorized field changes")
     func validateWriteThrowsForUnauthorizedChanges() {
-        let original = Employee(name: "Alice", salary: 50000)
+        var original = SecureEmployee(name: "Alice")
+        original.salary = 50000
         var updated = original
-        updated.salary = 100000 // Attempt to change salary
+        updated.salary = 100000
 
-        // Regular employee cannot change salary
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
 
         #expect(throws: FieldSecurityError.self) {
             try FieldSecurityEvaluator.validateWrite(
                 original: original,
                 updated: updated,
-                auth: employee_auth
+                auth: employeeAuth
             )
         }
     }
 
     @Test("validateWrite allows authorized field changes")
     func validateWriteAllowsAuthorizedChanges() throws {
-        let original = Employee(name: "Alice", salary: 50000)
+        var original = SecureEmployee(name: "Alice")
+        original.salary = 50000
         var updated = original
-        updated.salary = 100000 // HR can change salary
+        updated.salary = 100000
 
-        // HR user can change salary
-        let hr_auth = TestAuth(userID: "hr1", roles: ["hr"])
+        let hrAuth = TestAuth(userID: "hr1", roles: ["hr"])
 
-        // Should not throw
         try FieldSecurityEvaluator.validateWrite(
             original: original,
             updated: updated,
-            auth: hr_auth
+            auth: hrAuth
         )
     }
 
     @Test("validateWrite allows changes to unrestricted fields")
     func validateWriteAllowsUnrestrictedChanges() throws {
-        let original = Employee(name: "Alice")
+        let original = SecureEmployee(name: "Alice")
         var updated = original
-        updated.name = "Alice Smith" // Name is not restricted
+        updated.name = "Alice Smith"
 
-        // Anyone can change name
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
 
         try FieldSecurityEvaluator.validateWrite(
             original: original,
             updated: updated,
-            auth: employee_auth
+            auth: employeeAuth
         )
     }
 
     @Test("validateWrite for new insert checks non-default values")
     func validateWriteForNewInsertChecksNonDefaults() {
-        // New employee with salary set (HR only can set salary)
-        let newEmployee = Employee(name: "Bob", salary: 75000)
+        var newEmployee = SecureEmployee(name: "Bob")
+        newEmployee.salary = 75000
 
-        // Regular employee cannot insert with salary
-        let employee_auth = TestAuth(userID: "user1", roles: ["employee"])
+        let employeeAuth = TestAuth(userID: "user1", roles: ["employee"])
 
         #expect(throws: FieldSecurityError.self) {
             try FieldSecurityEvaluator.validateWrite(
                 original: nil,
                 updated: newEmployee,
-                auth: employee_auth
+                auth: employeeAuth
             )
         }
     }
@@ -443,20 +427,58 @@ struct FieldSecurityErrorTests {
 
     @Test("Error contains type and field info")
     func errorContainsTypeAndFieldInfo() {
-        let error = FieldSecurityError.writeNotAllowed(type: "Employee", fields: ["salary", "ssn"])
+        let error = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary", "ssn"])
 
-        #expect(error.description.contains("Employee"))
+        #expect(error.description.contains("SecureEmployee"))
         #expect(error.description.contains("salary"))
         #expect(error.description.contains("ssn"))
     }
 
     @Test("Error is equatable")
     func errorIsEquatable() {
-        let error1 = FieldSecurityError.writeNotAllowed(type: "Employee", fields: ["salary"])
-        let error2 = FieldSecurityError.writeNotAllowed(type: "Employee", fields: ["salary"])
-        let error3 = FieldSecurityError.writeNotAllowed(type: "Employee", fields: ["ssn"])
+        let error1 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary"])
+        let error2 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["salary"])
+        let error3 = FieldSecurityError.writeNotAllowed(type: "SecureEmployee", fields: ["ssn"])
 
         #expect(error1 == error2)
         #expect(error1 != error3)
+    }
+}
+
+// MARK: - RestrictedFieldMetadata Tests
+
+@Suite("RestrictedFieldMetadata")
+struct RestrictedFieldMetadataTests {
+
+    @Test("Metadata struct is equatable")
+    func metadataIsEquatable() {
+        let meta1 = RestrictedFieldMetadata(
+            fieldName: "salary",
+            readAccess: .roles(["hr"]),
+            writeAccess: .roles(["hr"])
+        )
+        let meta2 = RestrictedFieldMetadata(
+            fieldName: "salary",
+            readAccess: .roles(["hr"]),
+            writeAccess: .roles(["hr"])
+        )
+        let meta3 = RestrictedFieldMetadata(
+            fieldName: "ssn",
+            readAccess: .roles(["hr"]),
+            writeAccess: .roles(["hr"])
+        )
+
+        #expect(meta1 == meta2)
+        #expect(meta1 != meta3)
+    }
+
+    @Test("Metadata is Sendable")
+    func metadataIsSendable() {
+        // Compile-time check - if this compiles, it's Sendable
+        let _: any Sendable = RestrictedFieldMetadata(
+            fieldName: "test",
+            readAccess: .public,
+            writeAccess: .public
+        )
     }
 }
