@@ -21,8 +21,7 @@ import Metrics
 /// // Create indexer
 /// let indexer = OnlineIndexer(
 ///     database: database,
-///     itemSubspace: itemSubspace,
-///     indexSubspace: indexSubspace,
+///     storeSubspace: storeSubspace,
 ///     itemType: "User",
 ///     index: emailIndex,
 ///     indexMaintainer: emailIndexMaintainer,
@@ -51,6 +50,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
     /// Database instance
     nonisolated(unsafe) private let database: any DatabaseProtocol
+
+    /// Store root subspace (parent of R/I/B/M)
+    private let storeSubspace: Subspace
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -104,9 +106,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Parameters:
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of items/indexes/blobs/metadata)
     ///   - itemType: Type name of items to index
     ///   - index: Index definition
     ///   - indexMaintainer: IndexMaintainer for this index
@@ -115,9 +115,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - throttleDelayMs: Delay between batches in milliseconds (default: 0)
     public init(
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         itemType: String,
         index: Index,
         indexMaintainer: any IndexMaintainer<Item>,
@@ -126,9 +124,10 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         throttleDelayMs: Int = 0
     ) {
         self.database = database
-        self.itemSubspace = itemSubspace
-        self.indexSubspace = indexSubspace
-        self.blobsSubspace = blobsSubspace
+        self.storeSubspace = storeSubspace
+        self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
+        self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        self.blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
         self.itemType = itemType
         self.index = index
         self.indexMaintainer = indexMaintainer
@@ -137,14 +136,13 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         self.throttleDelayMs = throttleDelayMs
 
         // Progress key: [indexSubspace]["_progress"][indexName]
-        self.progressKey = indexSubspace
+        self.progressKey = self.indexSubspace
             .subspace("_progress")
             .pack(Tuple(index.name))
 
         // Metadata and violation tracking for unique indexes
-        // Derive metadata subspace from itemSubspace parent (assumes [store]/R/ structure)
         // Violations stored in [store]/M/_violations/[indexName]/
-        self.metadataSubspace = itemSubspace.subspace(SubspaceKey.metadata)
+        self.metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
         self.violationTracker = UniquenessViolationTracker(
             database: database,
             metadataSubspace: metadataSubspace

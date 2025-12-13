@@ -225,7 +225,6 @@ public struct MigrationContext: Sendable {
         // The EntityIndexBuilder.buildIndex(forPersistableType:) method
         // uses the _EntityIndexBuildable protocol to dispatch to the
         // concrete type's buildEntityIndex implementation.
-        let itemSubspace = info.subspace.subspace(SubspaceKey.items)
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[index.name] ?? []
@@ -235,9 +234,7 @@ public struct MigrationContext: Sendable {
             try await EntityIndexBuilder.buildIndex(
                 forPersistableType: targetEntity.persistableType,
                 database: database,
-                itemSubspace: itemSubspace,
-                indexSubspace: info.indexSubspace,
-                blobsSubspace: info.blobsSubspace,
+                storeSubspace: info.subspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
                 batchSize: batchSize,
@@ -396,7 +393,6 @@ public struct MigrationContext: Sendable {
         }
 
         // 6. Build index via OnlineIndexer using EntityIndexBuilder
-        let itemSubspace = info.subspace.subspace(SubspaceKey.items)
 
         // Get configurations for this index (HNSW params, full-text settings, etc.)
         let configs = indexConfigurations[indexName] ?? []
@@ -405,9 +401,7 @@ public struct MigrationContext: Sendable {
             try await EntityIndexBuilder.buildIndex(
                 entityName: targetEntity.name,
                 database: database,
-                itemSubspace: itemSubspace,
-                indexSubspace: info.indexSubspace,
-                blobsSubspace: info.blobsSubspace,
+                storeSubspace: info.subspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
                 batchSize: batchSize,

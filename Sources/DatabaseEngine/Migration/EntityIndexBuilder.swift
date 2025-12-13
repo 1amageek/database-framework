@@ -23,9 +23,7 @@ public protocol IndexBuildableEntity: Persistable {
     ///
     /// - Parameters:
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -33,9 +31,7 @@ public protocol IndexBuildableEntity: Persistable {
     /// - Throws: Error if index building fails
     static func buildEntityIndex(
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -51,14 +47,14 @@ extension Persistable where Self: Codable {
     /// This implementation creates an OnlineIndexer with the concrete type.
     public static func buildEntityIndex(
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
         configurations: [any IndexConfiguration]
     ) async throws {
+        let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+
         // Create IndexMaintainer based on IndexKind (passing configurations)
         let indexMaintainer = try createIndexMaintainer(
             for: index,
@@ -69,9 +65,7 @@ extension Persistable where Self: Codable {
         // Create and run OnlineIndexer
         let indexer = OnlineIndexer<Self>(
             database: database,
-            itemSubspace: itemSubspace,
-            indexSubspace: indexSubspace,
-            blobsSubspace: blobsSubspace,
+            storeSubspace: storeSubspace,
             itemType: Self.persistableType,
             index: index,
             indexMaintainer: indexMaintainer,
@@ -149,9 +143,7 @@ public final class IndexBuilderRegistry: Sendable {
     /// Type alias for index builder closure
     public typealias IndexBuilder = @Sendable (
         _ database: any DatabaseProtocol,
-        _ itemSubspace: Subspace,
-        _ indexSubspace: Subspace,
-        _ blobsSubspace: Subspace,
+        _ storeSubspace: Subspace,
         _ index: Index,
         _ indexStateManager: IndexStateManager,
         _ batchSize: Int,
@@ -178,12 +170,10 @@ public final class IndexBuilderRegistry: Sendable {
     /// - Parameter type: The Persistable type to register
     public func register<T: Persistable & Codable>(_ type: T.Type) {
         state.withLock { state in
-            state.builders[T.persistableType] = { database, itemSubspace, indexSubspace, blobsSubspace, index, stateManager, batchSize, configurations in
+            state.builders[T.persistableType] = { database, storeSubspace, index, stateManager, batchSize, configurations in
                 try await T.buildEntityIndex(
                     database: database,
-                    itemSubspace: itemSubspace,
-                    indexSubspace: indexSubspace,
-                    blobsSubspace: blobsSubspace,
+                    storeSubspace: storeSubspace,
                     index: index,
                     indexStateManager: stateManager,
                     batchSize: batchSize,
@@ -198,9 +188,7 @@ public final class IndexBuilderRegistry: Sendable {
     /// - Parameters:
     ///   - entityName: The entity type name
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -209,9 +197,7 @@ public final class IndexBuilderRegistry: Sendable {
     public func buildIndex(
         entityName: String,
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -226,7 +212,7 @@ public final class IndexBuilderRegistry: Sendable {
         }
 
         // Execute builder outside of lock scope (I/O should not hold lock)
-        try await builder(database, itemSubspace, indexSubspace, blobsSubspace, index, indexStateManager, batchSize, configurations)
+        try await builder(database, storeSubspace, index, indexStateManager, batchSize, configurations)
     }
 
     /// Check if an entity is registered
@@ -258,9 +244,7 @@ public struct EntityIndexBuilder {
     /// - Parameters:
     ///   - entityName: The entity type name
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -269,9 +253,7 @@ public struct EntityIndexBuilder {
     public static func buildIndex(
         entityName: String,
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -280,9 +262,7 @@ public struct EntityIndexBuilder {
         try await IndexBuilderRegistry.shared.buildIndex(
             entityName: entityName,
             database: database,
-            itemSubspace: itemSubspace,
-            indexSubspace: indexSubspace,
-            blobsSubspace: blobsSubspace,
+            storeSubspace: storeSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,
@@ -295,9 +275,7 @@ public struct EntityIndexBuilder {
     /// - Parameters:
     ///   - type: The concrete Persistable type
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -306,9 +284,7 @@ public struct EntityIndexBuilder {
     public static func buildIndex<T: Persistable & Codable>(
         for type: T.Type,
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -316,9 +292,7 @@ public struct EntityIndexBuilder {
     ) async throws {
         try await T.buildEntityIndex(
             database: database,
-            itemSubspace: itemSubspace,
-            indexSubspace: indexSubspace,
-            blobsSubspace: blobsSubspace,
+            storeSubspace: storeSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,
@@ -341,9 +315,7 @@ public struct EntityIndexBuilder {
     /// - Parameters:
     ///   - persistableType: The Persistable metatype (from Schema.Entity.persistableType)
     ///   - database: Database instance
-    ///   - itemSubspace: Subspace where items are stored
-    ///   - indexSubspace: Subspace where index data is stored
-    ///   - blobsSubspace: Subspace where blob chunks are stored
+    ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
     ///   - batchSize: Number of items per batch
@@ -352,9 +324,7 @@ public struct EntityIndexBuilder {
     public static func buildIndex(
         forPersistableType persistableType: any Persistable.Type,
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int = 100,
@@ -367,9 +337,7 @@ public struct EntityIndexBuilder {
             try await IndexBuilderRegistry.shared.buildIndex(
                 entityName: entityName,
                 database: database,
-                itemSubspace: itemSubspace,
-                indexSubspace: indexSubspace,
-                blobsSubspace: blobsSubspace,
+                storeSubspace: storeSubspace,
                 index: index,
                 indexStateManager: indexStateManager,
                 batchSize: batchSize,
@@ -382,9 +350,7 @@ public struct EntityIndexBuilder {
         if let buildableType = persistableType as? any _EntityIndexBuildable.Type {
             try await buildableType._buildIndex(
                 database: database,
-                itemSubspace: itemSubspace,
-                indexSubspace: indexSubspace,
-                blobsSubspace: blobsSubspace,
+                storeSubspace: storeSubspace,
                 index: index,
                 indexStateManager: indexStateManager,
                 batchSize: batchSize,
@@ -426,9 +392,7 @@ public protocol _EntityIndexBuildable: Persistable {
     /// This is the existential-callable version of `buildEntityIndex`.
     static func _buildIndex(
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -443,9 +407,7 @@ public protocol _EntityIndexBuildable: Persistable {
 extension Persistable where Self: Codable {
     public static func _buildIndex(
         database: any DatabaseProtocol,
-        itemSubspace: Subspace,
-        indexSubspace: Subspace,
-        blobsSubspace: Subspace,
+        storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
         batchSize: Int,
@@ -453,9 +415,7 @@ extension Persistable where Self: Codable {
     ) async throws {
         try await Self.buildEntityIndex(
             database: database,
-            itemSubspace: itemSubspace,
-            indexSubspace: indexSubspace,
-            blobsSubspace: blobsSubspace,
+            storeSubspace: storeSubspace,
             index: index,
             indexStateManager: indexStateManager,
             batchSize: batchSize,

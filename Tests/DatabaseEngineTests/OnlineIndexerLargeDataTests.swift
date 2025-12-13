@@ -99,17 +99,15 @@ struct OnlineIndexerLargeDataTests {
 
             try await stateManager.enable(index.name)
 
-            let indexer = OnlineIndexer(
-                database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                indexStateManager: stateManager,
-                batchSize: 30  // Small batch size to ensure multiple transactions
-            )
+        let indexer = OnlineIndexer(
+            database: ctx.database,
+            storeSubspace: ctx.testSubspace,
+            itemType: Player.persistableType,
+            index: index,
+            indexMaintainer: maintainer,
+            indexStateManager: stateManager,
+            batchSize: 30  // Small batch size to ensure multiple transactions
+        )
 
             // Build should complete without transaction_too_large error
             try await indexer.buildIndex(clearFirst: true)
@@ -149,17 +147,15 @@ struct OnlineIndexerLargeDataTests {
 
             try await stateManager.enable(index.name)
 
-            let indexer = OnlineIndexer(
-                database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
-                itemType: Player.persistableType,
-                index: index,
-                indexMaintainer: maintainer,
-                indexStateManager: stateManager,
-                batchSize: batchSize
-            )
+        let indexer = OnlineIndexer(
+            database: ctx.database,
+            storeSubspace: ctx.testSubspace,
+            itemType: Player.persistableType,
+            index: index,
+            indexMaintainer: maintainer,
+            indexStateManager: stateManager,
+            batchSize: batchSize
+        )
 
             try await indexer.buildIndex(clearFirst: true)
 
@@ -250,9 +246,7 @@ struct OnlineIndexerLargeDataTests {
 
             let indexer = OnlineIndexer(
                 database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
+                storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
@@ -291,9 +285,7 @@ struct OnlineIndexerLargeDataTests {
 
         let indexer = OnlineIndexer(
             database: ctx.database,
-            itemSubspace: ctx.itemSubspace,
-            indexSubspace: ctx.indexSubspace,
-            blobsSubspace: ctx.blobsSubspace,
+            storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
             index: index,
             indexMaintainer: maintainer,

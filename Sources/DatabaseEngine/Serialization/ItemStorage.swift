@@ -22,7 +22,7 @@ import Core
 /// **Data Layout**:
 /// ```
 /// [items]/[type]/[id]                     → ItemEnvelope (inline or external ref)
-/// [blobs]/[Data(itemKey)]/[chunkIndex]    → Chunk data (only for external refs)
+/// [blobs]/[Tuple([itemKeyBytes])]/[chunkIndex] → Chunk data (only for external refs)
 /// ```
 ///
 /// **Usage**:
@@ -102,8 +102,8 @@ public struct ItemStorage: Sendable {
     ///   - data: The raw data to write
     ///   - key: The item key (in items subspace)
     public func write(_ data: FDB.Bytes, for key: FDB.Bytes) async throws {
-        // Step 1: Clean up any existing blobs (handles overwrite case)
-        try await clearExistingBlobs(for: key)
+        // Step 1: Always clear any existing blobs (handles overwrite and corrupted data)
+        clearAllBlobs(for: key)
 
         // Step 2: Compress
         let compressed = try compress(data)
@@ -147,24 +147,16 @@ public struct ItemStorage: Sendable {
         }
     }
 
-    /// Clear existing blobs if the item has external storage
-    private func clearExistingBlobs(for key: FDB.Bytes) async throws {
-        guard let envelopeBytes = try await transaction.getValue(for: key) else {
-            return  // No existing data
-        }
-
-        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
-            return  // Not an envelope (shouldn't happen in new format)
-        }
-
-        let envelope = try ItemEnvelope.deserialize(envelopeBytes)
-
-        if case .external = envelope.content {
-            // Clear all blobs with range clear
-            let blobBase = blobPrefix(for: key)
-            let (begin, end) = blobBase.range()
-            transaction.clearRange(beginKey: begin, endKey: end)
-        }
+    /// Clear all blob chunks for a key (efficient clearRange, no iteration).
+    ///
+    /// This is used for:
+    /// - Overwrite (external → inline, external → external, etc.)
+    /// - Delete
+    /// - Cleanup even if the existing item value is corrupted/non-envelope
+    private func clearAllBlobs(for key: FDB.Bytes) {
+        let blobBase = blobPrefix(for: key)
+        let (begin, end) = blobBase.range()
+        transaction.clearRange(beginKey: begin, endKey: end)
     }
 
     // MARK: - Read Operations
@@ -221,18 +213,8 @@ public struct ItemStorage: Sendable {
     ///
     /// - Parameter key: The item key to delete
     public func delete(for key: FDB.Bytes) async throws {
-        // Check if external to clear blobs
-        if let envelopeBytes = try await transaction.getValue(for: key),
-           ItemEnvelope.isEnvelope(envelopeBytes) {
-            let envelope = try ItemEnvelope.deserialize(envelopeBytes)
-
-            if case .external = envelope.content {
-                // Clear all blobs with range clear (efficient, no iteration)
-                let blobBase = blobPrefix(for: key)
-                let (begin, end) = blobBase.range()
-                transaction.clearRange(beginKey: begin, endKey: end)
-            }
-        }
+        // Always clear blob range (handles external storage and corrupted/non-envelope data)
+        clearAllBlobs(for: key)
 
         // Clear the item key
         transaction.clear(key: key)
@@ -368,11 +350,9 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         private let begin: FDB.Bytes
         private let end: FDB.Bytes
         private let reverse: Bool
-        private var count: Int = 0
         private let limit: Int
-        private var results: [(FDB.Bytes, FDB.Bytes)] = []
-        private var resultIndex: Int = 0
-        private var loaded = false
+        private var count: Int = 0
+        private var kvIterator: FDB.AsyncKVSequence.AsyncIterator?
 
         init(
             storage: ItemStorage,
@@ -396,9 +376,8 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                 return nil
             }
 
-            // Load all results on first access (getRange streams efficiently anyway)
-            if !loaded {
-                results = []
+            // Initialize streaming iterator on first access.
+            if kvIterator == nil {
                 let sequence = storage.underlying.getRange(
                     from: FDB.KeySelector.firstGreaterOrEqual(begin),
                     to: FDB.KeySelector.firstGreaterOrEqual(end),
@@ -407,19 +386,18 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                     snapshot: snapshot,
                     streamingMode: limit > 0 ? .small : .wantAll
                 )
-                for try await (key, value) in sequence {
-                    results.append((key, value))
-                }
-                loaded = true
+                kvIterator = sequence.makeAsyncIterator()
             }
 
-            // Return next result
-            guard resultIndex < results.count else {
+            guard var iterator = kvIterator else {
                 return nil
             }
 
-            let (key, envelopeBytes) = results[resultIndex]
-            resultIndex += 1
+            guard let (key, envelopeBytes) = try await iterator.next() else {
+                kvIterator = iterator
+                return nil
+            }
+            kvIterator = iterator
             count += 1
 
             // All data must be in envelope format

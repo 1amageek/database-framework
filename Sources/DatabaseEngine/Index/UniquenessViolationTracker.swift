@@ -70,7 +70,7 @@ public final class UniquenessViolationTracker: Sendable {
     ///
     /// - Parameters:
     ///   - database: FDB database connection
-    ///   - metadataSubspace: Subspace for metadata storage (usually `[store]/_metadata/`)
+    ///   - metadataSubspace: Subspace for metadata storage (usually `[store]/M/`)
     public init(
         database: any DatabaseProtocol,
         metadataSubspace: Subspace

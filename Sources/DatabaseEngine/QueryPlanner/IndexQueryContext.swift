@@ -26,24 +26,79 @@ import Core
 ///     return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
 /// }
 /// ```
+///
+/// **Partition Support**:
+/// For types with dynamic directories, use `withPartition()` to create a partition-scoped context:
+/// ```swift
+/// let partitionedContext = queryContext.withPartition(\.tenantID, equals: "tenant_123")
+/// let indexSubspace = try await partitionedContext.indexSubspace(for: Order.self)
+/// ```
 public struct IndexQueryContext: Sendable {
 
     /// The FDBContext this query context wraps
     public let context: FDBContext
 
+    /// Type-erased partition binding for dynamic directories (optional)
+    private let _partitionBinding: (any Sendable)?
+
     /// Create an index query context
     public init(context: FDBContext) {
         self.context = context
+        self._partitionBinding = nil
+    }
+
+    /// Create an index query context with partition binding
+    private init(context: FDBContext, partitionBinding: (any Sendable)?) {
+        self.context = context
+        self._partitionBinding = partitionBinding
+    }
+
+    // MARK: - Partition Support
+
+    /// Create a partition-scoped index query context
+    ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// this creates a context scoped to the specified partition.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let partitionedContext = queryContext.withPartition(\.tenantID, equals: "tenant_123")
+    /// let indexSubspace = try await partitionedContext.indexSubspace(for: Order.self)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: The partition field's keyPath
+    ///   - value: The partition value
+    /// - Returns: A partition-scoped IndexQueryContext
+    public func withPartition<T: Persistable, V: Sendable>(
+        _ keyPath: KeyPath<T, V>,
+        equals value: V
+    ) -> IndexQueryContext {
+        var binding = (_partitionBinding as? DirectoryPath<T>) ?? DirectoryPath<T>()
+        binding.set(keyPath, to: value)
+        return IndexQueryContext(context: context, partitionBinding: binding)
+    }
+
+    /// Get the partition binding for a specific type (if set)
+    public func partitionBinding<T: Persistable>(for type: T.Type) -> DirectoryPath<T>? {
+        return _partitionBinding as? DirectoryPath<T>
     }
 
     // MARK: - Storage Access
 
     /// Get the index subspace for a type
     ///
+    /// For types with dynamic directories, uses the partition binding if set.
+    ///
     /// - Parameter type: The Persistable type
     /// - Returns: The index subspace
     public func indexSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store = try await context.container.store(for: type)
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
         guard let fdbStore = store as? FDBDataStore else {
             throw IndexQueryContextError.unsupportedStoreType
         }
@@ -53,20 +108,33 @@ public struct IndexQueryContext: Sendable {
     /// Get a StorageReader for a type
     ///
     /// Use this to access index data via IndexSearcher classes.
+    /// For types with dynamic directories, uses the partition binding if set.
     ///
     /// - Parameter type: The Persistable type
     /// - Returns: A StorageReader for index access
     public func storageReader<T: Persistable>(for type: T.Type) async throws -> StorageReader {
-        let store = try await context.container.store(for: type)
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
         return FDBStorageReaderAdapter(store: store)
     }
 
     /// Get the item subspace for a type (for transaction-scoped operations)
     ///
+    /// For types with dynamic directories, uses the partition binding if set.
+    ///
     /// - Parameter type: The persistable type
     /// - Returns: Subspace for items of this type
     public func itemSubspace<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let store = try await context.container.store(for: type)
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
         guard let fdbStore = store as? FDBDataStore else {
             throw IndexQueryError.unsupportedStore
         }
@@ -87,6 +155,8 @@ public struct IndexQueryContext: Sendable {
 
     /// Fetch items by their IDs
     ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
+    ///
     /// - Parameters:
     ///   - ids: Array of item IDs (as Tuples)
     ///   - type: The item type
@@ -96,17 +166,32 @@ public struct IndexQueryContext: Sendable {
         type: T.Type
     ) async throws -> [T] {
         var results: [T] = []
-        for id in ids {
-            if let idElement = id[0] {
-                if let item = try await context.model(for: idElement, as: type) {
-                    results.append(item)
+
+        // Use partition binding if available
+        if let binding = partitionBinding(for: type) {
+            for id in ids {
+                if let idElement = id[0] {
+                    if let item = try await context.model(for: idElement, as: type, partition: binding) {
+                        results.append(item)
+                    }
+                }
+            }
+        } else {
+            for id in ids {
+                if let idElement = id[0] {
+                    if let item = try await context.model(for: idElement, as: type) {
+                        results.append(item)
+                    }
                 }
             }
         }
+
         return results
     }
 
     /// Fetch a single item by ID
+    ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
     ///
     /// - Parameters:
     ///   - id: The item ID (as Tuple)
@@ -117,10 +202,18 @@ public struct IndexQueryContext: Sendable {
         type: T.Type
     ) async throws -> T? {
         guard let idElement = id[0] else { return nil }
-        return try await context.model(for: idElement, as: type)
+
+        // Use partition binding if available
+        if let binding = partitionBinding(for: type) {
+            return try await context.model(for: idElement, as: type, partition: binding)
+        } else {
+            return try await context.model(for: idElement, as: type)
+        }
     }
 
     /// Fetch item by ID within a transaction
+    ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
     ///
     /// - Parameters:
     ///   - id: The item ID (as Tuple)
@@ -132,11 +225,25 @@ public struct IndexQueryContext: Sendable {
         type: T.Type,
         transaction: any TransactionProtocol
     ) async throws -> T? {
-        let itemSubspace = try await itemSubspace(for: type)
-        let key = itemSubspace.subspace(T.persistableType).pack(id)
-        guard let data = try await transaction.getValue(for: key, snapshot: true) else {
+        let itemSub = try await itemSubspace(for: type)
+        let key = itemSub.subspace(T.persistableType).pack(id)
+
+        // Use ItemStorage for proper envelope handling
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
+        guard let fdbStore = store as? FDBDataStore else {
+            throw IndexQueryContextError.unsupportedStoreType
+        }
+
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: fdbStore.blobsSubspace)
+        guard let data = try await storage.read(for: key, snapshot: true) else {
             return nil
         }
+
         let item: T = try DataAccess.deserialize(data)
         // Security: Evaluate GET for the retrieved item
         try context.container.securityDelegate?.evaluateGet(item)
@@ -144,6 +251,8 @@ public struct IndexQueryContext: Sendable {
     }
 
     /// Fetch items by string IDs
+    ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
     ///
     /// - Parameters:
     ///   - type: The persistable type
@@ -154,32 +263,60 @@ public struct IndexQueryContext: Sendable {
         ids: [String]
     ) async throws -> [T] {
         var results: [T] = []
-        for idString in ids {
-            if let item = try await context.model(for: idString, as: type) {
-                results.append(item)
-                continue
+
+        // Use partition binding if available
+        if let binding = partitionBinding(for: type) {
+            for idString in ids {
+                if let item = try await context.model(for: idString, as: type, partition: binding) {
+                    results.append(item)
+                    continue
+                }
+                if let intId = Int64(idString), let item = try await context.model(for: intId, as: type, partition: binding) {
+                    results.append(item)
+                    continue
+                }
+                if let intId = Int(idString), let item = try await context.model(for: intId, as: type, partition: binding) {
+                    results.append(item)
+                }
             }
-            if let intId = Int64(idString), let item = try await context.model(for: intId, as: type) {
-                results.append(item)
-                continue
-            }
-            if let intId = Int(idString), let item = try await context.model(for: intId, as: type) {
-                results.append(item)
+        } else {
+            for idString in ids {
+                if let item = try await context.model(for: idString, as: type) {
+                    results.append(item)
+                    continue
+                }
+                if let intId = Int64(idString), let item = try await context.model(for: intId, as: type) {
+                    results.append(item)
+                    continue
+                }
+                if let intId = Int(idString), let item = try await context.model(for: intId, as: type) {
+                    results.append(item)
+                }
             }
         }
+
         return results
     }
 
     /// Fetch all items of a type (expensive, use with caution)
     ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
+    ///
     /// - Parameter type: The persistable type
     /// - Returns: Array of all items
     public func fetchAllItems<T: Persistable>(type: T.Type) async throws -> [T] {
-        let store = try await context.container.store(for: type)
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
         return try await store.fetchAll(type)
     }
 
     /// Batch fetch items by their IDs using optimized BatchFetcher
+    ///
+    /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.
     ///
     /// - Parameters:
     ///   - ids: Array of item IDs (as Tuples)
@@ -201,7 +338,12 @@ public struct IndexQueryContext: Sendable {
             orderBy: nil
         )
 
-        let store = try await context.container.store(for: type)
+        let store: any DataStore
+        if let binding = partitionBinding(for: type) {
+            store = try await context.container.store(for: type, path: binding)
+        } else {
+            store = try await context.container.store(for: type)
+        }
         guard let fdbStore = store as? FDBDataStore else {
             return try await fetchItems(ids: ids, type: type)
         }

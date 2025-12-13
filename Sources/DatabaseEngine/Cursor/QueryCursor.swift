@@ -356,6 +356,35 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
         return copy
     }
 
+    // MARK: - Partition
+
+    /// Bind a partition field value for dynamic directory resolution
+    ///
+    /// Required for types with `Field(\.keyPath)` in their `#Directory` declaration.
+    /// The partition value is used to resolve the correct directory subspace.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let cursor = try await context.cursor(Order.self)
+    ///     .partition(\.tenantID, equals: "tenant_123")
+    ///     .where(\.status == "open")
+    ///     .batchSize(50)
+    ///     .build()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: The partition field's keyPath
+    ///   - value: The value for directory resolution
+    /// - Returns: A new CursorQueryBuilder with the partition binding added
+    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
+        _ keyPath: KeyPath<T, V>,
+        equals value: V
+    ) -> CursorQueryBuilder<T> {
+        var copy = self
+        copy.query = query.partition(keyPath, equals: value)
+        return copy
+    }
+
     /// Set the batch size (items per page)
     ///
     /// - Parameter size: Number of items per cursor.next() call

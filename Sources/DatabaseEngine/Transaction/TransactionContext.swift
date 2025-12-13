@@ -49,7 +49,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// The container for directory resolution
     private let container: FDBContainer
 
-    /// Cache of resolved subspaces per type
+    /// Cache of resolved subspaces per cache key (type + partition path)
     private var subspaceCache: [String: ResolvedSubspaces] = [:]
 
     /// Resolved subspaces for a type
@@ -76,8 +76,18 @@ public final class TransactionContext: @unchecked Sendable {
 
     // MARK: - Directory Resolution
 
-    /// Resolve subspaces for a Persistable type
+    /// Resolve subspaces for a Persistable type (static directory only)
+    ///
+    /// - Throws: Error for dynamic directory types without partition binding
     private func resolveSubspaces<T: Persistable>(for type: T.Type) async throws -> ResolvedSubspaces {
+        // Check if type has dynamic directory
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
+
         let typeName = T.persistableType
 
         // Check cache first
@@ -99,9 +109,54 @@ public final class TransactionContext: @unchecked Sendable {
         return resolved
     }
 
+    /// Resolve subspaces for a Persistable type with directory path
+    ///
+    /// Used for types with dynamic directories (`Field(\.keyPath)` in `#Directory`).
+    private func resolveSubspaces<T: Persistable>(
+        for type: T.Type,
+        partition path: DirectoryPath<T>
+    ) async throws -> ResolvedSubspaces {
+        // Validate path
+        try path.validate()
+
+        // Cache key includes path for uniqueness
+        let pathComponents = path.resolve()
+        let cacheKey = pathComponents.joined(separator: "/")
+
+        // Check cache first
+        if let cached = subspaceCache[cacheKey] {
+            return cached
+        }
+
+        // Resolve directory from container with path
+        let subspace = try await container.resolveDirectory(for: type, path: path)
+        let resolved = ResolvedSubspaces(
+            itemSubspace: subspace.subspace(SubspaceKey.items),
+            indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            blobsSubspace: subspace.subspace(SubspaceKey.blobs)
+        )
+
+        // Cache for reuse within this transaction
+        subspaceCache[cacheKey] = resolved
+
+        return resolved
+    }
+
+    /// Resolve subspaces from a model instance (extracts partition values automatically)
+    ///
+    /// For types with dynamic directories, extracts partition field values from the model.
+    private func resolveSubspaces<T: Persistable>(from model: T) async throws -> ResolvedSubspaces {
+        if T.hasDynamicDirectory {
+            let path = DirectoryPath<T>.from(model)
+            return try await resolveSubspaces(for: T.self, partition: path)
+        } else {
+            return try await resolveSubspaces(for: T.self)
+        }
+    }
+
     // MARK: - Read Operations
 
-    /// Get a model by ID with configurable isolation level
+    /// Get a model by ID with configurable isolation level (static directory types)
     ///
     /// - Parameters:
     ///   - type: The Persistable type to fetch
@@ -109,13 +164,51 @@ public final class TransactionContext: @unchecked Sendable {
     ///   - snapshot: If `false` (default), adds read conflict for serializable isolation.
     ///               If `true`, performs snapshot read with no conflict (may be stale).
     /// - Returns: The model if found, nil otherwise
-    /// - Throws: Error if deserialization fails
+    /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
     public func get<T: Persistable>(
         _ type: T.Type,
         id: any TupleElement,
         snapshot: Bool = false
     ) async throws -> T? {
         let subspaces = try await resolveSubspaces(for: type)
+        return try await getWithSubspaces(type, id: id, subspaces: subspaces, snapshot: snapshot)
+    }
+
+    /// Get a model by ID from a partitioned directory
+    ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// you must provide partition binding.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// var binding = DirectoryPath<Order>()
+    /// binding.set(\.tenantID, to: "tenant_123")
+    /// let order = try await tx.get(Order.self, id: orderId, partition: path)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type to fetch
+    ///   - id: The model's identifier
+    ///   - binding: Partition field binding
+    ///   - snapshot: If `false` (default), adds read conflict. If `true`, snapshot read.
+    /// - Returns: The model if found, nil otherwise
+    public func get<T: Persistable>(
+        _ type: T.Type,
+        id: any TupleElement,
+        partition path: DirectoryPath<T>,
+        snapshot: Bool = false
+    ) async throws -> T? {
+        let subspaces = try await resolveSubspaces(for: type, partition: path)
+        return try await getWithSubspaces(type, id: id, subspaces: subspaces, snapshot: snapshot)
+    }
+
+    /// Internal: Get with pre-resolved subspaces
+    private func getWithSubspaces<T: Persistable>(
+        _ type: T.Type,
+        id: any TupleElement,
+        subspaces: ResolvedSubspaces,
+        snapshot: Bool
+    ) async throws -> T? {
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
@@ -132,24 +225,53 @@ public final class TransactionContext: @unchecked Sendable {
         return try DataAccess.deserialize(bytes)
     }
 
-    /// Get multiple models by IDs with configurable isolation level
+    /// Get multiple models by IDs with configurable isolation level (static directory types)
     ///
     /// - Parameters:
     ///   - type: The Persistable type to fetch
     ///   - ids: The model identifiers
     ///   - snapshot: If `false` (default), adds read conflict. If `true`, snapshot read.
     /// - Returns: Array of found models (missing IDs are skipped)
-    /// - Throws: Error if deserialization fails
+    /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
     public func getMany<T: Persistable>(
         _ type: T.Type,
         ids: [any TupleElement],
         snapshot: Bool = false
     ) async throws -> [T] {
+        let subspaces = try await resolveSubspaces(for: type)
+        return try await getManyWithSubspaces(type, ids: ids, subspaces: subspaces, snapshot: snapshot)
+    }
+
+    /// Get multiple models by IDs from a partitioned directory
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type to fetch
+    ///   - ids: The model identifiers
+    ///   - binding: Partition field binding
+    ///   - snapshot: If `false` (default), adds read conflict. If `true`, snapshot read.
+    /// - Returns: Array of found models (missing IDs are skipped)
+    public func getMany<T: Persistable>(
+        _ type: T.Type,
+        ids: [any TupleElement],
+        partition path: DirectoryPath<T>,
+        snapshot: Bool = false
+    ) async throws -> [T] {
+        let subspaces = try await resolveSubspaces(for: type, partition: path)
+        return try await getManyWithSubspaces(type, ids: ids, subspaces: subspaces, snapshot: snapshot)
+    }
+
+    /// Internal: Get many with pre-resolved subspaces
+    private func getManyWithSubspaces<T: Persistable>(
+        _ type: T.Type,
+        ids: [any TupleElement],
+        subspaces: ResolvedSubspaces,
+        snapshot: Bool
+    ) async throws -> [T] {
         var results: [T] = []
         results.reserveCapacity(ids.count)
 
         for id in ids {
-            if let model: T = try await get(type, id: id, snapshot: snapshot) {
+            if let model: T = try await getWithSubspaces(type, id: id, subspaces: subspaces, snapshot: snapshot) {
                 results.append(model)
             }
         }
@@ -164,13 +286,17 @@ public final class TransactionContext: @unchecked Sendable {
     /// This operation adds a write conflict on the model's key.
     /// Performs scalar index maintenance only (suitable for transactional operations).
     ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// partition values are automatically extracted from the model instance.
+    ///
     /// **Note**: For full index maintenance including aggregations and uniqueness
     /// constraints, use FDBContext.save() instead.
     ///
     /// - Parameter model: The model to save
     /// - Throws: Error if serialization fails
     public func set<T: Persistable>(_ model: T) async throws {
-        let subspaces = try await resolveSubspaces(for: T.self)
+        // Resolve subspaces from model (extracts partition values automatically)
+        let subspaces = try await resolveSubspaces(from: model)
         let idTuple = try IndexMaintenanceService.extractIDTuple(from: model)
 
         // Serialize model
@@ -207,10 +333,14 @@ public final class TransactionContext: @unchecked Sendable {
     /// This operation adds a write conflict on the model's key.
     /// Performs scalar index cleanup only.
     ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// partition values are automatically extracted from the model instance.
+    ///
     /// - Parameter model: The model to delete
     /// - Throws: Error if index cleanup fails
     public func delete<T: Persistable>(_ model: T) async throws {
-        let subspaces = try await resolveSubspaces(for: T.self)
+        // Resolve subspaces from model (extracts partition values automatically)
+        let subspaces = try await resolveSubspaces(from: model)
         let idTuple = try IndexMaintenanceService.extractIDTuple(from: model)
 
         // Build key
@@ -290,16 +420,37 @@ public final class TransactionContext: @unchecked Sendable {
         }
     }
 
-    /// Delete a model by ID
+    /// Delete a model by ID (static directory types)
     ///
     /// Fetches the model first to properly clean up index entries.
     ///
     /// - Parameters:
     ///   - type: The Persistable type
     ///   - id: The model's identifier
-    /// - Throws: Error if the model is not found or deletion fails
+    /// - Throws: `DirectoryPathError.dynamicFieldsRequired` for dynamic directory types
     public func delete<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws {
         guard let model: T = try await get(type, id: id, snapshot: false) else {
+            return // Model doesn't exist, nothing to delete
+        }
+        try await delete(model)
+    }
+
+    /// Delete a model by ID from a partitioned directory
+    ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// you must provide partition binding.
+    ///
+    /// - Parameters:
+    ///   - type: The Persistable type
+    ///   - id: The model's identifier
+    ///   - binding: Partition field binding
+    /// - Throws: Error if the model is not found or deletion fails
+    public func delete<T: Persistable>(
+        _ type: T.Type,
+        id: any TupleElement,
+        partition path: DirectoryPath<T>
+    ) async throws {
+        guard let model: T = try await get(type, id: id, partition: path, snapshot: false) else {
             return // Model doesn't exist, nothing to delete
         }
         try await delete(model)

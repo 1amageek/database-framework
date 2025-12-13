@@ -10,7 +10,7 @@ import Foundation
 ///
 /// Data layout:
 /// ```
-/// [fdb]/R/[PersistableType]/[id]        → Protobuf-encoded item
+/// [fdb]/R/[PersistableType]/[id]        → ItemEnvelope (inline or external ref)
 /// [fdb]/I/[indexName]/[values...]/[id]  → Index entry
 /// [fdb]/S/...                           → Store metadata
 /// [fdb]/T/[indexName]                   → Index state
@@ -51,6 +51,6 @@ public enum SubspaceKey {
     /// Large values (>90KB) are split into chunks and stored here,
     /// keeping the items subspace clean for range scans.
     ///
-    /// Layout: `[subspace]/B/[typeName]/[id]/[chunkIndex]`
+    /// Layout: `[subspace]/B/[Tuple([itemKeyBytes])]/[chunkIndex]`
     public static let blobs = "B"
 }

@@ -232,8 +232,39 @@ public final class FDBContext: Sendable {
     }
 
     /// Delete all models of a type
+    ///
+    /// For types with dynamic directories, use `deleteAll(_:partition:equals:)` instead.
+    ///
+    /// - Throws: `DirectoryPathError.dynamicFieldsRequired` if type has dynamic directory
     public func deleteAll<T: Persistable>(_ type: T.Type) async throws {
+        // Validate: dynamic directory types require partition
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
         let models = try await fetch(Query<T>())
+        for model in models {
+            delete(model)
+        }
+    }
+
+    /// Delete all models of a type within a partition
+    ///
+    /// For types with dynamic directories, use this method to specify the partition.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// try await context.deleteAll(Order.self, partition: \.tenantID, equals: "tenant_123")
+    /// try await context.save()
+    /// ```
+    public func deleteAll<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
+        _ type: T.Type,
+        partition keyPath: KeyPath<T, V>,
+        equals value: V
+    ) async throws {
+        let models = try await fetch(Query<T>().partition(keyPath, equals: value))
         for model in models {
             delete(model)
         }
@@ -250,10 +281,19 @@ public final class FDBContext: Sendable {
     ///
     /// **Note**: This does NOT track deletions in the context. Changes are applied immediately.
     /// **Note**: Also clears polymorphic directory data if type conforms to Polymorphable.
+    /// **Note**: For types with dynamic directories, use `clearAll(_:partition:equals:)` instead.
     ///
     /// - Parameter type: The Persistable type to clear
-    /// - Throws: SecurityError if not admin
+    /// - Throws: SecurityError if not admin, DirectoryPathError if type has dynamic directory
     public func clearAll<T: Persistable>(_ type: T.Type) async throws {
+        // Validate: dynamic directory types require partition
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
+
         // Use DataStore.clearAll() which evaluates admin security
         let store = try await container.store(for: type)
         try await store.clearAll(type)
@@ -275,6 +315,25 @@ public final class FDBContext: Sendable {
                 }
             }
         }
+    }
+
+    /// Clear all data for a type within a partition without decoding
+    ///
+    /// For types with dynamic directories, use this method to specify the partition.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// try await context.clearAll(Order.self, partition: \.tenantID, equals: "tenant_123")
+    /// ```
+    public func clearAll<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
+        _ type: T.Type,
+        partition keyPath: KeyPath<T, V>,
+        equals value: V
+    ) async throws {
+        var binding = DirectoryPath<T>()
+        binding.set(keyPath, to: value)
+        let store = try await container.store(for: type, path: binding)
+        try await store.clearAll(type)
     }
 
     // MARK: - Fetch
@@ -320,7 +379,21 @@ public final class FDBContext: Sendable {
     }
 
     /// Fetch models matching a query (internal use)
+    ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// the query must include partition binding via `.partition()`.
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
+        // Check if type requires partition and validate
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+        }
+
         let (pendingInserts, pendingDeleteKeys) = stateLock.withLock { state -> ([T], Set<ModelKey>) in
             let inserts = state.insertedModels.values.compactMap { $0 as? T }
             let deleteKeys = state.deletedModels.keys
@@ -328,8 +401,14 @@ public final class FDBContext: Sendable {
             return (inserts, Set(deleteKeys))
         }
 
-        // Get store for this type and fetch
-        let store = try await container.store(for: T.self)
+        // Get store for this type (partition-aware if needed)
+        let store: any DataStore
+        if let binding = query.partitionBinding {
+            store = try await container.store(for: T.self, path: binding)
+        } else {
+            store = try await container.store(for: T.self)
+        }
+
         var results = try await store.fetch(query)
 
         // Exclude models pending deletion
@@ -339,10 +418,31 @@ public final class FDBContext: Sendable {
             }
         }
 
-        // Include models pending insertion
+        // Include models pending insertion (only from same partition and matching predicates)
         if !pendingInserts.isEmpty {
             let existingKeys = Set(results.map { ModelKey($0) })
             for model in pendingInserts {
+                // For dynamic directories, filter by partition value
+                if T.hasDynamicDirectory, let binding = query.partitionBinding {
+                    // Check if model's partition matches query's partition
+                    let modelBinding = DirectoryPath<T>.from(model)
+                    let modelPath = modelBinding.resolve()
+                    let queryPath = binding.resolve()
+                    if modelPath != queryPath {
+                        continue
+                    }
+                }
+
+                // Evaluate query predicates against pending insert
+                if !query.predicates.isEmpty {
+                    let matchesPredicates = query.predicates.allSatisfy { predicate in
+                        evaluatePredicate(predicate, on: model)
+                    }
+                    if !matchesPredicates {
+                        continue
+                    }
+                }
+
                 if !existingKeys.contains(ModelKey(model)) {
                     results.append(model)
                 }
@@ -353,7 +453,20 @@ public final class FDBContext: Sendable {
     }
 
     /// Fetch count of models matching a query (internal use)
+    ///
+    /// For types with dynamic directories, the query must include partition binding.
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
+        // Check if type requires partition and validate
+        if T.hasDynamicDirectory {
+            guard let binding = query.partitionBinding else {
+                throw DirectoryPathError.dynamicFieldsRequired(
+                    typeName: T.persistableType,
+                    fields: T.directoryFieldNames
+                )
+            }
+            try binding.validate()
+        }
+
         let (hasInserts, hasDeletes) = stateLock.withLock { state -> (Bool, Bool) in
             let inserts = state.insertedModels.values.contains { $0 is T }
             let deletes = state.deletedModels.keys.contains { $0.persistableType == T.persistableType }
@@ -361,7 +474,13 @@ public final class FDBContext: Sendable {
         }
 
         if !hasInserts && !hasDeletes {
-            let store = try await container.store(for: T.self)
+            // Get store (partition-aware if needed)
+            let store: any DataStore
+            if let binding = query.partitionBinding {
+                store = try await container.store(for: T.self, path: binding)
+            } else {
+                store = try await container.store(for: T.self)
+            }
             return try await store.fetchCount(query)
         }
 
@@ -401,7 +520,62 @@ public final class FDBContext: Sendable {
         }
 
         // DataStore.fetch() evaluates GET security internally
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
         let store = try await container.store(for: type)
+        guard let result = try await store.fetch(type, id: id) else {
+            return nil
+        }
+
+        return result
+    }
+
+    /// Get a single model by its identifier from a partitioned directory
+    ///
+    /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
+    /// you must provide partition binding.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// var binding = DirectoryPath<Order>()
+    /// binding.set(\.tenantID, to: "tenant_123")
+    /// let order = try await context.model(for: orderId, as: Order.self, partition: binding)
+    /// ```
+    public func model<T: Persistable>(
+        for id: any TupleElement,
+        as type: T.Type,
+        partition path: DirectoryPath<T>
+    ) async throws -> T? {
+        let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
+            let insertKey = ModelKey(persistableType: T.persistableType, id: id)
+            if let inserted = state.insertedModels[insertKey] as? T {
+                return (inserted, false)
+            }
+
+            let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
+            if state.deletedModels[deleteKey] != nil {
+                return (nil, true)
+            }
+
+            return (nil, false)
+        }
+
+        if let inserted = pendingResult.inserted {
+            // Evaluate GET security for pending insert (not via DataStore)
+            try container.securityDelegate?.evaluateGet(inserted)
+            return inserted
+        }
+
+        if pendingResult.isDeleted {
+            return nil
+        }
+
+        // DataStore.fetch() evaluates GET security internally
+        let store = try await container.store(for: type, path: path)
         guard let result = try await store.fetch(type, id: id) else {
             return nil
         }
@@ -464,28 +638,60 @@ public final class FDBContext: Sendable {
         }
 
         do {
-            // Group models by type for directory resolution
-            let insertsByType = Dictionary(grouping: insertsSnapshot) { type(of: $0).persistableType }
-            let deletesByType = Dictionary(grouping: deletesSnapshot) { type(of: $0).persistableType }
-            let allTypes = Set(insertsByType.keys).union(deletesByType.keys)
+            // Key for grouping by (type, partition path)
+            // For static directories, resolvedPath is empty
+            struct StoreKey: Hashable {
+                let typeName: String
+                let resolvedPath: String
+            }
 
-            // Pre-resolve stores for each type via Container
-            var resolvedStores: [String: any DataStore] = [:]
-            for typeName in allTypes {
-                // Get a sample model to get the type
-                let sampleModel = insertsByType[typeName]?.first ?? deletesByType[typeName]?.first
+            // Group models by (type, partition) for partition-aware batching
+            var insertsByStore: [StoreKey: [any Persistable]] = [:]
+            var deletesByStore: [StoreKey: [any Persistable]] = [:]
+
+            for model in insertsSnapshot {
+                let modelType = type(of: model)
+                let typeName = modelType.persistableType
+                let resolvedPath = resolvePartitionPath(for: model)
+                let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+                insertsByStore[key, default: []].append(model)
+            }
+
+            for model in deletesSnapshot {
+                let modelType = type(of: model)
+                let typeName = modelType.persistableType
+                let resolvedPath = resolvePartitionPath(for: model)
+                let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+                deletesByStore[key, default: []].append(model)
+            }
+
+            let allStoreKeys = Set(insertsByStore.keys).union(deletesByStore.keys)
+
+            // Pre-resolve stores for each (type, partition) combination
+            var resolvedStores: [StoreKey: any DataStore] = [:]
+            for storeKey in allStoreKeys {
+                let sampleModel = insertsByStore[storeKey]?.first ?? deletesByStore[storeKey]?.first
                 guard let model = sampleModel else { continue }
 
                 let modelType = type(of: model)
-                let store = try await container.store(for: modelType)
-                resolvedStores[typeName] = store
+                let store: any DataStore
+
+                if hasDynamicDirectory(modelType) {
+                    let binding = buildAnyDirectoryPath(from: model)
+                    store = try await container.store(for: modelType, path: binding)
+                } else {
+                    store = try await container.store(for: modelType)
+                }
+                resolvedStores[storeKey] = store
             }
-            // Make immutable for Sendable closure
-            let storesByType = resolvedStores
+            let storesByKey = resolvedStores
+
+            // Make immutable copies for Sendable closure
+            let insertsForTransaction = insertsByStore
+            let deletesForTransaction = deletesByStore
 
             // Get any store to provide the transaction (all stores share the same database)
-            guard let anyStore = storesByType.values.first else {
-                // No stores means no operations
+            guard let anyStore = storesByKey.values.first else {
                 stateLock.withLock { state in state.isSaving = false }
                 return
             }
@@ -494,9 +700,9 @@ public final class FDBContext: Sendable {
             try await anyStore.withRawTransaction { transaction in
                 var allSerializedModels: [SerializedModel] = []
 
-                // Batch process inserts per type
-                for (typeName, models) in insertsByType {
-                    guard let store = storesByType[typeName] else { continue }
+                // Batch process inserts per (type, partition)
+                for (storeKey, models) in insertsForTransaction {
+                    guard let store = storesByKey[storeKey] else { continue }
                     let serialized = try await store.executeBatchInTransaction(
                         inserts: models,
                         deletes: [],
@@ -505,9 +711,9 @@ public final class FDBContext: Sendable {
                     allSerializedModels.append(contentsOf: serialized)
                 }
 
-                // Batch process deletes per type
-                for (typeName, models) in deletesByType {
-                    guard let store = storesByType[typeName] else { continue }
+                // Batch process deletes per (type, partition)
+                for (storeKey, models) in deletesForTransaction {
+                    guard let store = storesByKey[storeKey] else { continue }
                     try await store.executeBatchInTransaction(
                         inserts: [],
                         deletes: models,
@@ -540,6 +746,150 @@ public final class FDBContext: Sendable {
                 state.isSaving = false
             }
             throw error
+        }
+    }
+
+    // MARK: - Partition Helpers
+
+    /// Check if a type has dynamic directory (contains Field components)
+    ///
+    /// Uses `DynamicDirectoryElement` protocol for explicit Field identification.
+    private func hasDynamicDirectory(_ type: any Persistable.Type) -> Bool {
+        type.directoryPathComponents.contains { $0 is any DynamicDirectoryElement }
+    }
+
+    /// Resolve the partition path for a model (empty string for static directories)
+    private func resolvePartitionPath(for model: any Persistable) -> String {
+        let modelType = type(of: model)
+        guard hasDynamicDirectory(modelType) else {
+            return ""
+        }
+
+        // Build path by extracting Field values from model
+        var path: [String] = []
+        for component in modelType.directoryPathComponents {
+            if let pathElement = component as? Path {
+                path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                path.append(stringElement)
+            } else if let dynamicElement = component as? any DynamicDirectoryElement {
+                // Extract field value using anyKeyPath from DynamicDirectoryElement
+                let fieldName = modelType.fieldName(for: dynamicElement.anyKeyPath)
+                if let value = model[dynamicMember: fieldName] {
+                    path.append(directoryPathString(from: value))
+                }
+            }
+        }
+        return path.joined(separator: "/")
+    }
+
+    /// Build type-erased partition binding from a model instance
+    ///
+    /// Uses `DynamicDirectoryElement.anyKeyPath` to extract Field keyPaths without Mirror.
+    private func buildAnyDirectoryPath(from model: any Persistable) -> AnyDirectoryPath {
+        let modelType = type(of: model)
+        var bindings: [(keyPath: AnyKeyPath, value: any Sendable)] = []
+
+        for component in modelType.directoryPathComponents {
+            if let dynamicElement = component as? any DynamicDirectoryElement {
+                let keyPath = dynamicElement.anyKeyPath
+                let fieldName = modelType.fieldName(for: keyPath)
+                if let value = model[dynamicMember: fieldName] {
+                    bindings.append((keyPath, value))
+                }
+            }
+        }
+
+        return AnyDirectoryPath(fieldValues: bindings, type: modelType)
+    }
+
+    // MARK: - Predicate Evaluation
+
+    /// Evaluate a predicate against a model (for pending insert filtering)
+    ///
+    /// This is used to filter pending inserts by query predicates during fetch.
+    private func evaluatePredicate<T: Persistable>(_ predicate: Predicate<T>, on model: T) -> Bool {
+        switch predicate {
+        case .comparison(let comparison):
+            return evaluateFieldComparison(model: model, comparison: comparison)
+        case .and(let predicates):
+            return predicates.allSatisfy { evaluatePredicate($0, on: model) }
+        case .or(let predicates):
+            return predicates.contains { evaluatePredicate($0, on: model) }
+        case .not(let inner):
+            return !evaluatePredicate(inner, on: model)
+        case .true:
+            return true
+        case .false:
+            return false
+        }
+    }
+
+    /// Evaluate a field comparison against a model
+    private func evaluateFieldComparison<T: Persistable>(
+        model: T,
+        comparison: FieldComparison<T>
+    ) -> Bool {
+        let fieldName = comparison.fieldName
+        let expectedValue = comparison.value
+
+        // Handle nil checks separately
+        switch comparison.op {
+        case .isNil:
+            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
+            return fieldValues == nil || fieldValues?.isEmpty == true
+        case .isNotNil:
+            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
+            return fieldValues != nil && fieldValues?.isEmpty == false
+        default:
+            break
+        }
+
+        guard let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName),
+              let rawFieldValue = fieldValues.first else {
+            return false
+        }
+
+        // Convert model field value to FieldValue for type-safe comparison
+        let modelFieldValue = FieldValue(rawFieldValue) ?? .null
+
+        switch comparison.op {
+        case .equal:
+            return modelFieldValue.isEqual(to: expectedValue)
+        case .notEqual:
+            return !modelFieldValue.isEqual(to: expectedValue)
+        case .lessThan:
+            return modelFieldValue.isLessThan(expectedValue)
+        case .lessThanOrEqual:
+            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
+        case .greaterThan:
+            return expectedValue.isLessThan(modelFieldValue)
+        case .greaterThanOrEqual:
+            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
+        case .contains:
+            if let fieldStr = rawFieldValue as? String, let substr = expectedValue.stringValue {
+                return fieldStr.contains(substr)
+            }
+            return false
+        case .hasPrefix:
+            if let fieldStr = rawFieldValue as? String, let prefix = expectedValue.stringValue {
+                return fieldStr.hasPrefix(prefix)
+            }
+            return false
+        case .hasSuffix:
+            if let fieldStr = rawFieldValue as? String, let suffix = expectedValue.stringValue {
+                return fieldStr.hasSuffix(suffix)
+            }
+            return false
+        case .in:
+            // Check if model value is in the expected array
+            if let arrayValues = expectedValue.arrayValue {
+                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
+            }
+            return false
+        case .isNil, .isNotNil:
+            // Already handled above
+            return false
         }
     }
 
@@ -704,11 +1054,47 @@ public final class FDBContext: Sendable {
     // MARK: - Enumerate
 
     /// Enumerate all models of a type
+    ///
+    /// For types with dynamic directories, use `enumerate(_:partition:equals:block:)` instead.
+    ///
+    /// - Throws: `DirectoryPathError.dynamicFieldsRequired` if type has dynamic directory
     public func enumerate<T: Persistable>(
         _ type: T.Type,
         block: (T) throws -> Void
     ) async throws {
+        // Validate: dynamic directory types require partition
+        if T.hasDynamicDirectory {
+            throw DirectoryPathError.dynamicFieldsRequired(
+                typeName: T.persistableType,
+                fields: T.directoryFieldNames
+            )
+        }
         let store = try await container.store(for: type)
+        let models = try await store.fetchAll(type)
+        for model in models {
+            try block(model)
+        }
+    }
+
+    /// Enumerate all models of a type within a partition
+    ///
+    /// For types with dynamic directories, use this method to specify the partition.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// try await context.enumerate(Order.self, partition: \.tenantID, equals: "tenant_123") { order in
+    ///     print(order.id)
+    /// }
+    /// ```
+    public func enumerate<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
+        _ type: T.Type,
+        partition keyPath: KeyPath<T, V>,
+        equals value: V,
+        block: (T) throws -> Void
+    ) async throws {
+        var binding = DirectoryPath<T>()
+        binding.set(keyPath, to: value)
+        let store = try await container.store(for: type, path: binding)
         let models = try await store.fetchAll(type)
         for model in models {
             try block(model)
@@ -817,202 +1203,6 @@ extension FDBContext: CustomStringConvertible {
             hasChanges: \(hasChanges)
         )
         """
-    }
-}
-
-// MARK: - Uniqueness Violation API
-
-extension FDBContext {
-    /// Scan uniqueness violations for an index
-    ///
-    /// Returns all violations for the specified index on the given Persistable type.
-    /// Use this after online indexing completes to review any uniqueness violations
-    /// that were tracked during the build process.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let violations = try await context.scanUniquenessViolations(
-    ///     for: User.self,
-    ///     indexName: "email_idx"
-    /// )
-    /// for violation in violations {
-    ///     print("Duplicate value: \(violation.valueDescription)")
-    ///     print("Conflicting records: \(violation.primaryKeys.count)")
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type to scan
-    ///   - indexName: Name of the index to scan for violations
-    ///   - limit: Maximum number of violations to return (nil = all)
-    /// - Returns: Array of uniqueness violations
-    public func scanUniquenessViolations<T: Persistable>(
-        for type: T.Type,
-        indexName: String,
-        limit: Int? = nil
-    ) async throws -> [UniquenessViolation] {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.scanViolations(
-            indexName: indexName,
-            limit: limit
-        )
-    }
-
-    /// Check if an index has any uniqueness violations
-    ///
-    /// Fast check without loading all violations.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// if try await context.hasUniquenessViolations(for: User.self, indexName: "email_idx") {
-    ///     print("Index has violations - review before making readable")
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type
-    ///   - indexName: Name of the index to check
-    /// - Returns: True if violations exist
-    public func hasUniquenessViolations<T: Persistable>(
-        for type: T.Type,
-        indexName: String
-    ) async throws -> Bool {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.hasViolations(indexName: indexName)
-    }
-
-    /// Get a summary of uniqueness violations for an index
-    ///
-    /// Returns violation count and total conflicting records without loading
-    /// all violation details.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let summary = try await context.uniquenessViolationSummary(
-    ///     for: User.self,
-    ///     indexName: "email_idx"
-    /// )
-    /// if summary.hasViolations {
-    ///     print("\(summary.violationCount) duplicate values")
-    ///     print("\(summary.totalConflictingRecords) total conflicting records")
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type
-    ///   - indexName: Name of the index
-    /// - Returns: Violation summary
-    public func uniquenessViolationSummary<T: Persistable>(
-        for type: T.Type,
-        indexName: String
-    ) async throws -> ViolationSummary {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        return try await fdbStore.violationTracker.violationSummary(indexName: indexName)
-    }
-
-    /// Clear a resolved uniqueness violation
-    ///
-    /// Call this after confirming the violation has been resolved by
-    /// deleting or updating the duplicate records.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// // After resolving a violation
-    /// try await context.clearUniquenessViolation(
-    ///     for: User.self,
-    ///     indexName: "email_idx",
-    ///     valueKey: violation.valueKey
-    /// )
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type
-    ///   - indexName: Name of the index
-    ///   - valueKey: The duplicate value key to clear
-    public func clearUniquenessViolation<T: Persistable>(
-        for type: T.Type,
-        indexName: String,
-        valueKey: [UInt8]
-    ) async throws {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearViolation(
-            indexName: indexName,
-            valueKey: valueKey
-        )
-    }
-
-    /// Clear all uniqueness violations for an index
-    ///
-    /// Use after all violations have been resolved or when resetting the index.
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type
-    ///   - indexName: Name of the index
-    public func clearAllUniquenessViolations<T: Persistable>(
-        for type: T.Type,
-        indexName: String
-    ) async throws {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-        try await fdbStore.violationTracker.clearAllViolations(indexName: indexName)
-    }
-
-    /// Verify if a uniqueness violation has been resolved
-    ///
-    /// Checks the actual index to see if duplicate entries still exist.
-    ///
-    /// **Usage**:
-    /// ```swift
-    /// let resolution = try await context.verifyUniquenessViolationResolution(
-    ///     for: User.self,
-    ///     indexName: "email_idx",
-    ///     valueKey: violation.valueKey
-    /// )
-    /// switch resolution {
-    /// case .resolved:
-    ///     try await context.clearUniquenessViolation(...)
-    /// case .unresolved(let updatedViolation):
-    ///     print("Still has \(updatedViolation.primaryKeys.count) duplicates")
-    /// case .notFound:
-    ///     print("Violation was already cleared")
-    /// }
-    /// ```
-    ///
-    /// - Parameters:
-    ///   - type: The Persistable type
-    ///   - indexName: Name of the index
-    ///   - valueKey: The duplicate value key to verify
-    /// - Returns: Resolution status
-    public func verifyUniquenessViolationResolution<T: Persistable>(
-        for type: T.Type,
-        indexName: String,
-        valueKey: [UInt8]
-    ) async throws -> ViolationResolution {
-        let store = try await container.store(for: type)
-        guard let fdbStore = store as? FDBDataStore else {
-            throw FDBRuntimeError.internalError("Store is not an FDBDataStore")
-        }
-
-        let indexSubspace = fdbStore.indexSubspace.subspace(indexName)
-        return try await fdbStore.violationTracker.verifyResolution(
-            indexName: indexName,
-            valueKey: valueKey,
-            indexSubspace: indexSubspace
-        )
     }
 }
 

@@ -88,9 +88,7 @@ struct OnlineIndexerAtomicityTests {
 
             let indexer = OnlineIndexer(
                 database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
+                storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
@@ -193,9 +191,7 @@ struct OnlineIndexerAtomicityTests {
 
             let indexer = OnlineIndexer(
                 database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
+                storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,
@@ -239,9 +235,7 @@ struct OnlineIndexerAtomicityTests {
 
             let indexer = OnlineIndexer(
                 database: ctx.database,
-                itemSubspace: ctx.itemSubspace,
-                indexSubspace: ctx.indexSubspace,
-                blobsSubspace: ctx.blobsSubspace,
+                storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
                 indexMaintainer: maintainer,

@@ -331,3 +331,79 @@ public struct Address: Persistable {
         return "\(keyPath)"
     }
 }
+
+// MARK: - TenantOrder Model (for Partitioned Directory tests)
+
+/// Order model with dynamic directory for multi-tenant partitioning
+///
+/// Directory: ["tenants", Field(\.tenantID), "orders"]
+/// This model is partitioned by tenantID for testing dynamic directory support.
+public struct TenantOrder: Persistable {
+    public typealias ID = String
+
+    public var id: String
+    public var tenantID: String
+    public var status: String
+    public var total: Double
+
+    public init(id: String = UUID().uuidString, tenantID: String, status: String = "pending", total: Double = 0) {
+        self.id = id
+        self.tenantID = tenantID
+        self.status = status
+        self.total = total
+    }
+
+    public static var persistableType: String { "TenantOrder" }
+
+    public static var allFields: [String] { ["id", "tenantID", "status", "total"] }
+
+    public static var indexDescriptors: [IndexDescriptor] { [] }
+
+    // Dynamic directory: ["tenants", Field(\.tenantID), "orders"]
+    public static var directoryPathComponents: [any DirectoryPathElement] {
+        [Path("tenants"), Field<TenantOrder>(\.tenantID), Path("orders")]
+    }
+
+    public static var directoryLayer: Core.DirectoryLayer { .partition }
+
+    public static func fieldNumber(for fieldName: String) -> Int? { nil }
+
+    public static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    public subscript(dynamicMember member: String) -> (any Sendable)? {
+        switch member {
+        case "id": return id
+        case "tenantID": return tenantID
+        case "status": return status
+        case "total": return total
+        default: return nil
+        }
+    }
+
+    public static func fieldName<Value>(for keyPath: KeyPath<TenantOrder, Value>) -> String {
+        switch keyPath {
+        case \TenantOrder.id: return "id"
+        case \TenantOrder.tenantID: return "tenantID"
+        case \TenantOrder.status: return "status"
+        case \TenantOrder.total: return "total"
+        default: return "\(keyPath)"
+        }
+    }
+
+    public static func fieldName(for keyPath: PartialKeyPath<TenantOrder>) -> String {
+        switch keyPath {
+        case \TenantOrder.id: return "id"
+        case \TenantOrder.tenantID: return "tenantID"
+        case \TenantOrder.status: return "status"
+        case \TenantOrder.total: return "total"
+        default: return "\(keyPath)"
+        }
+    }
+
+    public static func fieldName(for keyPath: AnyKeyPath) -> String {
+        if let partial = keyPath as? PartialKeyPath<TenantOrder> {
+            return fieldName(for: partial)
+        }
+        return "\(keyPath)"
+    }
+}

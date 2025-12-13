@@ -182,122 +182,42 @@ public final class FDBContainer: Sendable {
 
     /// Resolve directory for a Persistable type
     ///
-    /// Uses the type's `#Directory` declaration to resolve the directory path.
-    /// Results are cached for performance.
+    /// Unified API for both static and dynamic directories.
+    /// - Static directories: Use default empty path
+    /// - Dynamic directories: Provide path with field values
     ///
-    /// - Parameter type: The Persistable type
-    /// - Returns: Subspace for the type's directory
-    /// - Throws: Error if type has dynamic path (Field components)
-    public func resolveDirectory<T: Persistable>(for type: T.Type) async throws -> Subspace {
-        let cacheKey = type.persistableType
-
-        // Check cache first
-        if let cached = directoryCache.withLock({ $0[cacheKey] }) {
-            return cached
-        }
-
-        // Resolve path from type's directoryPathComponents
-        let pathComponents = type.directoryPathComponents
-        var path: [String] = []
-
-        for component in pathComponents {
-            if let pathElement = component as? Path {
-                path.append(pathElement.value)
-            } else if let stringElement = component as? String {
-                // Support direct String values (String conforms to DirectoryPathElement)
-                path.append(stringElement)
-            } else {
-                throw FDBRuntimeError.internalError(
-                    "Type \(type.persistableType) has dynamic directory path (Field components). " +
-                    "Use resolveDirectory(for:with:) with an instance instead."
-                )
-            }
-        }
-
-        // Resolve via DirectoryLayer (created on demand)
-        let layer = convertDirectoryLayer(type.directoryLayer)
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path, type: layer)
-        let subspace = dirSubspace.subspace
-
-        // Cache the result
-        directoryCache.withLock { $0[cacheKey] = subspace }
-
-        return subspace
-    }
-
-    /// Resolve directory for a Persistable type (type-erased version)
-    ///
-    /// Used by FDBContext for batch operations with mixed types.
-    ///
-    /// - Parameter type: The Persistable type (existential)
-    /// - Returns: Subspace for the type's directory
-    internal func resolveDirectory(for type: any Persistable.Type) async throws -> Subspace {
-        let cacheKey = type.persistableType
-
-        // Check cache first
-        if let cached = directoryCache.withLock({ $0[cacheKey] }) {
-            return cached
-        }
-
-        // Resolve path from type's directoryPathComponents
-        let pathComponents = type.directoryPathComponents
-        var path: [String] = []
-
-        for component in pathComponents {
-            if let pathElement = component as? Path {
-                path.append(pathElement.value)
-            } else if let stringElement = component as? String {
-                // Support direct String values (String conforms to DirectoryPathElement)
-                path.append(stringElement)
-            } else {
-                throw FDBRuntimeError.internalError(
-                    "Type \(type.persistableType) has dynamic directory path (Field components)."
-                )
-            }
-        }
-
-        // Resolve via DirectoryLayer (created on demand)
-        let layer = convertDirectoryLayer(type.directoryLayer)
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path, type: layer)
-        let subspace = dirSubspace.subspace
-
-        // Cache the result
-        directoryCache.withLock { $0[cacheKey] = subspace }
-
-        return subspace
-    }
-
-    /// Resolve directory for a Persistable instance (supports partitioned directories)
-    ///
-    /// **Example**:
+    /// **Usage**:
     /// ```swift
-    /// @Persistable
-    /// struct Order {
-    ///     #Directory<Order>("tenants", Field(\.tenantID), "orders", layer: .partition)
-    ///     var tenantID: String
-    /// }
+    /// // Static directory
+    /// let subspace = try await container.resolveDirectory(for: User.self)
     ///
-    /// let subspace = try await container.resolveDirectory(for: Order.self, with: order)
-    /// // Resolves to: tenants/{tenantID}/orders
+    /// // Dynamic directory
+    /// var path = DirectoryPath<Order>()
+    /// path.set(\.tenantID, to: "tenant_123")
+    /// let subspace = try await container.resolveDirectory(for: Order.self, path: path)
+    ///
+    /// // From model instance
+    /// let subspace = try await container.resolveDirectory(for: Order.self, path: .from(order))
     /// ```
-    public func resolveDirectory<T: Persistable>(for type: T.Type, with instance: T) async throws -> Subspace {
-        let pathComponents = type.directoryPathComponents
-        var path: [String] = []
+    public func resolveDirectory<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath()
+    ) async throws -> Subspace {
+        try await resolveDirectory(for: type, path: AnyDirectoryPath(path))
+    }
 
-        for component in pathComponents {
-            if let pathElement = component as? Path {
-                path.append(pathElement.value)
-            } else if let fieldElement = component as? Field<T> {
-                let keyPath = fieldElement.value
-                let value = instance[keyPath: keyPath]
-                path.append(String(describing: value))
-            }
-        }
+    /// Resolve directory (type-erased version)
+    ///
+    /// Used when the generic type is not known at compile time.
+    public func resolveDirectory(
+        for type: any Persistable.Type,
+        path: AnyDirectoryPath? = nil
+    ) async throws -> Subspace {
+        let directoryPath = path ?? AnyDirectoryPath(for: type)
+        try directoryPath.validate()
 
-        // For partitioned directories, cache key includes the resolved path
-        let cacheKey = path.joined(separator: "/")
+        let pathComponents = directoryPath.resolve()
+        let cacheKey = pathComponents.joined(separator: "/")
 
         if let cached = directoryCache.withLock({ $0[cacheKey] }) {
             return cached
@@ -305,11 +225,10 @@ public final class FDBContainer: Sendable {
 
         let layer = convertDirectoryLayer(type.directoryLayer)
         let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path, type: layer)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: pathComponents, type: layer)
         let subspace = dirSubspace.subspace
 
         directoryCache.withLock { $0[cacheKey] = subspace }
-
         return subspace
     }
 
@@ -323,16 +242,39 @@ public final class FDBContainer: Sendable {
         }
     }
 
-    // MARK: - Store Access (Convenience)
+    // MARK: - Store Access
 
     /// Get DataStore for a Persistable type
     ///
-    /// **Example**:
+    /// **Usage**:
     /// ```swift
+    /// // Static directory
     /// let store = try await container.store(for: User.self)
+    ///
+    /// // Dynamic directory
+    /// var path = DirectoryPath<Order>()
+    /// path.set(\.tenantID, to: "tenant_123")
+    /// let store = try await container.store(for: Order.self, path: path)
     /// ```
-    public func store<T: Persistable>(for type: T.Type) async throws -> any DataStore {
-        let subspace = try await resolveDirectory(for: type)
+    public func store<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath()
+    ) async throws -> any DataStore {
+        let subspace = try await resolveDirectory(for: type, path: path)
+        return FDBDataStore(
+            database: database,
+            subspace: subspace,
+            schema: schema,
+            securityDelegate: securityDelegate
+        )
+    }
+
+    /// Get DataStore (type-erased version)
+    internal func store(
+        for type: any Persistable.Type,
+        path: AnyDirectoryPath? = nil
+    ) async throws -> any DataStore {
+        let subspace = try await resolveDirectory(for: type, path: path)
         return FDBDataStore(
             database: database,
             subspace: subspace,

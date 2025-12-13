@@ -40,12 +40,19 @@ public struct Query<T: Persistable>: Sendable {
     /// Number of results to skip
     public var fetchOffset: Int?
 
+    /// Partition binding for dynamic directories
+    ///
+    /// Required for types with `Field(\.keyPath)` in their `#Directory` declaration.
+    /// Set via `.partition()` fluent API method.
+    public var partitionBinding: DirectoryPath<T>?
+
     /// Initialize an empty query
     public init() {
         self.predicates = []
         self.sortDescriptors = []
         self.fetchLimit = nil
         self.fetchOffset = nil
+        self.partitionBinding = nil
     }
 
     // MARK: - Fluent API
@@ -82,6 +89,56 @@ public struct Query<T: Persistable>: Sendable {
     public func offset(_ count: Int) -> Query<T> {
         var copy = self
         copy.fetchOffset = count
+        return copy
+    }
+
+    // MARK: - Partition
+
+    /// Bind a partition field value for dynamic directory resolution
+    ///
+    /// Required for types with `Field(\.keyPath)` in their `#Directory` declaration.
+    /// The partition value is used to resolve the correct directory subspace.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// @Persistable
+    /// struct Order {
+    ///     #Directory<Order>("tenants", Field(\.tenantID), "orders")
+    ///     var tenantID: String
+    /// }
+    ///
+    /// let orders = try await context.fetch(Order.self)
+    ///     .partition(\.tenantID, equals: "tenant_123")
+    ///     .where(\.status == "open")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: The partition field's keyPath
+    ///   - value: The value for directory resolution
+    /// - Returns: A new Query with the partition binding added
+    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
+        _ keyPath: KeyPath<T, V>,
+        equals value: V
+    ) -> Query<T> {
+        var copy = self
+        var binding = copy.partitionBinding ?? DirectoryPath<T>()
+        binding.set(keyPath, to: value)
+        copy.partitionBinding = binding
+
+        // Also add as a where clause for filtering (defense in depth)
+        // This ensures data integrity even if wrong partition is somehow accessed
+        // Only add if not already present for this keyPath
+        let fieldName = T.fieldName(for: keyPath)
+        let alreadyHasPredicate = copy.predicates.contains { predicate in
+            if case .comparison(let comparison) = predicate {
+                return comparison.fieldName == fieldName
+            }
+            return false
+        }
+        if !alreadyHasPredicate {
+            copy.predicates.append(.comparison(FieldComparison(keyPath: keyPath, op: .equal, value: value)))
+        }
         return copy
     }
 }
@@ -433,6 +490,40 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     public func offset(_ count: Int) -> QueryExecutor<T> {
         var copy = self
         copy.query = query.offset(count)
+        return copy
+    }
+
+    // MARK: - Partition
+
+    /// Bind a partition field value for dynamic directory resolution
+    ///
+    /// Required for types with `Field(\.keyPath)` in their `#Directory` declaration.
+    /// The partition value is used to resolve the correct directory subspace.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// @Persistable
+    /// struct Order {
+    ///     #Directory<Order>("tenants", Field(\.tenantID), "orders")
+    ///     var tenantID: String
+    /// }
+    ///
+    /// let orders = try await context.fetch(Order.self)
+    ///     .partition(\.tenantID, equals: "tenant_123")
+    ///     .where(\.status == "open")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - keyPath: The partition field's keyPath
+    ///   - value: The value for directory resolution
+    /// - Returns: A new QueryExecutor with the partition binding added
+    public func partition<V: Sendable & Equatable & FieldValueConvertible>(
+        _ keyPath: KeyPath<T, V>,
+        equals value: V
+    ) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.partition(keyPath, equals: value)
         return copy
     }
 

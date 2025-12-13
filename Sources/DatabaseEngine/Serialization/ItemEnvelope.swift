@@ -16,8 +16,7 @@ import FoundationDB
 /// Bytes 0-3:  Magic number "ITEM" (0x49 0x54 0x45 0x4D)
 /// Byte 4:     Format version (currently 0x01)
 /// Byte 5:     Flags (inline/external)
-/// Byte 6:     Codec ID (compression/encryption algorithm)
-/// Bytes 7...: Payload (inline data) or ExternalRef (blob reference)
+/// Bytes 6...: Payload (inline data) or ExternalRef (blob reference)
 /// ```
 ///
 /// **Design Goals**:
@@ -34,8 +33,8 @@ public struct ItemEnvelope: Sendable, Equatable {
     /// Current format version
     public static let currentVersion: UInt8 = 0x01
 
-    /// Header size: magic (4) + version (1) + flags (1) + codec (1)
-    public static let headerSize: Int = 7
+    /// Header size: magic (4) + version (1) + flags (1)
+    public static let headerSize: Int = 6
 
     /// Maximum inline payload size (90KB - leave room for FDB overhead)
     public static let maxInlineSize: Int = 90_000
@@ -48,9 +47,6 @@ public struct ItemEnvelope: Sendable, Equatable {
     /// Storage flags
     public let flags: Flags
 
-    /// Codec identifier for compression/encryption
-    public let codec: Codec
-
     /// Payload data (inline) or external reference
     public let content: Content
 
@@ -58,34 +54,29 @@ public struct ItemEnvelope: Sendable, Equatable {
 
     /// Create an inline envelope
     public static func inline(
-        data: FDB.Bytes,
-        codec: Codec = .zlibCompressed
+        data: FDB.Bytes
     ) -> ItemEnvelope {
         ItemEnvelope(
             version: currentVersion,
             flags: .inline,
-            codec: codec,
             content: .inline(data)
         )
     }
 
     /// Create an external reference envelope
     public static func external(
-        ref: ExternalRef,
-        codec: Codec = .zlibCompressed
+        ref: ExternalRef
     ) -> ItemEnvelope {
         ItemEnvelope(
             version: currentVersion,
             flags: .external,
-            codec: codec,
             content: .external(ref)
         )
     }
 
-    private init(version: UInt8, flags: Flags, codec: Codec, content: Content) {
+    private init(version: UInt8, flags: Flags, content: Content) {
         self.version = version
         self.flags = flags
-        self.codec = codec
         self.content = content
     }
 
@@ -101,7 +92,6 @@ public struct ItemEnvelope: Sendable, Equatable {
         // Header
         result.append(version)
         result.append(flags.rawValue)
-        result.append(codec.rawValue)
 
         // Content
         switch content {
@@ -137,9 +127,6 @@ public struct ItemEnvelope: Sendable, Equatable {
         guard let flags = Flags(rawValue: bytes[5]) else {
             throw ItemEnvelopeError.invalidFlags(bytes[5])
         }
-
-        let codec = Codec(rawValue: bytes[6]) ?? .none
-
         let payloadBytes = Array(bytes[headerSize...])
 
         let content: Content
@@ -155,7 +142,6 @@ public struct ItemEnvelope: Sendable, Equatable {
         return ItemEnvelope(
             version: version,
             flags: flags,
-            codec: codec,
             content: content
         )
     }
@@ -183,34 +169,6 @@ extension ItemEnvelope {
 
         /// Data is stored externally in blobs subspace
         case external = 0x01
-    }
-}
-
-// MARK: - Codec
-
-extension ItemEnvelope {
-    /// Codec identifier for compression/encryption
-    public enum Codec: UInt8, Sendable {
-        /// No transformation (raw data)
-        case none = 0x00
-
-        /// zlib compression (default)
-        case zlibCompressed = 0x01
-
-        /// LZ4 compression (faster)
-        case lz4Compressed = 0x02
-
-        /// LZMA compression (better ratio)
-        case lzmaCompressed = 0x03
-
-        /// LZFSE compression (Apple optimized)
-        case lzfseCompressed = 0x04
-
-        /// AES-256-GCM encryption (no compression)
-        case aesEncrypted = 0x10
-
-        /// zlib + AES-256-GCM
-        case zlibEncrypted = 0x11
     }
 }
 

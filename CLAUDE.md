@@ -95,6 +95,8 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `TransformingSerializer` | Compression (LZ4/zlib/LZMA/LZFSE) and encryption (AES-256-GCM) |
 | `Polymorphable` | Protocol enabling union types with shared directory and polymorphic queries |
 | `IndexStateManager` | Manages index lifecycle states (disabled/writeOnly/readable) |
+| `ItemStorage` | Envelope-based storage for items (handles large values, blobs) |
+| `ItemEnvelope` | Storage format wrapper with magic number validation |
 
 ### Responsibility Separation
 
@@ -158,13 +160,19 @@ FDBContext.save()
 ### Data Layout in FoundationDB
 
 ```
-[fdb]/R/[PersistableType]/[id]           → Protobuf-encoded item
+[fdb]/R/[PersistableType]/[id]           → ItemEnvelope(JSON-encoded item)
+[fdb]/B/[blob-key]                       → Large value blob chunks
 [fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
 [fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
 [fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
 ```
 
-Subspace keys are single characters for storage efficiency. Use `SubspaceKey.items`, `SubspaceKey.indexes`, etc. for semantic clarity in code.
+**ItemEnvelope Format**:
+- All items are wrapped in `ItemEnvelope` with magic number `ITEM` (0x49 0x54 0x45 0x4D)
+- Large values (>100KB) are automatically split into blob chunks in `/B/` subspace
+- Reading raw data without `ItemStorage.read()` will fail with "Data is not in ItemEnvelope format"
+
+Subspace keys are single characters for storage efficiency. Use `SubspaceKey.items`, `SubspaceKey.indexes`, `SubspaceKey.blobs`, etc. for semantic clarity in code.
 
 ## Implemented Features
 
@@ -290,10 +298,34 @@ hexastore (6-index):
 
 | Component | File | Description |
 |-----------|------|-------------|
-| `LargeValueSplitter` | `Serialization/LargeValueSplitter.swift` | Handle values > 100KB (FDB limit) |
+| `ItemStorage` | `Serialization/ItemStorage.swift` | Primary storage interface with envelope format |
+| `ItemEnvelope` | `Serialization/ItemEnvelope.swift` | Magic-number validated storage format |
 | `TransformingSerializer` | `Serialization/TransformingSerializer.swift` | Compression (LZ4/zlib/LZMA/LZFSE) + encryption (AES-256-GCM) |
 | `RecordEncryption` | `Serialization/RecordEncryption.swift` | Key providers (Static, Rotating, Derived, Environment) |
-| `StoragePipeline` | `Serialization/StoragePipeline.swift` | Composable transformation chain |
+
+#### ItemStorage/ItemEnvelope Format
+
+All items are stored using `ItemStorage.write()` and read using `ItemStorage.read()`. The format uses a magic number header for validation:
+
+```
+[ITEM magic (4 bytes: 0x49 0x54 0x45 0x4D)] [payload...]
+```
+
+**Important**: Direct `transaction.getValue()` cannot be used to read item data. Always use `ItemStorage.read()` to properly unwrap the envelope:
+
+```swift
+// ✅ Correct: Use ItemStorage
+let storage = ItemStorage(transaction: tx, blobsSubspace: blobsSubspace)
+if let data = try await storage.read(for: key) {
+    let item = try decoder.decode(MyType.self, from: Data(data))
+}
+
+// ❌ Wrong: Direct transaction access
+if let data = try await tx.getValue(for: key) {
+    // Error: "Data is not in ItemEnvelope format"
+    let item = try decoder.decode(MyType.self, from: Data(data))
+}
+```
 
 ### Transaction Management
 
@@ -790,6 +822,107 @@ import Testing
 ```
 
 Test models are defined in `Tests/Shared/TestModels.swift`.
+
+### @Persistable マクロ必須パターン
+
+**重要**: テストモデルを含む全ての `Persistable` 型は `@Persistable` マクロを使用する必要がある。手動で `Persistable` プロトコルを実装すると、`ItemStorage/ItemEnvelope` 形式との互換性問題が発生する。
+
+**問題**: 手動実装の `Persistable` は `ItemEnvelope` 形式で保存されず、読み取り時に "Data is not in ItemEnvelope format" エラーが発生する。
+
+```swift
+// ❌ 悪い例: 手動 Persistable 実装（動作しない）
+struct MyModel: Persistable {
+    typealias ID = String
+    var id: String = UUID().uuidString
+    var name: String
+
+    static var persistableType: String { "MyModel" }
+    static var directoryPathComponents: [String] { ["test", "models"] }
+    static var allFields: [String] { ["id", "name"] }
+
+    // 手動実装のボイラープレート...
+    subscript(dynamicMember member: String) -> (any Sendable)? { ... }
+    static func fieldName<V>(for keyPath: KeyPath<MyModel, V>) -> String { ... }
+}
+
+// ✅ 良い例: @Persistable マクロを使用
+@Persistable
+struct MyModel {
+    #Directory<MyModel>("test", "models")
+
+    var id: String = UUID().uuidString
+    var name: String = ""
+
+    #Index<MyModel>(ScalarIndexKind<MyModel>(fields: [\.name]))
+}
+```
+
+**マクロが生成するもの**:
+- `persistableType`
+- `directoryPathComponents` (from `#Directory`)
+- `allFields`
+- `fieldName(for:)` メソッド群
+- `dynamicMember` subscript
+- `indexDescriptors` (from `#Index`)
+
+**カスタムインデックスの定義**:
+
+```swift
+@Persistable
+struct GameScore {
+    #Directory<GameScore>("game", "scores")
+
+    var id: String = UUID().uuidString
+    var playerId: String = ""
+    var score: Int64 = 0
+    var region: String = "global"
+
+    // Scalar indexes
+    #Index<GameScore>(ScalarIndexKind<GameScore>(fields: [\.playerId]))
+    #Index<GameScore>(ScalarIndexKind<GameScore>(fields: [\.region]))
+
+    // Leaderboard index
+    #Index<GameScore>(TimeWindowLeaderboardIndexKind<GameScore, Int64>(
+        scoreField: \.score,
+        window: .daily,
+        windowCount: 7
+    ))
+
+    // Compound index with groupBy
+    #Index<GameScore>(TimeWindowLeaderboardIndexKind<GameScore, Int64>(
+        scoreField: \.score,
+        groupBy: [\.region],
+        window: .daily,
+        windowCount: 7
+    ))
+}
+```
+
+**Relationship の定義**:
+
+```swift
+@Persistable
+struct Customer {
+    #Directory<Customer>("app", "customers")
+
+    var id: String = ULID().uuidString
+    var name: String = ""
+
+    @Relationship(Order.self)
+    var orderIDs: [String] = []
+}
+
+@Persistable
+struct Order {
+    #Directory<Order>("app", "orders")
+
+    var id: String = ULID().uuidString
+    var total: Double = 0
+
+    @Relationship(Customer.self)
+    var customerID: String? = nil
+}
+```
 
 ### テスト分離パターン
 
