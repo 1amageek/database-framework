@@ -324,6 +324,32 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
+        // BitmapIndex tests
+        .testTarget(
+            name: "BitmapIndexTests",
+            dependencies: [
+                "BitmapIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // LeaderboardIndex tests
+        .testTarget(
+            name: "LeaderboardIndexTests",
+            dependencies: [
+                "LeaderboardIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

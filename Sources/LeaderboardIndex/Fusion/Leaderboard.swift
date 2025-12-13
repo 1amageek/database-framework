@@ -306,7 +306,9 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
                 continue
             }
 
-            let score = Int64.max - invertedScore
+            // Reverse the inversion (same formula is self-inverse)
+            let unsigned = UInt64(bitPattern: invertedScore)
+            let score = Int64(bitPattern: UInt64.max - unsigned)
 
             // Extract primary key (remaining elements)
             var pkElements: [any TupleElement] = []

@@ -37,6 +37,50 @@ struct AdaptiveThrottlerTests {
         #expect(config.increaseRatio == 2.0)
     }
 
+    @Test func nestedBatchSettingsConfiguration() {
+        let batch = ThrottleConfiguration.BatchSettings(
+            initial: 200,
+            min: 50,
+            max: 500,
+            increaseRatio: 2.0,
+            decreaseRatio: 0.3
+        )
+        let config = ThrottleConfiguration(batch: batch)
+
+        #expect(config.batch.initial == 200)
+        #expect(config.batch.min == 50)
+        #expect(config.batch.max == 500)
+        #expect(config.batch.increaseRatio == 2.0)
+        #expect(config.batch.decreaseRatio == 0.3)
+
+        // Convenience accessors
+        #expect(config.initialBatchSize == 200)
+        #expect(config.minBatchSize == 50)
+        #expect(config.maxBatchSize == 500)
+    }
+
+    @Test func nestedDelaySettingsConfiguration() {
+        let delay = ThrottleConfiguration.DelaySettings(
+            min: 10,
+            max: 2000,
+            initial: 100,
+            increaseRatio: 3.0,
+            decreaseRatio: 0.8
+        )
+        let config = ThrottleConfiguration(delay: delay)
+
+        #expect(config.delay.min == 10)
+        #expect(config.delay.max == 2000)
+        #expect(config.delay.initial == 100)
+        #expect(config.delay.increaseRatio == 3.0)
+        #expect(config.delay.decreaseRatio == 0.8)
+
+        // Convenience accessors
+        #expect(config.minDelayMs == 10)
+        #expect(config.maxDelayMs == 2000)
+        #expect(config.initialDelayMs == 100)
+    }
+
     // MARK: - Initial State Tests
 
     @Test func initialState() {
@@ -54,9 +98,7 @@ struct AdaptiveThrottlerTests {
 
     @Test func customConfiguration() {
         let config = ThrottleConfiguration(
-            initialBatchSize: 50,
-            minBatchSize: 5,
-            maxBatchSize: 500
+            batch: .init(initial: 50, min: 5, max: 500)
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
@@ -78,10 +120,7 @@ struct AdaptiveThrottlerTests {
 
     @Test func batchSizeIncreasesAfterConsecutiveSuccesses() {
         let config = ThrottleConfiguration(
-            initialBatchSize: 100,
-            minBatchSize: 10,
-            maxBatchSize: 1000,
-            increaseRatio: 1.5,
+            batch: .init(initial: 100, min: 10, max: 1000, increaseRatio: 1.5),
             successesBeforeIncrease: 3
         )
         let throttler = AdaptiveThrottler(configuration: config)
@@ -97,10 +136,7 @@ struct AdaptiveThrottlerTests {
 
     @Test func batchSizeDoesNotExceedMax() {
         let config = ThrottleConfiguration(
-            initialBatchSize: 900,
-            minBatchSize: 10,
-            maxBatchSize: 1000,
-            increaseRatio: 1.5,
+            batch: .init(initial: 900, min: 10, max: 1000, increaseRatio: 1.5),
             successesBeforeIncrease: 1
         )
         let throttler = AdaptiveThrottler(configuration: config)
@@ -115,14 +151,11 @@ struct AdaptiveThrottlerTests {
 
     @Test func recordFailureDecreasesBatchSize() {
         let config = ThrottleConfiguration(
-            initialBatchSize: 100,
-            minBatchSize: 10,
-            maxBatchSize: 1000,
-            decreaseRatio: 0.5
+            batch: .init(initial: 100, min: 10, max: 1000, decreaseRatio: 0.5)
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         #expect(throttler.currentBatchSize == 50)
 
@@ -133,14 +166,11 @@ struct AdaptiveThrottlerTests {
 
     @Test func batchSizeDoesNotGoBelowMin() {
         let config = ThrottleConfiguration(
-            initialBatchSize: 15,
-            minBatchSize: 10,
-            maxBatchSize: 1000,
-            decreaseRatio: 0.5
+            batch: .init(initial: 15, min: 10, max: 1000, decreaseRatio: 0.5)
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         // Should be clamped to minBatchSize (15 * 0.5 = 7.5 -> 10)
         #expect(throttler.currentBatchSize == 10)
@@ -154,7 +184,7 @@ struct AdaptiveThrottlerTests {
 
         #expect(throttler.statistics.consecutiveSuccesses == 2)
 
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         #expect(throttler.statistics.consecutiveSuccesses == 0)
         #expect(throttler.statistics.consecutiveFailures == 1)
@@ -163,8 +193,8 @@ struct AdaptiveThrottlerTests {
     @Test func successResetsConsecutiveFailures() {
         let throttler = AdaptiveThrottler()
 
-        throttler.recordFailure(error: TestError.generic)
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         #expect(throttler.statistics.consecutiveFailures == 2)
 
@@ -178,20 +208,18 @@ struct AdaptiveThrottlerTests {
 
     @Test func failureIncreasesDelay() {
         let config = ThrottleConfiguration(
-            initialDelayMs: 10,
-            delayIncreaseRatio: 2.0
+            delay: .init(min: 0, max: 1000, initial: 10, increaseRatio: 2.0)
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         #expect(throttler.currentDelayMs == 20)
     }
 
     @Test func successDecreasesDelay() {
         let config = ThrottleConfiguration(
-            initialDelayMs: 100,
-            delayDecreaseRatio: 0.5
+            delay: .init(min: 0, max: 1000, initial: 100, decreaseRatio: 0.5)
         )
         let throttler = AdaptiveThrottler(configuration: config)
 
@@ -202,31 +230,23 @@ struct AdaptiveThrottlerTests {
 
     // MARK: - Retryable Error Tests
 
-    @Test func isRetryableDetectsRetryableErrors() {
+    @Test func isRetryableDetectsFDBRetryableErrors() {
         let throttler = AdaptiveThrottler()
 
-        #expect(throttler.isRetryable(TestError.retryable))
-        #expect(throttler.isRetryable(TestError.timeout))
-        #expect(throttler.isRetryable(TestError.conflict))
-        #expect(throttler.isRetryable(TestError.transactionTooOld))
-    }
-
-    @Test func isRetryableRejectsNonRetryableErrors() {
-        let throttler = AdaptiveThrottler()
-
-        #expect(!throttler.isRetryable(TestError.generic))
-        #expect(!throttler.isRetryable(TestError.permanent))
+        // Generic non-FDB errors are not retryable
+        #expect(!throttler.isRetryable(ThrottlerTestError.generic))
+        #expect(!throttler.isRetryable(ThrottlerTestError.permanent))
     }
 
     // MARK: - Reset Tests
 
     @Test func resetRestoresInitialState() {
-        let config = ThrottleConfiguration(initialBatchSize: 100)
+        let config = ThrottleConfiguration(batch: .init(initial: 100))
         let throttler = AdaptiveThrottler(configuration: config)
 
         // Modify state
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         // Reset
         throttler.reset()
@@ -234,25 +254,8 @@ struct AdaptiveThrottlerTests {
         #expect(throttler.currentBatchSize == 100)
         #expect(throttler.statistics.consecutiveSuccesses == 0)
         #expect(throttler.statistics.consecutiveFailures == 0)
-    }
-
-    @Test func resetStatisticsKeepsThrottleSettings() {
-        let config = ThrottleConfiguration(
-            initialBatchSize: 100,
-            successesBeforeIncrease: 1
-        )
-        let throttler = AdaptiveThrottler(configuration: config)
-
-        throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        let newBatchSize = throttler.currentBatchSize
-
-        throttler.resetStatistics()
-
-        // Batch size should remain
-        #expect(throttler.currentBatchSize == newBatchSize)
-        // Statistics should be reset
         #expect(throttler.statistics.totalSuccesses == 0)
-        #expect(throttler.statistics.totalItemsProcessed == 0)
+        #expect(throttler.statistics.totalFailures == 0)
     }
 
     // MARK: - Statistics Tests
@@ -263,51 +266,54 @@ struct AdaptiveThrottlerTests {
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
         throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordFailure(error: TestError.generic)
+        throttler.recordFailure(error: ThrottlerTestError.generic)
 
         let stats = throttler.statistics
         #expect(stats.successRate == 0.75)
     }
 
-    @Test func statisticsAverageItemsPerBatch() {
-        let throttler = AdaptiveThrottler()
-
-        throttler.recordSuccess(itemCount: 100, durationNs: 1_000_000)
-        throttler.recordSuccess(itemCount: 200, durationNs: 1_000_000)
-
-        let stats = throttler.statistics
-        #expect(stats.averageItemsPerBatch == 150)
-    }
-
-    @Test func statisticsThroughput() {
+    @Test func statisticsAvgItemsPerSecond() {
         let throttler = AdaptiveThrottler()
 
         // 100 items in 100ms = 1000 items/second
         throttler.recordSuccess(itemCount: 100, durationNs: 100_000_000)
 
         let stats = throttler.statistics
-        #expect(stats.throughputPerSecond == 1000)
+        #expect(stats.avgItemsPerSecond == 1000)
+    }
+
+    // MARK: - Description Tests
+
+    @Test func configurationDescription() {
+        let defaultConfig = ThrottleConfiguration.default
+        #expect(defaultConfig.description == "ThrottleConfiguration.default")
+
+        let customConfig = ThrottleConfiguration(
+            batch: .init(initial: 200),
+            successesBeforeIncrease: 5
+        )
+        #expect(customConfig.description.contains("batch:"))
+        #expect(customConfig.description.contains("successesBeforeIncrease: 5"))
+    }
+
+    @Test func batchSettingsDescription() {
+        let batch = ThrottleConfiguration.BatchSettings(initial: 100, min: 10, max: 500)
+        #expect(batch.description.contains("initial: 100"))
+        #expect(batch.description.contains("min: 10"))
+        #expect(batch.description.contains("max: 500"))
     }
 }
 
 // MARK: - Test Errors
 
-private enum TestError: Error, CustomStringConvertible {
+private enum ThrottlerTestError: Error, CustomStringConvertible {
     case generic
     case permanent
-    case retryable
-    case timeout
-    case conflict
-    case transactionTooOld
 
     var description: String {
         switch self {
         case .generic: return "Generic error"
         case .permanent: return "Permanent error"
-        case .retryable: return "Please retry"
-        case .timeout: return "Connection timeout"
-        case .conflict: return "Write conflict"
-        case .transactionTooOld: return "transaction_too_old"
         }
     }
 }

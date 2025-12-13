@@ -7,9 +7,6 @@
 import Foundation
 import FoundationDB
 
-// Import DatabaseConfiguration for global defaults
-// Note: DatabaseConfiguration is in the same module
-
 // MARK: - TransactionPriority
 
 /// Transaction priority level
@@ -76,15 +73,17 @@ public enum ReadPriority: String, Sendable, Hashable, Codable {
 /// let config = TransactionConfiguration(
 ///     timeout: 5000,
 ///     retryLimit: 5,
-///     priority: .default,
-///     readPriority: .normal
+///     priority: .default
 /// )
-/// try await context.withTransaction(configuration: config) { tx in
-///     // ...
-/// }
+///
+/// // With tracing enabled
+/// let tracedConfig = TransactionConfiguration(
+///     timeout: 5000,
+///     tracing: .init(transactionID: "user-request-12345")
+/// )
 /// ```
 ///
-/// **Reference**: FDB transaction options
+/// **Reference**: FDB transaction options, FDB Record Layer FDBRecordContextConfig
 public struct TransactionConfiguration: Sendable, Hashable {
     // MARK: - Properties
 
@@ -144,6 +143,9 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// **Reference**: FDB Record Layer `WeakReadSemantics`
     public let weakReadSemantics: WeakReadSemantics?
 
+    /// Tracing and logging configuration
+    public let tracing: Tracing
+
     // MARK: - Initialization
 
     /// Create a custom transaction configuration
@@ -162,6 +164,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     ///   - readPriority: Read operation priority (default: .normal)
     ///   - disableReadCache: Whether to disable server-side read caching (default: false)
     ///   - weakReadSemantics: Weak read semantics (default: nil = strict consistency)
+    ///   - tracing: Tracing and logging configuration (default: .disabled)
     public init(
         timeout: Int? = DatabaseConfiguration.shared.transactionTimeout,
         retryLimit: Int = DatabaseConfiguration.shared.transactionRetryLimit,
@@ -169,7 +172,8 @@ public struct TransactionConfiguration: Sendable, Hashable {
         priority: TransactionPriority = .default,
         readPriority: ReadPriority = .normal,
         disableReadCache: Bool = false,
-        weakReadSemantics: WeakReadSemantics? = nil
+        weakReadSemantics: WeakReadSemantics? = nil,
+        tracing: Tracing = .disabled
     ) {
         self.timeout = timeout
         self.retryLimit = retryLimit
@@ -178,6 +182,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
         self.readPriority = readPriority
         self.disableReadCache = disableReadCache
         self.weakReadSemantics = weakReadSemantics
+        self.tracing = tracing
     }
 
     // MARK: - Presets
@@ -246,6 +251,116 @@ public struct TransactionConfiguration: Sendable, Hashable {
         readPriority: .low,
         weakReadSemantics: .veryRelaxed
     )
+}
+
+// MARK: - Tracing Configuration
+
+extension TransactionConfiguration {
+    /// Tracing and logging configuration for transactions
+    ///
+    /// Groups observability-related settings for cleaner API.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Simple tracing with just transaction ID
+    /// let config = TransactionConfiguration(
+    ///     tracing: .init(transactionID: "req-12345")
+    /// )
+    ///
+    /// // Full debugging configuration
+    /// let debugConfig = TransactionConfiguration(
+    ///     tracing: .init(
+    ///         transactionID: "debug-session",
+    ///         logTransaction: true,
+    ///         serverRequestTracing: true,
+    ///         tags: ["debug", "performance"]
+    ///     )
+    /// )
+    /// ```
+    public struct Tracing: Sendable, Hashable {
+        /// Transaction identifier for log correlation
+        ///
+        /// A unique identifier used to correlate logs across different systems.
+        /// When set, this ID is:
+        /// - Included in transaction lifecycle events
+        /// - Passed to FDB client trace logs (if `logTransaction` is enabled)
+        /// - Available for custom logging and debugging
+        ///
+        /// **Best Practice**: Use request IDs or trace IDs from your distributed tracing system.
+        ///
+        /// **Reference**: FDB Record Layer `FDBRecordContextConfig.transactionID`
+        public let transactionID: String?
+
+        /// Enable detailed transaction logging to FDB client trace logs
+        ///
+        /// When `true`, all read and written keys/values are logged to FDB client trace logs.
+        /// This is useful for debugging but has high overhead.
+        ///
+        /// **Requirements**: `transactionID` must be set for this to work.
+        ///
+        /// **Warning**: This logs sensitive data. Use only in development/debugging.
+        ///
+        /// **Reference**: FDB Record Layer `FDBRecordContextConfig.logTransaction`
+        public let logTransaction: Bool
+
+        /// Enable server request tracing
+        ///
+        /// When `true`, additional logging and tracing for each FDB server operation
+        /// associated with this transaction is enabled.
+        ///
+        /// **Warning**: High overhead. Use only for performance debugging.
+        ///
+        /// **Reference**: FDB Record Layer `FDBRecordContextConfig.serverRequestTracing`
+        public let serverRequestTracing: Bool
+
+        /// Tags for transaction categorization
+        ///
+        /// Tags can be used for:
+        /// - Filtering logs
+        /// - Metrics grouping
+        /// - Debugging
+        ///
+        /// Example: `["user-request", "api-v2"]`
+        public let tags: Set<String>
+
+        /// Disabled tracing (default)
+        public static let disabled = Tracing()
+
+        /// Create a tracing configuration
+        ///
+        /// - Parameters:
+        ///   - transactionID: Transaction ID for log correlation (default: nil)
+        ///   - logTransaction: Enable detailed FDB logging (default: false)
+        ///   - serverRequestTracing: Enable server tracing (default: false)
+        ///   - tags: Tags for categorization (default: empty)
+        public init(
+            transactionID: String? = nil,
+            logTransaction: Bool = false,
+            serverRequestTracing: Bool = false,
+            tags: Set<String> = []
+        ) {
+            self.transactionID = transactionID
+            self.logTransaction = logTransaction
+            self.serverRequestTracing = serverRequestTracing
+            self.tags = tags
+        }
+    }
+}
+
+// MARK: - Convenience Accessors
+
+extension TransactionConfiguration {
+    /// Transaction ID for log correlation (convenience accessor)
+    public var transactionID: String? { tracing.transactionID }
+
+    /// Whether detailed transaction logging is enabled (convenience accessor)
+    public var logTransaction: Bool { tracing.logTransaction }
+
+    /// Whether server request tracing is enabled (convenience accessor)
+    public var serverRequestTracing: Bool { tracing.serverRequestTracing }
+
+    /// Tags for categorization (convenience accessor)
+    public var tags: Set<String> { tracing.tags }
 }
 
 // MARK: - Apply to Transaction
@@ -338,11 +453,35 @@ extension TransactionConfiguration: CustomStringConvertible {
         if let semantics = weakReadSemantics {
             parts.append("weakReadSemantics: \(semantics)")
         }
+        if tracing != .disabled {
+            parts.append("tracing: \(tracing)")
+        }
 
         if parts.isEmpty {
             return "TransactionConfiguration.default"
         }
 
         return "TransactionConfiguration(\(parts.joined(separator: ", ")))"
+    }
+}
+
+extension TransactionConfiguration.Tracing: CustomStringConvertible {
+    public var description: String {
+        var parts: [String] = []
+
+        if let id = transactionID {
+            parts.append("transactionID: \"\(id)\"")
+        }
+        if logTransaction {
+            parts.append("logTransaction: true")
+        }
+        if serverRequestTracing {
+            parts.append("serverRequestTracing: true")
+        }
+        if !tags.isEmpty {
+            parts.append("tags: \(tags)")
+        }
+
+        return "Tracing(\(parts.joined(separator: ", ")))"
     }
 }

@@ -11,117 +11,184 @@ import FoundationDB
 // MARK: - ThrottleConfiguration
 
 /// Configuration for adaptive throttling
+///
+/// Groups batch and delay settings for cleaner initialization.
+///
+/// **Usage**:
+/// ```swift
+/// // Use presets
+/// let config = ThrottleConfiguration.default
+///
+/// // Custom batch settings only
+/// let config = ThrottleConfiguration(
+///     batch: .init(initial: 200, min: 50, max: 500)
+/// )
+///
+/// // Custom both
+/// let config = ThrottleConfiguration(
+///     batch: .init(initial: 100, increaseRatio: 2.0),
+///     delay: .init(max: 2000)
+/// )
+/// ```
 public struct ThrottleConfiguration: Sendable, Equatable {
-    /// Initial batch size
-    public let initialBatchSize: Int
+    /// Batch size settings
+    public let batch: BatchSettings
 
-    /// Minimum batch size (won't go below this)
-    public let minBatchSize: Int
-
-    /// Maximum batch size (won't exceed this)
-    public let maxBatchSize: Int
-
-    /// Batch size increase factor on success (e.g., 1.5 = 50% increase)
-    public let increaseRatio: Double
-
-    /// Batch size decrease factor on failure (e.g., 0.5 = 50% decrease)
-    public let decreaseRatio: Double
-
-    /// Minimum delay between batches (milliseconds)
-    public let minDelayMs: Int
-
-    /// Maximum delay between batches (milliseconds)
-    public let maxDelayMs: Int
-
-    /// Initial delay (milliseconds)
-    public let initialDelayMs: Int
-
-    /// Delay increase factor on failure
-    public let delayIncreaseRatio: Double
-
-    /// Delay decrease factor on success
-    public let delayDecreaseRatio: Double
+    /// Delay settings
+    public let delay: DelaySettings
 
     /// Number of consecutive successes before increasing batch size
     public let successesBeforeIncrease: Int
 
     /// Default configuration
-    public static let `default` = ThrottleConfiguration(
-        initialBatchSize: 100,
-        minBatchSize: 10,
-        maxBatchSize: 1000,
-        increaseRatio: 1.5,
-        decreaseRatio: 0.5,
-        minDelayMs: 0,
-        maxDelayMs: 1000,
-        initialDelayMs: 0,
-        delayIncreaseRatio: 2.0,
-        delayDecreaseRatio: 0.9,
-        successesBeforeIncrease: 3
-    )
+    public static let `default` = ThrottleConfiguration()
 
     /// Conservative configuration (smaller batches, more delay)
     public static let conservative = ThrottleConfiguration(
-        initialBatchSize: 50,
-        minBatchSize: 10,
-        maxBatchSize: 200,
-        increaseRatio: 1.2,
-        decreaseRatio: 0.3,
-        minDelayMs: 10,
-        maxDelayMs: 5000,
-        initialDelayMs: 50,
-        delayIncreaseRatio: 2.0,
-        delayDecreaseRatio: 0.95,
+        batch: .init(initial: 50, min: 10, max: 200, increaseRatio: 1.2, decreaseRatio: 0.3),
+        delay: .init(min: 10, max: 5000, initial: 50, increaseRatio: 2.0, decreaseRatio: 0.95),
         successesBeforeIncrease: 5
     )
 
     /// Aggressive configuration (larger batches, less delay)
     public static let aggressive = ThrottleConfiguration(
-        initialBatchSize: 200,
-        minBatchSize: 50,
-        maxBatchSize: 2000,
-        increaseRatio: 2.0,
-        decreaseRatio: 0.7,
-        minDelayMs: 0,
-        maxDelayMs: 500,
-        initialDelayMs: 0,
-        delayIncreaseRatio: 1.5,
-        delayDecreaseRatio: 0.8,
+        batch: .init(initial: 200, min: 50, max: 2000, increaseRatio: 2.0, decreaseRatio: 0.7),
+        delay: .init(min: 0, max: 500, initial: 0, increaseRatio: 1.5, decreaseRatio: 0.8),
         successesBeforeIncrease: 2
     )
 
     public init(
-        initialBatchSize: Int = 100,
-        minBatchSize: Int = 10,
-        maxBatchSize: Int = 1000,
-        increaseRatio: Double = 1.5,
-        decreaseRatio: Double = 0.5,
-        minDelayMs: Int = 0,
-        maxDelayMs: Int = 1000,
-        initialDelayMs: Int = 0,
-        delayIncreaseRatio: Double = 2.0,
-        delayDecreaseRatio: Double = 0.9,
+        batch: BatchSettings = .default,
+        delay: DelaySettings = .default,
         successesBeforeIncrease: Int = 3
     ) {
-        precondition(minBatchSize > 0, "minBatchSize must be positive")
-        precondition(maxBatchSize >= minBatchSize, "maxBatchSize must be >= minBatchSize")
-        precondition(initialBatchSize >= minBatchSize && initialBatchSize <= maxBatchSize,
-                     "initialBatchSize must be between minBatchSize and maxBatchSize")
-        precondition(increaseRatio > 1.0, "increaseRatio must be > 1.0")
-        precondition(decreaseRatio > 0 && decreaseRatio < 1.0, "decreaseRatio must be between 0 and 1")
-
-        self.initialBatchSize = initialBatchSize
-        self.minBatchSize = minBatchSize
-        self.maxBatchSize = maxBatchSize
-        self.increaseRatio = increaseRatio
-        self.decreaseRatio = decreaseRatio
-        self.minDelayMs = minDelayMs
-        self.maxDelayMs = maxDelayMs
-        self.initialDelayMs = initialDelayMs
-        self.delayIncreaseRatio = delayIncreaseRatio
-        self.delayDecreaseRatio = delayDecreaseRatio
+        self.batch = batch
+        self.delay = delay
         self.successesBeforeIncrease = successesBeforeIncrease
     }
+}
+
+// MARK: - BatchSettings
+
+extension ThrottleConfiguration {
+    /// Batch size configuration
+    ///
+    /// Controls how batch sizes are adjusted based on success/failure.
+    public struct BatchSettings: Sendable, Equatable {
+        /// Initial batch size
+        public let initial: Int
+
+        /// Minimum batch size (won't go below this)
+        public let min: Int
+
+        /// Maximum batch size (won't exceed this)
+        public let max: Int
+
+        /// Batch size increase factor on success (e.g., 1.5 = 50% increase)
+        public let increaseRatio: Double
+
+        /// Batch size decrease factor on failure (e.g., 0.5 = 50% decrease)
+        public let decreaseRatio: Double
+
+        /// Default batch settings
+        public static let `default` = BatchSettings()
+
+        public init(
+            initial: Int = 100,
+            min: Int = 10,
+            max: Int = 1000,
+            increaseRatio: Double = 1.5,
+            decreaseRatio: Double = 0.5
+        ) {
+            precondition(min > 0, "min must be positive")
+            precondition(max >= min, "max must be >= min")
+            precondition(initial >= min && initial <= max,
+                         "initial must be between min and max")
+            precondition(increaseRatio > 1.0, "increaseRatio must be > 1.0")
+            precondition(decreaseRatio > 0 && decreaseRatio < 1.0, "decreaseRatio must be between 0 and 1")
+
+            self.initial = initial
+            self.min = min
+            self.max = max
+            self.increaseRatio = increaseRatio
+            self.decreaseRatio = decreaseRatio
+        }
+    }
+}
+
+// MARK: - DelaySettings
+
+extension ThrottleConfiguration {
+    /// Delay configuration
+    ///
+    /// Controls inter-batch delay adjustments based on success/failure.
+    public struct DelaySettings: Sendable, Equatable {
+        /// Minimum delay between batches (milliseconds)
+        public let min: Int
+
+        /// Maximum delay between batches (milliseconds)
+        public let max: Int
+
+        /// Initial delay (milliseconds)
+        public let initial: Int
+
+        /// Delay increase factor on failure
+        public let increaseRatio: Double
+
+        /// Delay decrease factor on success
+        public let decreaseRatio: Double
+
+        /// Default delay settings (no delay)
+        public static let `default` = DelaySettings()
+
+        public init(
+            min: Int = 0,
+            max: Int = 1000,
+            initial: Int = 0,
+            increaseRatio: Double = 2.0,
+            decreaseRatio: Double = 0.9
+        ) {
+            self.min = min
+            self.max = max
+            self.initial = initial
+            self.increaseRatio = increaseRatio
+            self.decreaseRatio = decreaseRatio
+        }
+    }
+}
+
+// MARK: - Convenience Accessors
+
+extension ThrottleConfiguration {
+    /// Initial batch size (convenience accessor)
+    public var initialBatchSize: Int { batch.initial }
+
+    /// Minimum batch size (convenience accessor)
+    public var minBatchSize: Int { batch.min }
+
+    /// Maximum batch size (convenience accessor)
+    public var maxBatchSize: Int { batch.max }
+
+    /// Batch size increase ratio (convenience accessor)
+    public var increaseRatio: Double { batch.increaseRatio }
+
+    /// Batch size decrease ratio (convenience accessor)
+    public var decreaseRatio: Double { batch.decreaseRatio }
+
+    /// Minimum delay in ms (convenience accessor)
+    public var minDelayMs: Int { delay.min }
+
+    /// Maximum delay in ms (convenience accessor)
+    public var maxDelayMs: Int { delay.max }
+
+    /// Initial delay in ms (convenience accessor)
+    public var initialDelayMs: Int { delay.initial }
+
+    /// Delay increase ratio (convenience accessor)
+    public var delayIncreaseRatio: Double { delay.increaseRatio }
+
+    /// Delay decrease ratio (convenience accessor)
+    public var delayDecreaseRatio: Double { delay.decreaseRatio }
 }
 
 // MARK: - AdaptiveThrottler
@@ -193,7 +260,7 @@ public final class AdaptiveThrottler: Sendable {
         state.withLock { $0.currentDelayMs }
     }
 
-    /// Get current throttler statistics
+    /// Get statistics
     public var statistics: ThrottlerStatistics {
         state.withLock { state in
             ThrottlerStatistics(
@@ -204,18 +271,20 @@ public final class AdaptiveThrottler: Sendable {
                 totalSuccesses: state.totalSuccesses,
                 totalFailures: state.totalFailures,
                 totalItemsProcessed: state.totalItemsProcessed,
-                totalDurationNs: state.totalDurationNs
+                avgItemsPerSecond: state.totalDurationNs > 0
+                    ? Double(state.totalItemsProcessed) / (Double(state.totalDurationNs) / 1_000_000_000)
+                    : 0
             )
         }
     }
 
     // MARK: - Recording Results
 
-    /// Record a successful batch operation
+    /// Record a successful operation
     ///
     /// - Parameters:
-    ///   - itemCount: Number of items processed in the batch
-    ///   - durationNs: Duration of the batch operation in nanoseconds
+    ///   - itemCount: Number of items processed
+    ///   - durationNs: Duration in nanoseconds
     public func recordSuccess(itemCount: Int, durationNs: UInt64) {
         state.withLock { state in
             state.consecutiveSuccesses += 1
@@ -224,20 +293,20 @@ public final class AdaptiveThrottler: Sendable {
             state.totalItemsProcessed += itemCount
             state.totalDurationNs += durationNs
 
-            // Decrease delay on success
-            let newDelay = Double(state.currentDelayMs) * configuration.delayDecreaseRatio
-            state.currentDelayMs = max(configuration.minDelayMs, Int(newDelay))
-
-            // Increase batch size after enough consecutive successes
+            // Increase batch size after consecutive successes
             if state.consecutiveSuccesses >= configuration.successesBeforeIncrease {
-                let newSize = Double(state.currentBatchSize) * configuration.increaseRatio
-                state.currentBatchSize = min(configuration.maxBatchSize, Int(newSize))
-                state.consecutiveSuccesses = 0  // Reset counter
+                let newSize = Int(Double(state.currentBatchSize) * configuration.increaseRatio)
+                state.currentBatchSize = min(newSize, configuration.maxBatchSize)
+                state.consecutiveSuccesses = 0
             }
+
+            // Decrease delay on success
+            let newDelay = Int(Double(state.currentDelayMs) * configuration.delayDecreaseRatio)
+            state.currentDelayMs = max(newDelay, configuration.minDelayMs)
         }
     }
 
-    /// Record a failed batch operation
+    /// Record a failed operation
     ///
     /// - Parameter error: The error that occurred
     public func recordFailure(error: Error) {
@@ -246,55 +315,51 @@ public final class AdaptiveThrottler: Sendable {
             state.consecutiveSuccesses = 0
             state.totalFailures += 1
 
-            // Decrease batch size on failure
-            let newSize = Double(state.currentBatchSize) * configuration.decreaseRatio
-            state.currentBatchSize = max(configuration.minBatchSize, Int(newSize))
+            // Immediately decrease batch size
+            let newSize = Int(Double(state.currentBatchSize) * configuration.decreaseRatio)
+            state.currentBatchSize = max(newSize, configuration.minBatchSize)
 
             // Increase delay on failure
-            let newDelay = Double(max(state.currentDelayMs, 1)) * configuration.delayIncreaseRatio
-            state.currentDelayMs = min(configuration.maxDelayMs, Int(newDelay))
+            let newDelay = Int(Double(max(state.currentDelayMs, 10)) * configuration.delayIncreaseRatio)
+            state.currentDelayMs = min(newDelay, configuration.maxDelayMs)
         }
     }
 
     /// Check if an error is retryable
     ///
     /// - Parameter error: The error to check
-    /// - Returns: True if the operation should be retried
+    /// - Returns: true if the operation should be retried
     public func isRetryable(_ error: Error) -> Bool {
-        // Check for common retryable patterns in error description
-        let description = String(describing: error).lowercased()
-        return description.contains("retry") ||
-               description.contains("timeout") ||
-               description.contains("conflict") ||
-               description.contains("too old") ||
-               description.contains("transaction_too_old") ||
-               description.contains("future_version") ||
-               description.contains("not_committed")
+        // FDB errors have a built-in isRetryable property
+        if let fdbError = error as? FDBError {
+            return fdbError.isRetryable
+        }
+
+        // Generic timeout errors
+        if (error as NSError).domain == NSURLErrorDomain {
+            return true
+        }
+
+        return false
     }
 
-    /// Wait before the next batch
+    /// Wait before next batch
     ///
-    /// Call this between batches to apply throttling delay.
+    /// Waits for the current delay duration.
     public func waitBeforeNextBatch() async throws {
-        let delayMs = state.withLock { $0.currentDelayMs }
+        let delayMs = currentDelayMs
         if delayMs > 0 {
             try await Task.sleep(nanoseconds: UInt64(delayMs) * 1_000_000)
         }
     }
 
-    /// Reset the throttler to initial state
+    /// Reset to initial state
     public func reset() {
         state.withLock { state in
             state.currentBatchSize = configuration.initialBatchSize
             state.currentDelayMs = configuration.initialDelayMs
             state.consecutiveSuccesses = 0
             state.consecutiveFailures = 0
-        }
-    }
-
-    /// Reset statistics while keeping current throttle settings
-    public func resetStatistics() {
-        state.withLock { state in
             state.totalSuccesses = 0
             state.totalFailures = 0
             state.totalItemsProcessed = 0
@@ -303,65 +368,45 @@ public final class AdaptiveThrottler: Sendable {
     }
 }
 
-// MARK: - ThrottlerStatistics
+// MARK: - Statistics
 
-/// Statistics about throttler performance
+/// Throttler statistics
 public struct ThrottlerStatistics: Sendable {
-    /// Current batch size
     public let currentBatchSize: Int
-
-    /// Current delay in milliseconds
     public let currentDelayMs: Int
-
-    /// Number of consecutive successes
     public let consecutiveSuccesses: Int
-
-    /// Number of consecutive failures
     public let consecutiveFailures: Int
-
-    /// Total number of successful batches
     public let totalSuccesses: Int
-
-    /// Total number of failed batches
     public let totalFailures: Int
-
-    /// Total number of items processed
     public let totalItemsProcessed: Int
+    public let avgItemsPerSecond: Double
 
-    /// Total duration in nanoseconds
-    public let totalDurationNs: UInt64
-
-    /// Success rate (0.0 - 1.0)
     public var successRate: Double {
         let total = totalSuccesses + totalFailures
-        guard total > 0 else { return 0.0 }
-        return Double(totalSuccesses) / Double(total)
-    }
-
-    /// Average items per successful batch
-    public var averageItemsPerBatch: Double {
-        guard totalSuccesses > 0 else { return 0.0 }
-        return Double(totalItemsProcessed) / Double(totalSuccesses)
-    }
-
-    /// Average duration per batch in milliseconds
-    public var averageDurationMs: Double {
-        let totalBatches = totalSuccesses + totalFailures
-        guard totalBatches > 0 else { return 0.0 }
-        return Double(totalDurationNs) / Double(totalBatches) / 1_000_000
-    }
-
-    /// Throughput in items per second
-    public var throughputPerSecond: Double {
-        guard totalDurationNs > 0 else { return 0.0 }
-        return Double(totalItemsProcessed) / (Double(totalDurationNs) / 1_000_000_000)
+        return total > 0 ? Double(totalSuccesses) / Double(total) : 0
     }
 }
 
-// MARK: - ThrottledOperation
+// MARK: - ThrottledBatchExecutor
 
-/// A convenience wrapper for running throttled operations
-public struct ThrottledOperation<T: Sendable>: Sendable {
+/// Executor for throttled batch operations
+///
+/// Wraps an operation with automatic throttling and retry logic.
+///
+/// **Usage**:
+/// ```swift
+/// let throttler = AdaptiveThrottler()
+/// let executor = ThrottledBatchExecutor(throttler: throttler) { batchSize in
+///     let items = try await fetchItems(limit: batchSize)
+///     return (result: items, itemCount: items.count)
+/// }
+///
+/// while !isDone {
+///     let items = try await executor.execute()
+///     // Process items
+/// }
+/// ```
+public struct ThrottledBatchExecutor<T: Sendable>: Sendable {
     private let throttler: AdaptiveThrottler
     private let operation: @Sendable (Int) async throws -> (result: T, itemCount: Int)
 
@@ -386,29 +431,73 @@ public struct ThrottledOperation<T: Sendable>: Sendable {
 
             do {
                 let (result, itemCount) = try await operation(batchSize)
-                let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
-                throttler.recordSuccess(itemCount: itemCount, durationNs: duration)
+                let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                throttler.recordSuccess(itemCount: itemCount, durationNs: elapsed)
+
+                // Wait before next batch
+                try await throttler.waitBeforeNextBatch()
+
                 return result
             } catch {
                 throttler.recordFailure(error: error)
                 lastError = error
 
-                if !throttler.isRetryable(error) || attempt >= maxRetries {
+                if !throttler.isRetryable(error) || attempt == maxRetries {
                     throw error
                 }
 
-                // Wait before retry
+                // Wait before retry (exponential backoff built into delay)
                 try await throttler.waitBeforeNextBatch()
             }
         }
 
-        throw lastError ?? ThrottleError.exhaustedRetries
+        throw lastError ?? ThrottlerError.maxRetriesExceeded
     }
 }
 
-// MARK: - ThrottleError
+// MARK: - ThrottlerError
 
-/// Errors from throttled operations
-public enum ThrottleError: Error, Sendable {
-    case exhaustedRetries
+/// Errors from throttling operations
+public enum ThrottlerError: Error {
+    case maxRetriesExceeded
+}
+
+// MARK: - CustomStringConvertible
+
+extension ThrottleConfiguration: CustomStringConvertible {
+    public var description: String {
+        if self == .default {
+            return "ThrottleConfiguration.default"
+        }
+
+        var parts: [String] = []
+
+        if batch != .default {
+            parts.append("batch: \(batch)")
+        }
+        if delay != .default {
+            parts.append("delay: \(delay)")
+        }
+        if successesBeforeIncrease != 3 {
+            parts.append("successesBeforeIncrease: \(successesBeforeIncrease)")
+        }
+
+        if parts.isEmpty {
+            return "ThrottleConfiguration.default"
+        }
+
+        return "ThrottleConfiguration(\(parts.joined(separator: ", ")))"
+    }
+}
+
+extension ThrottleConfiguration.BatchSettings: CustomStringConvertible {
+    public var description: String {
+        "BatchSettings(initial: \(initial), min: \(min), max: \(max))"
+    }
+}
+
+extension ThrottleConfiguration.DelaySettings: CustomStringConvertible {
+    public var description: String {
+        "DelaySettings(min: \(min), max: \(max), initial: \(initial))"
+    }
 }

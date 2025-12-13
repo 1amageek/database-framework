@@ -26,10 +26,10 @@ import Core
 /// ```swift
 /// try await context.withTransaction { tx in
 ///     // Transactional read - adds read conflict
-///     let user = try await tx.get(User.self, id: userId)
+///     let user = try await tx.get(User.self, id: userID)
 ///
 ///     // Snapshot read - no conflict, may be stale
-///     let stats = try await tx.get(Stats.self, id: statsId, snapshot: true)
+///     let stats = try await tx.get(Stats.self, id: statsID, snapshot: true)
 ///
 ///     // Write - adds write conflict
 ///     try await tx.set(updatedUser)
@@ -183,7 +183,7 @@ public final class TransactionContext: @unchecked Sendable {
     /// ```swift
     /// var binding = DirectoryPath<Order>()
     /// binding.set(\.tenantID, to: "tenant_123")
-    /// let order = try await tx.get(Order.self, id: orderId, partition: path)
+    /// let order = try await tx.get(Order.self, id: orderID, partition: path)
     /// ```
     ///
     /// - Parameters:

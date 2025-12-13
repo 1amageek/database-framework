@@ -207,8 +207,21 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     }
 
     /// Invert score for descending order storage
+    ///
+    /// Uses UInt64 conversion to handle the full Int64 range without overflow:
+    /// 1. Convert score to UInt64 (preserving bit pattern)
+    /// 2. Subtract from UInt64.max (higher scores → smaller values)
+    /// 3. Convert back to Int64 (preserving bit pattern)
+    ///
+    /// FDB tuple encoding preserves signed Int64 order, so this ensures:
+    /// - score 100  → -101 (smallest in signed order)
+    /// - score -50  → 49
+    /// - score -100 → 99 (largest in signed order)
+    /// This gives correct descending order: 100, -50, -100
     private func invertScore(_ score: Int64) -> Int64 {
-        return Int64.max - score
+        let unsigned = UInt64(bitPattern: score)
+        let inverted = UInt64.max - unsigned
+        return Int64(bitPattern: inverted)
     }
 
     /// Extract score from item (type-safe)
@@ -505,8 +518,17 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             prefixElements.append(contentsOf: g)
         }
 
+        // Range: All keys with prefix pack([windowId, grouping...])
+        // Use FDB.strinc on prefix bytes to get exclusive upper bound
+        // This includes ALL scores (including 0, which has invertedScore=Int64.max)
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd = windowSubspace.pack(Tuple(prefixElements + [Int64.max]))
+        let rangeEnd: FDB.Bytes
+        do {
+            rangeEnd = try FDB.strinc(rangeStart)
+        } catch {
+            // Fallback: append 0xFF (should never happen in practice)
+            rangeEnd = rangeStart + [0xFF]
+        }
 
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(rangeStart),
@@ -531,7 +553,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
                 continue
             }
 
-            let score = Int64.max - invertedScore
+            // Reverse the inversion (same formula is self-inverse)
+            let unsigned = UInt64(bitPattern: invertedScore)
+            let score = Int64(bitPattern: UInt64.max - unsigned)
 
             // Extract primary key (remaining elements)
             var pkElements: [any TupleElement] = []

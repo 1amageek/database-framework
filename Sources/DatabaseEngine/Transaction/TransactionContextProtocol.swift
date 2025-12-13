@@ -26,7 +26,7 @@ import Core
 /// ```swift
 /// try await store.withTransaction(security: securityContext) { tx in
 ///     // GET security evaluated here
-///     let user = try await tx.get(User.self, id: userId)
+///     let user = try await tx.get(User.self, id: userID)
 ///
 ///     // CREATE/UPDATE security evaluated here
 ///     try await tx.set(updatedUser)

@@ -1112,3 +1112,384 @@ struct ToManyRelationshipIndexUpdateTests {
         return exists
     }
 }
+
+// MARK: - Relationship Edge Cases Tests
+
+@Suite("Relationship Edge Cases Tests", .serialized)
+struct RelationshipEdgeCasesTests {
+
+    // MARK: - Helper Methods
+
+    private func setupContainer() async throws -> FDBContainer {
+        try await FDBTestEnvironment.shared.ensureInitialized()
+        let database = try FDBClient.openDatabase()
+
+        let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
+
+        let container = FDBContainer(
+            database: database,
+            schema: schema,
+            security: .disabled
+        )
+
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
+    }
+
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
+    }
+
+    @Test("FK can reference non-existent related item")
+    func testFKToNonExistentItem() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let orderId = uniqueID("O-orphan")
+        let nonExistentCustomerId = uniqueID("C-nonexistent")
+
+        // Create order with FK to non-existent customer
+        // This should succeed - FK integrity is not enforced by default
+        var order = RTestOrder(total: 99.99)
+        order.id = orderId
+        order.customerID = nonExistentCustomerId
+        context.insert(order)
+        try await context.save()
+
+        // Verify order was saved
+        let loadedOrder = try await context.model(for: orderId, as: RTestOrder.self)
+        #expect(loadedOrder != nil)
+        #expect(loadedOrder?.customerID == nonExistentCustomerId)
+
+        // related() should return nil for non-existent customer
+        let relatedCustomer = try await context.related(loadedOrder!, \.customerID, as: RTestCustomer.self)
+        #expect(relatedCustomer == nil)
+    }
+
+    @Test("To-Many FK can contain non-existent IDs")
+    func testToManyFKWithNonExistentIds() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-orphan")
+        let existingOrderId = uniqueID("O-existing")
+        let nonExistentOrderId1 = uniqueID("O-nonexistent")
+        let nonExistentOrderId2 = uniqueID("O-nonexistent")
+
+        // Create only one order
+        var existingOrder = RTestOrder(total: 100.00)
+        existingOrder.id = existingOrderId
+        context.insert(existingOrder)
+        try await context.save()
+
+        // Create customer with mix of existing and non-existing order IDs
+        var customer = RTestCustomer(name: "Alice")
+        customer.id = customerId
+        customer.orderIDs = [existingOrderId, nonExistentOrderId1, nonExistentOrderId2]
+        context.insert(customer)
+        try await context.save()
+
+        // Verify customer was saved with all IDs
+        let loadedCustomer = try await context.model(for: customerId, as: RTestCustomer.self)
+        #expect(loadedCustomer != nil)
+        #expect(loadedCustomer?.orderIDs.count == 3)
+
+        // related() should only return existing order
+        let relatedOrders = try await context.related(loadedCustomer!, \.orderIDs, as: RTestOrder.self)
+        #expect(relatedOrders.count == 1)
+        #expect(relatedOrders.first?.id == existingOrderId)
+    }
+
+    @Test("Update FK to nil clears relationship")
+    func testUpdateFKToNil() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-fknull")
+        let orderId = uniqueID("O-fknull")
+
+        // Create customer
+        var customer = RTestCustomer(name: "Bob")
+        customer.id = customerId
+        context.insert(customer)
+        try await context.save()
+
+        // Create order with relationship
+        var order = RTestOrder(total: 150.00)
+        order.id = orderId
+        order.customerID = customerId
+        context.insert(order)
+        try await context.save()
+
+        // Verify relationship exists
+        let loadedOrder1 = try await context.model(for: orderId, as: RTestOrder.self)
+        #expect(loadedOrder1?.customerID == customerId)
+
+        // Update FK to nil
+        order.customerID = nil
+        context.insert(order)
+        try await context.save()
+
+        // Verify FK is now nil
+        let loadedOrder2 = try await context.model(for: orderId, as: RTestOrder.self)
+        #expect(loadedOrder2?.customerID == nil)
+
+        // related() should return nil
+        let relatedCustomer = try await context.related(loadedOrder2!, \.customerID, as: RTestCustomer.self)
+        #expect(relatedCustomer == nil)
+    }
+
+    @Test("Clear To-Many FK array clears all relationships")
+    func testClearToManyFKArray() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-clear")
+        let orderId1 = uniqueID("O-clear")
+        let orderId2 = uniqueID("O-clear")
+
+        // Create orders
+        var order1 = RTestOrder(total: 100.00)
+        order1.id = orderId1
+        var order2 = RTestOrder(total: 200.00)
+        order2.id = orderId2
+        context.insert(order1)
+        context.insert(order2)
+        try await context.save()
+
+        // Create customer with orders
+        var customer = RTestCustomer(name: "Charlie")
+        customer.id = customerId
+        customer.orderIDs = [orderId1, orderId2]
+        context.insert(customer)
+        try await context.save()
+
+        // Verify initial state
+        let loadedCustomer1 = try await context.model(for: customerId, as: RTestCustomer.self)
+        #expect(loadedCustomer1?.orderIDs.count == 2)
+
+        // Clear FK array
+        customer.orderIDs = []
+        context.insert(customer)
+        try await context.save()
+
+        // Verify array is empty
+        let loadedCustomer2 = try await context.model(for: customerId, as: RTestCustomer.self)
+        #expect(loadedCustomer2?.orderIDs.isEmpty == true)
+
+        // related() should return empty array
+        let relatedOrders = try await context.related(loadedCustomer2!, \.orderIDs, as: RTestOrder.self)
+        #expect(relatedOrders.isEmpty)
+    }
+
+    @Test("Duplicate IDs in To-Many FK array are handled")
+    func testDuplicateIdsInToManyFK() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-dup")
+        let orderId = uniqueID("O-dup")
+
+        // Create order
+        var order = RTestOrder(total: 100.00)
+        order.id = orderId
+        context.insert(order)
+        try await context.save()
+
+        // Create customer with duplicate order IDs
+        var customer = RTestCustomer(name: "Diana")
+        customer.id = customerId
+        customer.orderIDs = [orderId, orderId, orderId]  // Duplicates
+        context.insert(customer)
+        try await context.save()
+
+        // Verify customer was saved (duplicates allowed in array)
+        let loadedCustomer = try await context.model(for: customerId, as: RTestCustomer.self)
+        #expect(loadedCustomer != nil)
+
+        // related() should return the order (deduplicated)
+        let relatedOrders = try await context.related(loadedCustomer!, \.orderIDs, as: RTestOrder.self)
+        // Implementation may deduplicate or not - just verify at least one is returned
+        #expect(!relatedOrders.isEmpty)
+    }
+
+    @Test("Large To-Many FK array is handled")
+    func testLargeToManyFKArray() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-large")
+
+        // Create 50 orders
+        var orderIds: [String] = []
+        for i in 1...50 {
+            let orderId = uniqueID("O-large-\(i)")
+            orderIds.append(orderId)
+            var order = RTestOrder(total: Double(i * 10))
+            order.id = orderId
+            context.insert(order)
+        }
+        try await context.save()
+
+        // Create customer with all 50 order IDs
+        var customer = RTestCustomer(name: "Large Customer")
+        customer.id = customerId
+        customer.orderIDs = orderIds
+        context.insert(customer)
+        try await context.save()
+
+        // Verify customer was saved
+        let loadedCustomer = try await context.model(for: customerId, as: RTestCustomer.self)
+        #expect(loadedCustomer?.orderIDs.count == 50)
+
+        // related() should return all 50 orders
+        let relatedOrders = try await context.related(loadedCustomer!, \.orderIDs, as: RTestOrder.self)
+        #expect(relatedOrders.count == 50)
+    }
+}
+
+// MARK: - Relationship Consistency Tests
+
+@Suite("Relationship Consistency Tests", .serialized)
+struct RelationshipConsistencyTests {
+
+    private func setupContainer() async throws -> FDBContainer {
+        try await FDBTestEnvironment.shared.ensureInitialized()
+        let database = try FDBClient.openDatabase()
+
+        let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
+
+        let container = FDBContainer(
+            database: database,
+            schema: schema,
+            security: .disabled
+        )
+
+        try await enableAllIndexes(container: container, for: RTestOrder.self)
+        try await enableAllIndexes(container: container, for: RTestCustomer.self)
+
+        return container
+    }
+
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
+    }
+
+    @Test("Index and data remain consistent after multiple updates")
+    func testIndexDataConsistencyAfterUpdates() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-cons")
+        let orderId = uniqueID("O-cons")
+
+        // Create customer
+        var customer = RTestCustomer(name: "Diana")
+        customer.id = customerId
+        context.insert(customer)
+        try await context.save()
+
+        // Create order with FK
+        var order = RTestOrder(total: 100.00)
+        order.id = orderId
+        order.customerID = customerId
+        context.insert(order)
+        try await context.save()
+
+        // Perform multiple updates
+        for i in 1...5 {
+            order.total = Double(i * 100)
+            order.status = "status-\(i)"
+            context.insert(order)
+            try await context.save()
+        }
+
+        // Verify data consistency
+        let loadedOrder = try await context.model(for: orderId, as: RTestOrder.self)
+        #expect(loadedOrder?.customerID == customerId)
+        #expect(loadedOrder?.total == 500.0)
+        #expect(loadedOrder?.status == "status-5")
+
+        // Verify relationship still works
+        let relatedCustomer = try await context.related(loadedOrder!, \.customerID, as: RTestCustomer.self)
+        #expect(relatedCustomer?.id == customerId)
+    }
+
+    @Test("Index updated correctly when item is re-inserted with same ID")
+    func testReinsertWithSameId() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customer1Id = uniqueID("C-reins1")
+        let customer2Id = uniqueID("C-reins2")
+        let orderId = uniqueID("O-reins")
+
+        // Create two customers
+        var customer1 = RTestCustomer(name: "Eve")
+        customer1.id = customer1Id
+        var customer2 = RTestCustomer(name: "Frank")
+        customer2.id = customer2Id
+        context.insert(customer1)
+        context.insert(customer2)
+        try await context.save()
+
+        // Create order with FK to customer1
+        var order = RTestOrder(total: 100.00)
+        order.id = orderId
+        order.customerID = customer1Id
+        context.insert(order)
+        try await context.save()
+
+        // Verify initial relationship
+        let loadedOrder1 = try await context.model(for: orderId, as: RTestOrder.self)
+        let related1 = try await context.related(loadedOrder1!, \.customerID, as: RTestCustomer.self)
+        #expect(related1?.id == customer1Id)
+
+        // Re-insert with different FK (simulating update)
+        order.customerID = customer2Id
+        context.insert(order)
+        try await context.save()
+
+        // Verify updated relationship
+        let loadedOrder2 = try await context.model(for: orderId, as: RTestOrder.self)
+        let related2 = try await context.related(loadedOrder2!, \.customerID, as: RTestCustomer.self)
+        #expect(related2?.id == customer2Id)
+    }
+
+    @Test("Delete related item leaves orphan FK")
+    func testDeleteRelatedItemLeavesOrphanFK() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let customerId = uniqueID("C-orphan")
+        let orderId = uniqueID("O-orphan")
+
+        // Create customer
+        var customer = RTestCustomer(name: "Grace")
+        customer.id = customerId
+        context.insert(customer)
+        try await context.save()
+
+        // Create order with FK
+        var order = RTestOrder(total: 100.00)
+        order.id = orderId
+        order.customerID = customerId
+        context.insert(order)
+        try await context.save()
+
+        // Delete customer (leaving orphan FK in order)
+        context.delete(customer)
+        try await context.save()
+
+        // Verify order still exists with orphan FK
+        let loadedOrder = try await context.model(for: orderId, as: RTestOrder.self)
+        #expect(loadedOrder != nil)
+        #expect(loadedOrder?.customerID == customerId)  // FK still points to deleted customer
+
+        // related() should return nil (customer no longer exists)
+        let relatedCustomer = try await context.related(loadedOrder!, \.customerID, as: RTestCustomer.self)
+        #expect(relatedCustomer == nil)
+    }
+}
