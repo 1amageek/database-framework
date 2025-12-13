@@ -97,6 +97,8 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `IndexStateManager` | Manages index lifecycle states (disabled/writeOnly/readable) |
 | `ItemStorage` | Envelope-based storage for items (handles large values, blobs) |
 | `ItemEnvelope` | Storage format wrapper with magic number validation |
+| `DirectoryPath<T>` | Type-safe field values for dynamic directory resolution |
+| `AnyDirectoryPath` | Type-erased wrapper for DirectoryPath |
 
 ### Responsibility Separation
 
@@ -122,11 +124,59 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ FDBContext (User-Facing API)                                            │
-│   - insert(), delete(), fetch()                                         │
-│   - save() → orchestrates via DataStore.withRawTransaction              │
+│   - insert(), delete() → queue changes locally                          │
+│   - save() → persist all queued changes                                 │
+│   - fetch() → returns ONLY persisted data (no pending mixing)           │
 │   - Change tracking (insertedModels, deletedModels)                     │
 │   ❌ Does NOT access database directly                                   │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### FDBContext Semantics
+
+**Core Operations**:
+```swift
+let context = container.newContext()
+
+// insert() - queue model for insertion (not persisted yet)
+context.insert(model)
+
+// delete() - queue model for deletion (not persisted yet)
+context.delete(model)
+
+// save() - persist all queued changes atomically
+try await context.save()
+
+// fetch() - returns ONLY persisted data (ignores pending changes)
+let results = try await context.fetch(MyType.self).execute()
+```
+
+**Design Principle**: `fetch()` returns only persisted data. Pending inserts/deletes are NOT mixed into fetch results.
+
+**Rationale**:
+- Clean semantics: fetch always reflects database state
+- No complex offset/limit issues with pending mixing
+- No sort order conflicts between pending and persisted
+- Predictable behavior for cursor-based pagination
+
+**Usage Pattern**:
+```swift
+let context = container.newContext()
+
+// Insert a model
+var user = User(name: "Alice")
+context.insert(user)
+
+// fetch() does NOT include the pending insert
+let users = try await context.fetch(User.self).execute()
+// users.isEmpty == true (assuming empty database)
+
+// After save(), the model is persisted
+try await context.save()
+
+// Now fetch() returns the persisted model
+let usersAfterSave = try await context.fetch(User.self).execute()
+// usersAfterSave.count == 1
 ```
 
 ### Data Operation Flow (FDBContext.save)
@@ -335,6 +385,135 @@ if let data = try await tx.getValue(for: key) {
 | `TransactionRunner` | `Transaction/TransactionRunner.swift` | Retry logic with exponential backoff |
 | `CommitHook` | `Transaction/CommitHook.swift` | Synchronous callbacks before commit |
 | `AsyncCommitHook` | `Transaction/AsyncCommitHook.swift` | Asynchronous callbacks before commit |
+
+### Dynamic Directories (Partitioned Data)
+
+Dynamic directories enable multi-tenant and partitioned data patterns by including field values in the directory path.
+
+**Key Components**:
+
+| Type | Description |
+|------|-------------|
+| `DirectoryPath<T>` | Type-safe struct holding field values for directory resolution |
+| `AnyDirectoryPath` | Type-erased version for use when generic type is unknown |
+| `DirectoryPathError` | Error type for directory resolution failures |
+| `Field<T>` | Directory component that references a model field |
+| `Path` | Static directory component |
+
+**Model Definition**:
+```swift
+@Persistable
+struct TenantOrder {
+    // Dynamic directory: includes tenantID field value in path
+    #Directory<TenantOrder>("app", Field(\.tenantID), "orders")
+
+    var id: String = UUID().uuidString
+    var tenantID: String = ""  // Partition key
+    var status: String = ""
+    var total: Double = 0.0
+}
+```
+
+**Storage Layout**:
+```
+[fdb]/app/[tenantID]/orders/R/TenantOrder/[id] → ItemEnvelope
+```
+
+**Query API (Fluent)**:
+```swift
+// Query with partition - required for dynamic directory types
+let orders = try await context.fetch(TenantOrder.self)
+    .partition(\.tenantID, equals: "tenant_123")
+    .where(\.status == "pending")
+    .execute()
+
+// Multiple partition fields
+let data = try await context.fetch(RegionalData.self)
+    .partition(\.region, equals: "us-west")
+    .partition(\.year, equals: 2024)
+    .execute()
+```
+
+**DirectoryPath API (Manual)**:
+```swift
+// Create DirectoryPath manually
+var path = DirectoryPath<TenantOrder>()
+path.set(\.tenantID, to: "tenant_123")
+
+// Use with FDBContainer
+let subspace = try await container.resolveDirectory(for: TenantOrder.self, path: path)
+let store = try await container.store(for: TenantOrder.self, path: path)
+
+// Use with model() for single item fetch
+let order = try await context.model(for: orderID, as: TenantOrder.self, partition: path)
+
+// Create from existing model instance
+let pathFromModel = DirectoryPath<TenantOrder>.from(existingOrder)
+```
+
+**API Design**:
+```swift
+// FDBContainer - unified API with `path:` parameter
+public func resolveDirectory<T: Persistable>(
+    for type: T.Type,
+    path: DirectoryPath<T> = DirectoryPath()
+) async throws -> Subspace
+
+public func resolveDirectory(
+    for type: any Persistable.Type,
+    path: AnyDirectoryPath? = nil
+) async throws -> Subspace
+
+public func store<T: Persistable>(
+    for type: T.Type,
+    path: DirectoryPath<T> = DirectoryPath()
+) async throws -> any DataStore
+
+public func store(
+    for type: any Persistable.Type,
+    path: AnyDirectoryPath? = nil
+) async throws -> any DataStore
+```
+
+**Static vs Dynamic Directories**:
+
+| Type | directoryPathComponents | hasDynamicDirectory |
+|------|------------------------|---------------------|
+| Static | `["app", "users"]` | `false` |
+| Dynamic | `["app", Field(\.tenantID), "orders"]` | `true` |
+
+**Error Handling**:
+```swift
+// Querying dynamic directory without partition throws error
+do {
+    let orders = try await context.fetch(TenantOrder.self).execute()
+} catch DirectoryPathError.dynamicFieldsRequired(let typeName, let fields) {
+    // "Type 'TenantOrder' requires field values for directory resolution: tenantID"
+}
+
+// Missing required partition field
+do {
+    var path = DirectoryPath<TenantOrder>()
+    try path.validate()  // tenantID not set
+} catch DirectoryPathError.missingFields(let fields) {
+    // "Missing directory field values: tenantID"
+}
+```
+
+**TransactionContext Support**:
+```swift
+try await container.database.withTransaction { transaction in
+    let txContext = TransactionContext(transaction: transaction, container: container)
+
+    // set() extracts partition from model automatically
+    try await txContext.set(order)
+
+    // get() requires explicit partition
+    var path = DirectoryPath<TenantOrder>()
+    path.set(\.tenantID, to: "tenant_123")
+    let fetched = try await txContext.get(TenantOrder.self, id: orderID, partition: path)
+}
+```
 
 ### Polymorphable (Union Record Type)
 

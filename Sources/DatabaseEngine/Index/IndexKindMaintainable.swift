@@ -22,7 +22,7 @@ import Core
 /// ```
 ///
 /// **How it works**:
-/// 1. User defines `#Index<User>([\.email], type: ScalarIndexKind())` in model
+/// 1. User defines `#Index([\.email], type: ScalarIndexKind())` in model
 /// 2. `@Persistable` macro generates `IndexDescriptor` with the `IndexKind`
 /// 3. At runtime, system casts `IndexKind` to `IndexKindMaintainable`
 /// 4. `makeIndexMaintainer()` creates the appropriate `IndexMaintainer`

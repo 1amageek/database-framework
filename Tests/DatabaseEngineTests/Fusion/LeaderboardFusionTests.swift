@@ -21,13 +21,13 @@ struct LeaderboardTestScore {
     var score: Int64 = 0
     var region: String = "global"
 
-    #Index<LeaderboardTestScore>(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+    #Index(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
         scoreField: \.score,
         window: .daily,
         windowCount: 7
     ))
 
-    #Index<LeaderboardTestScore>(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
+    #Index(TimeWindowLeaderboardIndexKind<LeaderboardTestScore, Int64>(
         scoreField: \.score,
         groupBy: [\.region],
         window: .daily,

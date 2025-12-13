@@ -21,8 +21,8 @@ struct EfficiencyTestProduct {
     var name: String = ""
     var price: Int = 0
 
-    #Index<EfficiencyTestProduct>(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.sku]))
-    #Index<EfficiencyTestProduct>(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.price]))
+    #Index(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.sku]))
+    #Index(ScalarIndexKind<EfficiencyTestProduct>(fields: [\.price]))
 }
 
 // MARK: - Tests

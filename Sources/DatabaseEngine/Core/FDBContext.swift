@@ -133,13 +133,22 @@ public final class FDBContext: Sendable {
         }
 
         private static func packID(_ id: any Sendable) -> [UInt8] {
+            // Tuple types (compound keys)
             if let tuple = id as? Tuple {
                 return tuple.pack()
             }
+            // TupleElement types (String, Int, UUID, etc.)
             if let element = id as? any TupleElement {
                 return Tuple([element]).pack()
             }
-            return Array(String(describing: id).utf8)
+            // UUID (common ID type, not TupleElement by default)
+            if let uuid = id as? UUID {
+                return Tuple([uuid.uuidString]).pack()
+            }
+            // Fallback: Use string representation
+            // WARNING: This may cause inconsistencies for custom types
+            // Consider making your ID type conform to TupleElement
+            return Tuple([String(describing: id)]).pack()
         }
     }
 
@@ -380,6 +389,9 @@ public final class FDBContext: Sendable {
 
     /// Fetch models matching a query (internal use)
     ///
+    /// Returns only persisted data. Pending changes (inserts/deletes) are not included.
+    /// Use `pendingInserts()` and `pendingDeletes()` to access uncommitted changes.
+    ///
     /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
     /// the query must include partition binding via `.partition()`.
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
@@ -394,13 +406,6 @@ public final class FDBContext: Sendable {
             try binding.validate()
         }
 
-        let (pendingInserts, pendingDeleteKeys) = stateLock.withLock { state -> ([T], Set<ModelKey>) in
-            let inserts = state.insertedModels.values.compactMap { $0 as? T }
-            let deleteKeys = state.deletedModels.keys
-                .filter { $0.persistableType == T.persistableType }
-            return (inserts, Set(deleteKeys))
-        }
-
         // Get store for this type (partition-aware if needed)
         let store: any DataStore
         if let binding = query.partitionBinding {
@@ -409,50 +414,12 @@ public final class FDBContext: Sendable {
             store = try await container.store(for: T.self)
         }
 
-        var results = try await store.fetch(query)
-
-        // Exclude models pending deletion
-        if !pendingDeleteKeys.isEmpty {
-            results = results.filter { model in
-                !pendingDeleteKeys.contains(ModelKey(model))
-            }
-        }
-
-        // Include models pending insertion (only from same partition and matching predicates)
-        if !pendingInserts.isEmpty {
-            let existingKeys = Set(results.map { ModelKey($0) })
-            for model in pendingInserts {
-                // For dynamic directories, filter by partition value
-                if T.hasDynamicDirectory, let binding = query.partitionBinding {
-                    // Check if model's partition matches query's partition
-                    let modelBinding = DirectoryPath<T>.from(model)
-                    let modelPath = modelBinding.resolve()
-                    let queryPath = binding.resolve()
-                    if modelPath != queryPath {
-                        continue
-                    }
-                }
-
-                // Evaluate query predicates against pending insert
-                if !query.predicates.isEmpty {
-                    let matchesPredicates = query.predicates.allSatisfy { predicate in
-                        evaluatePredicate(predicate, on: model)
-                    }
-                    if !matchesPredicates {
-                        continue
-                    }
-                }
-
-                if !existingKeys.contains(ModelKey(model)) {
-                    results.append(model)
-                }
-            }
-        }
-
-        return results
+        return try await store.fetch(query)
     }
 
     /// Fetch count of models matching a query (internal use)
+    ///
+    /// Returns count of persisted data only. Pending changes are not included.
     ///
     /// For types with dynamic directories, the query must include partition binding.
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
@@ -467,25 +434,14 @@ public final class FDBContext: Sendable {
             try binding.validate()
         }
 
-        let (hasInserts, hasDeletes) = stateLock.withLock { state -> (Bool, Bool) in
-            let inserts = state.insertedModels.values.contains { $0 is T }
-            let deletes = state.deletedModels.keys.contains { $0.persistableType == T.persistableType }
-            return (inserts, deletes)
+        // Get store (partition-aware if needed)
+        let store: any DataStore
+        if let binding = query.partitionBinding {
+            store = try await container.store(for: T.self, path: binding)
+        } else {
+            store = try await container.store(for: T.self)
         }
-
-        if !hasInserts && !hasDeletes {
-            // Get store (partition-aware if needed)
-            let store: any DataStore
-            if let binding = query.partitionBinding {
-                store = try await container.store(for: T.self, path: binding)
-            } else {
-                store = try await container.store(for: T.self)
-            }
-            return try await store.fetchCount(query)
-        }
-
-        let results = try await fetch(query)
-        return results.count
+        return try await store.fetchCount(query)
     }
 
     // MARK: - Get by ID
@@ -803,96 +759,6 @@ public final class FDBContext: Sendable {
         return AnyDirectoryPath(fieldValues: bindings, type: modelType)
     }
 
-    // MARK: - Predicate Evaluation
-
-    /// Evaluate a predicate against a model (for pending insert filtering)
-    ///
-    /// This is used to filter pending inserts by query predicates during fetch.
-    private func evaluatePredicate<T: Persistable>(_ predicate: Predicate<T>, on model: T) -> Bool {
-        switch predicate {
-        case .comparison(let comparison):
-            return evaluateFieldComparison(model: model, comparison: comparison)
-        case .and(let predicates):
-            return predicates.allSatisfy { evaluatePredicate($0, on: model) }
-        case .or(let predicates):
-            return predicates.contains { evaluatePredicate($0, on: model) }
-        case .not(let inner):
-            return !evaluatePredicate(inner, on: model)
-        case .true:
-            return true
-        case .false:
-            return false
-        }
-    }
-
-    /// Evaluate a field comparison against a model
-    private func evaluateFieldComparison<T: Persistable>(
-        model: T,
-        comparison: FieldComparison<T>
-    ) -> Bool {
-        let fieldName = comparison.fieldName
-        let expectedValue = comparison.value
-
-        // Handle nil checks separately
-        switch comparison.op {
-        case .isNil:
-            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
-            return fieldValues == nil || fieldValues?.isEmpty == true
-        case .isNotNil:
-            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
-            return fieldValues != nil && fieldValues?.isEmpty == false
-        default:
-            break
-        }
-
-        guard let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName),
-              let rawFieldValue = fieldValues.first else {
-            return false
-        }
-
-        // Convert model field value to FieldValue for type-safe comparison
-        let modelFieldValue = FieldValue(rawFieldValue) ?? .null
-
-        switch comparison.op {
-        case .equal:
-            return modelFieldValue.isEqual(to: expectedValue)
-        case .notEqual:
-            return !modelFieldValue.isEqual(to: expectedValue)
-        case .lessThan:
-            return modelFieldValue.isLessThan(expectedValue)
-        case .lessThanOrEqual:
-            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
-        case .greaterThan:
-            return expectedValue.isLessThan(modelFieldValue)
-        case .greaterThanOrEqual:
-            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
-        case .contains:
-            if let fieldStr = rawFieldValue as? String, let substr = expectedValue.stringValue {
-                return fieldStr.contains(substr)
-            }
-            return false
-        case .hasPrefix:
-            if let fieldStr = rawFieldValue as? String, let prefix = expectedValue.stringValue {
-                return fieldStr.hasPrefix(prefix)
-            }
-            return false
-        case .hasSuffix:
-            if let fieldStr = rawFieldValue as? String, let suffix = expectedValue.stringValue {
-                return fieldStr.hasSuffix(suffix)
-            }
-            return false
-        case .in:
-            // Check if model value is in the expected array
-            if let arrayValues = expectedValue.arrayValue {
-                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
-            }
-            return false
-        case .isNil, .isNotNil:
-            // Already handled above
-            return false
-        }
-    }
-
     // MARK: - Polymorphable Dual-Write Support
 
     /// Process dual-writes for Polymorphable types
@@ -1036,6 +902,12 @@ public final class FDBContext: Sendable {
                         state.autosaveEnabled = false
                     }
                     self.logger.warning("Autosave disabled due to failure. Call save() manually or re-enable autosave.")
+                }
+            } else {
+                // Reset flag when no save occurred (no changes or autosave disabled)
+                // This allows future changes to schedule autosave again
+                self.stateLock.withLock { state in
+                    state.autosaveScheduled = false
                 }
             }
         }

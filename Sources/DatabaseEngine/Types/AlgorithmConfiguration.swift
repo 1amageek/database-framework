@@ -23,7 +23,7 @@
 /// @Persistable
 /// struct Product {
 ///     var id: Int64
-///     #Index<Product>([\.embedding], type: VectorIndexKind(dimensions: 384, metric: .cosine))
+///     #Index([\.embedding], type: VectorIndexKind(dimensions: 384, metric: .cosine))
 ///     var embedding: [Float32]
 /// }
 ///

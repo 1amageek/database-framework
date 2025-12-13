@@ -24,7 +24,7 @@ import Core
 /// @Recordable
 /// struct User {
 ///     #PrimaryKey<User>([\.userID])
-///     #Index<User>([\.email])
+///     #Index([\.email])
 ///
 ///     var userID: Int64
 ///     var email: String

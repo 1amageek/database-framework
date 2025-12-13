@@ -18,8 +18,8 @@ struct FDBConfigurationTests {
     @Persistable
     struct ConfigTestUser {
         #Directory<ConfigTestUser>("test", "config", "users")
-        #Index<ConfigTestUser>(ScalarIndexKind<ConfigTestUser>(fields: [\.name]))
-        #Index<ConfigTestUser>(ScalarIndexKind<ConfigTestUser>(fields: [\.embedding]))
+        #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.name]))
+        #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.embedding]))
 
         var name: String = ""
         var embedding: [Float] = []

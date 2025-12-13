@@ -21,7 +21,7 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct UniqueTestUser {
         #Directory<UniqueTestUser>("test", "uniqueness", "users")
-        #Index<UniqueTestUser>(ScalarIndexKind<UniqueTestUser>(fields: [\.email]), unique: true, name: "UniqueTestUser_email")
+        #Index(ScalarIndexKind<UniqueTestUser>(fields: [\.email]), unique: true, name: "UniqueTestUser_email")
 
         var id: String = ULID().ulidString
         var email: String
@@ -32,7 +32,7 @@ struct UniquenessEnforcementTests {
     @Persistable
     struct NonUniqueTestProduct {
         #Directory<NonUniqueTestProduct>("test", "uniqueness", "products")
-        #Index<NonUniqueTestProduct>(ScalarIndexKind<NonUniqueTestProduct>(fields: [\.category]), name: "NonUniqueTestProduct_category")
+        #Index(ScalarIndexKind<NonUniqueTestProduct>(fields: [\.category]), name: "NonUniqueTestProduct_category")
 
         var id: String = ULID().ulidString
         var category: String

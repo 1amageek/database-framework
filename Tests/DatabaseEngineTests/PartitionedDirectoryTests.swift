@@ -392,63 +392,6 @@ struct PartitionedDirectoryTests {
         #expect(fetched?.status == "processing")
     }
 
-    // MARK: - Pending Insert Predicate Evaluation Tests
-
-    @Test("Pending inserts are filtered by query predicates")
-    func testPendingInsertsFilteredByPredicates() async throws {
-        let container = try await setupContainer()
-        let context = container.newContext()
-
-        let tenantID = uniqueID("tenant")
-
-        // Insert multiple orders with different statuses (not saved yet)
-        var pendingOrder = TenantOrder(tenantID: tenantID, status: "pending", total: 100.0)
-        pendingOrder.id = uniqueID("pending-order")
-
-        var completedOrder = TenantOrder(tenantID: tenantID, status: "completed", total: 200.0)
-        completedOrder.id = uniqueID("completed-order")
-
-        context.insert(pendingOrder)
-        context.insert(completedOrder)
-
-        // Query for only "pending" status - should only return the pending order
-        let results = try await context.fetch(TenantOrder.self)
-            .partition(\.tenantID, equals: tenantID)
-            .where(\.status == "pending")
-            .execute()
-
-        // Both are pending inserts, but only one matches the predicate
-        #expect(results.count == 1)
-        #expect(results.first?.status == "pending")
-    }
-
-    @Test("Pending inserts from different partitions are excluded")
-    func testPendingInsertsFromDifferentPartitionsExcluded() async throws {
-        let container = try await setupContainer()
-        let context = container.newContext()
-
-        let tenant1 = uniqueID("tenant1")
-        let tenant2 = uniqueID("tenant2")
-
-        // Insert orders to different tenants (not saved yet)
-        var order1 = TenantOrder(tenantID: tenant1, status: "new", total: 100.0)
-        order1.id = uniqueID("order1")
-
-        var order2 = TenantOrder(tenantID: tenant2, status: "new", total: 200.0)
-        order2.id = uniqueID("order2")
-
-        context.insert(order1)
-        context.insert(order2)
-
-        // Query for tenant1 - should only return order1
-        let results = try await context.fetch(TenantOrder.self)
-            .partition(\.tenantID, equals: tenant1)
-            .execute()
-
-        #expect(results.count == 1)
-        #expect(results.first?.tenantID == tenant1)
-    }
-
     // MARK: - TransactionContext Partition Tests
 
     @Test("TransactionContext set/get works for dynamic directory types")

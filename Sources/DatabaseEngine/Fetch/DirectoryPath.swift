@@ -5,6 +5,23 @@ import Foundation
 import Core
 import FoundationDB
 
+// MARK: - Helper Function
+
+/// Convert a value to directory path string
+///
+/// - Parameter value: The value to convert
+/// - Returns: String representation for directory path
+package func directoryPathString(from value: Any) -> String {
+    switch value {
+    case let str as String:
+        return str
+    case let uuid as UUID:
+        return uuid.uuidString
+    default:
+        return "\(value)"
+    }
+}
+
 // MARK: - DirectoryPath
 
 /// Holds field values needed to resolve a directory path
@@ -28,8 +45,10 @@ public struct DirectoryPath<T: Persistable>: @unchecked Sendable {
 
     public init() {}
 
-    /// Add a field value
+    /// Set a field value (overwrites if already exists)
     public mutating func set<V: Sendable>(_ keyPath: KeyPath<T, V>, to value: V) {
+        // Remove existing value for this keyPath if present
+        fieldValues.removeAll { $0.keyPath == keyPath }
         fieldValues.append((keyPath, value))
     }
 

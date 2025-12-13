@@ -18,7 +18,7 @@ struct MigrationTests {
     @Persistable
     struct MigrationTestUser {
         #Directory<MigrationTestUser>("test", "migration", "users")
-        #Index<MigrationTestUser>(ScalarIndexKind<MigrationTestUser>(fields: [\.email]))
+        #Index(ScalarIndexKind<MigrationTestUser>(fields: [\.email]))
 
         var id: String = ULID().ulidString
         var email: String

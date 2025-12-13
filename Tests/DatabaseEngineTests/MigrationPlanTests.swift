@@ -11,7 +11,7 @@ import Core
 /// V1: Basic user with email index
 @Persistable(type: "TestUser")
 struct UserV1 {
-    #Index<UserV1>(ScalarIndexKind<UserV1>(fields: [\.email]), unique: true, name: "TestUser_email")
+    #Index(ScalarIndexKind<UserV1>(fields: [\.email]), unique: true, name: "TestUser_email")
 
     var name: String
     var email: String
@@ -20,8 +20,8 @@ struct UserV1 {
 /// V2: User with additional age field and index
 @Persistable(type: "TestUser")
 struct UserV2 {
-    #Index<UserV2>(ScalarIndexKind<UserV2>(fields: [\.email]), unique: true, name: "TestUser_email")
-    #Index<UserV2>(ScalarIndexKind<UserV2>(fields: [\.age]), name: "TestUser_age")
+    #Index(ScalarIndexKind<UserV2>(fields: [\.email]), unique: true, name: "TestUser_email")
+    #Index(ScalarIndexKind<UserV2>(fields: [\.age]), name: "TestUser_age")
 
     var name: String
     var email: String
@@ -31,8 +31,8 @@ struct UserV2 {
 /// V3: User with removed age index, added createdAt
 @Persistable(type: "TestUser")
 struct UserV3 {
-    #Index<UserV3>(ScalarIndexKind<UserV3>(fields: [\.email]), unique: true, name: "TestUser_email")
-    #Index<UserV3>(ScalarIndexKind<UserV3>(fields: [\.createdAt]), name: "TestUser_createdAt")
+    #Index(ScalarIndexKind<UserV3>(fields: [\.email]), unique: true, name: "TestUser_email")
+    #Index(ScalarIndexKind<UserV3>(fields: [\.createdAt]), name: "TestUser_createdAt")
 
     var name: String
     var email: String

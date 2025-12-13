@@ -20,10 +20,7 @@ struct StorageInvariantTests {
 
             let testId = String(UUID().uuidString.prefix(8))
             let storeSubspace = Subspace(prefix: Tuple("test", "onlineindexer", "violations", testId).pack())
-
-            let itemSubspace = storeSubspace.subspace(SubspaceKey.items)
             let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
-            let blobsSubspace = storeSubspace.subspace(SubspaceKey.blobs)
             let metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
 
             let tracker = UniquenessViolationTracker(database: database, metadataSubspace: metadataSubspace)

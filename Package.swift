@@ -23,7 +23,7 @@ let package = Package(
         .library(name: "Database", targets: ["Database"]),
     ],
     dependencies: [
-        .package(path: "../database-kit"),
+        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
