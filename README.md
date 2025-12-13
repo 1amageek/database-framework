@@ -47,7 +47,7 @@ This separation allows:
 │                      database-kit                               │
 │  ┌─────────────────┐    ┌──────────────────────────────────┐   │
 │  │   IndexKind     │    │     @Persistable Model           │   │
-│  │  (protocol)     │    │  #Index<User>([\.email])         │   │
+│  │  (protocol)     │    │  #Index(ScalarIndexKind<User>...)│   │
 │  └────────┬────────┘    └──────────────────────────────────┘   │
 └───────────┼─────────────────────────────────────────────────────┘
             │ defines WHAT to index
@@ -191,8 +191,8 @@ import Core
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    #Index<User>([\.email], unique: true)
-    #Index<User>([\.createdAt])
+    #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
+    #Index(ScalarIndexKind<User>(fields: [\.createdAt]))
 
     var email: String
     var name: String
@@ -402,8 +402,10 @@ import MyIndexFramework  // Registers IndexKindMaintainable conformance
 
 @Persistable
 struct SensorReading {
-    #Index<SensorReading>([\.timestamp, \.sensorId],
-                          type: TimeSeriesIndexKind(resolution: .second))
+    #Index(TimeSeriesIndexKind<SensorReading>(
+        fields: [\.timestamp, \.sensorId],
+        resolution: .second
+    ))
 
     var timestamp: Date
     var sensorId: String
@@ -634,6 +636,202 @@ extension FDBContext {
     // Delete rule enforcement (explicit call required)
     public func deleteEnforcingRelationshipRules<T>(_ model: T) async throws
 }
+```
+
+## Security
+
+Database provides comprehensive security features including declarative access control and data encryption.
+
+### Access Control (SecurityPolicy)
+
+Define per-type access control rules using the `SecurityPolicy` protocol:
+
+```swift
+import Core
+
+@Persistable
+struct Post {
+    var id: String = UUID().uuidString
+    var title: String
+    var content: String
+    var authorID: String
+    var isPublic: Bool = false
+}
+
+extension Post: SecurityPolicy {
+    static func allowGet(resource: Post, auth: (any AuthContext)?) -> Bool {
+        // Public posts or author can read
+        resource.isPublic || resource.authorID == auth?.userID
+    }
+
+    static func allowList(query: SecurityQuery<Post>, auth: (any AuthContext)?) -> Bool {
+        // Authenticated users with reasonable limit
+        auth != nil && (query.limit ?? 0) <= 100
+    }
+
+    static func allowCreate(newResource: Post, auth: (any AuthContext)?) -> Bool {
+        // Authors can create their own posts
+        auth != nil && newResource.authorID == auth?.userID
+    }
+
+    static func allowUpdate(resource: Post, newResource: Post, auth: (any AuthContext)?) -> Bool {
+        // Authors can update, can't change authorID
+        resource.authorID == auth?.userID
+            && newResource.authorID == resource.authorID
+    }
+
+    static func allowDelete(resource: Post, auth: (any AuthContext)?) -> Bool {
+        resource.authorID == auth?.userID
+    }
+}
+```
+
+**Default behavior**: All operations are denied by default (secure by default).
+
+### Security Configuration
+
+```swift
+// Security enabled with strict mode (default - recommended)
+let container = try FDBContainer(for: schema)
+
+// Security enabled with custom admin roles
+let container = try FDBContainer(
+    for: schema,
+    security: .enabled(adminRoles: ["admin", "superuser"])
+)
+
+// Non-strict mode (allows models without SecurityPolicy)
+let container = try FDBContainer(
+    for: schema,
+    security: .enabled(strict: false)
+)
+
+// Security disabled (ONLY for testing)
+let testContainer = try FDBContainer(
+    for: schema,
+    security: .disabled
+)
+```
+
+| Mode | Behavior |
+|------|----------|
+| `strict: true` (default) | Types without `SecurityPolicy` are denied |
+| `strict: false` | Types without `SecurityPolicy` are allowed |
+| `adminRoles` | Roles that bypass security evaluation |
+
+### Authentication Context
+
+Set authentication context per-request using TaskLocal:
+
+```swift
+struct MyAuthContext: AuthContext {
+    var userID: String?
+    var roles: Set<String>
+}
+
+// In request handler
+try await AuthContextKey.$current.withValue(MyAuthContext(userID: "user-123", roles: ["user"])) {
+    let context = container.newContext()
+    // All operations in this scope use the auth context
+    let posts = try await context.fetch(FDBFetchDescriptor<Post>())
+    try await context.save()
+}
+```
+
+### Data Encryption
+
+Encrypt data at rest using AES-256-GCM authenticated encryption:
+
+```swift
+import Crypto
+
+// Create a key provider
+let key = SymmetricKey(size: .bits256)
+let keyProvider = StaticKeyProvider(key: key, keyId: "key-v1")
+
+// Configure encryption
+let config = TransformConfiguration(
+    compressionEnabled: true,
+    compressionAlgorithm: .zlib,
+    encryptionEnabled: true,
+    keyProvider: keyProvider
+)
+
+let container = try FDBContainer(
+    for: schema,
+    transformConfiguration: config
+)
+```
+
+### Key Providers
+
+| Provider | Use Case |
+|----------|----------|
+| `StaticKeyProvider` | Development/testing with fixed key |
+| `RotatingKeyProvider` | Production with key rotation support |
+| `DerivedKeyProvider` | Derive keys from master key using HKDF |
+| `EnvironmentKeyProvider` | Read keys from environment variables |
+
+**Key Rotation Example**:
+
+```swift
+let provider = RotatingKeyProvider()
+provider.addKey(key: oldKey, keyId: "key-v1")
+provider.addKey(key: newKey, keyId: "key-v2")
+try provider.setCurrentKeyId("key-v2")  // New writes use v2
+
+// Old data encrypted with v1 is still readable
+// Gradually re-encrypt data, then remove old key
+provider.removeKey(keyId: "key-v1")
+```
+
+### Compression
+
+Reduce storage size with configurable compression:
+
+```swift
+let config = TransformConfiguration(
+    compressionEnabled: true,
+    compressionAlgorithm: .lz4,      // or .zlib, .lzma, .lzfse
+    compressionMinSize: 100,         // Skip compression for small data
+    skipIneffectiveCompression: true // Skip if no size reduction
+)
+```
+
+| Algorithm | Speed | Ratio | Use Case |
+|-----------|-------|-------|----------|
+| LZ4 | Fastest | Lower | Real-time, high throughput |
+| zlib | Balanced | Medium | General purpose (default) |
+| LZFSE | Fast | Good | Apple platforms |
+| LZMA | Slowest | Best | Archival, cold storage |
+
+### Security Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Request Flow                              │
+│                                                                  │
+│  1. AuthContextKey.$current.withValue(auth) { ... }             │
+│                          │                                       │
+│                          ▼                                       │
+│  2. FDBContext operations (fetch, save, delete)                 │
+│                          │                                       │
+│                          ▼                                       │
+│  3. DataStoreSecurityDelegate.evaluate*(...)                    │
+│     ├── Check admin roles → bypass if admin                     │
+│     ├── Check SecurityPolicy conformance                        │
+│     │   ├── strict=true: deny if not conforming                 │
+│     │   └── strict=false: allow if not conforming               │
+│     └── Call SecurityPolicy.allow*() methods                    │
+│                          │                                       │
+│                          ▼                                       │
+│  4. Data serialization with TransformingSerializer              │
+│     ├── Compression (if enabled)                                │
+│     └── Encryption (AES-256-GCM, if enabled)                    │
+│                          │                                       │
+│                          ▼                                       │
+│  5. FoundationDB transaction                                    │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Migration System
@@ -915,7 +1113,7 @@ Define storage paths declaratively using the `#Directory` macro in database-kit:
 @Persistable
 struct User {
     #Directory<User>("app", "users")
-    #Index<User>([\.email], unique: true)
+    #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
 
     var email: String
     var name: String
@@ -930,7 +1128,6 @@ Use `Field(\.property)` for dynamic path segments based on record fields:
 @Persistable
 struct Order {
     #Directory<Order>("tenants", Field(\.accountID), "orders", layer: .partition)
-    #PrimaryKey<Order>([\.orderID])
 
     var orderID: Int64
     var accountID: String  // Partition key
