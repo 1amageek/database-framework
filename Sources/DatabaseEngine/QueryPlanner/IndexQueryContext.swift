@@ -350,6 +350,7 @@ public struct IndexQueryContext: Sendable {
 
         let fetcher = BatchFetcher<T>(
             itemSubspace: fdbStore.itemSubspace,
+            blobsSubspace: fdbStore.blobsSubspace,
             itemType: T.persistableType,
             configuration: configuration
         )

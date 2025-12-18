@@ -126,6 +126,9 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// Item subspace
     private let subspace: Subspace
 
+    /// Blobs subspace for large value storage
+    private let blobsSubspace: Subspace
+
     /// Configuration
     public let configuration: RemoteFetchConfiguration
 
@@ -136,10 +139,12 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
 
     public init(
         subspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String = String(describing: Item.self),
         configuration: RemoteFetchConfiguration = .default
     ) {
         self.subspace = subspace
+        self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.configuration = configuration
     }
@@ -161,6 +166,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = subspace.subspace(itemType)
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
         // Optimize fetch order based on key locality
         let orderedKeys: [Tuple]
@@ -181,7 +187,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             let batchResults = try await fetchBatch(
                 primaryKeys: batch,
                 subspace: itemTypeSubspace,
-                transaction: transaction
+                storage: storage
             )
 
             for (keyData, item) in batchResults {
@@ -207,7 +213,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     private func fetchBatch(
         primaryKeys: [Tuple],
         subspace: Subspace,
-        transaction: any TransactionProtocol
+        storage: ItemStorage
     ) async throws -> [(Data, Item)] {
         var results: [(Data, Item)] = []
         results.reserveCapacity(primaryKeys.count)
@@ -215,8 +221,8 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         // Sequential reads within transaction (FDB constraint)
         for pk in primaryKeys {
             let key = subspace.pack(pk)
-            if let data = try await transaction.getValue(for: key) {
-                let item: Item = try DataAccess.deserialize(Array(data))
+            if let data = try await storage.read(for: key) {
+                let item: Item = try DataAccess.deserialize(data)
                 results.append((Data(pk.pack()), item))
             }
         }
@@ -242,13 +248,14 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             Task {
                 do {
                     let itemTypeSubspace = subspace.subspace(itemType)
+                    let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
                     let batches = primaryKeys.chunked(into: configuration.batchSize)
 
                     for batch in batches {
                         for pk in batch {
                             let key = itemTypeSubspace.pack(pk)
-                            if let data = try await transaction.getValue(for: key) {
-                                let item: Item = try DataAccess.deserialize(Array(data))
+                            if let data = try await storage.read(for: key) {
+                                let item: Item = try DataAccess.deserialize(data)
                                 continuation.yield(item)
                             }
                         }
@@ -286,6 +293,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         }
 
         let itemTypeSubspace = subspace.subspace(itemType)
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
         var items: [Item] = []
         var notFoundKeys: [Tuple] = []
@@ -294,8 +302,8 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
 
         for pk in primaryKeys {
             let key = itemTypeSubspace.pack(pk)
-            if let data = try await transaction.getValue(for: key) {
-                let item: Item = try DataAccess.deserialize(Array(data))
+            if let data = try await storage.read(for: key) {
+                let item: Item = try DataAccess.deserialize(data)
                 items.append(item)
             } else {
                 notFoundKeys.append(pk)
@@ -415,6 +423,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String = String(describing: Item.self),
         configuration: RemoteFetchConfiguration = .default,
         maxConcurrency: Int = 4
@@ -422,6 +431,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         self.database = database
         self.fetcher = RemoteFetcher<Item>(
             subspace: subspace,
+            blobsSubspace: blobsSubspace,
             itemType: itemType,
             configuration: configuration
         )

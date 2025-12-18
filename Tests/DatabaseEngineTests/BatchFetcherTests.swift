@@ -254,6 +254,10 @@ struct BatchFetcherIntegrationTests {
         Subspace(prefix: Tuple("test", "batchfetcher", UUID().uuidString).pack())
     }
 
+    private func blobsSubspace(from base: Subspace) -> Subspace {
+        base.subspace("blobs")
+    }
+
     @Test("Fetch empty list returns empty")
     func fetchEmptyList() async throws {
         let database = try await setupDatabase()
@@ -261,6 +265,7 @@ struct BatchFetcherIntegrationTests {
 
         let fetcher = BatchFetcher<TestUser>(
             itemSubspace: subspace,
+            blobsSubspace: blobsSubspace(from: subspace),
             itemType: "TestUser",
             configuration: .default
         )
@@ -279,6 +284,7 @@ struct BatchFetcherIntegrationTests {
 
         let fetcher = BatchFetcher<TestUser>(
             itemSubspace: subspace,
+            blobsSubspace: blobsSubspace(from: subspace),
             itemType: "TestUser",
             configuration: .default
         )
@@ -302,6 +308,7 @@ struct BatchFetcherIntegrationTests {
 
         let fetcher = BatchFetcher<TestUser>(
             itemSubspace: subspace,
+            blobsSubspace: blobsSubspace(from: subspace),
             itemType: "TestUser",
             configuration: .default
         )

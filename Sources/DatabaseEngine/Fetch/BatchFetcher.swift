@@ -116,6 +116,9 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// Item subspace
     private let itemSubspace: Subspace
 
+    /// Blobs subspace for large value storage
+    private let blobsSubspace: Subspace
+
     /// Item type name
     private let itemType: String
 
@@ -123,10 +126,12 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
 
     public init(
         itemSubspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String,
         configuration: BatchFetchConfiguration = .default
     ) {
         self.itemSubspace = itemSubspace
+        self.blobsSubspace = blobsSubspace
         self.itemType = itemType
         self.configuration = configuration
     }
@@ -149,6 +154,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
         guard !primaryKeys.isEmpty else { return [] }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
         // All reads are sequential within a single transaction
         // FDB transactions are NOT thread-safe for concurrent access
@@ -157,8 +163,8 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
 
         for pk in primaryKeys {
             let key = itemTypeSubspace.pack(pk)
-            if let data = try await transaction.getValue(for: key) {
-                let item: Item = try DataAccess.deserialize(Array(data))
+            if let data = try await storage.read(for: key) {
+                let item: Item = try DataAccess.deserialize(data)
                 results.append(item)
             }
         }
@@ -172,7 +178,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     private func fetchBatch(
         primaryKeys: [Tuple],
         subspace: Subspace,
-        transaction: any TransactionProtocol
+        storage: ItemStorage
     ) async throws -> [Item] {
         var results: [Item] = []
         results.reserveCapacity(primaryKeys.count)
@@ -180,8 +186,8 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
         // Sequential reads only - FDB transactions are NOT thread-safe
         for pk in primaryKeys {
             let key = subspace.pack(pk)
-            if let data = try await transaction.getValue(for: key) {
-                let item: Item = try DataAccess.deserialize(Array(data))
+            if let data = try await storage.read(for: key) {
+                let item: Item = try DataAccess.deserialize(data)
                 results.append(item)
             }
         }
@@ -207,6 +213,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
+                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
                 do {
                     for try await pk in primaryKeys {
@@ -216,7 +223,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                             let items = try await fetchBatch(
                                 primaryKeys: batch,
                                 subspace: itemTypeSubspace,
-                                transaction: transaction
+                                storage: storage
                             )
                             for item in items {
                                 continuation.yield(item)
@@ -230,7 +237,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                         let items = try await fetchBatch(
                             primaryKeys: batch,
                             subspace: itemTypeSubspace,
-                            transaction: transaction
+                            storage: storage
                         )
                         for item in items {
                             continuation.yield(item)
@@ -265,6 +272,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                 batch.reserveCapacity(configuration.batchSize)
 
                 let itemTypeSubspace = itemSubspace.subspace(itemType)
+                let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
                 do {
                     for try await (key, _) in indexEntries {
@@ -276,7 +284,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                                 let items = try await fetchBatch(
                                     primaryKeys: batch,
                                     subspace: itemTypeSubspace,
-                                    transaction: transaction
+                                    storage: storage
                                 )
                                 for item in items {
                                     continuation.yield(item)
@@ -291,7 +299,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
                         let items = try await fetchBatch(
                             primaryKeys: batch,
                             subspace: itemTypeSubspace,
-                            transaction: transaction
+                            storage: storage
                         )
                         for item in items {
                             continuation.yield(item)
@@ -367,6 +375,7 @@ extension BatchFetcher {
         }
 
         let itemTypeSubspace = itemSubspace.subspace(itemType)
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
 
         var items: [Item] = []
         var notFound: [Tuple] = []
@@ -375,8 +384,8 @@ extension BatchFetcher {
         for pk in primaryKeys {
             do {
                 let key = itemTypeSubspace.pack(pk)
-                if let data = try await transaction.getValue(for: key) {
-                    let item: Item = try DataAccess.deserialize(Array(data))
+                if let data = try await storage.read(for: key) {
+                    let item: Item = try DataAccess.deserialize(data)
                     items.append(item)
                 } else {
                     notFound.append(pk)
@@ -415,12 +424,14 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
     public init(
         database: any DatabaseProtocol,
         itemSubspace: Subspace,
+        blobsSubspace: Subspace,
         itemType: String,
         configuration: BatchFetchConfiguration = .default
     ) {
         self.database = database
         self.baseFetcher = BatchFetcher<Item>(
             itemSubspace: itemSubspace,
+            blobsSubspace: blobsSubspace,
             itemType: itemType,
             configuration: configuration
         )
