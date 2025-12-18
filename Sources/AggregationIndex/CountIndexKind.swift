@@ -37,7 +37,7 @@ extension CountIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return CountIndexMaintainer<Item>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

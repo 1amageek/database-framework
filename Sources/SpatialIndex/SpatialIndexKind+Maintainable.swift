@@ -28,7 +28,7 @@ extension SpatialIndexKind: IndexKindMaintainable {
             index: index,
             encoding: encoding,
             level: level,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

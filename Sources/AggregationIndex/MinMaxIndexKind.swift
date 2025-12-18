@@ -32,7 +32,7 @@ extension MinIndexKind: IndexKindMaintainable {
         // Value type is preserved from MinIndexKind<Root, Value>
         return MinIndexMaintainer<Item, Value>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }
@@ -61,7 +61,7 @@ extension MaxIndexKind: IndexKindMaintainable {
         // Value type is preserved from MaxIndexKind<Root, Value>
         return MaxIndexMaintainer<Item, Value>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

@@ -4,9 +4,11 @@
 // Single responsibility: All index-related operations
 // - Index key building
 // - Index value extraction
-// - Diff-based index updates
-// - Uniqueness constraint checking
-// - Support for all index types (Scalar, Count, Sum, Min/Max)
+// - Diff-based index updates (via IndexMaintainer protocol)
+// - Uniqueness constraint checking (delegated to IndexMaintainer where applicable)
+//
+// **Design**: Uses IndexKindMaintainable protocol bridge pattern to delegate
+// index maintenance to specialized IndexMaintainer implementations for each index type.
 
 import Foundation
 import FoundationDB
@@ -16,11 +18,18 @@ import Logging
 /// Centralized service for index maintenance operations
 ///
 /// **Responsibilities**:
-/// - Build index keys from model values
-/// - Extract index values from models using KeyPaths
-/// - Perform diff-based index updates (FDB Record Layer pattern)
-/// - Check uniqueness constraints
-/// - Support all index types: Scalar, Count, Sum, Min/Max
+/// - Coordinate index maintenance across all index types
+/// - Manage index state checks (skip disabled indexes)
+/// - Bridge IndexDescriptor to IndexMaintainer via IndexKindMaintainable protocol
+///
+/// **Design Pattern**:
+/// Uses the protocol bridge pattern from CLAUDE.md:
+/// ```
+/// IndexKind (metadata) → IndexKindMaintainable (bridge) → IndexMaintainer (runtime)
+/// ```
+///
+/// This ensures all index types (Vector, FullText, Graph, Scalar, Aggregation, etc.)
+/// are maintained correctly via their specialized IndexMaintainer implementations.
 ///
 /// **Not Responsible For**:
 /// - Record serialization/deserialization (DataAccess)
@@ -35,6 +44,7 @@ internal final class IndexMaintenanceService: Sendable {
     private let violationTracker: UniquenessViolationTracker
     private let indexSubspace: Subspace
     private let logger: Logger
+    private let configurations: [any IndexConfiguration]
 
     // MARK: - Initialization
 
@@ -42,11 +52,13 @@ internal final class IndexMaintenanceService: Sendable {
         indexStateManager: IndexStateManager,
         violationTracker: UniquenessViolationTracker,
         indexSubspace: Subspace,
+        configurations: [any IndexConfiguration] = [],
         logger: Logger? = nil
     ) {
         self.indexStateManager = indexStateManager
         self.violationTracker = violationTracker
         self.indexSubspace = indexSubspace
+        self.configurations = configurations
         self.logger = logger ?? Logger(label: "com.fdb.index.maintenance")
     }
 
@@ -54,7 +66,8 @@ internal final class IndexMaintenanceService: Sendable {
 
     /// Update indexes for a model change (typed)
     ///
-    /// Handles all index types: Scalar, Count, Sum, Min/Max
+    /// Uses IndexKindMaintainable protocol to delegate index maintenance to
+    /// the appropriate IndexMaintainer for each index type.
     ///
     /// - Parameters:
     ///   - oldModel: Previous model state (nil for insert)
@@ -68,6 +81,7 @@ internal final class IndexMaintenanceService: Sendable {
         transaction: any TransactionProtocol
     ) async throws {
         let indexDescriptors = T.indexDescriptors
+        logger.trace("updateIndexes<\(T.persistableType)>: indexDescriptors.count=\(indexDescriptors.count)")
         guard !indexDescriptors.isEmpty else { return }
 
         // Batch fetch all index states for performance
@@ -77,54 +91,54 @@ internal final class IndexMaintenanceService: Sendable {
         for descriptor in indexDescriptors {
             // Check if index should be maintained based on its state
             let state = indexStates[descriptor.name] ?? .disabled
+            logger.trace("updateIndexes: processing descriptor=\(descriptor.name), isUnique=\(descriptor.isUnique), state=\(state)")
             guard state.shouldMaintain else {
                 logger.trace("Skipping index '\(descriptor.name)' maintenance (state: \(state))")
                 continue
             }
 
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-            let kindIdentifier = type(of: descriptor.kind).identifier
 
-            switch kindIdentifier {
-            case "count":
-                try await updateCountIndex(
-                    descriptor: descriptor,
+            // Use IndexKindMaintainable protocol bridge pattern
+            // This ensures all index types are handled correctly by their specialized IndexMaintainer
+            if let maintainable = descriptor.kind as? any IndexKindMaintainable {
+                // Build Index from IndexDescriptor
+                let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
+                let idExpression = FieldKeyExpression(fieldName: "id")
+
+                // Create the appropriate IndexMaintainer via protocol bridge
+                let maintainer: any IndexMaintainer<T> = maintainable.makeIndexMaintainer(
+                    index: index,
                     subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    transaction: transaction
+                    idExpression: idExpression,
+                    configurations: configurations
                 )
 
-            case "sum":
-                try await updateSumIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
+                // Check uniqueness constraint for inserts (newModel != nil)
+                if descriptor.isUnique, let newModel = newModel {
+                    try await checkUniquenessConstraint(
+                        descriptor: descriptor,
+                        model: newModel,
+                        id: id,
+                        oldModel: oldModel,
+                        state: state,
+                        indexSubspace: indexSubspaceForIndex,
+                        transaction: transaction
+                    )
+                }
+
+                // Delegate to IndexMaintainer
+                try await maintainer.updateIndex(
+                    oldItem: oldModel,
+                    newItem: newModel,
                     transaction: transaction
                 )
-
-            case "min", "max":
-                try await updateMinMaxIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    id: id,
-                    transaction: transaction
-                )
-
-            default:
-                // ScalarIndexKind, VersionIndexKind: Standard key-value index
-                try await updateScalarIndex(
-                    descriptor: descriptor,
-                    subspace: indexSubspaceForIndex,
-                    oldModel: oldModel,
-                    newModel: newModel,
-                    id: id,
-                    indexState: state,
-                    persistableType: T.persistableType,
-                    transaction: transaction
+            } else {
+                // Fallback for IndexKinds that don't conform to IndexKindMaintainable
+                // This should not happen for well-implemented indexes
+                let kindIdentifier = type(of: descriptor.kind).identifier
+                logger.warning(
+                    "IndexKind '\(kindIdentifier)' does not conform to IndexKindMaintainable. Index '\(descriptor.name)' will not be maintained. Please add IndexKindMaintainable conformance to the IndexKind."
                 )
             }
         }
@@ -133,7 +147,10 @@ internal final class IndexMaintenanceService: Sendable {
     /// Update indexes for type-erased models
     ///
     /// For batch operations where type information is erased.
-    /// Uses diff-based strategy: calculates exact keys from oldModel/newModel and applies clear/set.
+    /// Uses IndexKindMaintainable protocol bridge pattern.
+    ///
+    /// **Note**: This method uses existential types and is less efficient than the typed version.
+    /// For polymorphic operations, the typed `updateIndexes<T>()` is preferred when possible.
     ///
     /// - Parameters:
     ///   - oldModel: Previous model (nil for insert) - should be pre-deserialized by caller
@@ -173,53 +190,189 @@ internal final class IndexMaintenanceService: Sendable {
 
             let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
 
-            // Clear old index entries using efficient key calculation
-            if let oldModel = oldModel {
-                let oldValues = Self.extractIndexValues(from: oldModel, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    let oldIndexKeys = Self.buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: oldValues,
-                        id: id,
-                        keyPathCount: descriptor.keyPaths.count
+            // Use IndexKindMaintainable protocol bridge pattern
+            if let maintainable = descriptor.kind as? any IndexKindMaintainable {
+                // Build Index from IndexDescriptor
+                let index = Self.buildIndex(from: descriptor, persistableType: modelType.persistableType)
+                let idExpression = FieldKeyExpression(fieldName: "id")
+
+                // Check uniqueness constraint for inserts (newModel != nil)
+                // or updates where the indexed value changes
+                if descriptor.isUnique, let newModel = newModel {
+                    // Extract ID for uniqueness check
+                    let idTuple: Tuple
+                    if let element = newModel.id as? any TupleElement {
+                        idTuple = Tuple([element])
+                    } else {
+                        idTuple = Tuple(["unknown"])
+                    }
+
+                    try await checkUniquenessConstraintUntyped(
+                        descriptor: descriptor,
+                        model: newModel,
+                        id: idTuple,
+                        oldModel: oldModel,
+                        state: state,
+                        indexSubspace: indexSubspaceForIndex,
+                        transaction: transaction
                     )
-                    for key in oldIndexKeys {
-                        transaction.clear(key: key)
-                    }
                 }
-            }
 
-            // Add new index entries
-            if let newModel = newModel {
-                let newValues = Self.extractIndexValues(from: newModel, keyPaths: descriptor.keyPaths)
-                if !newValues.isEmpty {
-                    let newIndexKeys = Self.buildIndexKeys(
-                        subspace: indexSubspaceForIndex,
-                        values: newValues,
-                        id: id,
-                        keyPathCount: descriptor.keyPaths.count
-                    )
-
-                    // Check unique constraint (only for non-array indexes)
-                    if descriptor.isUnique && newIndexKeys.count == 1 {
-                        let mode = uniquenessCheckMode(for: state)
-                        try await checkUniqueConstraint(
-                            descriptor: descriptor,
-                            subspace: indexSubspaceForIndex,
-                            values: newValues,
-                            excludingId: id,
-                            persistableType: modelType.persistableType,
-                            mode: mode,
-                            transaction: transaction
-                        )
-                    }
-
-                    for key in newIndexKeys {
-                        transaction.setValue([], for: key)
-                    }
-                }
+                // Create maintainer and update index using type-erased helper
+                try await Self.updateIndexWithMaintainable(
+                    maintainable: maintainable,
+                    index: index,
+                    subspace: indexSubspaceForIndex,
+                    idExpression: idExpression,
+                    configurations: configurations,
+                    oldModel: oldModel,
+                    newModel: newModel,
+                    transaction: transaction
+                )
+            } else {
+                // Fallback for IndexKinds that don't conform to IndexKindMaintainable
+                let kindIdentifier = type(of: descriptor.kind).identifier
+                logger.warning(
+                    "IndexKind '\(kindIdentifier)' does not conform to IndexKindMaintainable. Index '\(descriptor.name)' will not be maintained."
+                )
             }
         }
+    }
+
+    // MARK: - Private: Index Building
+
+    /// Build Index from IndexDescriptor
+    ///
+    /// Creates an Index object from an IndexDescriptor, constructing the rootExpression
+    /// from the keyPaths. This is used to bridge IndexDescriptor (compile-time metadata)
+    /// with IndexMaintainer (runtime execution).
+    ///
+    /// - Parameters:
+    ///   - descriptor: The IndexDescriptor to convert
+    ///   - persistableType: The type name for itemTypes
+    /// - Returns: An Index object suitable for IndexMaintainer
+    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+        // Build rootExpression from keyPaths
+        // Most IndexMaintainers prefer keyPaths over rootExpression, so we provide a simple expression
+        let rootExpression: KeyExpression
+        if descriptor.keyPaths.isEmpty {
+            rootExpression = EmptyKeyExpression()
+        } else {
+            // Use the first keyPath's field name as a simple expression
+            // Note: IndexMaintainers should use Index.keyPaths directly for accurate field extraction
+            let firstKeyPathString = String(describing: descriptor.keyPaths.first!)
+            let fieldName = extractFieldName(from: firstKeyPathString)
+            rootExpression = FieldKeyExpression(fieldName: fieldName)
+        }
+
+        return Index(
+            name: descriptor.name,
+            kind: descriptor.kind,
+            rootExpression: rootExpression,
+            keyPaths: descriptor.keyPaths,
+            subspaceKey: descriptor.name,
+            itemTypes: Set([persistableType]),
+            isUnique: descriptor.isUnique
+        )
+    }
+
+    /// Extract field name from keyPath string representation
+    ///
+    /// KeyPath string representation looks like: "\\Type.fieldName" or "Swift.KeyPath<Type, FieldType>"
+    private static func extractFieldName(from keyPathString: String) -> String {
+        // Try to extract field name from various formats
+        // Format 1: "\Type.fieldName"
+        if let dotIndex = keyPathString.lastIndex(of: ".") {
+            let afterDot = keyPathString[keyPathString.index(after: dotIndex)...]
+            // Remove any trailing type info
+            if let parenIndex = afterDot.firstIndex(of: "(") {
+                return String(afterDot[..<parenIndex])
+            }
+            return String(afterDot)
+        }
+        // Fallback: return the whole string
+        return keyPathString
+    }
+
+    /// Type-erased helper for updating index with IndexKindMaintainable
+    ///
+    /// This method handles the type erasure required for `updateIndexesUntyped`.
+    /// Uses _openExistential for runtime type dispatch from existential to concrete type.
+    private static func updateIndexWithMaintainable(
+        maintainable: any IndexKindMaintainable,
+        index: Index,
+        subspace: Subspace,
+        idExpression: KeyExpression,
+        configurations: [any IndexConfiguration],
+        oldModel: (any Persistable)?,
+        newModel: (any Persistable)?,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Determine the concrete model type
+        let modelType: any Persistable.Type
+        if let new = newModel {
+            modelType = type(of: new)
+        } else if let old = oldModel {
+            modelType = type(of: old)
+        } else {
+            return
+        }
+
+        // Use _openExistential to dispatch to the concrete type
+        // This unwraps the existential and calls the generic helper with the concrete type
+        func helper<T: Persistable>(_ type: T.Type) async throws {
+            let maintainer: any IndexMaintainer<T> = maintainable.makeIndexMaintainer(
+                index: index,
+                subspace: subspace,
+                idExpression: idExpression,
+                configurations: configurations
+            )
+
+            // Safe cast - we derived modelType from the models so types will match
+            let typedOld = oldModel as? T
+            let typedNew = newModel as? T
+
+            try await maintainer.updateIndex(
+                oldItem: typedOld,
+                newItem: typedNew,
+                transaction: transaction
+            )
+        }
+
+        try await _openExistential(modelType, do: helper)
+    }
+
+    /// Type-erased uniqueness constraint check
+    ///
+    /// This method wraps the typed `checkUniquenessConstraint` for use in `updateIndexesUntyped`.
+    /// Uses _openExistential for runtime type dispatch from existential to concrete type.
+    private func checkUniquenessConstraintUntyped(
+        descriptor: IndexDescriptor,
+        model: any Persistable,
+        id: Tuple,
+        oldModel: (any Persistable)?,
+        state: IndexState,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let modelType = type(of: model)
+
+        func helper<T: Persistable>(_ type: T.Type) async throws {
+            guard let typedModel = model as? T else { return }
+            let typedOld = oldModel as? T
+
+            try await checkUniquenessConstraint(
+                descriptor: descriptor,
+                model: typedModel,
+                id: id,
+                oldModel: typedOld,
+                state: state,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        try await _openExistential(modelType, do: helper)
     }
 
     // MARK: - Static Utilities
@@ -287,310 +440,131 @@ internal final class IndexMaintenanceService: Sendable {
         }
     }
 
-    // MARK: - Private: Scalar Index
-
-    private func updateScalarIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        indexState: IndexState,
-        persistableType: String,
-        transaction: any TransactionProtocol
-    ) async throws {
-        let keyPathCount = descriptor.keyPaths.count
-
-        // Compute old index keys (to potentially remove)
-        var oldKeys: Set<[UInt8]> = []
-        if let old = oldModel {
-            let oldValues = Self.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-            if !oldValues.isEmpty {
-                for key in Self.buildIndexKeys(subspace: subspace, values: oldValues, id: id, keyPathCount: keyPathCount) {
-                    oldKeys.insert(key)
-                }
-            }
-        }
-
-        // Compute new index keys (to potentially add)
-        var newKeys: Set<[UInt8]> = []
-        if let new = newModel {
-            let newValues = Self.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-            if !newValues.isEmpty {
-                // Check unique constraint with appropriate mode
-                if descriptor.isUnique {
-                    let mode = uniquenessCheckMode(for: indexState)
-                    try await checkUniqueConstraint(
-                        descriptor: descriptor,
-                        subspace: subspace,
-                        values: newValues,
-                        excludingId: id,
-                        persistableType: persistableType,
-                        mode: mode,
-                        transaction: transaction
-                    )
-                }
-
-                for key in Self.buildIndexKeys(subspace: subspace, values: newValues, id: id, keyPathCount: keyPathCount) {
-                    newKeys.insert(key)
-                }
-            }
-        }
-
-        // Apply diff: remove keys that are in old but not in new
-        for key in oldKeys.subtracting(newKeys) {
-            transaction.clear(key: key)
-        }
-
-        // Apply diff: add keys that are in new but not in old
-        for key in newKeys.subtracting(oldKeys) {
-            transaction.setValue([], for: key)
-        }
-    }
-
-    // MARK: - Private: Count Index
-
-    private func updateCountIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        transaction: any TransactionProtocol
-    ) async throws {
-        // Decrement count for old group key
-        if let old = oldModel {
-            let groupValues = Self.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-            if !groupValues.isEmpty {
-                let key = subspace.pack(Tuple(groupValues))
-                let decrementValue = withUnsafeBytes(of: Int64(-1).littleEndian) { Array($0) }
-                transaction.atomicOp(key: key, param: decrementValue, mutationType: .add)
-            }
-        }
-
-        // Increment count for new group key
-        if let new = newModel {
-            let groupValues = Self.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-            if !groupValues.isEmpty {
-                let key = subspace.pack(Tuple(groupValues))
-                let incrementValue = withUnsafeBytes(of: Int64(1).littleEndian) { Array($0) }
-                transaction.atomicOp(key: key, param: incrementValue, mutationType: .add)
-            }
-        }
-    }
-
-    // MARK: - Private: Sum Index
-
-    private func updateSumIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        transaction: any TransactionProtocol
-    ) async throws {
-        guard descriptor.keyPaths.count >= 2,
-              let valueKeyPath = descriptor.keyPaths.last else { return }
-
-        let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-
-        var oldNumeric: Double = 0.0
-        var newNumeric: Double = 0.0
-        var groupKey: [UInt8]?
-
-        if let old = oldModel {
-            let groupValues = Self.extractIndexValues(from: old, keyPaths: groupKeyPaths)
-            let valueValues = Self.extractIndexValues(from: old, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, let oldValue = valueValues.first {
-                groupKey = subspace.pack(Tuple(groupValues))
-                oldNumeric = toDouble(oldValue) ?? 0.0
-            }
-        }
-
-        if let new = newModel {
-            let groupValues = Self.extractIndexValues(from: new, keyPaths: groupKeyPaths)
-            let valueValues = Self.extractIndexValues(from: new, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, let newValue = valueValues.first {
-                groupKey = subspace.pack(Tuple(groupValues))
-                newNumeric = toDouble(newValue) ?? 0.0
-            }
-        }
-
-        guard let key = groupKey else { return }
-
-        let delta = newNumeric - oldNumeric
-        if delta == 0.0 { return }
-
-        // Read current sum
-        let currentBytes = try await transaction.getValue(for: key, snapshot: false)
-        var currentSum: Double = 0.0
-        if let bytes = currentBytes, bytes.count == 8 {
-            let bitPattern = bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
-            currentSum = Double(bitPattern: UInt64(littleEndian: bitPattern))
-        }
-
-        // Write new sum
-        let newSum = currentSum + delta
-        let newSumBytes = withUnsafeBytes(of: newSum.bitPattern.littleEndian) { Array($0) }
-        transaction.setValue(newSumBytes, for: key)
-    }
-
-    // MARK: - Private: Min/Max Index
-
-    private func updateMinMaxIndex<T: Persistable>(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws {
-        guard descriptor.keyPaths.count >= 2,
-              let valueKeyPath = descriptor.keyPaths.last else { return }
-
-        let groupKeyPaths = Array(descriptor.keyPaths.dropLast())
-
-        // Remove old entry
-        if let old = oldModel {
-            let groupValues = Self.extractIndexValues(from: old, keyPaths: groupKeyPaths)
-            let valueValues = Self.extractIndexValues(from: old, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, !valueValues.isEmpty {
-                var keyElements: [any TupleElement] = groupValues
-                keyElements.append(contentsOf: valueValues)
-                Self.appendIDElements(from: id, to: &keyElements)
-                let oldKey = subspace.pack(Tuple(keyElements))
-                transaction.clear(key: oldKey)
-            }
-        }
-
-        // Add new entry
-        if let new = newModel {
-            let groupValues = Self.extractIndexValues(from: new, keyPaths: groupKeyPaths)
-            let valueValues = Self.extractIndexValues(from: new, keyPaths: [valueKeyPath])
-
-            if !groupValues.isEmpty, !valueValues.isEmpty {
-                var keyElements: [any TupleElement] = groupValues
-                keyElements.append(contentsOf: valueValues)
-                Self.appendIDElements(from: id, to: &keyElements)
-                let newKey = subspace.pack(Tuple(keyElements))
-                transaction.setValue([], for: newKey)
-            }
-        }
-    }
-
-    // MARK: - Private: Uniqueness
-
-    private func checkUniqueConstraint(
-        descriptor: IndexDescriptor,
-        subspace: Subspace,
-        values: [any TupleElement],
-        excludingId: Tuple,
-        persistableType: String,
-        mode: UniquenessCheckMode,
-        transaction: any TransactionProtocol
-    ) async throws {
-        guard mode != .skip else { return }
-
-        let valueKey = Tuple(values).pack()
-        let valueSubspace = Subspace(prefix: subspace.prefix + valueKey)
-        let (begin, end) = valueSubspace.range()
-
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
-
-        for try await (key, _) in sequence {
-            if let existingId = extractIDFromIndexKey(key, subspace: valueSubspace, idElementCount: excludingId.count) {
-                let existingBytes = existingId.pack()
-                let excludingBytes = excludingId.pack()
-
-                if existingBytes != excludingBytes {
-                    switch mode {
-                    case .immediate:
-                        throw UniquenessViolationError(
-                            indexName: descriptor.name,
-                            persistableType: persistableType,
-                            conflictingValues: values.map { String(describing: $0) },
-                            existingPrimaryKey: existingId,
-                            newPrimaryKey: excludingId
-                        )
-
-                    case .track:
-                        try await violationTracker.recordViolation(
-                            indexName: descriptor.name,
-                            persistableType: persistableType,
-                            valueKey: valueKey,
-                            existingPrimaryKey: existingId,
-                            newPrimaryKey: excludingId,
-                            transaction: transaction
-                        )
-                        logger.warning(
-                            "Recorded uniqueness violation (tracking mode)",
-                            metadata: [
-                                "index": "\(descriptor.name)",
-                                "type": "\(persistableType)"
-                            ]
-                        )
-
-                    case .skip:
-                        break
-                    }
-                }
-            }
-        }
-    }
-
-    private func uniquenessCheckMode(for indexState: IndexState) -> UniquenessCheckMode {
-        switch indexState {
-        case .readable:
-            return .immediate
-        case .writeOnly:
-            return .track
-        case .disabled:
-            return .skip
-        }
-    }
-
     // MARK: - Private: Helpers
-
-    /// Extract ID from index key
-    ///
-    /// Index key structure: [indexSubspace][value1][value2]...[valueN][id1][id2]...[idM]
-    /// ID is the last idElementCount elements of the tuple
-    private func extractIDFromIndexKey(_ key: [UInt8], subspace: Subspace, idElementCount: Int) -> Tuple? {
-        do {
-            let tuple = try subspace.unpack(key)
-            let totalCount = tuple.count
-            guard totalCount >= idElementCount else { return nil }
-
-            // Extract last idElementCount elements as ID
-            var idElements: [any TupleElement] = []
-            for i in (totalCount - idElementCount)..<totalCount {
-                if let element = tuple[i] {
-                    idElements.append(element)
-                }
-            }
-            return Tuple(idElements)
-        } catch {
-            // Key doesn't belong to this subspace
-        }
-        return nil
-    }
-
-    private func toDouble(_ value: any TupleElement) -> Double? {
-        switch value {
-        case let v as Int64: return Double(v)
-        case let v as Double: return v
-        case let v as Int: return Double(v)
-        case let v as Float: return Double(v)
-        default: return nil
-        }
-    }
 
     private static func appendIDElements(from id: Tuple, to elements: inout [any TupleElement]) {
         for i in 0..<id.count {
             if let element = id[i] {
                 elements.append(element)
             }
+        }
+    }
+
+    // MARK: - Private: Uniqueness Constraint
+
+    /// Check uniqueness constraint for a unique index
+    ///
+    /// - Readable state: throws `UniquenessViolationError` if duplicate exists
+    /// - WriteOnly state: tracks violation using `violationTracker` (does not throw)
+    private func checkUniquenessConstraint<T: Persistable>(
+        descriptor: IndexDescriptor,
+        model: T,
+        id: Tuple,
+        oldModel: T?,
+        state: IndexState,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws {
+        // Extract index values from the new model
+        let values = Self.extractIndexValues(from: model, keyPaths: descriptor.keyPaths)
+        logger.trace("checkUniquenessConstraint: index=\(descriptor.name), values=\(values), state=\(state)")
+        guard !values.isEmpty else {
+            return
+        }
+
+        // Build the index key (without ID suffix) to check for existing entries
+        // Note: We use pack() to get the key prefix, not subspace() which creates a nested tuple
+        let valueTuple = Tuple(values)
+        let keyPrefix = indexSubspace.pack(valueTuple)
+
+        // Build range by appending FDB range markers to the key prefix
+        // Range: [keyPrefix, keyPrefix + 0xFF] covers all keys with this prefix
+        var rangeBegin = keyPrefix
+        var rangeEnd = keyPrefix
+        rangeEnd.append(0xFF)
+
+        var existingEntryFound = false
+        var existingPrimaryKey: [UInt8]? = nil
+
+        for try await (key, _) in transaction.getRange(from: rangeBegin, to: rangeEnd, limit: 2, snapshot: false) {
+            // Parse the key to extract the primary key (last element after value tuple)
+            let keyTuple: Tuple? = (try? Tuple.unpack(from: key)).map { Tuple($0) }
+
+            // Skip if this is the same record (update case)
+            if let oldModel = oldModel {
+                let oldId = try Self.extractIDTuple(from: oldModel)
+                if let keyTuple = keyTuple, keyTuple.count > values.count {
+                    // Check if the ID portion matches oldModel's ID
+                    var matches = true
+                    for i in 0..<oldId.count {
+                        let keyIdx = values.count + i
+                        if keyIdx < keyTuple.count {
+                            if let oldElement = oldId[i] as? String, let keyElement = keyTuple[keyIdx] as? String {
+                                if oldElement != keyElement { matches = false; break }
+                            } else if let oldElement = oldId[i] as? Int64, let keyElement = keyTuple[keyIdx] as? Int64 {
+                                if oldElement != keyElement { matches = false; break }
+                            } else {
+                                matches = false; break
+                            }
+                        }
+                    }
+                    if matches { continue } // Skip our own old entry
+                }
+            }
+
+            existingEntryFound = true
+            existingPrimaryKey = key
+            break
+        }
+
+        guard existingEntryFound else { return }
+
+        // Build value description for error message
+        let conflictingValues = values.map { String(describing: $0) }
+
+        // Parse the existing primary key from the index entry
+        let existingId: Tuple
+        if let existingKey = existingPrimaryKey,
+           let elements = try? Tuple.unpack(from: existingKey),
+           elements.count > values.count {
+            let keyTuple = Tuple(elements)
+            // Extract ID elements from the end of the key tuple
+            var idElements: [any TupleElement] = []
+            for i in values.count..<keyTuple.count {
+                if let element = keyTuple[i] {
+                    idElements.append(element)
+                }
+            }
+            existingId = Tuple(idElements)
+        } else {
+            existingId = Tuple(["unknown"])
+        }
+
+        switch state {
+        case .readable:
+            // Throw immediately in readable state
+            throw UniquenessViolationError(
+                indexName: descriptor.name,
+                persistableType: T.persistableType,
+                conflictingValues: conflictingValues,
+                existingPrimaryKey: existingId,
+                newPrimaryKey: id
+            )
+
+        case .writeOnly:
+            // Track violation for later resolution
+            try await violationTracker.recordViolation(
+                indexName: descriptor.name,
+                persistableType: T.persistableType,
+                valueKey: keyPrefix,
+                existingPrimaryKey: existingId,
+                newPrimaryKey: id,
+                transaction: transaction
+            )
+
+        case .disabled:
+            // Should not reach here (disabled indexes are skipped)
+            break
         }
     }
 }

@@ -27,7 +27,7 @@ extension TimeWindowLeaderboardIndexKind: IndexKindMaintainable {
         // Score type is preserved from TimeWindowLeaderboardIndexKind<Root, Score>
         return TimeWindowLeaderboardIndexMaintainer<Item, Score>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression,
             window: window,
             windowCount: windowCount

@@ -22,7 +22,7 @@ extension Core.BitmapIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return BitmapIndexMaintainer<Item>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

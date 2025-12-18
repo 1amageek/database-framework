@@ -2,6 +2,55 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Project Vision
+
+### Purpose
+
+**database-framework** is a **protocol-extensible, customizable index database** designed for the AI era.
+
+The rise of Large Language Models (LLMs) and Retrieval-Augmented Generation (RAG) has created new requirements for databases:
+- **Vector Search**: Semantic similarity for embeddings
+- **Graph Traversal**: Knowledge graphs and entity relationships
+- **Full-Text Search**: Hybrid retrieval combining keywords and semantics
+- **Multi-Modal Queries**: Combining different index types in a single query
+
+Traditional databases treat these as separate systems. **database-framework unifies them** into a single, coherent database built on FoundationDB's transactional guarantees.
+
+### Design Philosophy
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                     Protocol-Based Extensibility                     │
+│                                                                      │
+│   IndexKind (protocol)  ───▶  IndexMaintainer (protocol)            │
+│        ↓                            ↓                                │
+│   User defines           Framework executes                          │
+│   WHAT to index          HOW to maintain                            │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+1. **Protocol-Driven**: New index types can be added without modifying core code
+2. **Composable**: Combine Vector + Graph + FullText in unified queries (Fusion API)
+3. **Transactional**: All operations backed by FoundationDB's ACID guarantees
+4. **AI-Native**: First-class support for embeddings, knowledge graphs, and RAG patterns
+
+### Core Use Cases
+
+| Use Case | Index Types | Example |
+|----------|-------------|---------|
+| **Semantic Search** | Vector | Find similar documents by embedding |
+| **Knowledge Graph** | Graph (RDF/Hexastore) | Query entity relationships |
+| **RAG Pipeline** | Vector + FullText | Hybrid retrieval for LLM context |
+| **Entity Resolution** | Graph + Scalar | Link entities across data sources |
+| **Recommendation** | Vector + Rank | Similar items with popularity ranking |
+
+### Why FoundationDB?
+
+- **Horizontal Scalability**: Petabyte-scale with linear performance
+- **Strong Consistency**: Serializable transactions across all indexes
+- **Operational Simplicity**: Single system for all index types
+- **Proven at Scale**: Powers Apple, Snowflake, and other large-scale systems
+
 ## Build and Test Commands
 
 ```bash

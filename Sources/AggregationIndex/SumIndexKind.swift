@@ -36,7 +36,7 @@ extension SumIndexKind: IndexKindMaintainable {
         // Value type is preserved from SumIndexKind<Root, Value>
         return SumIndexMaintainer<Item, Value>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

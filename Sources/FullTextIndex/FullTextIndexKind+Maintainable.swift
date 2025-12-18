@@ -30,7 +30,7 @@ extension FullTextIndexKind: IndexKindMaintainable {
             storePositions: storePositions,
             ngramSize: ngramSize,
             minTermLength: minTermLength,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

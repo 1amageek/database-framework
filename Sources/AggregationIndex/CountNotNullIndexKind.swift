@@ -22,7 +22,7 @@ extension CountNotNullIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return CountNotNullIndexMaintainer<Item>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression,
             groupByFieldNames: groupByFieldNames,
             valueFieldName: valueFieldName

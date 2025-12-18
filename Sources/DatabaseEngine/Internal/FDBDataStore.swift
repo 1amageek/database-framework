@@ -65,7 +65,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         schema: Schema,
         logger: Logger? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
-        securityDelegate: (any DataStoreSecurityDelegate)? = nil
+        securityDelegate: (any DataStoreSecurityDelegate)? = nil,
+        indexConfigurations: [any IndexConfiguration] = []
     ) {
         self.database = database
         self.subspace = subspace
@@ -86,6 +87,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             indexStateManager: indexStateManager,
             violationTracker: violationTracker,
             indexSubspace: indexSubspace,
+            configurations: indexConfigurations,
             logger: logger
         )
     }

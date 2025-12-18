@@ -51,11 +51,12 @@ extension VectorIndexKind: IndexKindMaintainable {
         } as? _VectorIndexConfiguration
 
         // Build subspace with optional subspaceKey
+        // Note: subspace is already index-specific (caller passes indexSubspace.subspace(indexName))
         let indexSubspace: Subspace
         if let subspaceKey = matchingConfig?.subspaceKey {
-            indexSubspace = subspace.subspace(index.name).subspace(subspaceKey)
+            indexSubspace = subspace.subspace(subspaceKey)
         } else {
-            indexSubspace = subspace.subspace(index.name)
+            indexSubspace = subspace
         }
 
         // Check algorithm selection

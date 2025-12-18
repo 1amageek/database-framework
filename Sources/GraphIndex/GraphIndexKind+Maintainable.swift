@@ -43,7 +43,7 @@ extension GraphIndexKind: IndexKindMaintainable {
     ) -> any IndexMaintainer<Item> {
         return GraphIndexMaintainer<Item>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression,
             fromField: fromField,
             edgeField: edgeField,

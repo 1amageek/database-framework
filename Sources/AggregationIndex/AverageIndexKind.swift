@@ -38,7 +38,7 @@ extension AverageIndexKind: IndexKindMaintainable {
         // Value type is preserved from AverageIndexKind<Root, Value>
         return AverageIndexMaintainer<Item, Value>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

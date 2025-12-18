@@ -30,7 +30,7 @@ extension RankIndexKind: IndexKindMaintainable {
         return RankIndexMaintainer<Item, Score>(
             index: index,
             bucketSize: bucketSize,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

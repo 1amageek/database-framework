@@ -265,7 +265,8 @@ public final class FDBContainer: Sendable {
             database: database,
             subspace: subspace,
             schema: schema,
-            securityDelegate: securityDelegate
+            securityDelegate: securityDelegate,
+            indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
     }
 
@@ -279,7 +280,8 @@ public final class FDBContainer: Sendable {
             database: database,
             subspace: subspace,
             schema: schema,
-            securityDelegate: securityDelegate
+            securityDelegate: securityDelegate,
+            indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
     }
 

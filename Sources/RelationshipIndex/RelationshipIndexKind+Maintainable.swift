@@ -33,7 +33,7 @@ extension RelationshipIndexKind: IndexKindMaintainable {
             relatedFieldNames: self.relatedFieldNames,
             isToMany: self.isToMany,
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression,
             relatedItemLoader: relatedItemLoader
         )

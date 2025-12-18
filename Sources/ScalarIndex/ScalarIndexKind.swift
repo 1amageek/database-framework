@@ -43,9 +43,10 @@ extension ScalarIndexKind: IndexKindMaintainable {
         configurations: [any IndexConfiguration]
     ) -> any IndexMaintainer<Item> {
         // ScalarIndexKind doesn't use configurations (no heavy runtime parameters)
+        // Note: subspace is already index-specific (caller passes indexSubspace.subspace(indexName))
         return ScalarIndexMaintainer<Item>(
             index: index,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,
             idExpression: idExpression
         )
     }

@@ -27,7 +27,7 @@ extension PermutedIndexKind: IndexKindMaintainable {
         return PermutedIndexMaintainer<Item>(
             index: index,
             permutation: permutation,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }

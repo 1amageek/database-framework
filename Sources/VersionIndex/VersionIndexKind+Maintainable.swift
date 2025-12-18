@@ -25,7 +25,7 @@ extension VersionIndexKind: IndexKindMaintainable {
         return VersionIndexMaintainer<Item>(
             index: index,
             strategy: self.strategy,
-            subspace: subspace.subspace(index.name),
+            subspace: subspace,  // Already index-specific from caller
             idExpression: idExpression
         )
     }
