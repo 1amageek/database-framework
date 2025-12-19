@@ -153,10 +153,23 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Private Methods
 
     /// Build all index keys for an item based on the strategy
+    ///
+    /// **Sparse index behavior**:
+    /// If any required field (from, to) is nil, returns an empty array (no index entries).
     private func buildIndexKeys(for item: Item) throws -> [FDB.Bytes] {
-        let from = try extractField(from: item, fieldName: fromField)
-        let edge = try extractEdgeField(from: item)
-        let to = try extractField(from: item, fieldName: toField)
+        // Sparse index: if any required field is nil, skip indexing
+        let from: any TupleElement
+        let edge: any TupleElement
+        let to: any TupleElement
+
+        do {
+            from = try extractField(from: item, fieldName: fromField)
+            edge = try extractEdgeField(from: item)
+            to = try extractField(from: item, fieldName: toField)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil field values are not indexed
+            return []
+        }
 
         switch strategy {
         case .adjacency:
@@ -280,12 +293,15 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Extract a field value from an item
+    ///
+    /// **Sparse index behavior**:
+    /// If the field value is nil (e.g., Optional FK field), throws
+    /// `DataAccessError.nilValueCannotBeIndexed` which is caught by
+    /// `buildIndexKeys` to skip indexing.
     private func extractField(from item: Item, fieldName: String) throws -> any TupleElement {
         guard let value = item[dynamicMember: fieldName] else {
-            throw GraphIndexError.fieldNotFound(
-                fieldName: fieldName,
-                itemType: Item.persistableType
-            )
+            // Sparse index: nil value cannot be indexed
+            throw DataAccessError.nilValueCannotBeIndexed
         }
 
         guard let tupleElement = value as? any TupleElement else {

@@ -89,6 +89,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     // MARK: - IndexMaintainer
 
     /// Update index when item changes
+    ///
+    /// **Sparse index behavior**:
+    /// If the score field is nil, the item is not indexed.
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
@@ -102,8 +105,28 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let newPK: Tuple? = try newItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
 
         // Get new item values (old values not needed - we delete by PK and reinsert)
-        let newScore = try newItem.map { try extractScore(from: $0) }
-        let newGroup = try newItem.map { try extractGrouping(from: $0) }
+        // Sparse index: if score field is nil, treat as no score
+        let newScore: Int64?
+        if let item = newItem {
+            do {
+                newScore = try extractScore(from: item)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                newScore = nil
+            }
+        } else {
+            newScore = nil
+        }
+
+        let newGroup: [any TupleElement]?
+        if let item = newItem {
+            do {
+                newGroup = try extractGrouping(from: item)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                newGroup = nil
+            }
+        } else {
+            newGroup = nil
+        }
 
         switch (oldPK, newPK) {
         case (nil, let pk?):
@@ -161,13 +184,24 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     }
 
     /// Build index entries for an item during batch indexing
+    ///
+    /// **Sparse index behavior**:
+    /// If the score field is nil, the item is not indexed.
     public func scanItem(
         _ item: Item,
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let score = try extractScore(from: item)
-        let grouping = try extractGrouping(from: item)
+        // Sparse index: if score field is nil, skip indexing
+        let score: Int64
+        let grouping: [any TupleElement]
+        do {
+            score = try extractScore(from: item)
+            grouping = try extractGrouping(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return
+        }
+
         let now = Date()
         let currentWindowId = windowId(for: now)
 
@@ -181,12 +215,23 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     }
 
     /// Compute expected index keys for an item
+    ///
+    /// **Sparse index behavior**:
+    /// If the score field is nil, returns an empty array.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let score = try extractScore(from: item)
-        let grouping = try extractGrouping(from: item)
+        // Sparse index: if score field is nil, no index entry
+        let score: Int64
+        let grouping: [any TupleElement]
+        do {
+            score = try extractScore(from: item)
+            grouping = try extractGrouping(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
+
         let now = Date()
         let currentWindowId = windowId(for: now)
 

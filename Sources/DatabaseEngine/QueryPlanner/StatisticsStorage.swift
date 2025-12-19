@@ -58,8 +58,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -68,7 +67,7 @@ public final class StatisticsStorage: Sendable {
     public func loadTableStatistics(typeName: String) async throws -> TableStatisticsData? {
         let key = statsSubspace.subspace("table").pack(Tuple([typeName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -80,7 +79,7 @@ public final class StatisticsStorage: Sendable {
     public func loadAllTableStatistics() async throws -> [String: TableStatisticsData] {
         let tableSubspace = statsSubspace.subspace("table")
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             let decoder = ProtobufDecoder()
             var results: [String: TableStatisticsData] = [:]
 
@@ -107,8 +106,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -117,7 +115,7 @@ public final class StatisticsStorage: Sendable {
     public func loadFieldStatistics(typeName: String, fieldName: String) async throws -> FieldStatisticsData? {
         let key = statsSubspace.subspace("field").subspace(typeName).pack(Tuple([fieldName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -129,7 +127,7 @@ public final class StatisticsStorage: Sendable {
     public func loadAllFieldStatistics(typeName: String) async throws -> [String: FieldStatisticsData] {
         let fieldSubspace = statsSubspace.subspace("field").subspace(typeName)
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             let decoder = ProtobufDecoder()
             var results: [String: FieldStatisticsData] = [:]
 
@@ -156,8 +154,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -166,7 +163,7 @@ public final class StatisticsStorage: Sendable {
     public func loadIndexStatistics(indexName: String) async throws -> IndexStatisticsData? {
         let key = statsSubspace.subspace("index").pack(Tuple([indexName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -181,8 +178,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -191,7 +187,7 @@ public final class StatisticsStorage: Sendable {
     public func loadVectorStatistics(indexName: String) async throws -> VectorStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("vector").pack(Tuple([indexName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -204,8 +200,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -214,7 +209,7 @@ public final class StatisticsStorage: Sendable {
     public func loadFullTextStatistics(indexName: String) async throws -> FullTextStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("fulltext").pack(Tuple([indexName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -227,8 +222,7 @@ public final class StatisticsStorage: Sendable {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
         let data = try ProtobufEncoder().encode(stats)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(Array(data), for: key)
         }
     }
@@ -237,7 +231,7 @@ public final class StatisticsStorage: Sendable {
     public func loadSpatialStatistics(indexName: String) async throws -> SpatialStatisticsData? {
         let key = statsSubspace.subspace("search").subspace("spatial").pack(Tuple([indexName]))
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             guard let data = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -249,7 +243,7 @@ public final class StatisticsStorage: Sendable {
 
     /// Delete all statistics for a type
     public func deleteAllStatistics(typeName: String) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             // Delete table stats (single key range)
             let tableKey = self.statsSubspace.subspace("table").pack(Tuple([typeName]))
@@ -265,7 +259,7 @@ public final class StatisticsStorage: Sendable {
 
     /// Delete index statistics
     public func deleteIndexStatistics(indexName: String) async throws {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             let key = self.statsSubspace.subspace("index").pack(Tuple([indexName]))
             let keyEnd = key + [0x00]

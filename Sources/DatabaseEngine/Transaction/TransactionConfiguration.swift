@@ -200,15 +200,19 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Batch priority (lower than interactive)
     /// - Low read priority
     /// - Server-side cache disabled (to avoid cache pollution)
-    /// - Relaxed weak read semantics (up to 30 second staleness)
+    /// - Strict consistency (no weak read semantics)
+    ///
+    /// **Note**: Weak read semantics is disabled for batch processing because
+    /// operations like index building require the latest data to ensure consistency.
+    /// Use `.longRunning` if you need relaxed consistency for read-heavy workloads.
     public static let batch = TransactionConfiguration(
         timeout: 30_000,
         retryLimit: 20,
         maxRetryDelay: 2000,
         priority: .batch,
         readPriority: .low,
-        disableReadCache: true,
-        weakReadSemantics: .relaxed
+        disableReadCache: true
+        // No weakReadSemantics: batch operations need latest data for consistency
     )
 
     /// System/administrative configuration
@@ -250,6 +254,26 @@ public struct TransactionConfiguration: Sendable, Hashable {
         priority: .batch,
         readPriority: .low,
         weakReadSemantics: .veryRelaxed
+    )
+
+    /// Read-only configuration
+    ///
+    /// Optimized for read-only operations that can tolerate staleness:
+    /// - Short timeout (2 seconds)
+    /// - Limited retries (3)
+    /// - Default priority
+    /// - Default weak read semantics (up to 5 second staleness)
+    ///
+    /// **Use Case**: Dashboard queries, analytics reads, cached lookups
+    /// where slightly stale data is acceptable.
+    ///
+    /// **Note**: This uses `WeakReadSemantics.default` which allows the
+    /// transaction to reuse a cached read version if it's less than 5 seconds old,
+    /// reducing `getReadVersion()` network round-trips.
+    public static let readOnly = TransactionConfiguration(
+        timeout: 2_000,
+        retryLimit: 3,
+        weakReadSemantics: .default  // 5 second staleness (not .relaxed which is 30s)
     )
 }
 

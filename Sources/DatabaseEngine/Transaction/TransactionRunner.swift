@@ -104,13 +104,18 @@ internal struct TransactionRunner: Sendable {
                     return result
                 }
 
-                // Commit returned false → apply backoff before retry
+                // Commit returned false → cancel and apply backoff before retry
+                transaction.cancel()
                 if attempt < maxRetries - 1 {
                     try await applyBackoff(attempt: attempt, maxDelayMs: maxDelayMs)
                 }
                 continue
 
             } catch {
+                // Cancel transaction before retry or rethrow
+                // Reference: FDB best practice - cancel uncommitted transactions
+                transaction.cancel()
+
                 // 7. Check if retryable
                 if let fdbError = error as? FDBError {
                     if fdbError.isRetryable && attempt < maxRetries - 1 {

@@ -45,8 +45,18 @@ import Logging
 public final class FDBContainer: Sendable {
     // MARK: - Properties
 
-    /// Database connection (thread-safe in FoundationDB)
-    nonisolated(unsafe) public let database: any DatabaseProtocol
+    /// FDB Database wrapper with read version caching
+    ///
+    /// Provides transaction execution with weak read semantics support.
+    public let fdbDatabase: FDBDatabase
+
+    /// Raw database connection (convenience accessor)
+    ///
+    /// For backward compatibility. Prefer `fdbDatabase.withTransaction()` for
+    /// proper read version caching support.
+    public var database: any DatabaseProtocol {
+        fdbDatabase.database
+    }
 
     /// Schema (version, entities, indexes)
     public let schema: Schema
@@ -73,15 +83,6 @@ public final class FDBContainer: Sendable {
 
     /// Migration plan (SwiftData-like API)
     nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
-
-    /// Read version cache for weak read semantics
-    ///
-    /// Shared across all contexts created from this container.
-    /// Used to reduce `getReadVersion()` network round-trips when
-    /// `TransactionConfiguration.weakReadSemantics` is set.
-    ///
-    /// **Reference**: FDB Record Layer `FDBDatabase.lastSeenVersion`
-    public let readVersionCache: ReadVersionCache
 
     // MARK: - Initialization
 
@@ -113,9 +114,7 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
-
-        self.database = database
+        self.fdbDatabase = try FDBDatabase(clusterFilePath: configuration?.url?.path)
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -126,13 +125,44 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        self.readVersionCache = ReadVersionCache()
     }
 
-    /// Initialize FDBContainer with database (low-level API)
+    /// Initialize FDBContainer with FDBDatabase (low-level API)
     ///
     /// - Parameters:
-    ///   - database: The FDB database
+    ///   - fdbDatabase: The FDB database wrapper
+    ///   - schema: Schema defining entities and indexes
+    ///   - configuration: Optional configuration
+    ///   - security: Security configuration (default: enabled)
+    ///   - indexConfigurations: Index configurations
+    public init(
+        fdbDatabase: FDBDatabase,
+        schema: Schema,
+        configuration: FDBConfiguration? = nil,
+        security: SecurityConfiguration = .enabled(),
+        indexConfigurations: [any IndexConfiguration] = []
+    ) {
+        precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
+
+        self.fdbDatabase = fdbDatabase
+        self.schema = schema
+        self.configuration = configuration
+        self.securityConfiguration = security
+        self.securityDelegate = security.isEnabled
+            ? DefaultSecurityDelegate(configuration: security)
+            : nil
+        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
+        self._migrationPlan = nil
+        self.logger = Logger(label: "com.fdb.runtime.container")
+        self.directoryCache = Mutex([:])
+    }
+
+    /// Initialize FDBContainer with raw database (convenience)
+    ///
+    /// Creates an FDBDatabase wrapper around the raw database.
+    ///
+    /// - Parameters:
+    ///   - database: The raw FDB database
     ///   - schema: Schema defining entities and indexes
     ///   - configuration: Optional configuration
     ///   - security: Security configuration (default: enabled)
@@ -146,7 +176,7 @@ public final class FDBContainer: Sendable {
     ) {
         precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
 
-        self.database = database
+        self.fdbDatabase = FDBDatabase(database: database)
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -157,7 +187,6 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
-        self.readVersionCache = ReadVersionCache()
     }
 
     // MARK: - Context Management
@@ -435,7 +464,7 @@ extension FDBContainer {
             .subspace("schema")
             .pack(Tuple("version"))
 
-        return try await database.withTransaction { transaction -> Schema.Version? in
+        return try await database.withTransaction(configuration: .default) { transaction -> Schema.Version? in
             guard let versionBytes = try await transaction.getValue(for: versionKey, snapshot: true) else {
                 return nil
             }
@@ -469,7 +498,7 @@ extension FDBContainer {
             .subspace("schema")
             .pack(Tuple("version"))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             let versionTuple = Tuple(version.major, version.minor, version.patch)
             transaction.setValue(versionTuple.pack(), for: versionKey)

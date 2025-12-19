@@ -451,8 +451,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
             // Start new prefetch
             state.prefetchKeys = primaryKeys
             state.prefetchTask = Task {
-                try await self.database.withTransaction { transaction in
-                    try transaction.setOption(forOption: .priorityBatch)
+                try await self.database.withTransaction(configuration: .batch) { transaction in
                     return try await self.baseFetcher.fetch(
                         primaryKeys: primaryKeys,
                         transaction: transaction

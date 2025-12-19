@@ -487,7 +487,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
         indexSubspace: Subspace
     ) async throws {
 
-        let (entryCount, distinctKeyCount) = try await database.withTransaction { transaction in
+        let (entryCount, distinctKeyCount) = try await database.withTransaction(configuration: .batch) { transaction in
             var entryCount: Int64 = 0
             var hll = HyperLogLog()
 

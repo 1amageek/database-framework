@@ -305,6 +305,9 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     ///
     /// Key structure: [scoresSubspace][score][primaryKey]
     ///
+    /// **Sparse index behavior**:
+    /// If the score field is nil, returns nil (no index entry).
+    ///
     /// **Type-Safe**: Uses Score type parameter for type-safe extraction.
     ///
     /// **KeyPath Optimization**:
@@ -313,11 +316,18 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     private func buildScoreKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
-        let scoreValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        // Sparse index: if score field is nil, return nil (no index entry)
+        let scoreValues: [any TupleElement]
+        do {
+            scoreValues = try DataAccess.evaluateIndexFields(
+                from: item,
+                keyPaths: index.keyPaths,
+                expression: index.rootExpression
+            )
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil score is not indexed
+            return nil
+        }
 
         guard !scoreValues.isEmpty else {
             return nil

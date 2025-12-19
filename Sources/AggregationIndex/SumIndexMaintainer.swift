@@ -72,7 +72,14 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let allValues = try evaluateIndexFields(from: item)
+        // Sparse index: if any field value is nil, skip indexing
+        let allValues: [any TupleElement]
+        do {
+            allValues = try evaluateIndexFields(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil values are not included in sum
+            return
+        }
 
         guard allValues.count >= 2 else {
             throw IndexError.invalidConfiguration(
@@ -94,11 +101,21 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         )
     }
 
+    /// Compute expected index keys for this item
+    ///
+    /// **Sparse index behavior**:
+    /// If any field value is nil, returns an empty array.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let allValues = try evaluateIndexFields(from: item)
+        // Sparse index: if any field value is nil, no index entry
+        let allValues: [any TupleElement]
+        do {
+            allValues = try evaluateIndexFields(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
         guard allValues.count >= 2 else { return [] }
 
         let groupingValues = Array(allValues.dropLast())
@@ -157,10 +174,20 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         let doubleValue: Double?
     }
 
+    /// Extract aggregation data from an item
+    ///
+    /// **Sparse index behavior**:
+    /// If any field value is nil, returns nil (no aggregation data).
     private func extractAggregationData(from item: Item?) throws -> AggregationData? {
         guard let item = item else { return nil }
 
-        let allValues = try evaluateIndexFields(from: item)
+        // Sparse index: if any field value is nil, skip aggregation
+        let allValues: [any TupleElement]
+        do {
+            allValues = try evaluateIndexFields(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return nil
+        }
         guard allValues.count >= 2 else { return nil }
 
         let groupingValues = Array(allValues.dropLast())

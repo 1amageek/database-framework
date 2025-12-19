@@ -82,6 +82,9 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     // MARK: - IndexMaintainer
 
     /// Update index when item changes
+    ///
+    /// **Sparse index behavior**:
+    /// If the field value is nil, the item is not indexed.
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
@@ -91,9 +94,28 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         let oldPK: Tuple? = try oldItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
         let newPK: Tuple? = try newItem.map { try DataAccess.extractId(from: $0, using: idExpression) }
 
-        // Get field values
-        let oldValue = try oldItem.map { try evaluateIndexFields(from: $0) }
-        let newValue = try newItem.map { try evaluateIndexFields(from: $0) }
+        // Get field values (sparse index: nil values are not indexed)
+        let oldValue: [any TupleElement]?
+        if let item = oldItem {
+            do {
+                oldValue = try evaluateIndexFields(from: item)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                oldValue = nil
+            }
+        } else {
+            oldValue = nil
+        }
+
+        let newValue: [any TupleElement]?
+        if let item = newItem {
+            do {
+                newValue = try evaluateIndexFields(from: item)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                newValue = nil
+            }
+        } else {
+            newValue = nil
+        }
 
         switch (oldPK, newPK) {
         case (nil, let pk?):
@@ -154,22 +176,40 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     }
 
     /// Build index entries for an item during batch indexing
+    ///
+    /// **Sparse index behavior**:
+    /// If the field value is nil, the item is not indexed.
     public func scanItem(
         _ item: Item,
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let fieldValues = try evaluateIndexFields(from: item)
+        // Sparse index: if field value is nil, skip indexing
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try evaluateIndexFields(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return
+        }
         let seqId = try await getOrCreateSequentialId(for: id, transaction: transaction)
         try await addToBitmap(fieldValues: fieldValues, sequentialId: seqId, transaction: transaction)
     }
 
     /// Compute expected index keys for an item
+    ///
+    /// **Sparse index behavior**:
+    /// If the field value is nil, returns an empty array.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let fieldValues = try evaluateIndexFields(from: item)
+        // Sparse index: if field value is nil, no index entry
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try evaluateIndexFields(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
         let valueKey = try makeFieldValueKey(fieldValues)
         return [dataSubspace.pack(Tuple(valueKey))]
     }

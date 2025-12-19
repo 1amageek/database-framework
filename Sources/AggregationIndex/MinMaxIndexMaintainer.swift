@@ -50,14 +50,23 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws {
+        // Sparse index: if value field is nil, skip that entry
         if let oldItem = oldItem {
-            let oldKey = try buildIndexKey(for: oldItem)
-            transaction.clear(key: oldKey)
+            do {
+                let oldKey = try buildIndexKey(for: oldItem)
+                transaction.clear(key: oldKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value was not indexed
+            }
         }
 
         if let newItem = newItem {
-            let newKey = try buildIndexKey(for: newItem)
-            transaction.setValue([], for: newKey)
+            do {
+                let newKey = try buildIndexKey(for: newItem)
+                transaction.setValue([], for: newKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value is not indexed
+            }
         }
     }
 
@@ -66,15 +75,28 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let indexKey = try buildIndexKey(for: item, id: id)
-        transaction.setValue([], for: indexKey)
+        // Sparse index: if value field is nil, skip indexing
+        do {
+            let indexKey = try buildIndexKey(for: item, id: id)
+            transaction.setValue([], for: indexKey)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil value is not indexed
+        }
     }
 
+    /// Compute expected index keys for this item
+    ///
+    /// **Sparse index behavior**:
+    /// If the value field is nil, returns an empty array.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        [try buildIndexKey(for: item, id: id)]
+        do {
+            return [try buildIndexKey(for: item, id: id)]
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
     }
 
     // MARK: - Query Methods
@@ -170,14 +192,23 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         newItem: Item?,
         transaction: any TransactionProtocol
     ) async throws {
+        // Sparse index: if value field is nil, skip that entry
         if let oldItem = oldItem {
-            let oldKey = try buildIndexKey(for: oldItem)
-            transaction.clear(key: oldKey)
+            do {
+                let oldKey = try buildIndexKey(for: oldItem)
+                transaction.clear(key: oldKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value was not indexed
+            }
         }
 
         if let newItem = newItem {
-            let newKey = try buildIndexKey(for: newItem)
-            transaction.setValue([], for: newKey)
+            do {
+                let newKey = try buildIndexKey(for: newItem)
+                transaction.setValue([], for: newKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value is not indexed
+            }
         }
     }
 
@@ -186,15 +217,28 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let indexKey = try buildIndexKey(for: item, id: id)
-        transaction.setValue([], for: indexKey)
+        // Sparse index: if value field is nil, skip indexing
+        do {
+            let indexKey = try buildIndexKey(for: item, id: id)
+            transaction.setValue([], for: indexKey)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil value is not indexed
+        }
     }
 
+    /// Compute expected index keys for this item
+    ///
+    /// **Sparse index behavior**:
+    /// If the value field is nil, returns an empty array.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        [try buildIndexKey(for: item, id: id)]
+        do {
+            return [try buildIndexKey(for: item, id: id)]
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            return []
+        }
     }
 
     // MARK: - Query Methods

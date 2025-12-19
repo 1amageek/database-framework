@@ -300,8 +300,7 @@ public struct MigrationContext: Sendable {
 
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             // Write FormerIndex entry
             let timestamp = Date().timeIntervalSince1970
             transaction.setValue(
@@ -376,8 +375,7 @@ public struct MigrationContext: Sendable {
         // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
             try await indexManager.stateManager.disable(indexName, transaction: transaction)
 
@@ -430,7 +428,7 @@ public struct MigrationContext: Sendable {
     public func executeOperation<T: Sendable>(
         _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             try await operation(transaction)
         }
     }
@@ -496,7 +494,7 @@ public struct MigrationContext: Sendable {
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
         let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -525,7 +523,7 @@ public struct MigrationContext: Sendable {
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
         let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -561,8 +559,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await database.withTransaction { transaction in
-                try transaction.setOption(forOption: .priorityBatch)
+            try await database.withTransaction(configuration: .batch) { transaction in
                 let storage = ItemStorage(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -603,8 +600,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await database.withTransaction { transaction in
-                try transaction.setOption(forOption: .priorityBatch)
+            try await database.withTransaction(configuration: .batch) { transaction in
                 let storage = ItemStorage(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -645,7 +641,7 @@ public struct MigrationContext: Sendable {
 
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await database.withTransaction { transaction in
+            let sizeBytes = try await database.withTransaction(configuration: .batch) { transaction in
                 try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
@@ -662,7 +658,7 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction { transaction in
+            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .batch) { transaction in
                 let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
@@ -885,8 +881,7 @@ struct SendableDatabase: @unchecked Sendable {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction { transaction in
-	                            try transaction.setOption(forOption: .priorityBatch)
+	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction(configuration: .batch) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
 
 	                            let storage = ItemStorage(

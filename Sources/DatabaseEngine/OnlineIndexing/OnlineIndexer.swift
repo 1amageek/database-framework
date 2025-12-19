@@ -480,7 +480,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let (begin, end) = itemTypeSubspace.range()
 
         // Get split points from FDB
-        let splitPoints = try await database.withTransaction { transaction in
+        let splitPoints = try await database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: begin,
                 endKey: end,
@@ -864,7 +864,7 @@ internal final class ParallelBuildProgress: Sendable {
     func loadProgress(chunkCount: Int) async throws -> [Int: ChunkProgress] {
         let (begin, end) = progressSubspace.range()
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .batch) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
             let sequence = transaction.getRange(

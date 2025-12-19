@@ -262,17 +262,27 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     ///
     /// Key structure: [subspace][permuted_field_0][permuted_field_1]...[permuted_field_n][primaryKey]
     ///
+    /// **Sparse index behavior**:
+    /// If any field value is nil, returns nil (no index entry).
+    ///
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
     private func buildPermutedKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
         // Evaluate index expression using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        // Sparse index: if any field value is nil, return nil (no index entry)
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try DataAccess.evaluateIndexFields(
+                from: item,
+                keyPaths: index.keyPaths,
+                expression: index.rootExpression
+            )
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil field values are not indexed
+            return nil
+        }
 
         guard !fieldValues.isEmpty else {
             return nil

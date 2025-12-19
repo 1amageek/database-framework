@@ -114,7 +114,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            let results: [T] = try await database.withTransaction { transaction in
+            let results: [T] = try await database.withTransaction(configuration: .default) { transaction in
                 // Use ItemStorage for proper handling of large values
                 let storage = ItemStorage(
                     transaction: transaction,
@@ -147,7 +147,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        let result: T? = try await database.withTransaction { transaction in
+        let result: T? = try await database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -262,7 +262,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Select optimal StreamingMode based on limit
         let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
 
-        let ids: [Tuple] = try await database.withTransaction { transaction in
+        let ids: [Tuple] = try await database.withTransaction(configuration: .default) { transaction in
             var ids: [Tuple] = []
 
             switch scanRange {
@@ -531,7 +531,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -691,7 +691,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             return 0  // Not index-optimizable
         }
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -714,7 +714,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -751,7 +751,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await database.withTransaction { transaction in
+        let sizeBytes = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -775,7 +775,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await database.withTransaction { transaction in
+        let sizeBytes = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -795,7 +795,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.saveModel(model, transaction: transaction)
                 }
@@ -861,7 +861,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
+            try await database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.deleteModel(model, transaction: transaction)
                 }
@@ -908,7 +908,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -938,8 +938,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction { transaction in
-                try transaction.setOption(forOption: .priorityBatch)
+            try await database.withTransaction(configuration: .default) { transaction in
                 try await self.executeBatchInTransaction(
                     inserts: inserts,
                     deletes: deletes,
@@ -1013,7 +1012,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(body)
+        return try await database.withTransaction(configuration: .default, body)
     }
 
     /// Save model with security evaluation, returning serialized data for dual-write
@@ -1212,8 +1211,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Admin-only operation
         try securityDelegate?.requireAdmin(operation: "clearAll", targetType: T.persistableType)
 
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)

@@ -160,17 +160,31 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - Key: `[subspace]["O001"]["C001"]`
     ///   - Key: `[subspace]["O002"]["C001"]`
     ///
+    /// **Sparse Index Behavior**:
+    /// When a field value is nil (e.g., Optional FK fields like `customerID: String? = nil`),
+    /// no index entry is created. This is standard "sparse index" behavior where
+    /// nil values are simply not indexed rather than causing an error.
+    ///
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
     private func buildIndexKeys(for item: Item, id: Tuple? = nil) throws -> [[UInt8]] {
         // Extract field values using optimized DataAccess method
         // Uses KeyPath direct extraction when available, falls back to KeyExpression
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        //
+        // Sparse index: if field value is nil, return empty (no index entry)
+        // This is standard behavior for Optional FK fields in @Relationship
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try DataAccess.evaluateIndexFields(
+                from: item,
+                keyPaths: index.keyPaths,
+                expression: index.rootExpression
+            )
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index behavior: nil values are not indexed
+            return []
+        }
 
         // Extract id
         let itemId: Tuple

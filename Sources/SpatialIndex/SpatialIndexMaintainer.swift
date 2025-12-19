@@ -198,16 +198,26 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
     /// Build index key for spatial data
     ///
+    /// **Sparse index behavior**:
+    /// If the coordinate field is nil, returns nil (no index entry).
+    ///
     /// **KeyPath Optimization**:
     /// When `index.keyPaths` is available, uses direct KeyPath subscript access
     /// which is more efficient than string-based `@dynamicMemberLookup`.
     private func buildIndexKey(for item: Item, id: Tuple? = nil) throws -> [UInt8]? {
         // Use optimized DataAccess method - KeyPath when available, falls back to KeyExpression
-        let fieldValues = try DataAccess.evaluateIndexFields(
-            from: item,
-            keyPaths: index.keyPaths,
-            expression: index.rootExpression
-        )
+        // Sparse index: if coordinate field is nil, return nil (no index entry)
+        let fieldValues: [any TupleElement]
+        do {
+            fieldValues = try DataAccess.evaluateIndexFields(
+                from: item,
+                keyPaths: index.keyPaths,
+                expression: index.rootExpression
+            )
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil coordinates are not indexed
+            return nil
+        }
 
         guard fieldValues.count >= 2 else {
             return nil

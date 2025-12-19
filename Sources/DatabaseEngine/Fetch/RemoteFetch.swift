@@ -455,7 +455,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         let results = try await withThrowingTaskGroup(of: [Item].self) { group in
             for chunk in chunks {
                 group.addTask {
-                    try await self.database.withTransaction { tx in
+                    try await self.database.withTransaction(configuration: .default) { tx in
                         try await self.fetcher.fetch(primaryKeys: chunk, transaction: tx)
                     }
                 }

@@ -103,82 +103,92 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Remove old index entries and update BM25 statistics
+        // Sparse index: if text field was nil, the document was never indexed
         if let oldItem = oldItem {
-            let oldId = try DataAccess.extractId(from: oldItem, using: idExpression)
-            let oldText = try extractText(from: oldItem)
-            let oldTokens = tokenize(oldText)
-            let oldDocLength = oldTokens.count
+            do {
+                let oldId = try DataAccess.extractId(from: oldItem, using: idExpression)
+                let oldText = try extractText(from: oldItem)
+                let oldTokens = tokenize(oldText)
+                let oldDocLength = oldTokens.count
 
-            // Group by truncated term to match how keys were stored
-            var oldTermPositions: [String: [Int]] = [:]
-            for token in oldTokens {
-                let safeTerm = truncateTerm(token.term)
-                oldTermPositions[safeTerm, default: []].append(token.position)
+                // Group by truncated term to match how keys were stored
+                var oldTermPositions: [String: [Int]] = [:]
+                for token in oldTokens {
+                    let safeTerm = truncateTerm(token.term)
+                    oldTermPositions[safeTerm, default: []].append(token.position)
+                }
+
+                // Remove term entries
+                for term in oldTermPositions.keys {
+                    let termKey = try buildTermKey(term: term, id: oldId)
+                    transaction.clear(key: termKey)
+
+                    // Decrement df for this term (BM25)
+                    let dfKey = dfSubspace.pack(Tuple(term))
+                    transaction.atomicOp(key: dfKey, param: int64ToBytes(-1), mutationType: .add)
+                }
+
+                // Remove document metadata
+                let docKey = docsSubspace.pack(oldId)
+                transaction.clear(key: docKey)
+
+                // Decrement BM25 corpus statistics
+                transaction.atomicOp(key: statsNKey, param: int64ToBytes(-1), mutationType: .add)
+                transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil text was not indexed, nothing to remove
             }
-
-            // Remove term entries
-            for term in oldTermPositions.keys {
-                let termKey = try buildTermKey(term: term, id: oldId)
-                transaction.clear(key: termKey)
-
-                // Decrement df for this term (BM25)
-                let dfKey = dfSubspace.pack(Tuple(term))
-                transaction.atomicOp(key: dfKey, param: int64ToBytes(-1), mutationType: .add)
-            }
-
-            // Remove document metadata
-            let docKey = docsSubspace.pack(oldId)
-            transaction.clear(key: docKey)
-
-            // Decrement BM25 corpus statistics
-            transaction.atomicOp(key: statsNKey, param: int64ToBytes(-1), mutationType: .add)
-            transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
         }
 
         // Add new index entries and update BM25 statistics
+        // Sparse index: if text field is nil, skip indexing
         if let newItem = newItem {
-            let newId = try DataAccess.extractId(from: newItem, using: idExpression)
-            let newText = try extractText(from: newItem)
-            let newTokens = tokenize(newText)
-            let newDocLength = newTokens.count
+            do {
+                let newId = try DataAccess.extractId(from: newItem, using: idExpression)
+                let newText = try extractText(from: newItem)
+                let newTokens = tokenize(newText)
+                let newDocLength = newTokens.count
 
-            // Group tokens by term to collect positions
-            var termPositions: [String: [Int]] = [:]
-            for token in newTokens {
-                let safeTerm = truncateTerm(token.term)
-                termPositions[safeTerm, default: []].append(token.position)
-            }
-
-            // Add term entries
-            for (term, positions) in termPositions {
-                let termKey = try buildTermKey(term: term, id: newId)
-
-                if storePositions {
-                    // Store positions for phrase search support
-                    let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
-                    let value = Tuple(positionElements).pack()
-                    transaction.setValue(value, for: termKey)
-                } else {
-                    // Store term frequency (tf) for BM25 scoring
-                    // Without this, all terms would be treated as tf=1
-                    let tfValue = Tuple(Int64(positions.count)).pack()
-                    transaction.setValue(tfValue, for: termKey)
+                // Group tokens by term to collect positions
+                var termPositions: [String: [Int]] = [:]
+                for token in newTokens {
+                    let safeTerm = truncateTerm(token.term)
+                    termPositions[safeTerm, default: []].append(token.position)
                 }
 
-                // Increment df for this term (BM25)
-                let dfKey = dfSubspace.pack(Tuple(term))
-                transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
+                // Add term entries
+                for (term, positions) in termPositions {
+                    let termKey = try buildTermKey(term: term, id: newId)
+
+                    if storePositions {
+                        // Store positions for phrase search support
+                        let positionElements: [any TupleElement] = positions.map { Int64($0) as any TupleElement }
+                        let value = Tuple(positionElements).pack()
+                        transaction.setValue(value, for: termKey)
+                    } else {
+                        // Store term frequency (tf) for BM25 scoring
+                        // Without this, all terms would be treated as tf=1
+                        let tfValue = Tuple(Int64(positions.count)).pack()
+                        transaction.setValue(tfValue, for: termKey)
+                    }
+
+                    // Increment df for this term (BM25)
+                    let dfKey = dfSubspace.pack(Tuple(term))
+                    transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
+                }
+
+                // Store document metadata: (uniqueTermCount, docLength)
+                let docKey = docsSubspace.pack(newId)
+                let uniqueTermCount = Int64(termPositions.count)
+                let docValue = Tuple(uniqueTermCount, Int64(newDocLength)).pack()
+                transaction.setValue(docValue, for: docKey)
+
+                // Increment BM25 corpus statistics
+                transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
+                transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(newDocLength)), mutationType: .add)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil text is not indexed
             }
-
-            // Store document metadata: (uniqueTermCount, docLength)
-            let docKey = docsSubspace.pack(newId)
-            let uniqueTermCount = Int64(termPositions.count)
-            let docValue = Tuple(uniqueTermCount, Int64(newDocLength)).pack()
-            transaction.setValue(docValue, for: docKey)
-
-            // Increment BM25 corpus statistics
-            transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
-            transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(newDocLength)), mutationType: .add)
         }
     }
 
@@ -187,7 +197,15 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let text = try extractText(from: item)
+        // Sparse index: if text field is nil, skip indexing
+        let text: String
+        do {
+            text = try extractText(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil text is not indexed
+            return
+        }
+
         let tokens = tokenize(text)
         let docLength = tokens.count
 
@@ -230,11 +248,22 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Compute expected index keys for this item
+    ///
+    /// **Sparse index behavior**:
+    /// If the text field is nil, returns an empty array (no index entries expected).
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        let text = try extractText(from: item)
+        // Sparse index: if text field is nil, no index entries expected
+        let text: String
+        do {
+            text = try extractText(from: item)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil text is not indexed
+            return []
+        }
+
         let tokens = tokenize(text)
 
         var keys: [FDB.Bytes] = []

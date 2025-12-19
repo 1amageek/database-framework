@@ -357,7 +357,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         let forwardSubspace = indexSubspace.subspace(forwardIndex.name)
         let reverseSubspace = indexSubspace.subspace(reverseIndex.name)
 
-        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await database.withTransaction { transaction in
+        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await database.withTransaction(configuration: .batch) { transaction in
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()

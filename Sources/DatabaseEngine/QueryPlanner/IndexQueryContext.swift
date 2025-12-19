@@ -148,7 +148,7 @@ public struct IndexQueryContext: Sendable {
     public func withTransaction<R: Sendable>(
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
     ) async throws -> R {
-        return try await context.container.database.withTransaction(body)
+        return try await context.container.database.withTransaction(configuration: .default, body)
     }
 
     // MARK: - Item Fetching
@@ -355,7 +355,7 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        let items = try await context.container.database.withTransaction { transaction in
+        let items = try await context.container.database.withTransaction(configuration: .default) { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 
@@ -520,7 +520,7 @@ extension FDBDataStore {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction { transaction in
+                    try await database.withTransaction(configuration: .default) { transaction in
                         let beginKey: [UInt8]
                         let endKey: [UInt8]
 
@@ -579,7 +579,7 @@ extension FDBDataStore {
 
     /// Get a single value by key (raw access)
     func getValueRaw(key: [UInt8]) async throws -> [UInt8]? {
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }

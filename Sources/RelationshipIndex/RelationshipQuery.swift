@@ -286,7 +286,7 @@ extension FDBContext {
     public func deleteEnforcingRelationshipRules<T: Persistable>(_ model: T) async throws {
         let handler = makePersistenceHandler()
 
-        try await container.database.withTransaction { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             try await self.deleteEnforcingRelationshipRulesInternal(
                 model,
                 transaction: transaction,
@@ -349,15 +349,13 @@ extension FDBContext {
         let typeSubspace = itemSubspace.subspace(typeName)
         let key = typeSubspace.pack(Tuple([id]))
 
-        var result: (any Persistable)?
-
-        try await container.database.withTransaction { tx in
+        let result: (any Persistable)? = try await container.database.withTransaction(configuration: .default) { tx in
             guard let data = try await tx.getValue(for: key, snapshot: false) else {
-                return
+                return nil
             }
 
             let decoder = ProtobufDecoder()
-            result = try decoder.decode(persistableType, from: Data(data))
+            return try decoder.decode(persistableType, from: Data(data))
         }
 
         return result

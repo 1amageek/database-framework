@@ -127,7 +127,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction { transaction in
+                    try await database.withTransaction(configuration: .default) { transaction in
                         let useSnapshot = mode == .snapshot
 
                         // Build prefix for range scan
@@ -268,7 +268,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
                             let currentVisited = visited
 
                             // Each batch in its own transaction - returns discovered targets
-                            let discoveredTargets: [String] = try await database.withTransaction { transaction in
+                            let discoveredTargets: [String] = try await database.withTransaction(configuration: .default) { transaction in
                                 var targets: [String] = []
 
                                 for (_, beginKey, endKey, prefix) in scanParams {

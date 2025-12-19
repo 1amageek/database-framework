@@ -146,16 +146,22 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Handle deletion
+        // Sparse index: if vector field was nil, there's no entry to delete
         if let oldItem = oldItem {
             let oldId = try DataAccess.extractId(from: oldItem, using: idExpression)
             try await deleteVector(primaryKey: oldId, transaction: transaction)
         }
 
         // Handle insertion/update
+        // Sparse index: if vector field is nil, skip indexing
         if let newItem = newItem {
-            let primaryKey = try DataAccess.extractId(from: newItem, using: idExpression)
-            let vector = try extractVector(from: newItem)
-            try await insertVector(primaryKey: primaryKey, vector: vector, transaction: transaction)
+            do {
+                let primaryKey = try DataAccess.extractId(from: newItem, using: idExpression)
+                let vector = try extractVector(from: newItem)
+                try await insertVector(primaryKey: primaryKey, vector: vector, transaction: transaction)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil vector is not indexed
+            }
         }
     }
 
@@ -164,8 +170,13 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let vector = try extractVector(from: item)
-        try await insertVector(primaryKey: id, vector: vector, transaction: transaction)
+        // Sparse index: if vector field is nil, skip indexing
+        do {
+            let vector = try extractVector(from: item)
+            try await insertVector(primaryKey: id, vector: vector, transaction: transaction)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil vector is not indexed
+        }
     }
 
     public func computeIndexKeys(

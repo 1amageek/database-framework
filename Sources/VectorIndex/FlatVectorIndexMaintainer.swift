@@ -60,16 +60,26 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         // Remove old index entry
+        // Sparse index: if vector field is nil, there's no entry to remove
         if let oldItem = oldItem {
-            let oldKey = try buildIndexKey(for: oldItem)
-            transaction.clear(key: oldKey)
+            do {
+                let oldKey = try buildIndexKey(for: oldItem)
+                transaction.clear(key: oldKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil vector was not indexed
+            }
         }
 
         // Add new index entry
+        // Sparse index: if vector field is nil, skip indexing
         if let newItem = newItem {
-            let newKey = try buildIndexKey(for: newItem)
-            let value = try buildIndexValue(for: newItem)
-            transaction.setValue(value, for: newKey)
+            do {
+                let newKey = try buildIndexKey(for: newItem)
+                let value = try buildIndexValue(for: newItem)
+                transaction.setValue(value, for: newKey)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil vector is not indexed
+            }
         }
     }
 
@@ -78,17 +88,30 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any TransactionProtocol
     ) async throws {
-        let indexKey = try buildIndexKey(for: item, id: id)
-        let value = try buildIndexValue(for: item)
-        transaction.setValue(value, for: indexKey)
+        // Sparse index: if vector field is nil, skip indexing
+        do {
+            let indexKey = try buildIndexKey(for: item, id: id)
+            let value = try buildIndexValue(for: item)
+            transaction.setValue(value, for: indexKey)
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil vector is not indexed
+        }
     }
 
     /// Compute expected index keys for this item
+    ///
+    /// **Sparse Index Behavior**:
+    /// Returns empty array if vector field is nil.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        return [try buildIndexKey(for: item, id: id)]
+        do {
+            return [try buildIndexKey(for: item, id: id)]
+        } catch DataAccessError.nilValueCannotBeIndexed {
+            // Sparse index: nil vector has no index keys
+            return []
+        }
     }
 
     /// Search for k nearest neighbors using linear scan

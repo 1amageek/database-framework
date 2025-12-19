@@ -11,9 +11,11 @@ import FoundationDB
 extension DatabaseProtocol {
     /// Execute a transaction with the specified configuration
     ///
-    /// This method applies `TransactionConfiguration` options (priority, timeout, etc.)
-    /// to the transaction and relies on the underlying `DatabaseProtocol.withTransaction()`
-    /// for retry logic.
+    /// This method uses `TransactionRunner` to provide:
+    /// - Exponential backoff with jitter (prevents thundering herd)
+    /// - Configurable retry limits (respects `configuration.retryLimit`)
+    /// - Configurable max delay (respects `configuration.maxRetryDelay`)
+    /// - Weak read semantics support (when cache is provided)
     ///
     /// **Usage**:
     /// ```swift
@@ -32,14 +34,12 @@ extension DatabaseProtocol {
     ///   - configuration: Transaction configuration to apply
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
-    /// - Throws: Error if transaction fails
+    /// - Throws: Error if transaction fails after all retry attempts
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
         _ operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        try await self.withTransaction { transaction in
-            try configuration.apply(to: transaction)
-            return try await operation(transaction)
-        }
+        let runner = TransactionRunner(database: self)
+        return try await runner.run(configuration: configuration, operation: operation)
     }
 }

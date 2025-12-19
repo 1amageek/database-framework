@@ -329,8 +329,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction { transaction in
-            try transaction.setOption(forOption: .priorityBatch)
+        try await database.withTransaction(configuration: .batch) { transaction in
             let indexRange = indexSubspace.subspace(index.name).range()
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }

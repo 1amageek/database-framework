@@ -318,7 +318,7 @@ public final class FDBContext: Sendable {
                 let typeCode = polymorphicType.typeCode(for: T.persistableType)
                 let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
 
-                try await container.database.withTransaction { transaction in
+                try await container.database.withTransaction(configuration: .batch) { transaction in
                     let (polyBegin, polyEnd) = polyItemSubspace.range()
                     transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
                 }
@@ -1049,7 +1049,7 @@ extension FDBContext {
         // Pass readVersionCache for weak read semantics support
         return try await runner.run(
             configuration: configuration,
-            readVersionCache: container.readVersionCache
+            readVersionCache: container.fdbDatabase.readVersionCache
         ) { transaction in
             let context = TransactionContext(
                 transaction: transaction,
@@ -1146,14 +1146,14 @@ extension FDBContext {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        var results: [any Persistable] = []
-
-        try await container.database.withTransaction { transaction in
+        let results: [any Persistable] = try await container.database.withTransaction(configuration: .default) { transaction in
             // Use ItemStorage.scan to properly handle external (large) values
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
+
+            var items: [any Persistable] = []
 
             // Scan all type codes for this protocol
             for entity in conformingEntities {
@@ -1172,9 +1172,11 @@ extension FDBContext {
                     )
                     // Security: Evaluate GET for each retrieved item
                     try self.container.securityDelegate?.evaluateGet(item)
-                    results.append(item)
+                    items.append(item)
                 }
             }
+
+            return items
         }
 
         return results
@@ -1208,7 +1210,7 @@ extension FDBContext {
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
-        let result: (any Persistable)? = try await container.database.withTransaction { transaction in
+        let result: (any Persistable)? = try await container.database.withTransaction(configuration: .default) { transaction in
             // Use ItemStorage for proper handling of large values
             let storage = ItemStorage(
                 transaction: transaction,
@@ -1304,7 +1306,7 @@ extension FDBContext {
         let data = try DataAccess.serialize(item)
 
         // Security: Check if this is CREATE or UPDATE
-        let oldData: FDB.Bytes? = try await container.database.withTransaction { transaction in
+        let oldData: FDB.Bytes? = try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1318,7 +1320,7 @@ extension FDBContext {
             try container.securityDelegate?.evaluateCreate(item)
         }
 
-        try await container.database.withTransaction { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1374,7 +1376,7 @@ extension FDBContext {
         let key = typeSubspace.pack(idTuple)
 
         // Security: Fetch existing item to evaluate DELETE permission
-        if let oldData: FDB.Bytes = try await container.database.withTransaction({ transaction in
+        if let oldData: FDB.Bytes = try await container.database.withTransaction(configuration: .default, { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1385,7 +1387,7 @@ extension FDBContext {
             try container.securityDelegate?.evaluateDelete(oldItem)
         }
 
-        try await container.database.withTransaction { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace

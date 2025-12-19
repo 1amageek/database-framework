@@ -165,7 +165,7 @@ public final class SynchronizedSession: Sendable {
     public func acquire() async throws -> Bool {
         let now = Date()
 
-        let acquired = try await database.withTransaction { transaction in
+        let acquired = try await database.withTransaction(configuration: .interactive) { transaction in
             // Read current lock holder
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 
@@ -234,7 +234,7 @@ public final class SynchronizedSession: Sendable {
             state.renewalTask = nil
         }
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .interactive) { transaction in
             // Verify we hold the lock
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 
@@ -259,7 +259,7 @@ public final class SynchronizedSession: Sendable {
 
     /// Get lock status
     public func getLockStatus() async throws -> LockStatus {
-        let holder = try await database.withTransaction { transaction in
+        let holder = try await database.withTransaction(configuration: .interactive) { transaction in
             try await self.readLockHolder(transaction: transaction)
         }
 
@@ -339,7 +339,7 @@ public final class SynchronizedSession: Sendable {
     private func renewLock() async throws {
         let now = Date()
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .interactive) { transaction in
             // Verify we still hold the lock
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 

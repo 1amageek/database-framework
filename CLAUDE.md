@@ -126,7 +126,8 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 
 | Type | Role |
 |------|------|
-| `FDBContainer` | Resource manager: database, schema, securityDelegate, directory resolution |
+| `FDBContainer` | Application resource manager: fdbDatabase, schema, securityDelegate, directory resolution |
+| `FDBDatabase` | Database session wrapper with read version caching for weak read semantics |
 | `FDBDataStore` | Data operations + transaction provision (`executeBatchInTransaction`, `withRawTransaction`) |
 | `FDBContext` | User-facing API: change tracking, orchestration via DataStore |
 | `DataStore` | Storage backend protocol (default: `FDBDataStore`) |
@@ -139,7 +140,8 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `OnlineIndexScrubber` | Detect and repair index inconsistencies |
 | `IndexFromIndexBuilder` | Build new index from existing index |
 | `CascadesOptimizer` | Cascades framework query optimizer |
-| `TransactionConfiguration` | Transaction priority, timeout, retry settings |
+| `TransactionConfiguration` | Transaction presets (.default/.batch/.interactive) with priority, timeout, retry |
+| `TransactionRunner` | Retry logic with exponential backoff and jitter |
 | `LargeValueSplitter` | Handle values exceeding FDB's 100KB limit |
 | `TransformingSerializer` | Compression (LZ4/zlib/LZMA/LZFSE) and encryption (AES-256-GCM) |
 | `Polymorphable` | Protocol enabling union types with shared directory and polymorphic queries |
@@ -153,14 +155,25 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│ FDBContainer (Resource Manager)                                         │
-│   - database: DatabaseProtocol                                          │
+│ FDBContainer (Application Resource Manager)                             │
+│   - fdbDatabase: FDBDatabase                                            │
 │   - schema: Schema                                                      │
 │   - securityDelegate: DataStoreSecurityDelegate?                        │
 │   - store(for:): DataStore instance per type                            │
-│   ❌ Does NOT provide transactions                                       │
+│   - database: computed property (fdbDatabase.database)                  │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
+                                    │ contains
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────┐
+│ FDBDatabase (Database Session)                                          │
+│   - database: DatabaseProtocol (raw FDB connection)                     │
+│   - readVersionCache: ReadVersionCache (for weak read semantics)        │
+│   - withTransaction(configuration:) → TransactionRunner execution       │
+│   Reference: FDB Record Layer FDBDatabase.java                          │
+└─────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    │ uses
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ FDBDataStore (Data Operations + Transaction Provider)                   │
@@ -170,6 +183,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 │   - Index maintenance                                                   │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
+                                    │ orchestrates
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
 │ FDBContext (User-Facing API)                                            │
@@ -179,6 +193,56 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 │   - Change tracking (insertedModels, deletedModels)                     │
 │   ❌ Does NOT access database directly                                   │
 └─────────────────────────────────────────────────────────────────────────┘
+```
+
+### FDBDatabase (Database Session)
+
+`FDBDatabase` wraps a raw `DatabaseProtocol` and provides:
+- **Read Version Caching**: Reduces `getReadVersion()` network round-trips
+- **Weak Read Semantics**: Reuse cached versions for staleness-tolerant reads
+- **Transaction Execution**: Delegates to `TransactionRunner` with configuration
+
+**Reference**: FDB Record Layer's `FDBDatabase.java` maintains `lastSeenFDBVersion` at the database level, shared across all `FDBRecordContext` instances.
+
+**Architecture**:
+```
+FDBContainer (Application Resource Manager)
+    │
+    └── FDBDatabase (Database Session)
+            │
+            ├── database: DatabaseProtocol (FDB native)
+            └── readVersionCache: ReadVersionCache
+```
+
+**Usage**:
+```swift
+// Create via FDBContainer (recommended)
+let container = try FDBContainer(schema: schema)
+let context = container.newContext()
+
+// Or create FDBDatabase directly
+let fdbDatabase = try FDBDatabase()
+
+// Transaction with weak read semantics (uses cache)
+let result = try await fdbDatabase.withTransaction(configuration: .readOnly) { tx in
+    try await tx.getValue(for: key, snapshot: true)
+}
+
+// Transaction without cache (strict consistency)
+let result = try await fdbDatabase.withTransaction(configuration: .default) { tx in
+    try await tx.getValue(for: key, snapshot: false)
+}
+```
+
+**Cache Management**:
+```swift
+// Clear cache after schema changes or for testing
+fdbDatabase.clearReadVersionCache()
+
+// Get cache info for debugging/metrics
+if let (version, ageMillis) = fdbDatabase.readVersionCacheInfo() {
+    print("Cached version: \(version), age: \(ageMillis)ms")
+}
 ```
 
 ### FDBContext Semantics
@@ -434,6 +498,121 @@ if let data = try await tx.getValue(for: key) {
 | `TransactionRunner` | `Transaction/TransactionRunner.swift` | Retry logic with exponential backoff |
 | `CommitHook` | `Transaction/CommitHook.swift` | Synchronous callbacks before commit |
 | `AsyncCommitHook` | `Transaction/AsyncCommitHook.swift` | Asynchronous callbacks before commit |
+
+#### Transaction Strategy
+
+All database operations are executed through `TransactionRunner`, which provides:
+- Exponential backoff with jitter (prevents thundering herd)
+- Configurable retry limits and timeouts
+- Weak read semantics support (cached read versions)
+- Transaction priority control
+
+**Execution Flow**:
+```
+database.withTransaction(configuration: .X) { tx in ... }
+       │
+       ▼
+DatabaseProtocol+Transaction.swift
+       │
+       ▼
+TransactionRunner.run(configuration:operation:)
+       ├── 1. Create NEW transaction for each attempt
+       ├── 2. Apply configuration (priority, timeout, etc.)
+       ├── 3. Execute operation
+       ├── 4. On retryable error: exponential backoff + retry
+       └── 5. On success: update read version cache (if enabled)
+```
+
+#### Configuration Presets
+
+| Preset | Timeout | Retry | Priority | Weak Read | Use Case |
+|--------|---------|-------|----------|-----------|----------|
+| `.default` | ~5s (FDB) | 5 | normal | No | User-facing CRUD, queries |
+| `.interactive` | 1s | 3 | normal | No | Lock operations (fail-fast) |
+| `.batch` | 30s | 20 | batch | No | Background indexing, statistics |
+| `.longRunning` | 60s | 50 | batch | 60s stale | Full scans, analytics |
+| `.readOnly` | 2s | 3 | normal | 5s stale | Dashboard, cached lookups |
+| `.system` | 2s | 5 | system | No | Reserved for critical operations |
+
+**Preset Selection Guide**:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Which preset should I use?                   │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  User clicks "Save" button?                                     │
+│  User runs a search query?          ──────▶  .default           │
+│  API request from client?                                       │
+│                                                                 │
+│  Lock acquisition/release?                                      │
+│  Need to fail fast on contention?   ──────▶  .interactive       │
+│                                                                 │
+│  Dashboard display?                                             │
+│  Cached lookup (stale OK)?          ──────▶  .readOnly          │
+│  Analytics read query?                                          │
+│                                                                 │
+│  Background index building?                                     │
+│  Statistics collection?             ──────▶  .batch             │
+│  Schema migration?                                              │
+│                                                                 │
+│  Full table scan for analytics?                                 │
+│  Report generation?                 ──────▶  .longRunning       │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+#### Usage Examples
+
+```swift
+// User-facing save operation
+try await database.withTransaction(configuration: .default) { tx in
+    try await store.save(user, transaction: tx)
+}
+
+// Background index building (tolerates delays, low priority)
+try await database.withTransaction(configuration: .batch) { tx in
+    try await indexer.buildBatch(items: batch, transaction: tx)
+}
+
+// Lock acquisition (fail fast if contested)
+try await database.withTransaction(configuration: .interactive) { tx in
+    guard try await acquireLock(tx) else { return false }
+    // ... do work ...
+    return true
+}
+
+// Dashboard query (stale data OK, uses cached read version)
+try await fdbDatabase.withTransaction(configuration: .readOnly) { tx in
+    try await tx.getValue(for: dashboardKey, snapshot: true)
+}
+
+// Custom configuration
+let customConfig = TransactionConfiguration(
+    timeout: 10_000,      // 10 seconds
+    retryLimit: 10,
+    priority: .default,
+    weakReadSemantics: .relaxed  // Allow stale reads
+)
+try await database.withTransaction(configuration: customConfig) { tx in
+    // ... operation ...
+}
+```
+
+#### Internal Routing
+
+All transaction calls are routed through `TransactionRunner`:
+
+| Entry Point | Routes Through | Configuration |
+|-------------|----------------|---------------|
+| `FDBContext.save()` | `withRawTransaction` | `.default` |
+| `FDBDataStore.fetch()` | direct | `.default` |
+| `IndexQueryContext.withTransaction` | direct | `.default` |
+| `SynchronizedSession.acquire()` | direct | `.interactive` |
+| `OnlineIndexer.buildBatch()` | direct | `.batch` |
+| `StatisticsManager.*` | direct | `.batch` |
+
+**Important**: Never call `database.withTransaction { }` without a configuration parameter. Always use `database.withTransaction(configuration: .X) { }` to ensure proper retry logic.
 
 ### Field-Level Security
 
@@ -760,7 +939,7 @@ if let polyType = entity.persistableType as? any Polymorphable.Type {
 | Union Record Type | ✅ | ✅ Polymorphable (dual-write) | ✅ |
 | Uniqueness Enforcement | ✅ checkUniqueness | ✅ Index state-based | ✅ |
 | SQL Interface | ✅ ANTLR parser | ❌ | Not implemented (SwiftData-like API) |
-| Weak Read Semantics | ✅ Cached read version | ❌ | Not implemented |
+| Weak Read Semantics | ✅ Cached read version | ✅ FDBDatabase + ReadVersionCache | ✅ |
 
 ### Extension Pattern for Optional Features
 

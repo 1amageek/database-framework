@@ -292,8 +292,8 @@ struct WeakReadSemanticsTests {
 
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        // Container should have a ReadVersionCache
-        #expect(container.readVersionCache.getCachedVersion(semantics: .relaxed) == nil)
+        // FDBDatabase should have a ReadVersionCache
+        #expect(container.fdbDatabase.readVersionCache.getCachedVersion(semantics: .relaxed) == nil)
 
         // After a transaction, cache should be populated
         let context = container.newContext()

@@ -1113,7 +1113,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         beginKey: [UInt8],
         endKey: [UInt8]
     ) async throws -> Int {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
                 endKey: endKey
@@ -1126,7 +1126,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         endKey: [UInt8],
         chunkSize: Int
     ) async throws -> [[UInt8]] {
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,
