@@ -25,7 +25,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    /// FDB Container reference for transaction execution
+    let container: FDBContainer
+
     let subspace: Subspace
     let schema: Schema
     private let logger: Logger
@@ -60,17 +62,16 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Initialization
 
     init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace,
-        schema: Schema,
         logger: Logger? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
         indexConfigurations: [any IndexConfiguration] = []
     ) {
-        self.database = database
+        self.container = container
         self.subspace = subspace
-        self.schema = schema
+        self.schema = container.schema
         self.logger = logger ?? Logger(label: "com.fdb.runtime.datastore")
         self.metricsDelegate = metricsDelegate ?? MetricsDataStoreDelegate.shared
         self.securityDelegate = securityDelegate
@@ -78,9 +79,13 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
-        self.indexStateManager = IndexStateManager(database: database, subspace: subspace, logger: logger)
+        self.indexStateManager = IndexStateManager(
+            container: container,
+            subspace: subspace,
+            logger: logger
+        )
         self.violationTracker = UniquenessViolationTracker(
-            database: database,
+            container: container,
             metadataSubspace: subspace.subspace(SubspaceKey.metadata)
         )
         self.indexMaintenanceService = IndexMaintenanceService(
@@ -93,6 +98,21 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     // MARK: - Fetch Operations
+    //
+    // **Design Intent - No ReadVersionCache**:
+    // Fetch operations use `container.database.withTransaction()` directly without
+    // ReadVersionCache. This is a deliberate simplification:
+    //
+    // 1. FDBDataStore is a low-level storage component that doesn't own a cache
+    // 2. Cache ownership is at the FDBContext level (per unit-of-work)
+    // 3. For weak read semantics optimization, users should use FDBContext.withTransaction()
+    //
+    // Example for optimized reads:
+    // ```swift
+    // let users = try await context.withTransaction(configuration: .readOnly) { tx in
+    //     try await tx.get(User.self, ids: userIds)
+    // }
+    // ```
 
     /// Fetch all models of a type
     func fetchAll<T: Persistable>(_ type: T.Type) async throws -> [T] {
@@ -114,7 +134,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            let results: [T] = try await database.withTransaction(configuration: .default) { transaction in
+            let results: [T] = try await container.database.withTransaction(configuration: .default) { transaction in
                 // Use ItemStorage for proper handling of large values
                 let storage = ItemStorage(
                     transaction: transaction,
@@ -147,7 +167,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        let result: T? = try await database.withTransaction(configuration: .default) { transaction in
+        let result: T? = try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -262,7 +282,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Select optimal StreamingMode based on limit
         let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
 
-        let ids: [Tuple] = try await database.withTransaction(configuration: .default) { transaction in
+        let ids: [Tuple] = try await container.database.withTransaction(configuration: .default) { transaction in
             var ids: [Tuple] = []
 
             switch scanRange {
@@ -531,7 +551,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -655,6 +675,421 @@ internal final class FDBDataStore: DataStore, Sendable {
         return results
     }
 
+    // MARK: - Transaction-Injected Fetch (for FDBContext)
+
+    /// Fetch items within an existing transaction
+    ///
+    /// This method is called by FDBContext.fetch() which manages the transaction
+    /// and ReadVersionCache. FDBDataStore does not create transactions for this path.
+    ///
+    /// - Parameters:
+    ///   - query: Query to execute
+    ///   - transaction: Transaction to use for fetch
+    /// - Returns: Array of matching items
+    func fetchInTransaction<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionProtocol
+    ) async throws -> [T] {
+        // Security evaluation
+        let orderByFields = query.sortDescriptors.map { $0.fieldName }
+        try securityDelegate?.evaluateList(
+            type: T.self,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset,
+            orderBy: orderByFields.isEmpty ? nil : orderByFields
+        )
+
+        return try await fetchInternalWithTransaction(query, transaction: transaction)
+    }
+
+    /// Internal fetch within an existing transaction
+    ///
+    /// This method contains the core fetch logic without creating transactions.
+    /// Called by FDBContext.fetch() which manages transaction and cache.
+    private func fetchInternalWithTransaction<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionProtocol
+    ) async throws -> [T] {
+        var results: [T]
+
+        // Combine predicates into single predicate for evaluation
+        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
+            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
+
+        // Try index-optimized fetch
+        if let predicate = combinedPredicate,
+           let indexResult = try await fetchUsingIndexWithTransaction(predicate, type: T.self, limit: query.fetchLimit, transaction: transaction) {
+            results = indexResult.models
+
+            // If index didn't cover all predicate conditions, apply remaining filters
+            if indexResult.needsPostFiltering {
+                results = results.filter { model in
+                    evaluatePredicate(predicate, on: model)
+                }
+            }
+        } else {
+            // Fall back to full table scan
+            results = try await fetchAllWithTransaction(T.self, transaction: transaction)
+
+            // Apply predicate filter
+            if let predicate = combinedPredicate {
+                results = results.filter { model in
+                    evaluatePredicate(predicate, on: model)
+                }
+            }
+        }
+
+        // Apply sorting
+        if !query.sortDescriptors.isEmpty {
+            results.sort { lhs, rhs in
+                for sortDescriptor in query.sortDescriptors {
+                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
+                    if comparison != .orderedSame {
+                        switch sortDescriptor.order {
+                        case .ascending:
+                            return comparison == .orderedAscending
+                        case .descending:
+                            return comparison == .orderedDescending
+                        }
+                    }
+                }
+                return false
+            }
+        }
+
+        // Apply offset
+        if let offset = query.fetchOffset, offset > 0 {
+            results = Array(results.dropFirst(offset))
+        }
+
+        // Apply limit
+        if let limit = query.fetchLimit {
+            results = Array(results.prefix(limit))
+        }
+
+        return results
+    }
+
+    /// Fetch all models with an existing transaction
+    private func fetchAllWithTransaction<T: Persistable>(
+        _ type: T.Type,
+        transaction: any TransactionProtocol
+    ) async throws -> [T] {
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
+        let (begin, end) = typeSubspace.range()
+        let startTime = DispatchTime.now()
+
+        do {
+            let storage = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
+            )
+            var results: [T] = []
+
+            // ItemStorage.scan handles both inline and external (split) values transparently
+            for try await (_, data) in storage.scan(begin: begin, end: end, snapshot: true) {
+                let model: T = try DataAccess.deserialize(data)
+                results.append(model)
+            }
+
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
+
+            return results
+        } catch {
+            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
+            throw error
+        }
+    }
+
+    /// Attempt to fetch using an index with an existing transaction
+    private func fetchUsingIndexWithTransaction<T: Persistable>(
+        _ predicate: Predicate<T>,
+        type: T.Type,
+        limit: Int?,
+        transaction: any TransactionProtocol
+    ) async throws -> IndexFetchResult<T>? {
+        // Extract indexable condition from predicate
+        guard let condition = extractIndexableCondition(from: predicate),
+              let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) else {
+            return nil
+        }
+
+        // Check index state - only use readable indexes for queries
+        let indexState = try await indexStateManager.state(of: matchingIndex.name)
+        guard indexState.isReadable else {
+            logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
+            return nil
+        }
+
+        // Build index scan range based on condition
+        let indexSubspaceForIndex = indexSubspace.subspace(matchingIndex.name)
+        let valueTuple = condition.valueTuple
+        let keyPathsCount = matchingIndex.keyPaths.count
+
+        // Compute key range
+        let scanRange: IndexScanRange
+        switch condition.op {
+        case .equal:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let (begin, end) = valueSubspace.range()
+            scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
+
+        case .greaterThan:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let beginKey = valueSubspace.range().1  // End of value range = start after
+            let (_, endKey) = indexSubspaceForIndex.range()
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        case .greaterThanOrEqual:
+            let beginKey = indexSubspaceForIndex.pack(valueTuple)
+            let (_, endKey) = indexSubspaceForIndex.range()
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        case .lessThan:
+            let (beginKey, _) = indexSubspaceForIndex.range()
+            let endKey = indexSubspaceForIndex.pack(valueTuple)
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        case .lessThanOrEqual:
+            let (beginKey, _) = indexSubspaceForIndex.range()
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            let endKey = valueSubspace.range().1
+            scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
+
+        default:
+            // Other comparisons (contains, hasPrefix, etc.) are not index-optimizable
+            return nil
+        }
+
+        // Execute scan with provided transaction
+        let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
+
+        var ids: [Tuple] = []
+
+        switch scanRange {
+        case .exactMatch(let begin, let end, let valueSubspace):
+            let sequence = transaction.getRange(
+                from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                to: FDB.KeySelector.firstGreaterOrEqual(end),
+                limit: limit ?? 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: streamingMode
+            )
+            for try await (key, _) in sequence {
+                if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
+                    ids.append(idTuple)
+                }
+            }
+
+        case .range(let begin, let end, let baseSubspace, let keyPathsCount):
+            let sequence = transaction.getRange(
+                from: FDB.KeySelector.firstGreaterOrEqual(begin),
+                to: FDB.KeySelector.firstGreaterOrEqual(end),
+                limit: limit ?? 0,
+                reverse: false,
+                snapshot: true,
+                streamingMode: streamingMode
+            )
+            for try await (key, _) in sequence {
+                if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
+                    ids.append(idTuple)
+                }
+            }
+        }
+
+        // If no IDs found, return empty result
+        if ids.isEmpty {
+            return IndexFetchResult(models: [], needsPostFiltering: false)
+        }
+
+        // Fetch models by IDs with provided transaction
+        let models = try await fetchByIdsWithTransaction(T.self, ids: ids, transaction: transaction)
+
+        // Determine if post-filtering is needed
+        let needsPostFiltering = !isSimpleFieldPredicate(predicate, fieldName: condition.fieldName)
+
+        return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
+    }
+
+    /// Fetch models by IDs with an existing transaction
+    private func fetchByIdsWithTransaction<T: Persistable>(
+        _ type: T.Type,
+        ids: [Tuple],
+        transaction: any TransactionProtocol
+    ) async throws -> [T] {
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
+        let keys = ids.map { typeSubspace.pack($0) }
+
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
+        var results: [T] = []
+        for key in keys {
+            if let bytes = try await storage.read(for: key) {
+                let model: T = try DataAccess.deserialize(bytes)
+                results.append(model)
+            }
+        }
+        return results
+    }
+
+    /// Fetch count within an existing transaction
+    ///
+    /// Called by FDBContext.fetchCount() which manages transaction and ReadVersionCache.
+    func fetchCountInTransaction<T: Persistable>(
+        _ query: Query<T>,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        // Security evaluation
+        let orderByFields = query.sortDescriptors.map { $0.fieldName }
+        try securityDelegate?.evaluateList(
+            type: T.self,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset,
+            orderBy: orderByFields.isEmpty ? nil : orderByFields
+        )
+
+        // Combine predicates into single predicate for evaluation
+        let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
+            (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
+
+        // For count, we can optimize by not deserializing if no predicate
+        if combinedPredicate == nil {
+            return try await countAllWithTransaction(T.self, transaction: transaction)
+        }
+
+        // Try to use index for counting
+        if let predicate = combinedPredicate,
+           let condition = extractIndexableCondition(from: predicate),
+           let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
+            return try await countUsingIndexWithTransaction(condition: condition, index: matchingIndex, transaction: transaction)
+        }
+
+        // Otherwise, fetch and count
+        let results = try await fetchInternalWithTransaction(query, transaction: transaction)
+        return results.count
+    }
+
+    /// Fetch a single model by ID within an existing transaction
+    ///
+    /// This method performs a direct key lookup (O(1)) rather than a query scan.
+    /// Called by FDBContext.model(for:as:) which manages transaction and ReadVersionCache.
+    ///
+    /// - Parameters:
+    ///   - type: The model type
+    ///   - id: The model's identifier
+    ///   - transaction: The transaction to use
+    /// - Returns: The model if found, nil if not found
+    /// - Throws: SecurityError if GET not allowed, or other errors on failure
+    func fetchByIdInTransaction<T: Persistable>(
+        _ type: T.Type,
+        id: any TupleElement,
+        transaction: any TransactionProtocol
+    ) async throws -> T? {
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
+        let keyTuple = (id as? Tuple) ?? Tuple([id])
+        let key = typeSubspace.pack(keyTuple)
+
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: self.blobsSubspace
+        )
+
+        guard let bytes = try await storage.read(for: key) else {
+            return nil
+        }
+
+        // Deserialize using DataAccess
+        let result: T = try DataAccess.deserialize(bytes)
+
+        // Evaluate GET security via delegate after fetch
+        try securityDelegate?.evaluateGet(result)
+
+        return result
+    }
+
+    /// Count all models with an existing transaction
+    private func countAllWithTransaction<T: Persistable>(
+        _ type: T.Type,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        let typeSubspace = itemSubspace.subspace(T.persistableType)
+        let (begin, end) = typeSubspace.range()
+
+        var count = 0
+        let sequence = transaction.getRange(
+            from: FDB.KeySelector.firstGreaterOrEqual(begin),
+            to: FDB.KeySelector.firstGreaterOrEqual(end),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
+
+        for try await _ in sequence {
+            count += 1
+        }
+        return count
+    }
+
+    /// Count using index scan with an existing transaction
+    private func countUsingIndexWithTransaction(
+        condition: IndexableCondition,
+        index: IndexDescriptor,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        let indexSubspaceForIndex = indexSubspace.subspace(index.name)
+        let valueTuple = condition.valueTuple
+
+        let beginKey: [UInt8]
+        let endKey: [UInt8]
+
+        switch condition.op {
+        case .equal:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            (beginKey, endKey) = valueSubspace.range()
+
+        case .greaterThan:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            beginKey = valueSubspace.range().1
+            endKey = indexSubspaceForIndex.range().1
+
+        case .greaterThanOrEqual:
+            beginKey = indexSubspaceForIndex.pack(valueTuple)
+            endKey = indexSubspaceForIndex.range().1
+
+        case .lessThan:
+            beginKey = indexSubspaceForIndex.range().0
+            endKey = indexSubspaceForIndex.pack(valueTuple)
+
+        case .lessThanOrEqual:
+            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
+            beginKey = indexSubspaceForIndex.range().0
+            endKey = valueSubspace.range().1
+
+        default:
+            return 0  // Not index-optimizable
+        }
+
+        var count = 0
+        let sequence = transaction.getRange(
+            from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
+            to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+            limit: 0,
+            reverse: false,
+            snapshot: true,
+            streamingMode: .wantAll
+        )
+        for try await _ in sequence {
+            count += 1
+        }
+        return count
+    }
+
     /// Count using index scan (without deserializing records)
     private func countUsingIndex(condition: IndexableCondition, index: IndexDescriptor) async throws -> Int {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
@@ -691,7 +1126,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             return 0  // Not index-optimizable
         }
 
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await container.database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -714,7 +1149,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await container.database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = transaction.getRange(
@@ -751,7 +1186,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await database.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.database.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -775,7 +1210,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await database.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.database.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -795,7 +1230,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction(configuration: .default) { transaction in
+            try await container.database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.saveModel(model, transaction: transaction)
                 }
@@ -861,7 +1296,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction(configuration: .default) { transaction in
+            try await container.database.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.deleteModel(model, transaction: transaction)
                 }
@@ -908,7 +1343,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        try await database.withTransaction(configuration: .default) { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -938,7 +1373,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await database.withTransaction(configuration: .default) { transaction in
+            _ = try await container.database.withTransaction(configuration: .default) { transaction in
                 try await self.executeBatchInTransaction(
                     inserts: inserts,
                     deletes: deletes,
@@ -1009,10 +1444,26 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///
     /// Provides raw TransactionProtocol for coordinating operations
     /// across multiple DataStores in a single atomic transaction.
+    ///
+    /// **Design Intent - No ReadVersionCache**:
+    /// This method uses `container.database.withTransaction()` directly, bypassing
+    /// any ReadVersionCache. This is intentional because:
+    ///
+    /// 1. **Write operations need latest data**: FDBDataStore primarily handles writes
+    ///    (`save()`, `delete()`) which require strong consistency, not stale cached reads.
+    ///
+    /// 2. **DataStore is a low-level component**: FDBDataStore doesn't own a cache;
+    ///    cache ownership is at the FDBContext level (per unit-of-work).
+    ///
+    /// 3. **Called by FDBContext.save()**: When FDBContext.save() uses this method,
+    ///    it's for write operations where cache staleness would be problematic.
+    ///
+    /// For read operations that benefit from weak read semantics, users should use
+    /// `FDBContext.withTransaction()` which properly uses the context's cache.
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(configuration: .default, body)
+        return try await container.database.withTransaction(configuration: .default, body)
     }
 
     /// Save model with security evaluation, returning serialized data for dual-write
@@ -1211,7 +1662,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Admin-only operation
         try securityDelegate?.requireAdmin(operation: "clearAll", targetType: T.persistableType)
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
@@ -1227,13 +1678,14 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Transaction Operations
 
     /// Execute operations within a transaction
+    ///
+    /// **Note**: This uses the database directly without ReadVersionCache.
+    /// For application operations that benefit from caching, use FDBContext.withTransaction().
     func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable (any TransactionContextProtocol) async throws -> T
+        _ operation: @Sendable @escaping (any TransactionContextProtocol) async throws -> T
     ) async throws -> T {
-        let runner = TransactionRunner(database: database)
-
-        return try await runner.run(configuration: configuration) { transaction in
+        return try await container.database.withTransaction(configuration: configuration) { transaction in
             // Create a secure transaction context
             let context = SecureTransactionContext(
                 transaction: transaction,

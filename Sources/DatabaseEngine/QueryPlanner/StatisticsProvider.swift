@@ -1044,8 +1044,8 @@ public struct SearchStatisticsCollector: Sendable {
 /// ```
 public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked Sendable {
 
-    /// Underlying database
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    private let container: FDBContainer
 
     /// Root subspace for the data
     private let subspace: Subspace
@@ -1057,12 +1057,12 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
     private let defaultAvgRowSize: Int
 
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace,
         baseProvider: StatisticsProvider = DefaultStatisticsProvider(),
         defaultAvgRowSize: Int = 200
     ) {
-        self.database = database
+        self.container = container
         self.subspace = subspace
         self.baseProvider = baseProvider
         self.defaultAvgRowSize = defaultAvgRowSize
@@ -1113,7 +1113,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         beginKey: [UInt8],
         endKey: [UInt8]
     ) async throws -> Int {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: beginKey,
                 endKey: endKey
@@ -1126,7 +1126,7 @@ public final class FDBLiveStatisticsProvider: LiveStatisticsProvider, @unchecked
         endKey: [UInt8],
         chunkSize: Int
     ) async throws -> [[UInt8]] {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: beginKey,
                 endKey: endKey,

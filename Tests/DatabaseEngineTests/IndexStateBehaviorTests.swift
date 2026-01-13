@@ -82,11 +82,23 @@ struct IndexedUser: Persistable {
 private struct TestContext {
     nonisolated(unsafe) let database: any DatabaseProtocol
     let subspace: Subspace
+    let container: FDBContainer
 
     init() throws {
         self.database = try FDBClient.openDatabase()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
+
+        // Create a minimal container with IndexedUser schema
+        let schema = Schema(
+            entities: [Schema.Entity(from: IndexedUser.self)],
+            version: Schema.Version(1, 0, 0)
+        )
+        self.container = FDBContainer(
+            database: database,
+            schema: schema,
+            security: .disabled
+        )
     }
 
     /// Clean up test data
@@ -123,7 +135,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled (default state)
@@ -135,7 +147,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "alice@example.com", name: "Alice")
@@ -155,7 +167,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled
@@ -167,7 +179,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert two users with same email - should NOT throw because index is disabled
             let user1 = IndexedUser(id: "user1", email: "duplicate@example.com", name: "User 1")
@@ -195,7 +207,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable index (disabled -> writeOnly)
@@ -208,7 +220,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "bob@example.com", name: "Bob")
@@ -228,7 +240,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable index (puts it in writeOnly state)
@@ -239,7 +251,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
@@ -264,7 +276,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable and make readable
@@ -276,7 +288,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
             let user1 = IndexedUser(id: "user1", email: "unique@example.com", name: "User 1")
@@ -301,7 +313,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Enable and make readable (disabled -> writeOnly -> readable)
@@ -315,7 +327,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
             let user = IndexedUser(email: "charlie@example.com", name: "Charlie")
@@ -337,7 +349,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Start with readable index
@@ -349,7 +361,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user (index entry created)
             let user = IndexedUser(id: "deletetest", email: "delete@example.com", name: "Delete Test")
@@ -381,7 +393,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_index"
 
             // Initial state is disabled
@@ -413,7 +425,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "test_invalid"
 
             // Cannot enable from writeOnly
@@ -440,7 +452,7 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(database: ctx.database, subspace: ctx.subspace)
+            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
             // Ensure index is disabled
@@ -452,7 +464,7 @@ struct IndexStateBehaviorTests {
                 entities: [Schema.Entity(from: IndexedUser.self)],
                 version: Schema.Version(1, 0, 0)
             )
-            let dataStore = FDBDataStore(database: ctx.database, subspace: ctx.subspace, schema: schema)
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Batch insert via executeBatch
             let users = [

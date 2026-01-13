@@ -1,5 +1,5 @@
 // ReadVersionCache.swift
-// DatabaseEngine - Cache for read versions to support weak read semantics
+// DatabaseEngine - Cache for read versions to support CachePolicy
 //
 // Reference: FDB Record Layer FDBDatabase.java - lastSeenVersion caching
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/FDBDatabase.java
@@ -12,7 +12,7 @@ import Dispatch
 
 /// Caches read versions from successful transactions
 ///
-/// Used to implement weak read semantics by allowing transactions
+/// Used to implement cache policies by allowing transactions
 /// to reuse recently observed read versions, reducing the number of
 /// `getReadVersion()` calls to the cluster.
 ///
@@ -32,7 +32,7 @@ import Dispatch
 /// cache.updateFromCommit(version: committedVersion)
 ///
 /// // Before starting transaction
-/// if let cachedVersion = cache.getCachedVersion(semantics: .relaxed) {
+/// if let cachedVersion = cache.getCachedVersion(policy: .cached) {
 ///     transaction.setReadVersion(cachedVersion)
 /// }
 /// ```
@@ -95,33 +95,40 @@ public final class ReadVersionCache: Sendable {
 
     // MARK: - Query Methods
 
-    /// Get cached version if valid according to semantics
+    /// Get cached version if valid according to cache policy
     ///
-    /// Returns the cached version only if:
-    /// 1. `useCachedVersion` is true
-    /// 2. Cached version >= `minVersion`
-    /// 3. Cache age <= `maxStalenessMillis`
+    /// Returns the cached version based on policy:
+    /// - `.server`: Always returns `nil` (no cache)
+    /// - `.cached`: Returns cached version regardless of age
+    /// - `.stale(N)`: Returns cached version only if age ≤ N seconds
     ///
-    /// - Parameter semantics: The weak read semantics configuration
+    /// - Parameter policy: The cache policy
     /// - Returns: The cached version, or `nil` if not valid
-    public func getCachedVersion(semantics: WeakReadSemantics) -> Int64? {
-        // Fast path: caching disabled
-        guard semantics.useCachedVersion else { return nil }
+    public func getCachedVersion(policy: CachePolicy) -> Int64? {
+        switch policy {
+        case .server:
+            // Always fetch from server
+            return nil
 
-        return cache.withLock { cached in
-            guard let cached = cached else { return nil }
+        case .cached:
+            // Use cache if available (no age check)
+            return cache.withLock { cached in
+                cached?.version
+            }
 
-            // Check minimum version requirement
-            guard cached.version >= semantics.minVersion else { return nil }
+        case .stale(let seconds):
+            // Use cache only if fresh enough
+            return cache.withLock { cached in
+                guard let cached = cached else { return nil }
 
-            // Check staleness
-            let now = DispatchTime.now().uptimeNanoseconds
-            let ageNanos = now - cached.timestamp
-            let ageMillis = Int64(ageNanos / 1_000_000)
+                let now = DispatchTime.now().uptimeNanoseconds
+                let ageNanos = now - cached.timestamp
+                let ageSeconds = Double(ageNanos) / 1_000_000_000
 
-            guard ageMillis <= semantics.maxStalenessMillis else { return nil }
+                guard ageSeconds <= seconds else { return nil }
 
-            return cached.version
+                return cached.version
+            }
         }
     }
 
@@ -140,12 +147,12 @@ public final class ReadVersionCache: Sendable {
         }
     }
 
-    /// Check if cache has a valid entry for given semantics
+    /// Check if cache has a valid entry for given policy
     ///
-    /// - Parameter semantics: The weak read semantics configuration
+    /// - Parameter policy: The cache policy
     /// - Returns: `true` if cache has a valid entry
-    public func hasValidCache(for semantics: WeakReadSemantics) -> Bool {
-        getCachedVersion(semantics: semantics) != nil
+    public func hasValidCache(for policy: CachePolicy) -> Bool {
+        getCachedVersion(policy: policy) != nil
     }
 
     // MARK: - Management
@@ -194,7 +201,7 @@ public struct ReadVersionCacheMetrics: Sendable {
 /// let cache = MetricsCollectingReadVersionCache()
 ///
 /// // Use normally...
-/// if let version = cache.getCachedVersion(semantics: .default) { ... }
+/// if let version = cache.getCachedVersion(policy: .cached) { ... }
 ///
 /// // Check metrics
 /// let metrics = cache.metrics
@@ -229,8 +236,8 @@ public final class MetricsCollectingReadVersionCache: Sendable {
         inner.updateFromRead(version: version)
     }
 
-    public func getCachedVersion(semantics: WeakReadSemantics) -> Int64? {
-        let result = inner.getCachedVersion(semantics: semantics)
+    public func getCachedVersion(policy: CachePolicy) -> Int64? {
+        let result = inner.getCachedVersion(policy: policy)
 
         counters.withLock { counters in
             counters.lookups += 1

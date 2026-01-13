@@ -177,7 +177,7 @@ struct MigrationTests {
             let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
-                database: container.database,
+                container: container,
                 schema: container.schema,
                 metadataSubspace: metadataSubspace.subspace,
                 storeRegistry: storeRegistry
@@ -233,7 +233,7 @@ struct MigrationTests {
             let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
-                database: container.database,
+                container: container,
                 schema: container.schema,
                 metadataSubspace: metadataSubspace.subspace,
                 storeRegistry: storeRegistry
@@ -269,7 +269,7 @@ struct MigrationTests {
             let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
-                database: container.database,
+                container: container,
                 schema: container.schema,
                 metadataSubspace: metadataSubspace.subspace,
                 storeRegistry: storeRegistry

@@ -46,6 +46,16 @@ public struct Query<T: Persistable>: Sendable {
     /// Set via `.partition()` fluent API method.
     public var partitionBinding: DirectoryPath<T>?
 
+    /// Cache policy for this query
+    ///
+    /// Controls whether the query uses cached read versions for performance optimization.
+    /// Default is `.server` (strict consistency).
+    ///
+    /// - `.server`: Always fetch latest data from server (strict consistency)
+    /// - `.cached`: Use cached read version (5 seconds staleness)
+    /// - `.stale(N)`: Allow stale data up to N seconds
+    public var cachePolicy: CachePolicy = .server
+
     /// Initialize an empty query
     public init() {
         self.predicates = []
@@ -53,6 +63,7 @@ public struct Query<T: Persistable>: Sendable {
         self.fetchLimit = nil
         self.fetchOffset = nil
         self.partitionBinding = nil
+        self.cachePolicy = .server
     }
 
     // MARK: - Fluent API
@@ -89,6 +100,31 @@ public struct Query<T: Persistable>: Sendable {
     public func offset(_ count: Int) -> Query<T> {
         var copy = self
         copy.fetchOffset = count
+        return copy
+    }
+
+    /// Set cache policy for this query
+    ///
+    /// Controls whether the query uses cached read versions for performance optimization.
+    ///
+    /// - Parameter policy: The cache policy to use
+    /// - Returns: A new Query with the cache policy set
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Fetch latest data (strict consistency)
+    /// let users = try await context.fetch(User.self)
+    ///     .cachePolicy(.server)
+    ///     .execute()
+    ///
+    /// // Allow 30-second stale data
+    /// let products = try await context.fetch(Product.self)
+    ///     .cachePolicy(.stale(30))
+    ///     .execute()
+    /// ```
+    public func cachePolicy(_ policy: CachePolicy) -> Query<T> {
+        var copy = self
+        copy.cachePolicy = policy
         return copy
     }
 
@@ -490,6 +526,31 @@ public struct QueryExecutor<T: Persistable>: Sendable {
     public func offset(_ count: Int) -> QueryExecutor<T> {
         var copy = self
         copy.query = query.offset(count)
+        return copy
+    }
+
+    /// Set cache policy for this query
+    ///
+    /// Controls whether the query uses cached read versions for performance optimization.
+    ///
+    /// - Parameter policy: The cache policy to use
+    /// - Returns: A new QueryExecutor with the cache policy set
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Fetch latest data (strict consistency)
+    /// let users = try await context.fetch(User.self)
+    ///     .cachePolicy(.server)
+    ///     .execute()
+    ///
+    /// // Allow 30-second stale data
+    /// let products = try await context.fetch(Product.self)
+    ///     .cachePolicy(.stale(30))
+    ///     .execute()
+    /// ```
+    public func cachePolicy(_ policy: CachePolicy) -> QueryExecutor<T> {
+        var copy = self
+        copy.query = query.cachePolicy(policy)
         return copy
     }
 

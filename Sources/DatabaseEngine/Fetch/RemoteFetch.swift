@@ -416,19 +416,19 @@ public struct LocalityHints: Sendable {
 /// For use cases where multiple independent fetches can run in parallel
 /// across different read snapshots.
 public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    private let container: FDBContainer
     private let fetcher: RemoteFetcher<Item>
     private let maxConcurrency: Int
 
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String = String(describing: Item.self),
         configuration: RemoteFetchConfiguration = .default,
         maxConcurrency: Int = 4
     ) {
-        self.database = database
+        self.container = container
         self.fetcher = RemoteFetcher<Item>(
             subspace: subspace,
             blobsSubspace: blobsSubspace,
@@ -455,7 +455,7 @@ public final class ParallelFetchCoordinator<Item: Persistable>: Sendable {
         let results = try await withThrowingTaskGroup(of: [Item].self) { group in
             for chunk in chunks {
                 group.addTask {
-                    try await self.database.withTransaction(configuration: .default) { tx in
+                    try await self.container.database.withTransaction(configuration: .default) { tx in
                         try await self.fetcher.fetch(primaryKeys: chunk, transaction: tx)
                     }
                 }

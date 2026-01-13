@@ -24,6 +24,7 @@ struct OnlineIndexerAtomicityTests {
 
     struct TestContext: Sendable {
         nonisolated(unsafe) let database: any DatabaseProtocol
+        let container: FDBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
@@ -36,6 +37,10 @@ struct OnlineIndexerAtomicityTests {
             self.itemSubspace = testSubspace.subspace("R")
             self.indexSubspace = testSubspace.subspace("I")
             self.blobsSubspace = testSubspace.subspace("B")
+
+            // Create container with Player schema
+            let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+            self.container = FDBContainer(database: database, schema: schema, security: .disabled)
         }
 
         func cleanup() async throws {
@@ -80,14 +85,14 @@ struct OnlineIndexerAtomicityTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
             let indexer = OnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
@@ -128,7 +133,7 @@ struct OnlineIndexerAtomicityTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
@@ -138,7 +143,7 @@ struct OnlineIndexerAtomicityTests {
             ]
 
             let indexer = MultiTargetOnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 itemSubspace: ctx.itemSubspace,
                 indexSubspace: ctx.indexSubspace,
                 blobsSubspace: ctx.blobsSubspace,
@@ -183,14 +188,14 @@ struct OnlineIndexerAtomicityTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
             let indexer = OnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
@@ -227,14 +232,14 @@ struct OnlineIndexerAtomicityTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
             let indexer = OnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,

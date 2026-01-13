@@ -28,7 +28,7 @@ import Synchronization
 /// **Usage Example**:
 /// ```swift
 /// let indexer = MultiTargetOnlineIndexer<User>(
-///     database: database,
+///     container: container,
 ///     itemSubspace: itemSubspace,
 ///     indexSubspace: indexSubspace,
 ///     itemType: "User",
@@ -44,8 +44,8 @@ import Synchronization
 public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -84,7 +84,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     /// Initialize multi-target indexer
     ///
     /// - Parameters:
-    ///   - database: Database instance
+    ///   - container: FDB Container instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
     ///   - blobsSubspace: Subspace where blob chunks are stored
@@ -94,7 +94,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -104,7 +104,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
     ) {
-        self.database = database
+        self.container = container
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
         self.blobsSubspace = blobsSubspace
@@ -221,7 +221,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
@@ -307,7 +307,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        let progressKey = self.progressKey
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -321,7 +322,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        let progressKey = self.progressKey
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -329,8 +331,8 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            let indexRange = indexSubspace.subspace(index.name).range()
+        let indexRange = self.indexSubspace.subspace(index.name).range()
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }

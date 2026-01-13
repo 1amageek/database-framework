@@ -66,7 +66,8 @@ import Synchronization
 public final class IndexManager: Sendable {
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    let container: FDBContainer
     private let subspace: Subspace
 
     /// IndexStateManager for managing index states
@@ -82,16 +83,16 @@ public final class IndexManager: Sendable {
     /// Initialize IndexManager
     ///
     /// - Parameters:
-    ///   - database: FoundationDB database
+    ///   - container: FDBContainer for transaction execution
     ///   - subspace: Subspace for storing index data and state
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace
     ) {
-        self.database = database
+        self.container = container
         self.subspace = subspace
         self.stateManager = IndexStateManager(
-            database: database,
+            container: container,
             subspace: subspace
         )
         self.indexRegistry = Mutex([:])

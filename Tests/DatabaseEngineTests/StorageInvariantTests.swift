@@ -23,7 +23,11 @@ struct StorageInvariantTests {
             let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
             let metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
 
-            let tracker = UniquenessViolationTracker(database: database, metadataSubspace: metadataSubspace)
+            // Create container for components that need it
+            let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+            let container = FDBContainer(database: database, schema: schema, security: .disabled)
+
+            let tracker = UniquenessViolationTracker(container: container, metadataSubspace: metadataSubspace)
             let indexName = "unique_clearFirst_idx"
 
             // Seed a violation in the correct metadata subspace.
@@ -49,11 +53,11 @@ struct StorageInvariantTests {
             )
 
             let maintainer = CountingIndexMaintainer<Player>(indexSubspace: indexSubspace, indexName: index.name)
-            let stateManager = IndexStateManager(database: database, subspace: indexSubspace.subspace("_meta"))
+            let stateManager = IndexStateManager(container: container, subspace: indexSubspace.subspace("_meta"))
             try await stateManager.enable(index.name)
 
             let indexer = OnlineIndexer(
-                database: database,
+                container: container,
                 storeSubspace: storeSubspace,
                 itemType: Player.persistableType,
                 index: index,

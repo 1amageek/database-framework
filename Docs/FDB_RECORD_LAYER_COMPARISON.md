@@ -41,10 +41,10 @@
 | PostCommit | `Transaction/PostCommit.swift` | ✅ |
 | TransactionListener | `Transaction/TransactionListener.swift` | ✅ |
 | StoreTimer | `Instrumentation/StoreTimer.swift` | ✅ |
-| WeakReadSemantics | `Transaction/WeakReadSemantics.swift` | ✅ |
+| CachePolicy | `Transaction/CachePolicy.swift` | ✅ |
 | TransactionConfiguration | `Transaction/TransactionConfiguration.swift` | ✅ |
 
-**結論**: トランザクション管理は同等レベルで実装済み。
+**結論**: トランザクション管理は同等レベルで実装済み。CachePolicyはWeakReadSemanticsの簡素化された代替実装。
 
 ---
 

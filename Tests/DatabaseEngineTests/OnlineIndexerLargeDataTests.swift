@@ -24,6 +24,7 @@ struct OnlineIndexerLargeDataTests {
 
     struct TestContext: Sendable {
         nonisolated(unsafe) let database: any DatabaseProtocol
+        let container: FDBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
@@ -36,6 +37,10 @@ struct OnlineIndexerLargeDataTests {
             self.itemSubspace = testSubspace.subspace("R")
             self.indexSubspace = testSubspace.subspace("I")
             self.blobsSubspace = testSubspace.subspace("B")
+
+            // Create container with Player schema
+            let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+            self.container = FDBContainer(database: database, schema: schema, security: .disabled)
         }
 
         func cleanup() async throws {
@@ -93,14 +98,14 @@ struct OnlineIndexerLargeDataTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
         let indexer = OnlineIndexer(
-            database: ctx.database,
+            container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
             index: index,
@@ -141,14 +146,14 @@ struct OnlineIndexerLargeDataTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
         let indexer = OnlineIndexer(
-            database: ctx.database,
+            container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
             index: index,
@@ -192,7 +197,7 @@ struct OnlineIndexerLargeDataTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
@@ -202,7 +207,7 @@ struct OnlineIndexerLargeDataTests {
             ]
 
             let indexer = MultiTargetOnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 itemSubspace: ctx.itemSubspace,
                 indexSubspace: ctx.indexSubspace,
                 blobsSubspace: ctx.blobsSubspace,
@@ -238,14 +243,14 @@ struct OnlineIndexerLargeDataTests {
             )
 
             let stateManager = IndexStateManager(
-                database: ctx.database,
+                container: ctx.container,
                 subspace: ctx.indexSubspace.subspace("_meta")
             )
 
             try await stateManager.enable(index.name)
 
             let indexer = OnlineIndexer(
-                database: ctx.database,
+                container: ctx.container,
                 storeSubspace: ctx.testSubspace,
                 itemType: Player.persistableType,
                 index: index,
@@ -277,14 +282,14 @@ struct OnlineIndexerLargeDataTests {
         )
 
         let stateManager = IndexStateManager(
-            database: ctx.database,
+            container: ctx.container,
             subspace: ctx.indexSubspace.subspace("_meta")
         )
 
         try await stateManager.enable(index.name)
 
         let indexer = OnlineIndexer(
-            database: ctx.database,
+            container: ctx.container,
             storeSubspace: ctx.testSubspace,
             itemType: Player.persistableType,
             index: index,

@@ -23,8 +23,8 @@ This document tracks the missing features required for database-framework to be 
 | TransactionConfiguration | `Transaction/TransactionConfiguration.swift` | ✅ Complete |
 | TransactionRunner | `Transaction/TransactionRunner.swift` | ✅ Complete |
 | TransactionContext | `Transaction/TransactionContext.swift` | ✅ Complete |
-| WeakReadSemantics | `Transaction/WeakReadSemantics.swift` | ✅ Complete |
-| ReadVersionCache | `Core/ReadVersionCache.swift` | ✅ Complete |
+| CachePolicy | `Transaction/CachePolicy.swift` | ✅ Complete |
+| ReadVersionCache | `Transaction/ReadVersionCache.swift` | ✅ Complete |
 | InstrumentedTransaction | `Instrumentation/InstrumentedTransaction.swift` | ✅ Complete |
 | CommitCheck | `Transaction/CommitCheck.swift` | ✅ Complete |
 | PostCommit | `Transaction/PostCommit.swift` | ✅ Complete |

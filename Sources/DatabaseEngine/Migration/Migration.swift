@@ -97,8 +97,8 @@ public struct MigrationStoreInfo: Sendable {
 public struct MigrationContext: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) public let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    public let container: FDBContainer
 
     /// Schema being migrated to
     public let schema: Schema
@@ -120,13 +120,13 @@ public struct MigrationContext: Sendable {
     // MARK: - Initialization
 
     internal init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         schema: Schema,
         metadataSubspace: Subspace,
         storeRegistry: [String: MigrationStoreInfo],
         indexConfigurations: [String: [any IndexConfiguration]] = [:]
     ) {
-        self.database = database
+        self.container = container
         self.schema = schema
         self.metadataSubspace = metadataSubspace
         self.storeRegistry = storeRegistry
@@ -183,7 +183,7 @@ public struct MigrationContext: Sendable {
         }
 
         let indexManager = IndexManager(
-            database: database,
+            container: container,
             subspace: info.indexSubspace
         )
 
@@ -233,7 +233,7 @@ public struct MigrationContext: Sendable {
             // Use the persistableType directly from Entity
             try await EntityIndexBuilder.buildIndex(
                 forPersistableType: targetEntity.persistableType,
-                database: database,
+                container: container,
                 storeSubspace: info.subspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
@@ -288,7 +288,7 @@ public struct MigrationContext: Sendable {
         }
 
         let indexManager = IndexManager(
-            database: database,
+            container: container,
             subspace: info.indexSubspace
         )
 
@@ -300,7 +300,7 @@ public struct MigrationContext: Sendable {
 
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             // Write FormerIndex entry
             let timestamp = Date().timeIntervalSince1970
             transaction.setValue(
@@ -355,7 +355,7 @@ public struct MigrationContext: Sendable {
         }
 
         let indexManager = IndexManager(
-            database: database,
+            container: container,
             subspace: info.indexSubspace
         )
 
@@ -375,7 +375,7 @@ public struct MigrationContext: Sendable {
         // This ensures the index is in a consistent state before building
         let indexRange = info.indexSubspace.subspace(indexName).range()
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
             try await indexManager.stateManager.disable(indexName, transaction: transaction)
 
@@ -398,7 +398,7 @@ public struct MigrationContext: Sendable {
         do {
             try await EntityIndexBuilder.buildIndex(
                 entityName: targetEntity.name,
-                database: database,
+                container: container,
                 storeSubspace: info.subspace,
                 index: index,
                 indexStateManager: indexManager.stateManager,
@@ -428,7 +428,7 @@ public struct MigrationContext: Sendable {
     public func executeOperation<T: Sendable>(
         _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await container.database.withTransaction(configuration: .default) { transaction in
             try await operation(transaction)
         }
     }
@@ -466,7 +466,7 @@ public struct MigrationContext: Sendable {
         let enumerator = ItemEnumerator<T>(
             itemType: T.persistableType,
             storeRegistry: self.storeRegistry,
-            database: self.database,
+            container: self.container,
             batchSize: batchSize
         )
         return enumerator.makeStream()
@@ -494,7 +494,7 @@ public struct MigrationContext: Sendable {
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
         let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-        try await database.withTransaction(configuration: .default) { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -523,7 +523,7 @@ public struct MigrationContext: Sendable {
         let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
         let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-        try await database.withTransaction(configuration: .default) { transaction in
+        try await container.database.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -559,7 +559,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = Array(items[batchStart..<batchEnd])
 
-            try await database.withTransaction(configuration: .batch) { transaction in
+            try await container.database.withTransaction(configuration: .batch) { transaction in
                 let storage = ItemStorage(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -600,7 +600,7 @@ public struct MigrationContext: Sendable {
             let batchEnd = min(batchStart + batchSize, items.count)
             let batch = items[batchStart..<batchEnd]
 
-            try await database.withTransaction(configuration: .batch) { transaction in
+            try await container.database.withTransaction(configuration: .batch) { transaction in
                 let storage = ItemStorage(
                     transaction: transaction,
                     blobsSubspace: blobsSubspace
@@ -641,7 +641,7 @@ public struct MigrationContext: Sendable {
 
         // Use approximate count for large datasets
         if approximate {
-            let sizeBytes = try await database.withTransaction(configuration: .batch) { transaction in
+            let sizeBytes = try await container.database.withTransaction(configuration: .batch) { transaction in
                 try await transaction.getEstimatedRangeSizeBytes(
                     beginKey: beginKey,
                     endKey: endKey
@@ -658,7 +658,7 @@ public struct MigrationContext: Sendable {
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await database.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await container.database.withTransaction(configuration: .batch) { transaction in
                 let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
@@ -815,22 +815,6 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
     }
 }
 
-// MARK: - Sendable Database Wrapper
-
-/// Wrapper to allow DatabaseProtocol to be captured in @Sendable closures
-///
-/// This is safe because FDB's database connection is thread-safe internally.
-@usableFromInline
-struct SendableDatabase: @unchecked Sendable {
-    @usableFromInline
-    let underlying: any DatabaseProtocol
-
-    @usableFromInline
-    init(_ database: any DatabaseProtocol) {
-        self.underlying = database
-    }
-}
-
 // MARK: - ItemEnumerator
 
 /// Internal helper for enumerating items with batch processing
@@ -840,13 +824,13 @@ struct SendableDatabase: @unchecked Sendable {
 	private struct ItemEnumerator<T: Persistable>: Sendable {
     let itemType: String
     let storeRegistry: [String: MigrationStoreInfo]
-    let database: SendableDatabase
+    let container: FDBContainer
     let batchSize: Int
 
-    init(itemType: String, storeRegistry: [String: MigrationStoreInfo], database: any DatabaseProtocol, batchSize: Int) {
+    init(itemType: String, storeRegistry: [String: MigrationStoreInfo], container: FDBContainer, batchSize: Int) {
         self.itemType = itemType
         self.storeRegistry = storeRegistry
-        self.database = SendableDatabase(database)
+        self.container = container
         self.batchSize = batchSize
     }
 
@@ -854,7 +838,7 @@ struct SendableDatabase: @unchecked Sendable {
         // Capture properties in local variables for sendability
         let itemType = self.itemType
         let storeRegistry = self.storeRegistry
-        let database = self.database
+        let container = self.container
         let batchSize = self.batchSize
 
         return AsyncThrowingStream { continuation in
@@ -881,7 +865,7 @@ struct SendableDatabase: @unchecked Sendable {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.underlying.withTransaction(configuration: .batch) { transaction in
+	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
 
 	                            let storage = ItemStorage(

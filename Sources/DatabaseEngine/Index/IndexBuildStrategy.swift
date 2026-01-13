@@ -23,7 +23,7 @@ import Core
 ///     private let maintainer: HNSWIndexMaintainer<Item>
 ///
 ///     public func buildIndex(
-///         database: any DatabaseProtocol,
+///         container: FDBContainer,
 ///         itemSubspace: Subspace,
 ///         indexSubspace: Subspace,
 ///         itemType: String,
@@ -58,7 +58,7 @@ public protocol IndexBuildStrategy<Item>: Sendable {
     /// - Consider batch processing for large datasets
     ///
     /// - Parameters:
-    ///   - database: Database instance for transactions
+    ///   - container: FDBContainer for transaction execution
     ///   - itemSubspace: Subspace where items are stored ([R]/)
     ///   - indexSubspace: Subspace where index data is stored ([I]/)
     ///   - itemType: Type name of items to index (e.g., "User", "Product")
@@ -67,7 +67,7 @@ public protocol IndexBuildStrategy<Item>: Sendable {
     ///
     /// **Note**: Use `DataAccess.serialize()`, `DataAccess.deserialize()`, and `DataAccess.evaluate()` to work with items
     func buildIndex(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         itemType: String,

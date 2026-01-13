@@ -520,7 +520,7 @@ extension FDBDataStore {
         return AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await database.withTransaction(configuration: .default) { transaction in
+                    try await self.container.database.withTransaction(configuration: .default) { transaction in
                         let beginKey: [UInt8]
                         let endKey: [UInt8]
 
@@ -579,7 +579,7 @@ extension FDBDataStore {
 
     /// Get a single value by key (raw access)
     func getValueRaw(key: [UInt8]) async throws -> [UInt8]? {
-        return try await database.withTransaction(configuration: .default) { transaction in
+        return try await self.container.database.withTransaction(configuration: .default) { transaction in
             return try await transaction.getValue(for: key, snapshot: true)
         }
     }

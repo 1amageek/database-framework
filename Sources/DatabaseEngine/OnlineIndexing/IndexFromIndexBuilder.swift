@@ -43,7 +43,7 @@ public enum IndexSourceCompatibility: Sendable {
 /// **Usage**:
 /// ```swift
 /// let builder = IndexFromIndexBuilder<User>(
-///     database: database,
+///     container: container,
 ///     sourceIndex: emailIndex,
 ///     targetIndex: emailDomainIndex,
 ///     sourceMaintainer: emailMaintainer,
@@ -62,8 +62,8 @@ public enum IndexSourceCompatibility: Sendable {
 public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Subspace where items are stored
     private let itemSubspace: Subspace
@@ -118,7 +118,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Initialization
 
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         itemSubspace: Subspace,
         blobsSubspace: Subspace,
         indexSubspace: Subspace,
@@ -130,7 +130,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         stateManager: IndexStateManager,
         throttleConfiguration: ThrottleConfiguration = .default
     ) {
-        self.database = database
+        self.container = container
         self.itemSubspace = itemSubspace
         self.blobsSubspace = blobsSubspace
         self.indexSubspace = indexSubspace
@@ -286,7 +286,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
 
@@ -393,7 +393,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, dataFetches, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, dataFetches, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
                     var dataFetches = 0
@@ -547,7 +547,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress() async throws -> RangeSet? {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: self.progressKey) else {
                 return nil
             }
@@ -561,7 +561,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: self.progressKey)
         }
     }
@@ -569,7 +569,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Index Management
 
     private func clearTargetIndex() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             let targetRange = self.indexSubspace.subspace(self.targetIndex.name).range()
             transaction.clearRange(beginKey: targetRange.begin, endKey: targetRange.end)
         }
@@ -595,7 +595,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
         // Collect sample using reservoir sampling
         // Move reservoir and itemsSeen inside transaction to avoid Sendable capture issues
-        let reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.withTransaction(configuration: .batch) { transaction in
+        let reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
             var reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = []
             var itemsSeen = 0
 
@@ -638,7 +638,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
             let batchEnd = min(batchStart + verifyBatchSize, reservoir.count)
             let batch = Array(reservoir[batchStart..<batchEnd])
 
-            let (batchMissing, batchVerified) = try await database.withTransaction(configuration: .batch) { transaction in
+            let (batchMissing, batchVerified) = try await container.database.withTransaction(configuration: .batch) { transaction in
                 var batchMissingCount = 0
                 var batchVerifiedCount = 0
 

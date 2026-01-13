@@ -953,7 +953,7 @@ struct TransactionConfigurationExtendedTests {
     @Test("TransactionConfiguration init has reasonable parameter count")
     func initHasReasonableParameterCount() {
         // The init now has 8 parameters instead of 11
-        // Core: timeout, retryLimit, maxRetryDelay, priority, readPriority, disableReadCache, weakReadSemantics
+        // Core: timeout, retryLimit, maxRetryDelay, priority, readPriority, disableReadCache, cachePolicy
         // Grouped: tracing
 
         let config = TransactionConfiguration(
@@ -963,7 +963,7 @@ struct TransactionConfigurationExtendedTests {
             priority: .batch,
             readPriority: .low,
             disableReadCache: true,
-            weakReadSemantics: .relaxed,
+            cachePolicy: .stale(30),
             tracing: .init(transactionID: "test")
         )
 
@@ -973,7 +973,7 @@ struct TransactionConfigurationExtendedTests {
         #expect(config.priority == .batch)
         #expect(config.readPriority == .low)
         #expect(config.disableReadCache == true)
-        #expect(config.weakReadSemantics == .relaxed)
+        #expect(config.cachePolicy == .stale(30))
         #expect(config.transactionID == "test")
     }
 }

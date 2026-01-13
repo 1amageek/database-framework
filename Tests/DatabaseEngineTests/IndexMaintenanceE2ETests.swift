@@ -116,7 +116,7 @@ struct IndexMaintenanceE2ETests {
         container: FDBContainer
     ) async throws {
         let subspace = try await container.resolveDirectory(for: type)
-        let indexStateManager = IndexStateManager(database: container.database, subspace: subspace)
+        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
         for descriptor in type.indexDescriptors {
             // Enable: disabled -> writeOnly

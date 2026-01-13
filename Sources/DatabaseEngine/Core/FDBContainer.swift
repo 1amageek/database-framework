@@ -7,21 +7,36 @@ import Logging
 /// FDBContainer - SwiftData-like container for FoundationDB persistence
 ///
 /// **Design Philosophy**:
-/// FDBContainer is a lightweight coordinator that connects:
+/// FDBContainer is a **resource manager** (like SwiftData's ModelContainer) that connects:
 /// - **Schema**: Defines entities and indexes
-/// - **Database**: Provides DirectoryLayer and transactions
+/// - **Database**: Provides DirectoryLayer access for system operations
 /// - **Persistable types**: Define their own directory paths via `#Directory` macro
 ///
 /// FDBContainer does NOT manage:
 /// - `subspace`: Each Persistable type defines its own directory via `#Directory`
-/// - `directoryLayer`: Provided by Database
+/// - `directoryLayer`: Used only for system-level operations
 /// - `dataStore`: Created dynamically based on resolved directory
+/// - **Transactions**: FDBContext manages transactions (Context-centric design)
+/// - **ReadVersionCache**: FDBContext owns cache per unit of work
 ///
 /// **Responsibilities**:
 /// - Schema management
-/// - Database connection reference
+/// - Database connection for system operations (DirectoryLayer, Migration)
 /// - Directory resolution from Persistable type metadata
-/// - Migration execution
+/// - DataStore factory
+///
+/// **Architecture** (similar to SwiftData's ModelContainer):
+/// ```
+/// FDBContainer (Resource Manager)
+///     ├── database: DatabaseProtocol (for system operations only)
+///     ├── schema: Schema
+///     └── newContext() → FDBContext (owns transactions + cache)
+/// ```
+///
+/// **Context-Centric Design**:
+/// - FDBContainer does NOT create application transactions
+/// - FDBContext owns ReadVersionCache and creates transactions via TransactionRunner
+/// - System operations (DirectoryLayer, Migration) use `database.withTransaction()` directly
 ///
 /// **Usage**:
 /// ```swift
@@ -45,18 +60,12 @@ import Logging
 public final class FDBContainer: Sendable {
     // MARK: - Properties
 
-    /// FDB Database wrapper with read version caching
+    /// The underlying FDB database connection
     ///
-    /// Provides transaction execution with weak read semantics support.
-    public let fdbDatabase: FDBDatabase
-
-    /// Raw database connection (convenience accessor)
-    ///
-    /// For backward compatibility. Prefer `fdbDatabase.withTransaction()` for
-    /// proper read version caching support.
-    public var database: any DatabaseProtocol {
-        fdbDatabase.database
-    }
+    /// Thread-safe: FDB client handles thread safety internally.
+    /// Used for system operations (DirectoryLayer, Migration).
+    /// Application transactions should use FDBContext.withTransaction().
+    nonisolated(unsafe) public let database: any DatabaseProtocol
 
     /// Schema (version, entities, indexes)
     public let schema: Schema
@@ -114,7 +123,7 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        self.fdbDatabase = try FDBDatabase(clusterFilePath: configuration?.url?.path)
+        self.database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -127,42 +136,10 @@ public final class FDBContainer: Sendable {
         self.directoryCache = Mutex([:])
     }
 
-    /// Initialize FDBContainer with FDBDatabase (low-level API)
+    /// Initialize FDBContainer with raw database
     ///
     /// - Parameters:
-    ///   - fdbDatabase: The FDB database wrapper
-    ///   - schema: Schema defining entities and indexes
-    ///   - configuration: Optional configuration
-    ///   - security: Security configuration (default: enabled)
-    ///   - indexConfigurations: Index configurations
-    public init(
-        fdbDatabase: FDBDatabase,
-        schema: Schema,
-        configuration: FDBConfiguration? = nil,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
-    ) {
-        precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
-
-        self.fdbDatabase = fdbDatabase
-        self.schema = schema
-        self.configuration = configuration
-        self.securityConfiguration = security
-        self.securityDelegate = security.isEnabled
-            ? DefaultSecurityDelegate(configuration: security)
-            : nil
-        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
-        self._migrationPlan = nil
-        self.logger = Logger(label: "com.fdb.runtime.container")
-        self.directoryCache = Mutex([:])
-    }
-
-    /// Initialize FDBContainer with raw database (convenience)
-    ///
-    /// Creates an FDBDatabase wrapper around the raw database.
-    ///
-    /// - Parameters:
-    ///   - database: The raw FDB database
+    ///   - database: The raw FDB database connection
     ///   - schema: Schema defining entities and indexes
     ///   - configuration: Optional configuration
     ///   - security: Security configuration (default: enabled)
@@ -176,7 +153,7 @@ public final class FDBContainer: Sendable {
     ) {
         precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
 
-        self.fdbDatabase = FDBDatabase(database: database)
+        self.database = database
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -291,9 +268,8 @@ public final class FDBContainer: Sendable {
     ) async throws -> any DataStore {
         let subspace = try await resolveDirectory(for: type, path: path)
         return FDBDataStore(
-            database: database,
+            container: self,
             subspace: subspace,
-            schema: schema,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -306,9 +282,8 @@ public final class FDBContainer: Sendable {
     ) async throws -> any DataStore {
         let subspace = try await resolveDirectory(for: type, path: path)
         return FDBDataStore(
-            database: database,
+            container: self,
             subspace: subspace,
-            schema: schema,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
@@ -567,7 +542,7 @@ extension FDBContainer {
         let metadataSubspace = try await getMetadataSubspace()
 
         let context = MigrationContext(
-            database: database,
+            container: self,
             schema: schema,
             metadataSubspace: metadataSubspace,
             storeRegistry: storeRegistry,

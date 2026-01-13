@@ -162,10 +162,29 @@ public protocol DataStore: AnyObject, Sendable {
     /// - Throws: SecurityError or other errors from the operation
     func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable (any TransactionContextProtocol) async throws -> T
+        _ operation: @Sendable @escaping (any TransactionContextProtocol) async throws -> T
     ) async throws -> T
 
     // MARK: - Transaction-Scoped Operations
+
+    /// Fetch a single model by ID within an externally-provided transaction
+    ///
+    /// Security: GET operation is evaluated via securityDelegate after fetch.
+    ///
+    /// This method performs a direct key lookup (O(1)) rather than a query scan.
+    /// Use this when you know the exact ID of the item you want to fetch.
+    ///
+    /// - Parameters:
+    ///   - type: The model type
+    ///   - id: The model's identifier
+    ///   - transaction: The transaction to use
+    /// - Returns: The model if found and access is allowed, nil if not found
+    /// - Throws: SecurityError if GET not allowed, or other errors on failure
+    func fetchByIdInTransaction<T: Persistable>(
+        _ type: T.Type,
+        id: any TupleElement,
+        transaction: any TransactionProtocol
+    ) async throws -> T?
 
     /// Execute batch operations within an externally-provided transaction
     ///

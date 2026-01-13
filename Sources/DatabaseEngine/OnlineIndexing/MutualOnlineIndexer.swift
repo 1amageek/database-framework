@@ -28,7 +28,7 @@ import Synchronization
 /// **Usage Example**:
 /// ```swift
 /// let indexer = MutualOnlineIndexer<Follow>(
-///     database: database,
+///     container: container,
 ///     itemSubspace: itemSubspace,
 ///     indexSubspace: indexSubspace,
 ///     itemType: "Follow",
@@ -44,8 +44,8 @@ import Synchronization
 public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -95,7 +95,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     /// Initialize mutual indexer
     ///
     /// - Parameters:
-    ///   - database: Database instance
+    ///   - container: FDB Container instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
     ///   - blobsSubspace: Subspace where blob chunks are stored
@@ -108,7 +108,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -121,7 +121,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
     ) {
-        self.database = database
+        self.container = container
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
         self.blobsSubspace = blobsSubspace
@@ -252,7 +252,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -357,7 +357,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         let forwardSubspace = indexSubspace.subspace(forwardIndex.name)
         let reverseSubspace = indexSubspace.subspace(reverseIndex.name)
 
-        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await database.withTransaction(configuration: .batch) { transaction in
+        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await container.database.withTransaction(configuration: .batch) { transaction in
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()
@@ -406,7 +406,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -420,17 +420,19 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     }
 
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: forwardProgressKey)
-            transaction.clear(key: reverseProgressKey)
+        let forwardKey = self.forwardProgressKey
+        let reverseKey = self.reverseProgressKey
+        try await container.database.withTransaction(configuration: .batch) { transaction in
+            transaction.clear(key: forwardKey)
+            transaction.clear(key: reverseKey)
         }
     }
 
     // MARK: - Index Data Management
 
     private func clearIndexData(for index: Index) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            let indexRange = indexSubspace.subspace(index.name).range()
+        let indexRange = self.indexSubspace.subspace(index.name).range()
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
@@ -481,8 +483,8 @@ public struct MutualIndexConfiguration: Sendable {
 /// using a secondary index or maintaining both directions. The current
 /// implementation requires a full scan for reverse lookups.
 public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Index subspace
     private let indexSubspace: Subspace
@@ -491,12 +493,12 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     private let config: MutualIndexConfiguration
 
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         indexSubspace: Subspace,
         config: MutualIndexConfiguration
     ) {
         precondition(config.isSymmetric, "SymmetricIndexBuilder requires symmetric configuration")
-        self.database = database
+        self.container = container
         self.indexSubspace = indexSubspace
         self.config = config
     }

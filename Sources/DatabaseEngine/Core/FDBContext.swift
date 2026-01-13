@@ -11,10 +11,16 @@ import Logging
 /// new models, track and persist changes to those models, and to delete those
 /// models when you no longer need them.
 ///
-/// **Architecture**:
+/// **Architecture** (Context-Centric Design):
 /// - FDBContext provides SwiftData-like high-level API
+/// - **FDBContext owns transactions and ReadVersionCache** (not FDBContainer)
 /// - Container resolves directories from Persistable type's `#Directory` declaration
 /// - FDBDataStore performs low-level FDB operations in the resolved directory
+///
+/// **Transaction Management**:
+/// - Use `context.withTransaction()` for explicit transaction control
+/// - ReadVersionCache is per-context for proper scoping per unit of work
+/// - System operations (DirectoryLayer, Migration) use `container.database.withTransaction()`
 ///
 /// **Usage**:
 /// ```swift
@@ -34,6 +40,12 @@ import Logging
 ///     .limit(10)
 ///     .execute()
 ///
+/// // Explicit transaction
+/// try await context.withTransaction(configuration: .default) { tx in
+///     let user = try await tx.get(User.self, id: userId)
+///     // ...
+/// }
+///
 /// // Get by ID
 /// if let user = try await context.model(for: userId, as: User.self) {
 ///     print(user.name)
@@ -48,6 +60,42 @@ public final class FDBContext: Sendable {
 
     /// The container that owns this context
     public let container: FDBContainer
+
+    /// Read version cache for CachePolicy
+    ///
+    /// Each context owns its own cache, scoped to the unit of work.
+    /// This follows the design principle that cache lifetime = context lifetime.
+    ///
+    /// **Use Cases**:
+    /// - Web app: 1 request = 1 context → cache effective within request
+    /// - Batch processing: long-lived context → cache shared across batch
+    /// - Parallel processing: each context has independent cache → no interference
+    ///
+    /// **Cache Usage by Operation**:
+    ///
+    /// | Operation | Uses Cache | CachePolicy |
+    /// |-----------|------------|-------------|
+    /// | `fetch()` | Configurable | `.server` (default), `.cached`, `.stale(N)` |
+    /// | `fetchCount()` | Configurable | Same as fetch() |
+    /// | `withTransaction()` | ✅ Yes | Via TransactionConfiguration.cachePolicy |
+    /// | `save()` | ❌ No | Write operations need latest data for consistency |
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Default: strict consistency (no cache)
+    /// let users = try await context.fetch(User.self).execute()
+    ///
+    /// // Use cache if available (no time limit)
+    /// let users = try await context.fetch(User.self)
+    ///     .cachePolicy(.cached)
+    ///     .execute()
+    ///
+    /// // Use cache only if younger than 30 seconds
+    /// let users = try await context.fetch(User.self)
+    ///     .cachePolicy(.stale(30))
+    ///     .execute()
+    /// ```
+    private let readVersionCache: ReadVersionCache
 
     /// Change tracking state
     private let stateLock: Mutex<ContextState>
@@ -82,6 +130,7 @@ public final class FDBContext: Sendable {
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
     public init(container: FDBContainer, autosaveEnabled: Bool = false) {
         self.container = container
+        self.readVersionCache = ReadVersionCache()
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
         self.logger = Logger(label: "com.fdb.runtime.context")
     }
@@ -318,7 +367,7 @@ public final class FDBContext: Sendable {
                 let typeCode = polymorphicType.typeCode(for: T.persistableType)
                 let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
 
-                try await container.database.withTransaction(configuration: .batch) { transaction in
+                try await self.withRawTransaction(configuration: .batch) { transaction in
                     let (polyBegin, polyEnd) = polyItemSubspace.range()
                     transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
                 }
@@ -394,6 +443,11 @@ public final class FDBContext: Sendable {
     ///
     /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
     /// the query must include partition binding via `.partition()`.
+    ///
+    /// **Cache Policy**: Uses `query.cachePolicy` to determine read version caching:
+    /// - `.server`: Always fetch latest data (no cache) - **default**
+    /// - `.cached`: Use cached read version if available (no time limit)
+    /// - `.stale(N)`: Use cache only if younger than N seconds
     internal func fetch<T: Persistable>(_ query: Query<T>) async throws -> [T] {
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
@@ -414,7 +468,17 @@ public final class FDBContext: Sendable {
             store = try await container.store(for: T.self)
         }
 
-        return try await store.fetch(query)
+        // Create TransactionConfiguration with CachePolicy
+        let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
+
+        // Execute fetch within transaction (uses ReadVersionCache)
+        return try await self.withRawTransaction(configuration: config) { transaction in
+            guard let fdbStore = store as? FDBDataStore else {
+                // Fall back to original behavior if not FDBDataStore
+                return try await store.fetch(query)
+            }
+            return try await fdbStore.fetchInTransaction(query, transaction: transaction)
+        }
     }
 
     /// Fetch count of models matching a query (internal use)
@@ -422,6 +486,11 @@ public final class FDBContext: Sendable {
     /// Returns count of persisted data only. Pending changes are not included.
     ///
     /// For types with dynamic directories, the query must include partition binding.
+    ///
+    /// **Cache Policy**: Uses `query.cachePolicy` to determine read version caching:
+    /// - `.server`: Always fetch latest count (no cache) - **default**
+    /// - `.cached`: Use cached read version if available (no time limit)
+    /// - `.stale(N)`: Use cache only if younger than N seconds
     internal func fetchCount<T: Persistable>(_ query: Query<T>) async throws -> Int {
         // Check if type requires partition and validate
         if T.hasDynamicDirectory {
@@ -441,15 +510,49 @@ public final class FDBContext: Sendable {
         } else {
             store = try await container.store(for: T.self)
         }
-        return try await store.fetchCount(query)
+
+        // Create TransactionConfiguration with CachePolicy
+        let config = TransactionConfiguration(cachePolicy: query.cachePolicy)
+
+        // Execute count within transaction (uses ReadVersionCache)
+        return try await self.withRawTransaction(configuration: config) { transaction in
+            guard let fdbStore = store as? FDBDataStore else {
+                // Fall back to original behavior if not FDBDataStore
+                return try await store.fetchCount(query)
+            }
+            return try await fdbStore.fetchCountInTransaction(query, transaction: transaction)
+        }
     }
 
     // MARK: - Get by ID
 
     /// Get a single model by its identifier
+    ///
+    /// Performs a direct key lookup (O(1)) rather than a query scan.
+    ///
+    /// **Cache Policy**: Controls whether to use cached read version:
+    /// - `.server`: Always fetch latest data (no cache) - **default**
+    /// - `.cached`: Use cached read version if available (no time limit)
+    /// - `.stale(N)`: Use cache only if younger than N seconds
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// // Default: strict consistency
+    /// let user = try await context.model(for: userId, as: User.self)
+    ///
+    /// // With cache (for read-heavy scenarios)
+    /// let user = try await context.model(for: userId, as: User.self, cachePolicy: .cached)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - id: The model's identifier
+    ///   - type: The model type
+    ///   - cachePolicy: Cache policy for this read (default: `.server`)
+    /// - Returns: The model if found, nil if not found
     public func model<T: Persistable>(
         for id: any TupleElement,
-        as type: T.Type
+        as type: T.Type,
+        cachePolicy: CachePolicy = .server
     ) async throws -> T? {
         let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
             let insertKey = ModelKey(persistableType: T.persistableType, id: id)
@@ -475,19 +578,25 @@ public final class FDBContext: Sendable {
             return nil
         }
 
-        // DataStore.fetch() evaluates GET security internally
+        // Validate: dynamic directory types require partition
         if T.hasDynamicDirectory {
             throw DirectoryPathError.dynamicFieldsRequired(
                 typeName: T.persistableType,
                 fields: T.directoryFieldNames
             )
         }
-        let store = try await container.store(for: type)
-        guard let result = try await store.fetch(type, id: id) else {
-            return nil
-        }
 
-        return result
+        // Get store and execute fetch within transaction (uses ReadVersionCache)
+        let store = try await container.store(for: type)
+        let config = TransactionConfiguration(cachePolicy: cachePolicy)
+
+        return try await self.withRawTransaction(configuration: config) { transaction in
+            guard let fdbStore = store as? FDBDataStore else {
+                // Fall back to standalone method if not FDBDataStore
+                return try await store.fetch(type, id: id)
+            }
+            return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+        }
     }
 
     /// Get a single model by its identifier from a partitioned directory
@@ -495,16 +604,27 @@ public final class FDBContext: Sendable {
     /// For types with dynamic directories (`Field(\.keyPath)` in `#Directory`),
     /// you must provide partition binding.
     ///
+    /// **Cache Policy**: Controls whether to use cached read version:
+    /// - `.server`: Always fetch latest data (no cache) - **default**
+    /// - `.cached`: Use cached read version if available (no time limit)
+    /// - `.stale(N)`: Use cache only if younger than N seconds
+    ///
     /// **Example**:
     /// ```swift
     /// var binding = DirectoryPath<Order>()
     /// binding.set(\.tenantID, to: "tenant_123")
     /// let order = try await context.model(for: orderId, as: Order.self, partition: binding)
+    ///
+    /// // With cache
+    /// let order = try await context.model(
+    ///     for: orderId, as: Order.self, partition: binding, cachePolicy: .cached
+    /// )
     /// ```
     public func model<T: Persistable>(
         for id: any TupleElement,
         as type: T.Type,
-        partition path: DirectoryPath<T>
+        partition path: DirectoryPath<T>,
+        cachePolicy: CachePolicy = .server
     ) async throws -> T? {
         let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
             let insertKey = ModelKey(persistableType: T.persistableType, id: id)
@@ -530,13 +650,17 @@ public final class FDBContext: Sendable {
             return nil
         }
 
-        // DataStore.fetch() evaluates GET security internally
+        // Get store and execute fetch within transaction (uses ReadVersionCache)
         let store = try await container.store(for: type, path: path)
-        guard let result = try await store.fetch(type, id: id) else {
-            return nil
-        }
+        let config = TransactionConfiguration(cachePolicy: cachePolicy)
 
-        return result
+        return try await self.withRawTransaction(configuration: config) { transaction in
+            guard let fdbStore = store as? FDBDataStore else {
+                // Fall back to standalone method if not FDBDataStore
+                return try await store.fetch(type, id: id)
+            }
+            return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+        }
     }
 
     // MARK: - Save
@@ -1008,6 +1132,12 @@ extension FDBContext {
     /// - `tx.get(snapshot: true)`: Snapshot read with no conflict tracking.
     ///   May return stale data, but won't cause conflicts. Use for non-critical reads.
     ///
+    /// **ReadVersionCache**:
+    /// This method uses the context's own ReadVersionCache for cache policies.
+    /// When `configuration.cachePolicy` is `.cached` or `.stale(N)`, the transaction
+    /// may reuse a cached read version instead of calling `getReadVersion()`, reducing
+    /// network round-trips at the cost of potential staleness.
+    ///
     /// **Usage**:
     /// ```swift
     /// // Read-modify-write with conflict detection
@@ -1042,14 +1172,13 @@ extension FDBContext {
     /// **Reference**: Cloud Firestore transaction model, FDB Record Layer FDBRecordContext
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable (TransactionContext) async throws -> T
+        _ operation: @Sendable @escaping (TransactionContext) async throws -> T
     ) async throws -> T {
+        // Use TransactionRunner with context's own ReadVersionCache
         let runner = TransactionRunner(database: container.database)
-
-        // Pass readVersionCache for weak read semantics support
         return try await runner.run(
             configuration: configuration,
-            readVersionCache: container.fdbDatabase.readVersionCache
+            readVersionCache: readVersionCache
         ) { transaction in
             let context = TransactionContext(
                 transaction: transaction,
@@ -1057,6 +1186,54 @@ extension FDBContext {
             )
             return try await operation(context)
         }
+    }
+
+    /// Execute a raw transaction with configurable retry and timeout (internal use only)
+    ///
+    /// **Design Intent**:
+    /// This is an internal API for FDBContext's own operations (clearAll, fetchPolymorphic, etc.)
+    /// that need direct TransactionProtocol access for low-level operations like `clearRange`.
+    ///
+    /// Uses the context's ReadVersionCache for weak read semantics optimization.
+    ///
+    /// **For public API users**:
+    /// - Use `withTransaction(_:)` for high-level TransactionContext API
+    /// - Use `container.database.withTransaction(_:)` if raw access is truly needed (no cache)
+    ///
+    /// - Parameters:
+    ///   - configuration: Transaction configuration (timeout, retry, priority)
+    ///   - operation: The operation to execute within the transaction
+    /// - Returns: The result of the operation
+    /// - Throws: Error if the transaction cannot be committed after retries
+    internal func withRawTransaction<T: Sendable>(
+        configuration: TransactionConfiguration = .default,
+        _ operation: @Sendable @escaping (any TransactionProtocol) async throws -> T
+    ) async throws -> T {
+        let runner = TransactionRunner(database: container.database)
+        return try await runner.run(
+            configuration: configuration,
+            readVersionCache: readVersionCache,
+            operation: operation
+        )
+    }
+
+    // MARK: - Cache Management
+
+    /// Clear the read version cache
+    ///
+    /// Use after:
+    /// - Schema changes that affect read compatibility
+    /// - Testing scenarios requiring fresh reads
+    /// - Recovery from errors
+    public func clearReadVersionCache() {
+        readVersionCache.clear()
+    }
+
+    /// Get current cache info for debugging/metrics
+    ///
+    /// - Returns: Tuple of (version, ageMillis), or nil if no cached value
+    public func readVersionCacheInfo() -> (version: Int64, ageMillis: Int64)? {
+        readVersionCache.currentCacheInfo()
     }
 }
 
@@ -1146,7 +1323,7 @@ extension FDBContext {
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
-        let results: [any Persistable] = try await container.database.withTransaction(configuration: .default) { transaction in
+        let results: [any Persistable] = try await self.withRawTransaction(configuration: .default) { transaction in
             // Use ItemStorage.scan to properly handle external (large) values
             let storage = ItemStorage(
                 transaction: transaction,
@@ -1210,7 +1387,7 @@ extension FDBContext {
         let idTuple = Tuple([id])
 
         // Search all type subspaces for this ID
-        let result: (any Persistable)? = try await container.database.withTransaction(configuration: .default) { transaction in
+        let result: (any Persistable)? = try await self.withRawTransaction(configuration: .default) { transaction in
             // Use ItemStorage for proper handling of large values
             let storage = ItemStorage(
                 transaction: transaction,
@@ -1306,7 +1483,7 @@ extension FDBContext {
         let data = try DataAccess.serialize(item)
 
         // Security: Check if this is CREATE or UPDATE
-        let oldData: FDB.Bytes? = try await container.database.withTransaction(configuration: .default) { transaction in
+        let oldData: FDB.Bytes? = try await self.withRawTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1320,7 +1497,7 @@ extension FDBContext {
             try container.securityDelegate?.evaluateCreate(item)
         }
 
-        try await container.database.withTransaction(configuration: .default) { transaction in
+        try await self.withRawTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1376,7 +1553,7 @@ extension FDBContext {
         let key = typeSubspace.pack(idTuple)
 
         // Security: Fetch existing item to evaluate DELETE permission
-        if let oldData: FDB.Bytes = try await container.database.withTransaction(configuration: .default, { transaction in
+        if let oldData: FDB.Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1387,7 +1564,7 @@ extension FDBContext {
             try container.securityDelegate?.evaluateDelete(oldItem)
         }
 
-        try await container.database.withTransaction(configuration: .default) { transaction in
+        try await self.withRawTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace

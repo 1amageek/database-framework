@@ -1397,7 +1397,7 @@ TransactionConfiguration.batch
 // - timeout: 30 seconds
 // - retryLimit: 20
 // - priority: .batch
-// - weakReadSemantics: .relaxed
+// - cachePolicy: .server (strict consistency for data integrity)
 
 // For system administration
 TransactionConfiguration.system
@@ -1414,23 +1414,40 @@ TransactionConfiguration.interactive
 TransactionConfiguration.longRunning
 // - timeout: 60 seconds
 // - retryLimit: 50
+// - cachePolicy: .stale(60)
+
+// For read-only dashboard queries
+TransactionConfiguration.readOnly
+// - timeout: 2 seconds
+// - retryLimit: 3
+// - cachePolicy: .cached
 ```
 
-### 8.4 Weak Read Consistency
+### 8.4 Cache Policy
 
 ```swift
-// Allow reading stale data with WeakReadSemantics
-let config = TransactionConfiguration(
-    weakReadSemantics: .default  // Allow up to 5 seconds staleness
-)
+// Strict consistency (default)
+let users = try await context.fetch(User.self)
+    .cachePolicy(.server)
+    .execute()
 
-// More relaxed setting
-let relaxedConfig = TransactionConfiguration(
-    weakReadSemantics: .relaxed  // Allow up to 30 seconds staleness
+// Use cache if available (no time limit)
+let users = try await context.fetch(User.self)
+    .cachePolicy(.cached)
+    .execute()
+
+// Use cache only if younger than 30 seconds
+let users = try await context.fetch(User.self)
+    .cachePolicy(.stale(30))
+    .execute()
+
+// With TransactionConfiguration
+let config = TransactionConfiguration(
+    cachePolicy: .stale(60)  // Allow up to 60 seconds staleness
 )
 
 // ReadVersionCache behavior
-// - Reuses cached read version
+// - Reuses cached read version based on CachePolicy
 // - Reduces getReadVersion() network round-trips
 ```
 

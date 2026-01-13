@@ -14,14 +14,14 @@ import FoundationDB
 /// TransactionRunner handles:
 /// - Creating new transactions for each retry attempt
 /// - Applying TransactionConfiguration options
-/// - Applying cached read versions (weak read semantics)
+/// - Applying cached read versions (based on CachePolicy)
 /// - Retrying on retryable FDB errors with exponential backoff
 /// - Respecting retry limits from configuration
 ///
-/// **Weak Read Semantics**:
-/// When `TransactionConfiguration.weakReadSemantics` is set and a `ReadVersionCache`
-/// is provided, the runner will attempt to use a cached read version on the first
-/// attempt. This reduces `getReadVersion()` network round-trips.
+/// **Cache Policy**:
+/// When `TransactionConfiguration.cachePolicy` is `.cached` or `.stale(N)` and a
+/// `ReadVersionCache` is provided, the runner will attempt to use a cached read
+/// version on the first attempt. This reduces `getReadVersion()` network round-trips.
 /// - Only applied on first attempt (retry uses fresh version)
 /// - Cache is updated after successful commit
 ///
@@ -33,7 +33,7 @@ import FoundationDB
 ///
 /// **Environment Variable**: `DATABASE_TRANSACTION_INITIAL_DELAY` to configure initial delay
 ///
-/// **Reference**: FDB client retry loop pattern, AWS exponential backoff, FDB Record Layer WeakReadSemantics
+/// **Reference**: FDB client retry loop pattern, AWS exponential backoff
 internal struct TransactionRunner: Sendable {
     // MARK: - Properties
 
@@ -134,7 +134,7 @@ internal struct TransactionRunner: Sendable {
         throw FDBError(.transactionTooOld)
     }
 
-    // MARK: - Weak Read Semantics
+    // MARK: - Cache Policy
 
     /// Apply cached read version to transaction if available and valid
     ///
@@ -146,8 +146,7 @@ internal struct TransactionRunner: Sendable {
         cache: ReadVersionCache?
     ) {
         guard let cache = cache,
-              let semantics = configuration.weakReadSemantics,
-              let cachedVersion = cache.getCachedVersion(semantics: semantics) else {
+              let cachedVersion = cache.getCachedVersion(policy: configuration.cachePolicy) else {
             return
         }
 

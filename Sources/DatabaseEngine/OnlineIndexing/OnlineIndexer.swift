@@ -20,7 +20,7 @@ import Metrics
 /// ```swift
 /// // Create indexer
 /// let indexer = OnlineIndexer(
-///     database: database,
+///     container: container,
 ///     storeSubspace: storeSubspace,
 ///     itemType: "User",
 ///     index: emailIndex,
@@ -48,8 +48,8 @@ import Metrics
 public final class OnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    let container: FDBContainer
 
     /// Store root subspace (parent of R/I/B/M)
     private let storeSubspace: Subspace
@@ -105,7 +105,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Initialize online indexer
     ///
     /// - Parameters:
-    ///   - database: Database instance
+    ///   - container: FDBContainer for transaction execution
     ///   - storeSubspace: Store root subspace (parent of items/indexes/blobs/metadata)
     ///   - itemType: Type name of items to index
     ///   - index: Index definition
@@ -114,7 +114,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in milliseconds (default: 0)
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         storeSubspace: Subspace,
         itemType: String,
         index: Index,
@@ -123,7 +123,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         batchSize: Int = 100,
         throttleDelayMs: Int = 0
     ) {
-        self.database = database
+        self.container = container
         self.storeSubspace = storeSubspace
         self.itemSubspace = storeSubspace.subspace(SubspaceKey.items)
         self.indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
@@ -144,7 +144,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         // Violations stored in [store]/M/_violations/[indexName]/
         self.metadataSubspace = storeSubspace.subspace(SubspaceKey.metadata)
         self.violationTracker = UniquenessViolationTracker(
-            database: database,
+            container: container,
             metadataSubspace: metadataSubspace
         )
 
@@ -214,7 +214,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         if let customStrategy = indexMaintainer.customBuildStrategy {
             // Use custom strategy (e.g., HNSW bulk build)
             try await customStrategy.buildIndex(
-                database: database,
+                container: container,
                 itemSubspace: itemSubspace,
                 indexSubspace: indexSubspace,
                 itemType: itemType,
@@ -283,7 +283,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
-                let (itemsInBatch, lastProcessedKey) = try await database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
 
                     var itemsInBatch = 0
                     var lastProcessedKey: FDB.Bytes? = nil
@@ -378,7 +378,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        let progressKey = self.progressKey
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -406,7 +407,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///
     /// Called after successful completion
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        let progressKey = self.progressKey
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -418,8 +420,8 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Removes all entries in the index subspace for this index.
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            let indexRange = indexSubspace.subspace(index.name).range()
+        let indexRange = self.indexSubspace.subspace(self.index.name).range()
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -462,7 +464,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let progress = ParallelBuildProgress(
             indexSubspace: indexSubspace,
             indexName: index.name,
-            database: database
+            container: container
         )
 
         // Clear existing data and progress if requested
@@ -480,7 +482,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let (begin, end) = itemTypeSubspace.range()
 
         // Get split points from FDB
-        let splitPoints = try await database.withTransaction(configuration: .batch) { transaction in
+        let splitPoints = try await container.database.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: begin,
                 endKey: end,
@@ -647,7 +649,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.database.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -741,7 +743,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         while true {
             let currentLastKey = lastKey
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await database.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.database.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -843,18 +845,18 @@ internal final class ParallelBuildProgress: Sendable {
     /// Subspace for progress data
     private let progressSubspace: Subspace
 
-    /// Database for persistence
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    let container: FDBContainer
 
     /// Initialize progress tracker
     ///
     /// - Parameters:
     ///   - indexSubspace: Index subspace (progress stored under _build/)
     ///   - indexName: Name of the index being built
-    ///   - database: Database for persistence
-    init(indexSubspace: Subspace, indexName: String, database: any DatabaseProtocol) {
+    ///   - container: FDBContainer for transaction execution
+    init(indexSubspace: Subspace, indexName: String, container: FDBContainer) {
         self.progressSubspace = indexSubspace.subspace("_build").subspace(indexName)
-        self.database = database
+        self.container = container
     }
 
     /// Load progress for all chunks
@@ -864,7 +866,7 @@ internal final class ParallelBuildProgress: Sendable {
     func loadProgress(chunkCount: Int) async throws -> [Int: ChunkProgress] {
         let (begin, end) = progressSubspace.range()
 
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
             let sequence = transaction.getRange(
@@ -898,7 +900,7 @@ internal final class ParallelBuildProgress: Sendable {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(value, for: key)
         }
     }
@@ -927,7 +929,7 @@ internal final class ParallelBuildProgress: Sendable {
     func clearProgress() async throws {
         let (begin, end) = progressSubspace.range()
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: begin, endKey: end)
         }
     }

@@ -15,7 +15,8 @@ import Logging
 public final class IndexStateManager: Sendable {
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for transaction execution
+    let container: FDBContainer
     private let subspace: Subspace
     private let logger: Logger
 
@@ -24,15 +25,15 @@ public final class IndexStateManager: Sendable {
     /// Initialize IndexStateManager
     ///
     /// - Parameters:
-    ///   - database: FoundationDB database
+    ///   - container: FDBContainer for transaction execution
     ///   - subspace: Subspace for storing index states
     ///   - logger: Optional logger
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace,
         logger: Logger? = nil
     ) {
-        self.database = database
+        self.container = container
         self.subspace = subspace
         self.logger = logger ?? Logger(label: "com.fdb.runtime.indexstate")
     }
@@ -45,7 +46,7 @@ public final class IndexStateManager: Sendable {
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
     public func state(of indexName: String) async throws -> IndexState {
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             let stateKey = self.makeStateKey(for: indexName)
 
             guard let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
@@ -100,7 +101,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
     public func enable(_ indexName: String) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             let stateKey = self.makeStateKey(for: indexName)
 
@@ -138,7 +139,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Throws: IndexStateError.invalidTransition if not in WRITE_ONLY state
     public func makeReadable(_ indexName: String) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             let stateKey = self.makeStateKey(for: indexName)
 
@@ -175,7 +176,7 @@ public final class IndexStateManager: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func disable(_ indexName: String) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             try await self.disable(indexName, transaction: transaction)
         }
@@ -251,7 +252,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameter indexNames: List of index names
     /// - Returns: Dictionary mapping index names to states
     public func states(of indexNames: [String]) async throws -> [String: IndexState] {
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             var states: [String: IndexState] = [:]
 
             for indexName in indexNames {

@@ -6,7 +6,7 @@ This document describes the design for three features missing from database-fram
 
 1. **Union Record Type** - Store multiple types in single logical store
 2. **Uniqueness Enforcement** - Detect and prevent duplicate values in unique indexes
-3. **Weak Read Semantics** - Reuse cached read versions for improved throughput
+3. **Cache Policy** - ✅ Implemented - Control cache behavior for read operations
 
 ---
 
@@ -307,7 +307,11 @@ private func updateIndexes(
 
 ---
 
-## 3. Weak Read Semantics
+## 3. Cache Policy (✅ Implemented)
+
+### Status: Complete
+
+This feature has been implemented as `CachePolicy` with a simpler, more intuitive API than FDB Record Layer's `WeakReadSemantics`.
 
 ### Record Layer Reference
 
@@ -318,259 +322,146 @@ WeakReadSemantics weakReadSemantics = new WeakReadSemantics(
     maxStalenessMillis,   // Maximum age of cached version
     useCache              // Whether to use cached version
 );
+```
 
-// FDBDatabase.java
-Long cachedReadVersion = lastSeenVersion.get();
-if (weakReadSemantics != null && cachedReadVersion != null) {
-    if (cachedReadVersion >= weakReadSemantics.getMinVersion()) {
-        long staleness = System.currentTimeMillis() - lastSeenVersionTime;
-        if (staleness <= weakReadSemantics.getMaxStalenessMillis()) {
-            transaction.setReadVersion(cachedReadVersion);
-        }
-    }
+### Implemented Design
+
+#### 3.1 CachePolicy Enum
+
+**File**: `Sources/DatabaseEngine/Transaction/CachePolicy.swift`
+
+```swift
+/// Cache policy for read operations
+public enum CachePolicy: Sendable, Hashable {
+    /// Fetch latest data from server (no cache)
+    case server
+
+    /// Use cached read version if available (no time limit)
+    case cached
+
+    /// Use cache only if younger than specified seconds
+    case stale(TimeInterval)
 }
 ```
 
-### Design Goals
+**Design Rationale**:
+- Simpler than Record Layer's 3-property `WeakReadSemantics`
+- Clear, intuitive semantics for each case
+- `.cached` uses cache without arbitrary time limits (user controls behavior explicitly)
 
-1. Cache read version from successful commits
-2. Allow transactions to reuse cached version within bounds
-3. Reduce `getReadVersion()` calls (network round-trip)
-4. Configurable staleness tolerance
+#### 3.2 ReadVersionCache Integration
 
-### Proposed Design
-
-#### 3.1 WeakReadSemantics Configuration (database-kit)
+**File**: `Sources/DatabaseEngine/Transaction/ReadVersionCache.swift`
 
 ```swift
-/// Configuration for weak read semantics
-public struct WeakReadSemantics: Sendable, Hashable {
-    /// Minimum acceptable read version (0 = any)
-    public let minVersion: Int64
-
-    /// Maximum staleness in milliseconds (default: 5000 = 5 seconds)
-    public let maxStalenessMillis: Int64
-
-    /// Whether to use cached read version
-    public let useCachedVersion: Bool
-
-    /// Default: 5 second staleness, use cache
-    public static let `default` = WeakReadSemantics(
-        minVersion: 0,
-        maxStalenessMillis: 5000,
-        useCachedVersion: true
-    )
-
-    /// Strict consistency: never use cache
-    public static let strict = WeakReadSemantics(
-        minVersion: 0,
-        maxStalenessMillis: 0,
-        useCachedVersion: false
-    )
-
-    /// Relaxed: up to 30 second staleness
-    public static let relaxed = WeakReadSemantics(
-        minVersion: 0,
-        maxStalenessMillis: 30_000,
-        useCachedVersion: true
-    )
-
-    public init(
-        minVersion: Int64 = 0,
-        maxStalenessMillis: Int64 = 5000,
-        useCachedVersion: Bool = true
-    ) {
-        self.minVersion = minVersion
-        self.maxStalenessMillis = maxStalenessMillis
-        self.useCachedVersion = useCachedVersion
-    }
-}
-```
-
-#### 3.2 ReadVersionCache (database-framework)
-
-```swift
-/// Caches read versions from successful transactions
 public final class ReadVersionCache: Sendable {
-    private struct CachedVersion: Sendable {
-        let version: Int64
-        let timestamp: UInt64  // nanoseconds since boot (monotonic)
-    }
-
-    private let cache: Mutex<CachedVersion?>
-
-    public init() {
-        self.cache = Mutex(nil)
-    }
-
-    /// Update cache after successful commit
-    public func updateFromCommit(version: Int64) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        cache.withLock { $0 = CachedVersion(version: version, timestamp: now) }
-    }
-
-    /// Update cache after reading version
-    public func updateFromRead(version: Int64) {
-        let now = DispatchTime.now().uptimeNanoseconds
-        cache.withLock { cached in
-            // Only update if newer
-            if cached == nil || version > cached!.version {
-                cached = CachedVersion(version: version, timestamp: now)
+    /// Get cached version based on policy
+    public func getCachedVersion(policy: CachePolicy) -> Int64? {
+        switch policy {
+        case .server:
+            return nil  // Never use cache
+        case .cached:
+            return cache.withLock { $0?.version }  // Use if available
+        case .stale(let seconds):
+            return cache.withLock { cached in
+                guard let cached = cached else { return nil }
+                let ageSeconds = Double(now - cached.timestamp) / 1_000_000_000
+                return ageSeconds <= seconds ? cached.version : nil
             }
         }
     }
-
-    /// Get cached version if valid according to semantics
-    public func getCachedVersion(semantics: WeakReadSemantics) -> Int64? {
-        guard semantics.useCachedVersion else { return nil }
-
-        return cache.withLock { cached in
-            guard let cached = cached else { return nil }
-
-            // Check minimum version
-            guard cached.version >= semantics.minVersion else { return nil }
-
-            // Check staleness
-            let now = DispatchTime.now().uptimeNanoseconds
-            let ageNanos = now - cached.timestamp
-            let ageMillis = Int64(ageNanos / 1_000_000)
-
-            guard ageMillis <= semantics.maxStalenessMillis else { return nil }
-
-            return cached.version
-        }
-    }
-
-    /// Clear cache (useful for testing or after schema changes)
-    public func clear() {
-        cache.withLock { $0 = nil }
-    }
 }
 ```
 
-#### 3.3 Integration with TransactionConfiguration
+#### 3.3 TransactionConfiguration Integration
+
+**File**: `Sources/DatabaseEngine/Transaction/TransactionConfiguration.swift`
 
 ```swift
 public struct TransactionConfiguration: Sendable, Hashable {
-    // ... existing properties ...
+    /// Cache policy (default: .server for strict consistency)
+    public let cachePolicy: CachePolicy
 
-    /// Weak read semantics (nil = strict consistency)
-    public let weakReadSemantics: WeakReadSemantics?
-
-    // Updated presets:
-
-    /// Batch: Allow stale reads for background processing
-    public static let batch = TransactionConfiguration(
-        timeout: 30_000,
-        retryLimit: 20,
-        priority: .batch,
-        readPriority: .low,
-        weakReadSemantics: .relaxed  // NEW
-    )
-
-    /// Interactive: Strict consistency for user-facing operations
-    public static let interactive = TransactionConfiguration(
-        timeout: 1_000,
-        retryLimit: 3,
-        weakReadSemantics: nil  // Strict
-    )
+    // Presets:
+    public static let `default` = TransactionConfiguration(cachePolicy: .server)
+    public static let readOnly = TransactionConfiguration(cachePolicy: .cached)
+    public static let longRunning = TransactionConfiguration(cachePolicy: .stale(60))
 }
 ```
 
-#### 3.4 Integration with DatabaseProtocol
+#### 3.4 Query API Integration
+
+**File**: `Sources/DatabaseEngine/Fetch/FDBFetchDescriptor.swift`
 
 ```swift
-extension DatabaseProtocol {
-    /// Execute transaction with weak read semantics
-    public func withTransaction<T: Sendable>(
-        configuration: TransactionConfiguration,
-        readVersionCache: ReadVersionCache?,
-        _ operation: @Sendable (any TransactionProtocol) async throws -> T
-    ) async throws -> T {
-        try await self.withTransaction { transaction in
-            // Apply configuration
-            try configuration.apply(to: transaction)
+// Query fluent API
+let results = try await context.fetch(User.self)
+    .cachePolicy(.cached)
+    .where(\.isActive == true)
+    .execute()
 
-            // Apply cached read version if available
-            if let cache = readVersionCache,
-               let semantics = configuration.weakReadSemantics,
-               let cachedVersion = cache.getCachedVersion(semantics: semantics) {
-                try transaction.setReadVersion(cachedVersion)
-            }
-
-            // Execute operation
-            let result = try await operation(transaction)
-
-            // Update cache after success
-            if let cache = readVersionCache {
-                if let committedVersion = try? await transaction.getCommittedVersion() {
-                    cache.updateFromCommit(version: committedVersion)
-                } else if let readVersion = try? await transaction.getReadVersion() {
-                    cache.updateFromRead(version: readVersion)
-                }
-            }
-
-            return result
-        }
-    }
-}
+// QueryExecutor fluent API
+let products = try await context.fetch(Product.self)
+    .cachePolicy(.stale(30))
+    .limit(100)
+    .execute()
 ```
 
-#### 3.5 Integration with FDBContainer
+#### 3.5 Usage Examples
 
 ```swift
-public final class FDBContainer: Sendable {
-    // ... existing properties ...
-
-    /// Shared read version cache for weak read semantics
-    public let readVersionCache: ReadVersionCache
-
-    public init(...) {
-        // ...
-        self.readVersionCache = ReadVersionCache()
-    }
-}
-```
-
-#### 3.6 Usage Example
-
-```swift
-let container = try await FDBContainer(schema: schema)
 let context = container.newContext()
 
-// Strict read (default) - always gets fresh data
+// Default: strict consistency (.server)
 let user = try await context.fetch(User.self)
     .where(\.id == userId)
     .first()
 
-// Weak read - may return slightly stale data
-let stats = try await context.fetch(Stats.self,
-    weakReadSemantics: .relaxed)
-    .where(\.category == category)
+// Dashboard query: use cached version
+let stats = try await context.fetch(Stats.self)
+    .cachePolicy(.cached)
+    .execute()
+
+// Analytics: allow up to 30-second stale data
+let metrics = try await context.fetch(Metrics.self)
+    .cachePolicy(.stale(30))
     .execute()
 ```
 
-### Implementation Phases
+### Comparison with Record Layer
 
-1. **Phase 1**: `ReadVersionCache` implementation with tests
-2. **Phase 2**: Integration with `TransactionConfiguration`
-3. **Phase 3**: Integration with `FDBContainer` and `FDBContext`
-4. **Phase 4**: Metrics for cache hit rate
+| Aspect | Record Layer | database-framework |
+|--------|--------------|-------------------|
+| Configuration | `WeakReadSemantics(minVersion, maxStaleness, useCache)` | `CachePolicy` enum |
+| Complexity | 3 properties | 3 simple cases |
+| Default behavior | Configurable | `.server` (strict) |
+| Cache scope | Database-level | Context-level |
+| API | Constructor parameters | Fluent `.cachePolicy()` |
+
+### Implementation Complete
+
+- ✅ `CachePolicy` enum
+- ✅ `ReadVersionCache.getCachedVersion(policy:)`
+- ✅ `TransactionConfiguration.cachePolicy`
+- ✅ `Query.cachePolicy()` fluent method
+- ✅ `QueryExecutor.cachePolicy()` fluent method
+- ✅ `FDBContext.fetch()` integration
+- ✅ Comprehensive tests in `CachePolicyTests.swift`
 
 ---
 
 ## Summary: Priority and Dependencies
 
-| Feature | Priority | Dependencies | Complexity |
-|---------|----------|--------------|------------|
-| Uniqueness Enforcement | High | None | Medium |
-| Weak Read Semantics | Medium | None | Low |
-| Union Record Type | Medium | Schema evolution | High |
+| Feature | Priority | Dependencies | Status |
+|---------|----------|--------------|--------|
+| Uniqueness Enforcement | High | None | ⚠️ Partial |
+| Cache Policy | Medium | None | ✅ Complete |
+| Union Record Type | Medium | Schema evolution | ❌ Not Started |
 
 ### Recommended Implementation Order
 
-1. **Uniqueness Enforcement** - Most critical for data integrity
-2. **Weak Read Semantics** - Quick win for read performance
+1. **Uniqueness Enforcement** - Most critical for data integrity (partial implementation exists)
+2. ~~Weak Read Semantics~~ → ✅ Implemented as **Cache Policy**
 3. **Union Record Type** - Complex, needs schema evolution design first
 
 ---

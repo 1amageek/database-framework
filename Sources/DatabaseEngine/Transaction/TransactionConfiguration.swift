@@ -131,17 +131,15 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// **Reference**: FDB `readServerSideCacheDisable` option (code 508)
     public let disableReadCache: Bool
 
-    /// Weak read semantics configuration
+    /// Cache policy for read operations
     ///
-    /// When set, allows transactions to reuse cached read versions,
+    /// Controls whether transactions reuse cached read versions,
     /// reducing `getReadVersion()` network round-trips.
     ///
-    /// - `nil`: Strict consistency (always get fresh read version)
-    /// - `.default`: Up to 5 second staleness
-    /// - `.relaxed`: Up to 30 second staleness
-    ///
-    /// **Reference**: FDB Record Layer `WeakReadSemantics`
-    public let weakReadSemantics: WeakReadSemantics?
+    /// - `.server`: Strict consistency (always get fresh read version)
+    /// - `.cached`: Use cached read version if available (no time limit)
+    /// - `.stale(N)`: Use cached read version only if younger than N seconds
+    public let cachePolicy: CachePolicy
 
     /// Tracing and logging configuration
     public let tracing: Tracing
@@ -163,7 +161,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     ///   - priority: Transaction priority (default: .default)
     ///   - readPriority: Read operation priority (default: .normal)
     ///   - disableReadCache: Whether to disable server-side read caching (default: false)
-    ///   - weakReadSemantics: Weak read semantics (default: nil = strict consistency)
+    ///   - cachePolicy: Cache policy for read operations (default: .server = strict consistency)
     ///   - tracing: Tracing and logging configuration (default: .disabled)
     public init(
         timeout: Int? = DatabaseConfiguration.shared.transactionTimeout,
@@ -172,7 +170,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
         priority: TransactionPriority = .default,
         readPriority: ReadPriority = .normal,
         disableReadCache: Bool = false,
-        weakReadSemantics: WeakReadSemantics? = nil,
+        cachePolicy: CachePolicy = .server,
         tracing: Tracing = .disabled
     ) {
         self.timeout = timeout
@@ -181,7 +179,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
         self.priority = priority
         self.readPriority = readPriority
         self.disableReadCache = disableReadCache
-        self.weakReadSemantics = weakReadSemantics
+        self.cachePolicy = cachePolicy
         self.tracing = tracing
     }
 
@@ -246,34 +244,30 @@ public struct TransactionConfiguration: Sendable, Hashable {
     /// - Extended timeout (60 seconds)
     /// - Many retries (50)
     /// - Batch priority
-    /// - Very relaxed weak read semantics (up to 60 second staleness)
+    /// - Cache policy: .stale(60) (up to 60 second staleness)
     public static let longRunning = TransactionConfiguration(
         timeout: 60_000,
         retryLimit: 50,
         maxRetryDelay: 5000,
         priority: .batch,
         readPriority: .low,
-        weakReadSemantics: .veryRelaxed
+        cachePolicy: .stale(60)
     )
 
     /// Read-only configuration
     ///
-    /// Optimized for read-only operations that can tolerate staleness:
+    /// Optimized for read-only operations that can use cached versions:
     /// - Short timeout (2 seconds)
     /// - Limited retries (3)
     /// - Default priority
-    /// - Default weak read semantics (up to 5 second staleness)
+    /// - Cache policy: .cached (use cached version if available)
     ///
     /// **Use Case**: Dashboard queries, analytics reads, cached lookups
     /// where slightly stale data is acceptable.
-    ///
-    /// **Note**: This uses `WeakReadSemantics.default` which allows the
-    /// transaction to reuse a cached read version if it's less than 5 seconds old,
-    /// reducing `getReadVersion()` network round-trips.
     public static let readOnly = TransactionConfiguration(
         timeout: 2_000,
         retryLimit: 3,
-        weakReadSemantics: .default  // 5 second staleness (not .relaxed which is 30s)
+        cachePolicy: .cached
     )
 }
 
@@ -474,8 +468,8 @@ extension TransactionConfiguration: CustomStringConvertible {
         if disableReadCache {
             parts.append("disableReadCache: true")
         }
-        if let semantics = weakReadSemantics {
-            parts.append("weakReadSemantics: \(semantics)")
+        if cachePolicy != .server {
+            parts.append("cachePolicy: \(cachePolicy)")
         }
         if tracing != .disabled {
             parts.append("tracing: \(tracing)")

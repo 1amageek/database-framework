@@ -20,7 +20,7 @@ import Metrics
 /// **Usage Example**:
 /// ```swift
 /// let scrubber = OnlineIndexScrubber<User>(
-///     database: database,
+///     container: container,
 ///     itemSubspace: itemSubspace,
 ///     indexSubspace: indexSubspace,
 ///     itemType: "User",
@@ -47,8 +47,8 @@ import Metrics
 public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     // MARK: - Properties
 
-    /// Database instance
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -103,7 +103,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Initialize online index scrubber
     ///
     /// - Parameters:
-    ///   - database: Database instance
+    ///   - container: FDB Container instance
     ///   - itemSubspace: Subspace where items are stored
     ///   - indexSubspace: Subspace where index data is stored
     ///   - blobsSubspace: Subspace where blob chunks are stored
@@ -112,7 +112,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     ///   - indexMaintainer: IndexMaintainer for this index
     ///   - configuration: Scrubber configuration (default: .default)
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -121,7 +121,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         indexMaintainer: any IndexMaintainer<Item>,
         configuration: ScrubberConfiguration = .default
     ) {
-        self.database = database
+        self.container = container
         self.itemSubspace = itemSubspace
         self.indexSubspace = indexSubspace
         self.blobsSubspace = blobsSubspace
@@ -340,7 +340,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase1Result {
 
-        let result = try await database.withTransaction(configuration: .batch) { transaction in
+        let result = try await container.database.withTransaction(configuration: .batch) { transaction in
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
@@ -496,7 +496,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
         rangeSet: inout RangeSet
     ) async throws -> Phase2Result {
 
-        let result = try await database.withTransaction(configuration: .batch) { transaction in
+        let result = try await container.database.withTransaction(configuration: .batch) { transaction in
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
@@ -608,7 +608,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Load saved progress
     private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
-        return try await database.withTransaction(configuration: .batch) { transaction in
+        return try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -620,7 +620,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Save progress
     private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await container.database.withTransaction(configuration: .batch) { transaction in
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)
             transaction.setValue(Array(data), for: key)
@@ -629,9 +629,11 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
 
     /// Clear all progress
     private func clearProgress() async throws {
-        try await database.withTransaction(configuration: .batch) { transaction in
-            transaction.clear(key: phase1ProgressKey)
-            transaction.clear(key: phase2ProgressKey)
+        let phase1Key = self.phase1ProgressKey
+        let phase2Key = self.phase2ProgressKey
+        try await container.database.withTransaction(configuration: .batch) { transaction in
+            transaction.clear(key: phase1Key)
+            transaction.clear(key: phase2Key)
         }
     }
 }

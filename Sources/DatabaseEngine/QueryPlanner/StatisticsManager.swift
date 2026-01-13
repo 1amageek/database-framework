@@ -13,7 +13,7 @@ import Synchronization
 ///
 /// **Usage**:
 /// ```swift
-/// let manager = StatisticsManager(database: database, subspace: subspace)
+/// let manager = StatisticsManager(container: container, subspace: subspace)
 ///
 /// // Collect statistics for a type
 /// try await manager.collectStatistics(
@@ -32,8 +32,8 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
 
     // MARK: - Properties
 
-    /// Database reference (thread-safe internally)
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// FDB Container for database access
+    private let container: FDBContainer
 
     /// Persistent storage
     private let storage: StatisticsStorage
@@ -125,16 +125,16 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
     /// Create a statistics manager
     ///
     /// - Parameters:
-    ///   - database: FoundationDB database
+    ///   - container: FDBContainer for database access
     ///   - subspace: Root subspace for storage
     ///   - configuration: Optional configuration
     public init(
-        database: any DatabaseProtocol,
+        container: FDBContainer,
         subspace: Subspace,
         configuration: Configuration = .default
     ) {
-        self.database = database
-        self.storage = StatisticsStorage(database: database, subspace: subspace)
+        self.container = container
+        self.storage = StatisticsStorage(container: container, subspace: subspace)
         self.cache = Mutex(Cache())
         self.defaults = DefaultStatisticsProvider()
         self.configuration = configuration
@@ -487,7 +487,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
         indexSubspace: Subspace
     ) async throws {
 
-        let (entryCount, distinctKeyCount) = try await database.withTransaction(configuration: .batch) { transaction in
+        let (entryCount, distinctKeyCount) = try await container.database.withTransaction(configuration: .batch) { transaction in
             var entryCount: Int64 = 0
             var hll = HyperLogLog()
 
