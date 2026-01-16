@@ -479,7 +479,7 @@ internal final class IndexMaintenanceService: Sendable {
 
         // Build range by appending FDB range markers to the key prefix
         // Range: [keyPrefix, keyPrefix + 0xFF] covers all keys with this prefix
-        var rangeBegin = keyPrefix
+        let rangeBegin = keyPrefix
         var rangeEnd = keyPrefix
         rangeEnd.append(0xFF)
 
