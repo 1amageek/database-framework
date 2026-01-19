@@ -1976,3 +1976,52 @@ let values = try DataAccess.evaluateIndexFields(
 - ❌ `Persistable`型のトップレベルフィールドへのMirrorアクセス
 - ❌ `item.id`の代わりにMirrorで"id"フィールドを探す
 - ❌ フィールド名がわかっている場合のMirror走査
+
+---
+
+## Known Limitations & Future Work
+
+### Watch機能 (fdb-swift-bindings拡張が必要)
+
+**現状**: `WatchManager`はスタブ実装であり、常にエラーを返す。
+
+**理由**: FoundationDBのネイティブWatch API (`fdb_transaction_watch()`) は、キーの変更を監視するFutureを返すC APIである。しかし、現在の`fdb-swift-bindings`ライブラリはこのAPIを公開していない。
+
+**TransactionProtocolで利用可能なメソッド**:
+- getValue, setValue, clear, clearRange
+- getKey, getRange, getRangeNative
+- commit, cancel
+- getReadVersion, getVersionstamp
+
+**不足しているメソッド**:
+- `watch(key:)` → `fdb_transaction_watch()` C APIを呼び出すメソッド
+
+**将来の実装に必要な作業**:
+
+1. **fdb-swift-bindings の拡張**:
+   ```swift
+   // TransactionProtocol に追加が必要
+   func watch(key: [UInt8]) async throws -> FDBFuture<Void>
+   ```
+
+2. **FDBFuture<Void>の実装**: Watchは値を返さず、キーが変更されたことのみを通知するため、`FDBFuture<Void>`型が必要。
+
+3. **WatchManagerの実装更新**: スタブ実装を実際のwatch APIを使用した実装に置き換え。
+
+**代替アプローチ** (fdb-swift-bindings を変更しない場合):
+- ポーリングベースの実装（定期的にキーを読み取り、変更を検出）
+- ただし、これはFDBのネイティブWatch機能の効率性を犠牲にする
+
+### インデックス再構築 (簡易実装)
+
+**現状**: `AdminContext.rebuildIndex()`は簡易実装であり、インデックスエントリの実際の再作成は行わない。
+
+**理由**:
+1. **IndexMaintainerとの統合が必要**: 各インデックスタイプ（Vector, FullText, Scalar等）には専用のMaintainerがあり、それぞれ異なるエントリ形式を持つ。
+2. **OnlineIndexerの使用が望ましい**: 本番環境では、バッチ処理、進捗追跡、再開可能性、スロットリングをサポートする`OnlineIndexer`を使用すべき。
+3. **型消去の問題**: `AdminContext`は型消去された`Schema.Entity`で動作するが、`OnlineIndexer<T>`はジェネリック型`T`を必要とする。
+
+**将来の実装に必要な作業**:
+- `IndexMaintainer`との統合
+- 型消去を解決するための設計変更
+- `OnlineIndexer`を使用した本格的な再構築ロジック

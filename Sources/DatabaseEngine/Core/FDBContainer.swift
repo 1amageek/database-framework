@@ -589,3 +589,30 @@ extension FDBContainer {
         return registry
     }
 }
+
+// MARK: - Admin Context
+
+extension FDBContainer {
+    /// Create a new admin context for management operations
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let admin = container.newAdminContext()
+    ///
+    /// // Get collection statistics
+    /// let stats = try await admin.collectionStatistics(User.self)
+    ///
+    /// // Explain query plan
+    /// let plan = try await admin.explain(Query<User>().where(\.age > 18))
+    ///
+    /// // Watch for changes
+    /// for await event in admin.watch(User.self, id: userId) {
+    ///     // Handle event
+    /// }
+    /// ```
+    ///
+    /// - Returns: New AdminContext instance
+    public func newAdminContext() -> AdminContextProtocol {
+        AdminContext(container: self)
+    }
+}
