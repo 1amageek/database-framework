@@ -283,8 +283,7 @@ let traverser = GraphTraverser<Edge>(
 for try await targetID in traverser.neighbors(
     from: "alice",
     label: "follows",
-    direction: .outgoing,
-    mode: .snapshot  // Use snapshot for large traversals
+    direction: .outgoing
 ) {
     print("Alice follows: \(targetID)")
 }
@@ -342,21 +341,205 @@ struct OptionalFollow {
 // Only edges with non-nil values appear in queries
 ```
 
+## Graph Algorithms
+
+GraphIndex includes production-ready graph algorithms with academic rigor.
+
+### Cycle Detection
+
+Detect cycles in directed graphs using DFS three-color algorithm.
+
+```swift
+let detector = CycleDetector<Edge>(
+    database: database,
+    subspace: indexSubspace
+)
+
+// Check if graph has any cycle
+let hasCycle = try await detector.hasCycle(edgeLabel: "depends_on")
+
+// Find all cycles (with limit)
+let cycleInfo = try await detector.findCycles(edgeLabel: "depends_on", maxCycles: 10)
+for cycle in cycleInfo.cycles {
+    print("Cycle: \(cycle.joined(separator: " -> "))")
+}
+
+// Validate DAG constraint before inserting edge
+let wouldCycle = try await detector.wouldCreateCycle(
+    from: "A",
+    to: "B",
+    edgeLabel: "depends_on"
+)
+```
+
+**Reference**: CLRS "Introduction to Algorithms" Chapter 22
+
+### Topological Sort
+
+Compute linear ordering for DAGs using Kahn's algorithm.
+
+```swift
+let sorter = TopologicalSorter<Edge>(
+    database: database,
+    subspace: indexSubspace
+)
+
+// Get topological order
+let result = try await sorter.sort(edgeLabel: "depends_on")
+if let order = result.order {
+    print("Build order: \(order.joined(separator: " -> "))")
+} else {
+    print("Cycle detected in: \(result.cyclicNodes)")
+}
+
+// Get transitive dependencies
+let deps = try await sorter.dependencies(of: "module_A", edgeLabel: "depends_on")
+
+// Get critical path (longest path)
+let critical = try await sorter.criticalPath(edgeLabel: "depends_on")
+```
+
+**Reference**: Kahn (1962)
+
+### Shortest Path
+
+Find shortest paths using unidirectional or bidirectional BFS.
+
+```swift
+let finder = ShortestPathFinder<Edge>(
+    database: database,
+    subspace: indexSubspace
+)
+
+// Find shortest path between two nodes
+let result = try await finder.findShortestPath(
+    from: "alice",
+    to: "bob",
+    edgeLabel: nil  // All edge types
+)
+
+if let path = result.path {
+    print("Path: \(path.nodeIDs.joined(separator: " -> "))")
+    print("Distance: \(path.distance)")
+}
+
+// Find all shortest paths
+let allPaths = try await finder.findAllShortestPaths(
+    from: "alice",
+    to: "bob"
+)
+
+// Check connectivity
+let connected = try await finder.isConnected(from: "alice", to: "bob")
+```
+
+### Weighted Shortest Path
+
+Find shortest paths in weighted graphs using Dijkstra's algorithm.
+
+```swift
+let dijkstra = WeightedShortestPath<Edge>(
+    database: database,
+    subspace: indexSubspace
+)
+
+// Single path with weights
+let result = try await dijkstra.findPath(
+    from: "A",
+    to: "Z",
+    weightExtractor: { edge in edge.weight }
+)
+
+// Single-source shortest paths (SSSP)
+let sssp = try await dijkstra.singleSource(
+    from: "A",
+    weightExtractor: { edge in edge.weight }
+)
+```
+
+**Complexity**: O((V + E) log V)
+
+### PageRank
+
+Compute importance scores using power iteration.
+
+```swift
+let pagerank = PageRankComputer<Edge>(
+    database: database,
+    subspace: indexSubspace,
+    configuration: .default  // damping=0.85, iterations=100
+)
+
+let result = try await pagerank.compute(edgeLabel: nil)
+
+// Get top ranked nodes
+let top10 = result.topK(10)
+for (node, score) in top10 {
+    print("\(node): \(score)")
+}
+
+// Get specific node's rank
+if let rank = result.rank(for: "alice") {
+    print("Alice is ranked #\(rank)")
+}
+```
+
+**Reference**: Page, Brin et al. (1999)
+
+### Community Detection
+
+Detect communities using Label Propagation Algorithm.
+
+```swift
+let detector = CommunityDetector<Edge>(
+    database: database,
+    subspace: indexSubspace,
+    configuration: .default
+)
+
+let result = try await detector.detect(edgeLabel: nil)
+
+// Get node's community
+if let community = result.community(for: "alice") {
+    print("Alice is in community: \(community)")
+}
+
+// Get community members
+let members = result.communityMembers(for: communityID)
+
+// Get largest communities
+let largest = result.largestCommunities(k: 5)
+```
+
+**Reference**: Raghavan et al. (2007)
+
 ## Implementation Status
 
 | Feature | Status | Notes |
 |---------|--------|-------|
+| **Storage Strategies** | | |
 | Adjacency strategy | ✅ Complete | 2 indexes (out/in) |
 | TripleStore strategy | ✅ Complete | 3 indexes (SPO/POS/OSP) |
 | Hexastore strategy | ✅ Complete | 6 indexes (all permutations) |
+| **Query** | | |
 | SPARQL-like queries | ✅ Complete | Pattern matching with wildcards |
+| Path pattern queries | ✅ Complete | Variable-length paths |
+| Algorithm queries | ✅ Complete | PageRank, Community, etc. |
+| **Traversal** | | |
 | 1-hop neighbors | ✅ Complete | Direct edge traversal |
 | Multi-hop BFS | ✅ Complete | Configurable depth and limits |
-| Bounded traversal | ✅ Complete | Pagination with continuation tokens |
+| Paginated traversal | ✅ Complete | Deterministic cursor-based |
+| Bidirectional BFS | ✅ Complete | O(b^(d/2)) optimization |
+| **Algorithms** | | |
+| Cycle detection | ✅ Complete | DFS three-color |
+| Topological sort | ✅ Complete | Kahn's algorithm |
+| Shortest path | ✅ Complete | Unidirectional & bidirectional BFS |
+| Weighted shortest path | ✅ Complete | Dijkstra's algorithm |
+| PageRank | ✅ Complete | Power iteration |
+| Community detection | ✅ Complete | Label propagation |
+| **Other** | | |
 | Sparse index (nil) | ✅ Complete | nil values not indexed |
-| Bidirectional BFS | ⚠️ Partial | Basic support |
-| Shortest path | ❌ Not implemented | Planned |
-| PageRank | ❌ Not implemented | Planned |
+| Limit handling | ✅ Complete | isComplete, limitReason |
 
 ## Performance Characteristics
 
@@ -423,8 +606,19 @@ Run with: `swift test --filter GraphIndexPerformanceTests`
 
 ## References
 
+### Storage & Query
 - [Hexastore Paper](https://dl.acm.org/doi/10.14778/1453856.1453965) - Weiss, Karras, & Bernstein (2008)
 - [RDF Triple Stores](https://en.wikipedia.org/wiki/Triplestore) - Wikipedia
 - [SPARQL](https://www.w3.org/TR/sparql11-query/) - W3C Query Language
+
+### Algorithms
+- [Introduction to Algorithms (CLRS)](https://mitpress.mit.edu/books/introduction-algorithms) - Cormen et al. (Chapter 22: Graph Algorithms)
+- [Topological Sorting](https://dl.acm.org/doi/10.1145/368996.369025) - Kahn (1962)
+- [PageRank](http://ilpubs.stanford.edu:8090/422/) - Page, Brin et al. (1999)
+- [Label Propagation](https://arxiv.org/abs/0709.2938) - Raghavan, Albert, Kumara (2007)
+- [Dijkstra's Algorithm](https://en.wikipedia.org/wiki/Dijkstra%27s_algorithm) - Dijkstra (1959)
+- [Bidirectional Search](https://en.wikipedia.org/wiki/Bidirectional_search) - Pohl (1971)
+
+### General
 - [Graph Databases](https://neo4j.com/developer/graph-database/) - Neo4j Introduction
 - [BFS Algorithm](https://en.wikipedia.org/wiki/Breadth-first_search) - Wikipedia
