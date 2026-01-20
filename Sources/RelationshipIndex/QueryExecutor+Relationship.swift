@@ -32,11 +32,7 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
     internal var query: Query<T>
 
     /// Relationship joins to load
-    ///
-    /// Note: `nonisolated(unsafe)` is used because AnyKeyPath is not Sendable,
-    /// but this is safe since the array is only modified during query building
-    /// (before execution) and each call returns a new executor copy.
-    private nonisolated(unsafe) var joins: [RelationshipJoin]
+    private var joins: [RelationshipJoin]
 
     /// Initialize with context and query
     public init(context: FDBContext, query: Query<T>) {
@@ -96,9 +92,10 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
     ) -> RelationshipQueryExecutor<T> {
         var copy = self
         copy.joins.append(RelationshipJoin(
-            keyPath: keyPath,
+            fieldName: T.fieldName(for: keyPath),
             relatedTypeName: R.persistableType,
-            isToMany: false
+            isToMany: false,
+            fieldType: .optionalString
         ))
         return copy
     }
@@ -115,9 +112,10 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
     ) -> RelationshipQueryExecutor<T> {
         var copy = self
         copy.joins.append(RelationshipJoin(
-            keyPath: keyPath,
+            fieldName: T.fieldName(for: keyPath),
             relatedTypeName: R.persistableType,
-            isToMany: false
+            isToMany: false,
+            fieldType: .requiredString
         ))
         return copy
     }
@@ -134,9 +132,10 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
     ) -> RelationshipQueryExecutor<T> {
         var copy = self
         copy.joins.append(RelationshipJoin(
-            keyPath: keyPath,
+            fieldName: T.fieldName(for: keyPath),
             relatedTypeName: R.persistableType,
-            isToMany: true
+            isToMany: true,
+            fieldType: .stringArray
         ))
         return copy
     }
@@ -174,27 +173,10 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
 
         for item in items {
             for join in joins {
-                if join.isToMany {
-                    if let typedKeyPath = join.keyPath as? KeyPath<T, [String]> {
-                        let ids = item[keyPath: typedKeyPath]
-                        var idSet = fkValuesToLoad[join.relatedTypeName] ?? []
-                        ids.forEach { idSet.insert($0) }
-                        fkValuesToLoad[join.relatedTypeName] = idSet
-                    }
-                } else {
-                    if let typedKeyPath = join.keyPath as? KeyPath<T, String?> {
-                        if let id = item[keyPath: typedKeyPath] {
-                            var idSet = fkValuesToLoad[join.relatedTypeName] ?? []
-                            idSet.insert(id)
-                            fkValuesToLoad[join.relatedTypeName] = idSet
-                        }
-                    } else if let typedKeyPath = join.keyPath as? KeyPath<T, String> {
-                        let id = item[keyPath: typedKeyPath]
-                        var idSet = fkValuesToLoad[join.relatedTypeName] ?? []
-                        idSet.insert(id)
-                        fkValuesToLoad[join.relatedTypeName] = idSet
-                    }
-                }
+                let ids = extractForeignKeyIds(from: item, join: join)
+                var idSet = fkValuesToLoad[join.relatedTypeName] ?? []
+                ids.forEach { idSet.insert($0) }
+                fkValuesToLoad[join.relatedTypeName] = idSet
             }
         }
 
@@ -215,29 +197,21 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
         var snapshots: [Snapshot<T>] = []
 
         for item in items {
-            var relations: [AnyKeyPath: any Sendable] = [:]
+            var relations: [String: any Sendable] = [:]
 
             for join in joins {
                 guard let itemsById = loadedItems[join.relatedTypeName] else {
                     continue
                 }
 
+                let ids = extractForeignKeyIds(from: item, join: join)
+
                 if join.isToMany {
-                    if let typedKeyPath = join.keyPath as? KeyPath<T, [String]> {
-                        let ids = item[keyPath: typedKeyPath]
-                        let relatedItems = ids.compactMap { itemsById[$0] }
-                        relations[join.keyPath] = relatedItems
-                    }
+                    let relatedItems = ids.compactMap { itemsById[$0] }
+                    relations[join.fieldName] = relatedItems
                 } else {
-                    if let typedKeyPath = join.keyPath as? KeyPath<T, String?> {
-                        if let id = item[keyPath: typedKeyPath], let related = itemsById[id] {
-                            relations[join.keyPath] = related
-                        }
-                    } else if let typedKeyPath = join.keyPath as? KeyPath<T, String> {
-                        let id = item[keyPath: typedKeyPath]
-                        if let related = itemsById[id] {
-                            relations[join.keyPath] = related
-                        }
+                    if let id = ids.first, let related = itemsById[id] {
+                        relations[join.fieldName] = related
                     }
                 }
             }
@@ -247,15 +221,55 @@ public struct RelationshipQueryExecutor<T: Persistable>: Sendable {
 
         return snapshots
     }
+
+    /// Extract foreign key IDs from an item using the join's field name
+    private func extractForeignKeyIds(from item: T, join: RelationshipJoin) -> [String] {
+        guard let value = item[dynamicMember: join.fieldName] else {
+            return []
+        }
+
+        switch join.fieldType {
+        case .stringArray:
+            return (value as? [String]) ?? []
+        case .requiredString:
+            if let id = value as? String {
+                return [id]
+            }
+            return []
+        case .optionalString:
+            // dynamicMember returns unwrapped value if present
+            if let id = value as? String {
+                return [id]
+            }
+            return []
+        }
+    }
 }
 
 // MARK: - RelationshipJoin
 
 /// Describes a relationship to join
-private struct RelationshipJoin: @unchecked Sendable {
-    let keyPath: AnyKeyPath
+///
+/// Uses field name strings instead of AnyKeyPath for proper Sendable compliance.
+/// Field values are accessed via Persistable's dynamicMember subscript.
+private struct RelationshipJoin: Sendable {
+    /// Field name for the FK field
+    let fieldName: String
+
+    /// Name of the related type
     let relatedTypeName: String
+
+    /// Whether this is a To-Many relationship
     let isToMany: Bool
+
+    /// Type of the FK field (for proper casting)
+    let fieldType: FieldType
+
+    enum FieldType: Sendable {
+        case optionalString   // String?
+        case requiredString   // String
+        case stringArray      // [String]
+    }
 }
 
 // MARK: - QueryExecutor Extension

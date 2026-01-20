@@ -56,8 +56,8 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Whether this is a To-Many relationship
     private let isToMany: Bool
 
-    /// Loader for related items (optional)
-    private let relatedItemLoader: RelatedItemLoader?
+    /// Loader for related items (required)
+    private let relatedItemLoader: RelatedItemLoader
 
     // MARK: - Initialization
 
@@ -69,7 +69,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        relatedItemLoader: RelatedItemLoader? = nil
+        relatedItemLoader: @escaping RelatedItemLoader
     ) {
         self.foreignKeyFieldName = foreignKeyFieldName
         self.relatedTypeName = relatedTypeName
@@ -120,8 +120,27 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes] {
-        // Cannot compute without transaction access to load related item
-        return []
+        // RelationshipIndex requires transaction access to load related items
+        // This method should never be called - use computeIndexKeys(for:id:transaction:) instead
+        throw RelationshipIndexError.transactionRequired(indexName: index.name)
+    }
+
+    /// Compute index keys with transaction access
+    ///
+    /// RelationshipIndex requires transaction access to load related items
+    /// and extract their field values for index key computation.
+    ///
+    /// - Parameters:
+    ///   - item: The item to compute keys for
+    ///   - id: The item's unique identifier
+    ///   - transaction: Transaction for loading related items
+    /// - Returns: Array of index keys that should exist for this item
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> [FDB.Bytes] {
+        return try await buildIndexKeys(for: item, id: id, transaction: transaction)
     }
 
     // MARK: - Private Methods
@@ -159,14 +178,25 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [UInt8]? {
         // Get foreign key value (single ID)
         guard let foreignKeyValue = item[dynamicMember: foreignKeyFieldName] else {
+            // FK field is nil - no index entry needed
             return nil
+        }
+
+        // Validate FK type (String for To-One)
+        guard let foreignKeyString = foreignKeyValue as? String else {
+            throw RelationshipIndexError.invalidForeignKeyType(
+                fieldName: foreignKeyFieldName,
+                expectedType: "String",
+                actualType: String(describing: type(of: foreignKeyValue))
+            )
         }
 
         // Load related item and extract field values
         guard let relatedFieldValues = try await loadRelatedFieldValues(
-            foreignKey: foreignKeyValue,
+            foreignKey: foreignKeyString,
             transaction: transaction
         ) else {
+            // Related item not found - no index entry needed
             return nil
         }
 
@@ -181,12 +211,17 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> [[UInt8]] {
         // Get foreign key array
         guard let foreignKeyArray = item[dynamicMember: foreignKeyFieldName] else {
+            // FK field is nil - no index entries needed
             return []
         }
 
-        // Convert to array of strings
+        // FK must be [String] - this is a framework constraint (Persistable.ID is String)
         guard let ids = foreignKeyArray as? [String] else {
-            return []
+            throw RelationshipIndexError.invalidForeignKeyType(
+                fieldName: foreignKeyFieldName,
+                expectedType: "[String]",
+                actualType: String(describing: type(of: foreignKeyArray))
+            )
         }
 
         var keys: [[UInt8]] = []
@@ -200,6 +235,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 let key = buildKey(relatedValues: relatedFieldValues, itemId: itemId)
                 keys.append(key)
             }
+            // If related item not found, skip (FK points to non-existent item)
         }
 
         return keys
@@ -223,85 +259,40 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Load field values from a related item
+    ///
+    /// - Returns: Array of field values as TupleElements, or nil if related item not found
+    /// - Throws: RelationshipIndexError if field is nil or cannot be converted
     private func loadRelatedFieldValues(
         foreignKey: any Sendable,
         transaction: any TransactionProtocol
     ) async throws -> [any TupleElement]? {
-        guard let loader = relatedItemLoader else {
-            return nil
-        }
-
-        guard let relatedItem = try await loader(relatedTypeName, foreignKey, transaction) else {
+        guard let relatedItem = try await relatedItemLoader(relatedTypeName, foreignKey, transaction) else {
+            // Related item not found - this is a valid case (FK points to deleted/non-existent item)
             return nil
         }
 
         var values: [any TupleElement] = []
 
         for fieldName in relatedFieldNames {
-            if let value = relatedItem[dynamicMember: fieldName] {
-                if let fieldValue = FieldValue(value) {
-                    values.append(fieldValue.toTupleElement())
-                } else if let tupleElement = value as? any TupleElement {
-                    values.append(tupleElement)
-                }
-            }
-        }
-
-        return values
-    }
-}
-
-// MARK: - Related Item Update Support
-
-extension RelationshipIndexMaintainer {
-    /// Update relationship indexes when related item changes
-    public func updateForRelatedChange(
-        oldRelatedItem: any Persistable,
-        newRelatedItem: any Persistable,
-        changedFields: Set<String>,
-        dependentItemIds: [Tuple],
-        itemLoader: (Tuple, any TransactionProtocol) async throws -> Item?,
-        transaction: any TransactionProtocol
-    ) async throws {
-        // Check if any of the changed fields are in our related fields
-        let affectedFields = Set(relatedFieldNames).intersection(changedFields)
-        guard !affectedFields.isEmpty else {
-            return
-        }
-
-        // Extract old and new related field values
-        let oldRelatedValues = extractFieldValues(from: oldRelatedItem, fieldNames: relatedFieldNames)
-        let newRelatedValues = extractFieldValues(from: newRelatedItem, fieldNames: relatedFieldNames)
-
-        // Update index entries for each dependent item
-        for itemId in dependentItemIds {
-            guard let _ = try await itemLoader(itemId, transaction) else {
-                continue
+            guard let value = relatedItem[dynamicMember: fieldName] else {
+                // Field is nil - cannot create index entry with partial key
+                throw RelationshipIndexError.relatedFieldIsNil(
+                    fieldName: fieldName,
+                    relatedType: relatedTypeName
+                )
             }
 
-            // Build and clear the OLD index key
-            let oldKey = buildKey(relatedValues: oldRelatedValues, itemId: itemId)
-            transaction.clear(key: oldKey)
-
-            // Build and set the NEW index key
-            let newKey = buildKey(relatedValues: newRelatedValues, itemId: itemId)
-            transaction.setValue([], for: newKey)
-        }
-    }
-
-    private func extractFieldValues(
-        from item: any Persistable,
-        fieldNames: [String]
-    ) -> [any TupleElement] {
-        var values: [any TupleElement] = []
-
-        for fieldName in fieldNames {
-            if let value = item[dynamicMember: fieldName] {
-                if let fieldValue = FieldValue(value) {
-                    values.append(fieldValue.toTupleElement())
-                } else if let tupleElement = value as? any TupleElement {
-                    values.append(tupleElement)
-                }
+            if let fieldValue = FieldValue(value) {
+                values.append(fieldValue.toTupleElement())
+            } else if let tupleElement = value as? any TupleElement {
+                values.append(tupleElement)
+            } else {
+                // Field cannot be converted to TupleElement
+                throw RelationshipIndexError.fieldNotConvertibleToTupleElement(
+                    fieldName: fieldName,
+                    relatedType: relatedTypeName,
+                    actualType: String(describing: type(of: value))
+                )
             }
         }
 

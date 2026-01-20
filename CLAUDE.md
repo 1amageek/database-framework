@@ -608,6 +608,7 @@ Subspace keys are single characters for storage efficiency. Use `SubspaceKey.ite
 | Version | `VersionIndex` | Temporal versioning with FDB versionstamps |
 | Bitmap | `BitmapIndex` | Set membership queries using Roaring Bitmaps |
 | Leaderboard | `LeaderboardIndex` | Time-windowed leaderboards |
+| Relationship | `RelationshipIndex` | Cross-type indexes for relationship queries (requires transaction) |
 
 ### GraphIndex (Unified Graph/RDF Index)
 

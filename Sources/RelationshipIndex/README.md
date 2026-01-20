@@ -385,6 +385,44 @@ try await context.save()
 // related() now returns nil
 ```
 
+## Error Handling
+
+RelationshipIndex throws specific errors for invalid configurations or data:
+
+```swift
+public enum RelationshipIndexError: Error {
+    /// Configuration not found for the index
+    case configurationNotFound(indexName: String, modelType: String)
+
+    /// FK field type is invalid (must be String or [String])
+    case invalidForeignKeyType(fieldName: String, expectedType: String, actualType: String)
+
+    /// Related field value is nil - cannot create index entry
+    case relatedFieldIsNil(fieldName: String, relatedType: String)
+
+    /// Field value cannot be converted to TupleElement
+    case fieldNotConvertibleToTupleElement(fieldName: String, relatedType: String, actualType: String)
+
+    /// Transaction is required for computing index keys
+    case transactionRequired(indexName: String)
+}
+```
+
+### Error Scenarios
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `invalidForeignKeyType` | FK field is not `String` (To-One) or `[String]` (To-Many) | Ensure FK field type matches relationship type |
+| `relatedFieldIsNil` | Related item exists but indexed field is nil | Ensure indexed fields are non-nil or use Optional |
+| `fieldNotConvertibleToTupleElement` | Field type cannot be used as index key | Use primitive types (String, Int, Double, etc.) |
+| `transactionRequired` | Internal: non-transaction computeIndexKeys called | Use transaction-aware version (internal only) |
+
+### Design Philosophy
+
+- **Fail Fast**: Invalid configurations throw errors at index maintenance time
+- **No Silent Failures**: Type mismatches and nil values cause explicit errors
+- **Orphan FKs Allowed**: FK pointing to non-existent item is valid (returns nil on load)
+
 ## Implementation Status
 
 | Feature | Status | Notes |

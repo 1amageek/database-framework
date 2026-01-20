@@ -131,6 +131,29 @@ public protocol IndexMaintainer<Item>: Sendable {
         for item: Item,
         id: Tuple
     ) async throws -> [FDB.Bytes]
+
+    /// Compute expected index keys for an item with transaction access
+    ///
+    /// This method is similar to `computeIndexKeys(for:id:)` but provides
+    /// transaction access for indexes that need to load related data.
+    ///
+    /// - Parameters:
+    ///   - item: The item to compute keys for
+    ///   - id: The item's unique identifier
+    ///   - transaction: The transaction for loading related data
+    /// - Returns: Array of index keys that should exist for this item
+    /// - Throws: Error if computation fails
+    ///
+    /// **Default**: Calls the non-transaction version
+    ///
+    /// **When to Override**:
+    /// - RelationshipIndex: Needs to load related items to compute index keys
+    /// - Cross-type indexes: Require data from multiple types
+    func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> [FDB.Bytes]
 }
 
 // MARK: - Default Implementations
@@ -149,5 +172,16 @@ extension IndexMaintainer {
         id: Tuple
     ) async throws -> [FDB.Bytes] {
         return []
+    }
+
+    /// Default: calls the non-transaction version
+    ///
+    /// Override this for indexes that need transaction access (e.g., RelationshipIndex).
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> [FDB.Bytes] {
+        return try await computeIndexKeys(for: item, id: id)
     }
 }

@@ -27,26 +27,51 @@ public typealias RelatedItemLoader = @Sendable (
 /// Configuration for relationship indexes
 ///
 /// Provides the related item loader needed for relationship index maintenance.
-/// This configuration is passed through `FDBConfiguration.indexConfigurations`.
+/// This configuration enables `RelationshipIndexMaintainer` to load related items
+/// and extract their field values for cross-type index building.
 ///
-/// **Usage**:
+/// ## Automatic Configuration (Recommended)
+///
+/// `FDBContainer` automatically generates `RelationshipIndexConfiguration` for all
+/// relationship indexes during initialization. This is achieved through the
+/// `AutoConfigurableIndexKind` protocol that `RelationshipIndexKind` conforms to.
+///
+/// ```swift
+/// // No manual configuration needed!
+/// // FDBContainer auto-generates configurations for RelationshipIndexKind indexes
+/// let schema = Schema([Customer.self, Order.self])
+/// let container = try FDBContainer(for: schema)
+///
+/// // RelationshipIndex can now load related items automatically
+/// ```
+///
+/// ## Manual Configuration (Advanced)
+///
+/// For custom scenarios, you can provide your own configuration:
+///
 /// ```swift
 /// let config = FDBConfiguration(
 ///     indexConfigurations: [
 ///         RelationshipIndexConfiguration(
-///             indexName: "Order_customer_name_total",
+///             indexName: "Order_customer_name",
+///             modelTypeName: "Order",
 ///             relatedItemLoader: { typeName, foreignKey, transaction in
-///                 // Load related item using container/store
-///                 return try await container.loadItem(typeName: typeName, id: foreignKey, transaction: transaction)
+///                 // Custom loading logic
+///                 return try await myCustomLoader(typeName, foreignKey, transaction)
 ///             }
 ///         )
 ///     ]
 /// )
+/// let container = try FDBContainer(for: schema, configuration: config)
 /// ```
 ///
-/// **Automatic Setup**:
-/// FDBContainer automatically creates RelationshipIndexConfiguration for all relationship indexes
-/// when schema contains relationships. Users typically don't need to create this manually.
+/// ## How It Works
+///
+/// 1. `FDBContainer.init()` scans schema for `RelationshipIndexKind` indexes
+/// 2. For each index, it calls `RelationshipIndexKind.createConfiguration()`
+/// 3. The configuration includes an `itemLoader` closure that uses `FDBContainer.loadItemByTypeName()`
+/// 4. When `RelationshipIndexMaintainer.updateIndex()` is called, it uses this loader
+///    to fetch related items and extract field values for index keys
 public struct RelationshipIndexConfiguration: IndexConfiguration, @unchecked Sendable {
     // MARK: - IndexConfiguration Protocol
 

@@ -525,9 +525,11 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 let id = try itemTypeSubspace.unpack(key)
 
                 // Compute expected index keys using IndexMaintainer
+                // Use transaction-aware version for indexes that need to load related data (e.g., RelationshipIndex)
                 let expectedIndexKeys = try await self.indexMaintainer.computeIndexKeys(
                     for: item,
-                    id: id
+                    id: id,
+                    transaction: transaction
                 )
 
                 // Check if all expected index entries exist

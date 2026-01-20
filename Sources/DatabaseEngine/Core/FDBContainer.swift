@@ -123,14 +123,21 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        self.database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
+        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
+
+        self.database = database
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
         self.securityDelegate = security.isEnabled
             ? DefaultSecurityDelegate(configuration: security)
             : nil
-        self.indexConfigurations = Self.aggregateIndexConfigurations(configuration?.indexConfigurations ?? [])
+
+        // Merge user-provided configurations with auto-generated ones
+        let userConfigs = configuration?.indexConfigurations ?? []
+        let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: database)
+        self.indexConfigurations = Self.aggregateIndexConfigurations(userConfigs + autoConfigs)
+
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
@@ -160,7 +167,11 @@ public final class FDBContainer: Sendable {
         self.securityDelegate = security.isEnabled
             ? DefaultSecurityDelegate(configuration: security)
             : nil
-        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations)
+
+        // Merge user-provided configurations with auto-generated ones
+        let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: database)
+        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations + autoConfigs)
+
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
@@ -419,6 +430,136 @@ public final class FDBContainer: Sendable {
             result[config.indexName, default: []].append(config)
         }
         return result
+    }
+
+    // MARK: - Auto Configuration Generation
+
+    /// Generate configurations for indexes that support auto-configuration
+    ///
+    /// Scans all entities in the schema for indexes that conform to `AutoConfigurableIndexKind`
+    /// and generates their configurations automatically.
+    ///
+    /// **Currently Supported**:
+    /// - RelationshipIndexKind: Auto-generates `RelationshipIndexConfiguration` with item loader
+    internal static func generateAutoConfigurations(
+        schema: Schema,
+        database: any DatabaseProtocol
+    ) -> [any IndexConfiguration] {
+        var configs: [any IndexConfiguration] = []
+
+        for entity in schema.entities {
+            for descriptor in entity.persistableType.indexDescriptors {
+                // Check if the index kind supports auto-configuration
+                guard let autoConfigurable = type(of: descriptor.kind) as? any AutoConfigurableIndexKind.Type else {
+                    continue
+                }
+
+                // Create the item loader closure
+                // Captures database (nonisolated unsafe - FDB handles thread safety internally)
+                // and schema (value type)
+                nonisolated(unsafe) let capturedDatabase = database
+                let itemLoader: GenericItemLoader = { typeName, id, transaction in
+                    try await Self.loadItemByTypeName(
+                        typeName: typeName,
+                        id: id,
+                        schema: schema,
+                        database: capturedDatabase,
+                        transaction: transaction
+                    )
+                }
+
+                // Generate configuration
+                let config = autoConfigurable.createConfiguration(
+                    indexName: descriptor.name,
+                    modelTypeName: entity.name,
+                    itemLoader: itemLoader
+                )
+                configs.append(config)
+            }
+        }
+
+        return configs
+    }
+
+    /// Load an item by type name and ID
+    ///
+    /// Internal helper used by auto-generated configurations to load related items.
+    ///
+    /// - Parameters:
+    ///   - typeName: Name of the Persistable type
+    ///   - id: ID value of the item
+    ///   - schema: Schema containing the type
+    ///   - database: Database for directory resolution
+    ///   - transaction: Transaction to use for reading
+    /// - Returns: The loaded item, or nil if not found
+    internal static func loadItemByTypeName(
+        typeName: String,
+        id: any Sendable,
+        schema: Schema,
+        database: any DatabaseProtocol,
+        transaction: any TransactionProtocol
+    ) async throws -> (any Persistable)? {
+        // Find the entity in schema
+        guard let entity = schema.entities.first(where: { $0.name == typeName }) else {
+            return nil
+        }
+
+        let type = entity.persistableType
+
+        // Resolve directory for the type
+        let pathComponents = resolveStaticDirectoryPath(for: type)
+        let directoryLayer = DirectoryLayer(database: database)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: pathComponents)
+        let subspace = dirSubspace.subspace
+
+        // Build the item key
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(type.persistableType)
+
+        let idTuple: Tuple
+        if let tupleElement = id as? any TupleElement {
+            idTuple = Tuple([tupleElement])
+        } else if let stringId = id as? String {
+            idTuple = Tuple([stringId])
+        } else {
+            return nil
+        }
+
+        let key = itemSubspace.pack(idTuple)
+
+        // Read using ItemStorage
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        let storage = ItemStorage(transaction: transaction, blobsSubspace: blobsSubspace)
+
+        guard let data = try await storage.read(for: key) else {
+            return nil
+        }
+
+        // Deserialize
+        return try DataAccess.deserializeAny(data, as: type)
+    }
+
+    /// Resolve static directory path for a Persistable type
+    ///
+    /// For types with dynamic directories (Field components), this returns only
+    /// the static portions. Used for auto-configuration where we don't have
+    /// specific field values yet.
+    private static func resolveStaticDirectoryPath(for type: any Persistable.Type) -> [String] {
+        var path: [String] = []
+        for component in type.directoryPathComponents {
+            if let pathElement = component as? Path {
+                path.append(pathElement.value)
+            } else if let stringElement = component as? String {
+                path.append(stringElement)
+            }
+            // Skip Field components - we can't resolve them without a specific item
+        }
+
+        // If no path components, use the type name
+        if path.isEmpty {
+            path = [type.persistableType]
+        }
+
+        return path
     }
 }
 

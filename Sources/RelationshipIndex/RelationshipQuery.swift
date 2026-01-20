@@ -69,12 +69,13 @@ extension FDBContext {
             return nil
         }
 
-        var relations: [AnyKeyPath: any Sendable] = [:]
+        var relations: [String: any Sendable] = [:]
 
         // Load the related item if FK is not nil
         if let foreignKeyValue = item[keyPath: keyPath] {
             if let relatedItem = try await model(for: foreignKeyValue, as: R.self) {
-                relations[keyPath] = relatedItem
+                let fieldName = T.fieldName(for: keyPath)
+                relations[fieldName] = relatedItem
             }
         }
 
@@ -99,12 +100,13 @@ extension FDBContext {
             return nil
         }
 
-        var relations: [AnyKeyPath: any Sendable] = [:]
+        var relations: [String: any Sendable] = [:]
 
         // Load the related item
         let foreignKeyValue = item[keyPath: keyPath]
         if let relatedItem = try await model(for: foreignKeyValue, as: R.self) {
-            relations[keyPath] = relatedItem
+            let fieldName = T.fieldName(for: keyPath)
+            relations[fieldName] = relatedItem
         }
 
         return Snapshot(item: item, relations: relations)
@@ -142,7 +144,7 @@ extension FDBContext {
             return nil
         }
 
-        var relations: [AnyKeyPath: any Sendable] = [:]
+        var relations: [String: any Sendable] = [:]
 
         // Load all related items
         let foreignKeyIds = item[keyPath: keyPath]
@@ -153,7 +155,8 @@ extension FDBContext {
                     relatedItems.append(relatedItem)
                 }
             }
-            relations[keyPath] = relatedItems
+            let fieldName = T.fieldName(for: keyPath)
+            relations[fieldName] = relatedItems
         }
 
         return Snapshot(item: item, relations: relations)
