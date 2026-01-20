@@ -23,7 +23,7 @@ let package = Package(
         .library(name: "Database", targets: ["Database"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        .package(path: "../database-kit"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
@@ -32,7 +32,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
-        .package(url: "https://github.com/apple/swift-configuration.git", from: "0.0.1"),
+        .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
     ],
     targets: [
         .target(

@@ -243,6 +243,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         var visited: Set<String> = []
         var results: [ConnectedNode] = []
         var frontier: [(node: String, hops: Int)] = []
+        var frontierIndex = 0
 
         // Initialize frontier
         if let source = sourceValue {
@@ -254,9 +255,10 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             visited.insert(target)
         }
 
-        // BFS traversal
-        while !frontier.isEmpty {
-            let (currentNode, currentHops) = frontier.removeFirst()
+        // BFS traversal using index-based iteration to avoid O(n) removeFirst()
+        while frontierIndex < frontier.count {
+            let (currentNode, currentHops) = frontier[frontierIndex]
+            frontierIndex += 1
 
             if currentHops > 0 {
                 results.append(ConnectedNode(node: currentNode, hops: currentHops))
@@ -504,15 +506,98 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
     }
 
     /// Fetch items by their node field values
+    ///
+    /// Uses optimized lookup strategy:
+    /// 1. If field is "id", use direct ID lookup (O(k) where k = nodeValues.count)
+    /// 2. If ScalarIndex exists on field, use index query (O(k) lookups)
+    /// 3. Otherwise, fallback to full scan (O(n) - expensive, logs warning)
     private func fetchItemsByNodeValues(_ nodeValues: [String]) async throws -> [T] {
-        // This would ideally use a scalar index on the node field
-        // For now, fetch all and filter
+        guard !nodeValues.isEmpty else { return [] }
+
+        // Strategy 1: If the field is the ID field, use direct ID lookup
+        if fieldName == "id" {
+            return try await queryContext.fetchItemsByStringIds(type: T.self, ids: nodeValues)
+        }
+
+        // Strategy 2: If there's a ScalarIndex on this field, use it
+        if let indexDescriptor = findScalarIndexForField() {
+            return try await fetchUsingScalarIndex(
+                nodeValues: nodeValues,
+                indexDescriptor: indexDescriptor
+            )
+        }
+
+        // Strategy 3: Fallback to full scan (expensive)
+        // Log warning for visibility
+        #if DEBUG
+        print("[Connected] Warning: No index found for field '\(fieldName)' on type '\(T.persistableType)'. Performing full table scan.")
+        #endif
+
         let allItems = try await queryContext.fetchAllItems(type: T.self)
+        let nodeValueSet = Set(nodeValues)
         return allItems.filter { item in
             guard let value = item[dynamicMember: fieldName] as? String else {
                 return false
             }
-            return nodeValues.contains(value)
+            return nodeValueSet.contains(value)
         }
+    }
+
+    /// Find a ScalarIndex that covers the field
+    private func findScalarIndexForField() -> IndexDescriptor? {
+        T.indexDescriptors.first { descriptor in
+            // Check if it's a ScalarIndex
+            guard descriptor.kindIdentifier == "scalar" else { return false }
+
+            // Check if the field is the first field in the index
+            // ScalarIndex names follow pattern: TypeName_field1_field2...
+            let indexFields = descriptor.name
+                .replacingOccurrences(of: "\(T.persistableType)_", with: "")
+                .split(separator: "_")
+                .map(String.init)
+
+            return indexFields.first == fieldName
+        }
+    }
+
+    /// Fetch items using ScalarIndex lookup
+    private func fetchUsingScalarIndex(
+        nodeValues: [String],
+        indexDescriptor: IndexDescriptor
+    ) async throws -> [T] {
+        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
+            .subspace(indexDescriptor.name)
+
+        let reader = try await queryContext.storageReader(for: T.self)
+        let searcher = ScalarIndexSearcher(keyFieldCount: 1)
+
+        var allIds: [Tuple] = []
+
+        // Query index for each node value
+        for nodeValue in nodeValues {
+            let query = ScalarIndexQuery.equals([nodeValue])
+            let entries = try await searcher.search(
+                query: query,
+                in: indexSubspace,
+                using: reader
+            )
+            for entry in entries {
+                allIds.append(entry.itemID)
+            }
+        }
+
+        // Deduplicate IDs by packed representation
+        var seenPacked: Set<[UInt8]> = []
+        var uniqueIds: [Tuple] = []
+        for id in allIds {
+            let packed = id.pack()
+            if !seenPacked.contains(packed) {
+                seenPacked.insert(packed)
+                uniqueIds.append(id)
+            }
+        }
+
+        // Fetch items by IDs
+        return try await queryContext.fetchItems(ids: uniqueIds, type: T.self)
     }
 }

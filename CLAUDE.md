@@ -248,20 +248,135 @@ TransactionRunner.run(database:configuration:readVersionCache:operation:)
        └── 7. On success: update context's read version cache
 ```
 
-**System-Level Operations (DirectoryLayer, Migration)**:
+### Transaction API の使い分け（設計原則）
 
-システムレベルの操作（DirectoryLayer 初期化、マイグレーション）は `DatabaseProtocol.withTransaction()` を直接使用:
+本フレームワークには**3つのトランザクション API** があり、それぞれ明確な用途がある：
+
+| API | 戻り値 | ReadVersionCache | アクセスレベル | 用途 |
+|-----|--------|------------------|---------------|------|
+| `context.withTransaction()` | `TransactionContext` | ✅ 使用 | `public` | ユーザー向け高レベルAPI |
+| `context.withRawTransaction()` | `TransactionProtocol` | ✅ 使用 | `internal` | 内部インフラ（キャッシュ必要） |
+| `database.withTransaction()` | `TransactionProtocol` | ❌ 不使用 | `public` | システム操作 |
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     Transaction API の選択基準                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ユーザーデータの読み書き？                                                   │
+│       │                                                                     │
+│       ├─ YES → context.withTransaction()                                    │
+│       │         • TransactionContext（高レベルAPI）                          │
+│       │         • get(), set(), delete() でセキュリティ評価                   │
+│       │         • Directory 解決、Subspace キャッシュ                         │
+│       │                                                                     │
+│       └─ NO → ReadVersionCache が必要？                                      │
+│                 │                                                           │
+│                 ├─ YES → context.withRawTransaction()  [internal]           │
+│                 │         • TransactionProtocol（低レベルAPI）               │
+│                 │         • IndexQueryContext 等の内部インフラ               │
+│                 │         • キャッシュの恩恵を受けつつ直接アクセス              │
+│                 │                                                           │
+│                 └─ NO → database.withTransaction()                          │
+│                           • TransactionProtocol（低レベルAPI）               │
+│                           • DirectoryLayer, Migration                       │
+│                           • OnlineIndexer, Graph Algorithms                 │
+│                           • 長時間バッチ処理（キャッシュが古くなる）            │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+#### 1. `context.withTransaction()` - ユーザー向け高レベルAPI
 
 ```swift
-// System operation - uses raw database, no ReadVersionCache
-try await container.database.withTransaction(configuration: .batch) { tx in
+// TransactionContext を返す（高レベル）
+try await context.withTransaction(configuration: .default) { tx: TransactionContext in
+    // 高レベルAPI: セキュリティ評価、Directory解決が自動
+    let user = try await tx.get(User.self, id: userID)
+    try await tx.set(updatedUser)
+    try await tx.delete(User.self, id: userID)
+}
+
+// 主な用途: FDBContext.save(), fetch() 等のユーザー向け操作
+```
+
+**TransactionContext が提供する機能**:
+- `get()` / `set()` / `delete()` - セキュリティ評価付き
+- Directory 解決（パーティション対応）
+- Subspace キャッシュ
+- `transaction` プロパティは `private`（カプセル化）
+
+#### 2. `context.withRawTransaction()` - 内部インフラ用（キャッシュあり）
+
+```swift
+// TransactionProtocol を返す（低レベル、internal）
+try await context.withRawTransaction(configuration: .default) { tx: TransactionProtocol in
+    // 低レベルAPI: 直接キーアクセス
+    let value = try await tx.getValue(for: key, snapshot: true)
+    tx.setValue(value, for: key)
+    for try await (k, v) in tx.getRange(...) { ... }
+}
+
+// 主な用途: IndexQueryContext.withTransaction()
+```
+
+**使用場面**:
+- `IndexQueryContext` - インデックス構造を直接読み取る必要がある
+- ReadVersionCache の恩恵を受けつつ、低レベルアクセスが必要な場合
+- セキュリティ評価はアイテム取得後に別途行う
+
+#### 3. `database.withTransaction()` - システム操作用（キャッシュなし）
+
+```swift
+// TransactionProtocol を返す（低レベル、キャッシュなし）
+try await container.database.withTransaction(configuration: .batch) { tx: TransactionProtocol in
+    // システム操作: キャッシュの恩恵なし
     try await directoryLayer.createOrOpen(at: path, using: tx)
+}
+
+// 主な用途: DirectoryLayer, Migration, OnlineIndexer, Graph Algorithms
+```
+
+**使用場面**:
+- DirectoryLayer 操作
+- Migration
+- OnlineIndexer / IndexScrubber
+- Graph Algorithms（独立したインフラコンポーネント）
+- StatisticsManager
+- 長時間バッチ処理（キャッシュが古くなるため無意味）
+
+#### Graph Algorithms が `database.withTransaction()` を使う理由
+
+Graph Algorithms（ShortestPathFinder, CycleDetector, TopologicalSort 等）は**インフラコンポーネント**として設計：
+
+1. **独立性**: FDBContext に依存しない再利用可能なコンポーネント
+2. **バッチ処理**: 長時間実行では ReadVersionCache が古くなる
+3. **システム統合**: OnlineIndexer や Migration から呼ばれる可能性がある
+4. **単純性**: 1回のアルゴリズム実行で ReadVersionCache の恩恵は限定的
+
+```swift
+// Graph Algorithm は database を直接受け取る = インフラコンポーネント
+public final class CycleDetector<Edge: Persistable>: Sendable {
+    nonisolated(unsafe) private let database: any DatabaseProtocol
+
+    public init(database: any DatabaseProtocol, subspace: Subspace) {
+        // database を直接保持（Context ではない）
+    }
 }
 ```
 
-これは意図的な設計:
-- システム操作は ReadVersionCache の恩恵を受けない
-- アプリケーション操作のみが Context を通じてキャッシュを使用
+#### コンポーネント別 API 使用一覧
+
+| コンポーネント | 使用する API | 理由 |
+|--------------|-------------|------|
+| `FDBContext.save()` | `withTransaction()` | ユーザー向け、高レベルAPI |
+| `FDBContext.fetch()` | `withTransaction()` | ユーザー向け、高レベルAPI |
+| `IndexQueryContext` | `withRawTransaction()` | 内部インフラ、キャッシュ必要 |
+| `FDBDataStore` | トランザクションを**受け取る** | 自身では作成しない |
+| `Graph Algorithms` | `database.withTransaction()` | 独立インフラ、キャッシュ不要 |
+| `OnlineIndexer` | `database.withTransaction()` | バックグラウンド処理 |
+| `DirectoryLayer` | `database.withTransaction()` | システム操作 |
+| `Migration` | `database.withTransaction()` | システム操作 |
 
 ### FDBContext (Transaction Manager)
 

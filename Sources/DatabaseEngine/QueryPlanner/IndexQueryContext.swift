@@ -143,12 +143,17 @@ public struct IndexQueryContext: Sendable {
 
     /// Execute a closure within a transaction
     ///
+    /// Uses `context.withRawTransaction()` internally to benefit from ReadVersionCache
+    /// while providing direct access to the raw TransactionProtocol.
+    ///
     /// - Parameter body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
         _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
     ) async throws -> R {
-        return try await context.container.database.withTransaction(configuration: .default, body)
+        return try await context.withRawTransaction(configuration: .default) { transaction in
+            try await body(transaction)
+        }
     }
 
     // MARK: - Item Fetching
@@ -355,7 +360,7 @@ public struct IndexQueryContext: Sendable {
             configuration: configuration
         )
 
-        let items = try await context.container.database.withTransaction(configuration: .default) { transaction in
+        let items = try await context.withRawTransaction(configuration: .default) { transaction in
             try await fetcher.fetch(primaryKeys: ids, transaction: transaction)
         }
 
