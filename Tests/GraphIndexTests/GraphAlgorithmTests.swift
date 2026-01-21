@@ -128,7 +128,7 @@ private struct TestContext {
         let range = subspace.range()
         try await database.withTransaction(configuration: .batch) { tx in
             tx.clearRange(beginKey: range.0, endKey: range.1)
-            _ = try await tx.commit()
+            // Note: withTransaction automatically commits on success - don't call commit() explicitly
         }
     }
 
@@ -142,7 +142,7 @@ private struct TestContext {
                     transaction: transaction
                 )
             }
-            _ = try await transaction.commit()
+            // Note: withTransaction automatically commits on success - don't call commit() explicitly
         }
     }
 }
@@ -238,7 +238,10 @@ struct GraphPathTests {
             edgeLabels: [],
             weights: nil
         )
-        #expect(path.isEmpty == true)
+        // A single-node path is NOT empty - it contains one node.
+        // isEmpty returns true only when nodeIDs is empty (no nodes at all).
+        // The path *length* is 0 (no edges), but the path itself exists.
+        #expect(path.isEmpty == false)
         #expect(path.length == 0)
     }
 }
@@ -349,7 +352,7 @@ struct ShortestPathConfigurationTests {
     func fastConfiguration() {
         let config = ShortestPathConfiguration.fast
         #expect(config.bidirectional == true)
-        #expect(config.maxDepth == 6)
+        #expect(config.maxDepth == 5)  // .fast uses maxDepth=5 for faster execution
     }
 }
 
@@ -438,6 +441,43 @@ struct ShortestPathFinderIntegrationTests {
         #expect(result.isConnected == true)
         #expect(result.distance == 2)  // A -> B -> D
     }
+
+    @Test("Shortest path with edgeLabel=nil (wildcard) considers ALL edge labels")
+    func shortestPathWithWildcardEdgeLabel() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Graph with multiple edge labels:
+        // A -> B (follows)
+        // A -> C (blocks) - different label, but should still be traversed
+        // C -> D (likes)  - yet another label
+        //
+        // With edgeLabel=nil (wildcard), should find path A -> C -> D (length 2)
+        // If edgeLabel=nil were incorrectly treated as empty string,
+        // no path would be found (this was the bug in the old implementation)
+        let edges = [
+            Edge(source: "A", target: "B", label: "follows"),
+            Edge(source: "A", target: "C", label: "blocks"),
+            Edge(source: "C", target: "D", label: "likes"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let finder = ShortestPathFinder<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: .default
+        )
+
+        // edgeLabel=nil means "match ALL labels" (wildcard)
+        // Use default bidirectional BFS
+        let result = try await finder.findShortestPath(from: "A", to: "D", edgeLabel: nil)
+
+        #expect(result.isConnected == true)
+        #expect(result.distance == 2)  // A -> C -> D
+        // Path could be A -> C -> D or A -> B -> ? (no path from B to D)
+        // Since B has no outgoing edges to D, path must be A -> C -> D
+        #expect(result.path?.length == 2)
+    }
 }
 
 // MARK: - PageRankComputer Integration Tests
@@ -519,6 +559,98 @@ struct PageRankComputerIntegrationTests {
         // All scores should be approximately equal (within 1%)
         #expect(abs(scoreA - scoreB) < 0.01)
         #expect(abs(scoreB - scoreC) < 0.01)
+    }
+
+    @Test("PageRank with edgeLabel=nil (wildcard) considers ALL edge labels")
+    func pageRankWithWildcardEdgeLabel() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Graph with multiple edge labels:
+        // A -> C (follows)
+        // B -> C (likes)   - different label
+        // D -> C (shares)  - yet another label
+        //
+        // With edgeLabel=nil (wildcard), C should receive PageRank from A, B, and D
+        // If edgeLabel=nil were incorrectly treated as empty string,
+        // C would have no incoming edges (this was the bug in the old implementation)
+        let edges = [
+            Edge(source: "A", target: "C", label: "follows"),
+            Edge(source: "B", target: "C", label: "likes"),
+            Edge(source: "D", target: "C", label: "shares"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 50,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        // edgeLabel=nil means "match ALL labels" (wildcard)
+        let result = try await computer.compute(edgeLabel: nil)
+
+        // All 4 nodes should be discovered
+        #expect(result.nodeCount == 4)
+
+        // C should have highest score (receives from 3 sources)
+        let top1 = result.topK(1)
+        #expect(top1.first?.nodeID == "C")
+
+        // A, B, D should have similar scores (each has no incoming edges, only outgoing)
+        let scores = result.scores
+        let scoreA = scores["A"] ?? 0
+        let scoreB = scores["B"] ?? 0
+        let scoreD = scores["D"] ?? 0
+
+        // A, B, D should have similar low scores (only teleportation, no incoming)
+        #expect(abs(scoreA - scoreB) < 0.05)
+        #expect(abs(scoreB - scoreD) < 0.05)
+    }
+
+    @Test("PageRank with specific edgeLabel filters correctly")
+    func pageRankWithSpecificEdgeLabel() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Graph with multiple edge labels:
+        // A -> C (follows)
+        // B -> C (likes)
+        //
+        // With edgeLabel="follows", only A -> C should be considered
+        let edges = [
+            Edge(source: "A", target: "C", label: "follows"),
+            Edge(source: "B", target: "C", label: "likes"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 50,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        // Only consider "follows" edges
+        let result = try await computer.compute(edgeLabel: "follows")
+
+        // Only A and C should be discovered (B is not connected via "follows")
+        #expect(result.nodeCount == 2)
+
+        // C should have higher score than A
+        let scores = result.scores
+        let scoreA = scores["A"] ?? 0
+        let scoreC = scores["C"] ?? 0
+        #expect(scoreC > scoreA)
     }
 }
 

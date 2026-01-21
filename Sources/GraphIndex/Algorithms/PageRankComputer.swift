@@ -54,12 +54,8 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     /// Database connection (internally thread-safe)
     nonisolated(unsafe) private let database: any DatabaseProtocol
 
-    /// Index subspace
-    private let subspace: Subspace
-
-    /// Cached subspaces
-    private let outgoingSubspace: Subspace
-    private let incomingSubspace: Subspace
+    /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
+    private let scanner: GraphEdgeScanner
 
     /// Configuration
     private let configuration: PageRankConfiguration
@@ -78,10 +74,8 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         configuration: PageRankConfiguration = .default
     ) {
         self.database = database
-        self.subspace = subspace
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
         self.configuration = configuration
-        self.outgoingSubspace = subspace.subspace(Int64(0))
-        self.incomingSubspace = subspace.subspace(Int64(1))
     }
 
     // MARK: - Public API
@@ -249,66 +243,16 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
 
     // MARK: - Private Methods
 
-    /// Collect all nodes and compute their out-degrees
+    /// Collect all nodes and compute their out-degrees using GraphEdgeScanner
     private func collectNodesAndDegrees(
         edgeLabel: String?
     ) async throws -> (nodes: Set<String>, outDegrees: [String: Int]) {
-        // Scan the outgoing edge index to find all nodes and degrees
-        let (beginKey, endKey) = outgoingSubspace.range()
-
-        // Collect edges inside transaction and process outside
-        let edges: [(source: String, target: String)] = try await database.withTransaction(configuration: .batch) { transaction in
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
-                snapshot: true
-            )
-
-            var collectedEdges: [(source: String, target: String)] = []
-
-            for try await (key, _) in stream {
-                // Parse the key to extract source and target
-                let elements = try self.outgoingSubspace.unpack(key)
-
-                guard elements.count >= 2 else { continue }
-
-                // Key structure: [edge?]/[source]/[target]
-                let sourceIndex: Int
-                let targetIndex: Int
-
-                if let label = edgeLabel {
-                    // Filter by edge label
-                    guard elements.count >= 3,
-                          let keyLabel = elements[0] as? String,
-                          keyLabel == label else { continue }
-                    sourceIndex = 1
-                    targetIndex = 2
-                } else {
-                    sourceIndex = elements.count >= 3 ? 1 : 0
-                    targetIndex = elements.count >= 3 ? 2 : 1
-                }
-
-                guard let sourceElement = elements[sourceIndex],
-                      let targetElement = elements[targetIndex] else { continue }
-
-                let source: String
-                let target: String
-
-                if let s = sourceElement as? String {
-                    source = s
-                } else {
-                    source = String(describing: sourceElement)
-                }
-
-                if let t = targetElement as? String {
-                    target = t
-                } else {
-                    target = String(describing: targetElement)
-                }
-
-                collectedEdges.append((source, target))
+        // Use GraphEdgeScanner to scan all edges
+        let edges: [EdgeInfo] = try await database.withTransaction(configuration: .batch) { transaction in
+            var collectedEdges: [EdgeInfo] = []
+            for try await edge in self.scanner.scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
+                collectedEdges.append(edge)
             }
-
             return collectedEdges
         }
 
@@ -316,16 +260,20 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         var nodes: Set<String> = []
         var outDegrees: [String: Int] = [:]
 
-        for (source, target) in edges {
-            nodes.insert(source)
-            nodes.insert(target)
-            outDegrees[source, default: 0] += 1
+        for edge in edges {
+            nodes.insert(edge.source)
+            nodes.insert(edge.target)
+            outDegrees[edge.source, default: 0] += 1
         }
 
         return (nodes, outDegrees)
     }
 
-    /// Compute PageRank contributions for a batch of target nodes
+    /// Compute PageRank contributions for a batch of target nodes using GraphEdgeScanner
+    ///
+    /// **Performance Note (Adjacency Strategy)**:
+    /// - When `edgeLabel` is specified: O(degree) per node via prefix scan
+    /// - When `edgeLabel` is nil: O(E) full scan of incoming edge subspace + filter
     private func computeContributions(
         nodes: [String],
         scores: [String: Double],
@@ -333,57 +281,31 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         edgeLabel: String?,
         dampingFactor: Double
     ) async throws -> [(node: String, contribution: Double)] {
-        // For each node, find incoming edges and compute contribution
-        let contributions: [(node: String, contribution: Double)] = try await database.withTransaction(configuration: .batch) { transaction in
-            var results: [(node: String, contribution: Double)] = []
-
-            for node in nodes {
-                // Build prefix for incoming edge scan
-                var prefixElements: [any TupleElement] = []
-                if let label = edgeLabel {
-                    prefixElements.append(label)
-                }
-                prefixElements.append(node)
-
-                let prefix = Subspace(prefix: self.incomingSubspace.prefix + Tuple(prefixElements).pack())
-                let (beginKey, endKey) = prefix.range()
-
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
-                    snapshot: true
-                )
-
-                var totalContribution = 0.0
-
-                for try await (key, _) in stream {
-                    let elements = try prefix.unpack(key)
-
-                    guard !elements.isEmpty else { continue }
-                    let lastIndex = elements.count - 1
-                    guard let sourceElement = elements[lastIndex] else { continue }
-
-                    let source: String
-                    if let s = sourceElement as? String {
-                        source = s
-                    } else {
-                        source = String(describing: sourceElement)
-                    }
-
-                    let sourceScore = scores[source] ?? 0
-                    let sourceOutDegree = outDegrees[source] ?? 1
-
-                    totalContribution += dampingFactor * sourceScore / Double(sourceOutDegree)
-                }
-
-                if totalContribution > 0 {
-                    results.append((node, totalContribution))
-                }
-            }
-
-            return results
+        // Use GraphEdgeScanner to get incoming edges for all target nodes
+        let incomingEdges: [EdgeInfo] = try await database.withTransaction(configuration: .batch) { transaction in
+            try await self.scanner.batchScanIncoming(
+                to: nodes,
+                edgeLabel: edgeLabel,
+                transaction: transaction
+            )
         }
 
-        return contributions
+        // Accumulate contributions per target node
+        var contributionsByTarget: [String: Double] = [:]
+
+        for edge in incomingEdges {
+            let targetNode = edge.target
+            let sourceNode = edge.source
+
+            let sourceScore = scores[sourceNode] ?? 0
+            let sourceOutDegree = outDegrees[sourceNode] ?? 1
+
+            contributionsByTarget[targetNode, default: 0] += dampingFactor * sourceScore / Double(sourceOutDegree)
+        }
+
+        // Convert to result format
+        return contributionsByTarget.compactMap { (node, contribution) in
+            contribution > 0 ? (node, contribution) : nil
+        }
     }
 }

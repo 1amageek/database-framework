@@ -69,14 +69,8 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     /// Database connection (internally thread-safe)
     nonisolated(unsafe) private let database: any DatabaseProtocol
 
-    /// Index subspace
-    private let subspace: Subspace
-
-    /// Cached subspace for outgoing edges
-    private let outgoingSubspace: Subspace
-
-    /// Cached subspace for incoming edges
-    private let incomingSubspace: Subspace
+    /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
+    private let scanner: GraphEdgeScanner
 
     /// Configuration
     private let configuration: ShortestPathConfiguration
@@ -95,12 +89,8 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         configuration: ShortestPathConfiguration = .default
     ) {
         self.database = database
-        self.subspace = subspace
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
         self.configuration = configuration
-        // Cache subspaces at initialization
-        // Use integer keys matching GraphIndexMaintainer: 0=out, 1=in
-        self.outgoingSubspace = subspace.subspace(Int64(0))
-        self.incomingSubspace = subspace.subspace(Int64(1))
     }
 
     // MARK: - Public API
@@ -541,99 +531,57 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
     // MARK: - Neighbor Queries
 
-    /// Get neighbors for a batch of nodes
+    /// Get neighbors for a batch of nodes using GraphEdgeScanner
     ///
     /// Returns (sourceNode, targetNode, edgeLabel) tuples.
+    ///
+    /// **Performance Note (Adjacency Strategy)**:
+    /// - When `edgeLabel` is specified: O(degree) per source node via prefix scan
+    /// - When `edgeLabel` is nil: O(E) full scan of edge subspace + filter
+    ///
+    /// For efficient `(from, ?, ?)` queries without edge label filter,
+    /// consider using `tripleStore` or `hexastore` strategy instead.
     private func getNeighborsBatch(
         nodes: [String],
         edgeLabel: String?,
         direction: Direction,
         visited: Set<String>
     ) async throws -> [(source: String, target: String, edge: String)] {
-        // Pre-compute scan parameters outside transaction (Sendable requirement)
-        let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
-        let scanParams: [(source: String, beginKey: [UInt8], endKey: [UInt8], prefix: Subspace)] = nodes.map { source in
-            var prefixElements: [any TupleElement] = []
-            if let label = edgeLabel {
-                prefixElements.append(label)
-            }
-            prefixElements.append(source)
-            let prefix = Subspace(prefix: scanSubspace.prefix + Tuple(prefixElements).pack())
-            let (beginKey, endKey) = prefix.range()
-            return (source, beginKey, endKey, prefix)
-        }
-
-        // Copy visited set for Sendable
         let currentVisited = visited
-        let hasEdgeLabel = edgeLabel != nil
 
         return try await database.withTransaction(configuration: .default) { transaction in
-            var results: [(source: String, target: String, edge: String)] = []
-
-            for (source, beginKey, endKey, prefix) in scanParams {
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
-                    snapshot: true
+            // Use GraphEdgeScanner for correct key structure handling
+            let edges: [EdgeInfo]
+            if direction == .outgoing {
+                edges = try await self.scanner.batchScanOutgoing(
+                    from: nodes,
+                    edgeLabel: edgeLabel,
+                    transaction: transaction
                 )
+            } else {
+                edges = try await self.scanner.batchScanIncoming(
+                    to: nodes,
+                    edgeLabel: edgeLabel,
+                    transaction: transaction
+                )
+            }
 
-                for try await (key, _) in stream {
-                    if let (target, edge) = try self.extractTargetAndEdge(
-                        key: key,
-                        prefix: prefix,
-                        hasEdgeLabel: hasEdgeLabel,
-                        defaultEdge: edgeLabel ?? ""
-                    ) {
-                        if !currentVisited.contains(target) {
-                            results.append((source, target, edge))
-                        }
-                    }
+            // Filter out visited nodes and convert to result format
+            // Return format: (parentNode, targetNode, edgeLabel)
+            // - For outgoing: parent=source, target=target (going FROM source TO target)
+            // - For incoming: parent=target, target=source (at target, going BACK to source)
+            return edges.compactMap { edge in
+                let targetNode = direction == .outgoing ? edge.target : edge.source
+                guard !currentVisited.contains(targetNode) else { return nil }
+
+                if direction == .outgoing {
+                    return (edge.source, edge.target, edge.edgeLabel)
+                } else {
+                    // Swap for incoming direction to maintain (parent, target) semantics
+                    return (edge.target, edge.source, edge.edgeLabel)
                 }
             }
-
-            return results
         }
-    }
-
-    /// Extract target node ID and edge label from index key
-    private func extractTargetAndEdge(
-        key: [UInt8],
-        prefix: Subspace,
-        hasEdgeLabel: Bool,
-        defaultEdge: String
-    ) throws -> (target: String, edge: String)? {
-        let elements = try prefix.unpack(key)
-
-        guard !elements.isEmpty else { return nil }
-
-        // Key structure depends on whether edge label is in prefix
-        // If hasEdgeLabel: prefix=[label, source], remaining=[target]
-        // If !hasEdgeLabel: prefix=[source], remaining=[label, target] or [target]
-        let targetIndex = elements.count - 1
-        guard let lastElement = elements[targetIndex] else { return nil }
-
-        let target: String
-        if let str = lastElement as? String {
-            target = str
-        } else {
-            target = String(describing: lastElement)
-        }
-
-        // Extract edge label if not already known
-        let edge: String
-        if hasEdgeLabel {
-            edge = defaultEdge
-        } else if elements.count >= 2, let edgeElement = elements[0] {
-            if let str = edgeElement as? String {
-                edge = str
-            } else {
-                edge = String(describing: edgeElement)
-            }
-        } else {
-            edge = ""
-        }
-
-        return (target, edge)
     }
 
     // MARK: - Path Reconstruction
