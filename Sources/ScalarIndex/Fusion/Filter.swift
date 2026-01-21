@@ -9,6 +9,22 @@ import Core
 import DatabaseEngine
 import FoundationDB
 
+// MARK: - FilterError
+
+/// Errors that can occur during filter execution
+public enum FilterError: Error, Sendable {
+    /// Type conversion produced no elements
+    case emptyTupleConversion
+
+    /// Value type cannot be compared in range queries
+    case incomparableType(actualType: String)
+
+    /// Numeric conversion failed during comparison
+    case numericConversionFailed(from: String, to: String)
+}
+
+// MARK: - Filter
+
 /// Scalar filter query for Fusion
 ///
 /// Filters items based on scalar field values using index.
@@ -297,18 +313,29 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor using kindIdentifier and fieldName
+    /// Find the index descriptor that can efficiently answer this query
+    ///
+    /// For scalar indexes, only the leftmost field can be used for efficient
+    /// equality/range queries. This follows B-tree index semantics:
+    ///
+    /// - Composite index `[a, b, c]` has key structure: `[a値][b値][c値][primaryKey]`
+    /// - Efficient queries: `a` alone, `(a, b)`, or `(a, b, c)` (left-to-right)
+    /// - Inefficient queries: `b` alone, `c` alone (requires full index scan)
+    ///
+    /// **Reference**: "Database System Concepts" (Silberschatz) - Chapter 14.3
     private func findIndexDescriptor() -> IndexDescriptor? {
         T.indexDescriptors.first { descriptor in
             // 1. Filter by kindIdentifier
             guard descriptor.kindIdentifier == ScalarIndexKind<T>.identifier else {
                 return false
             }
-            // 2. Match by fieldName
+            // 2. Match by fieldName - MUST be the FIRST (leftmost) field
             guard let kind = descriptor.kind as? ScalarIndexKind<T> else {
                 return false
             }
-            return kind.fieldNames.contains(fieldName)
+            // CRITICAL: Only match if fieldName is the FIRST field in the index
+            // This ensures efficient B-tree index usage (left-prefix rule)
+            return kind.fieldNames.first == fieldName
         }
     }
 
@@ -445,7 +472,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionProtocol
     ) async throws -> [Tuple] {
-        let tupleValue = convertToTupleElement(value)
+        let tupleValue = try convertToTupleElement(value)
         let valueSubspace = indexSubspace.subspace(tupleValue)
         let (begin, end) = valueSubspace.range()
 
@@ -484,7 +511,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         let endKey: [UInt8]
 
         if let minValue = min {
-            let minTuple = convertToTupleElement(minValue)
+            let minTuple = try convertToTupleElement(minValue)
             let packed = indexSubspace.pack(Tuple(minTuple))
             if minInclusive {
                 beginKey = packed
@@ -496,7 +523,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         }
 
         if let maxValue = max {
-            let maxTuple = convertToTupleElement(maxValue)
+            let maxTuple = try convertToTupleElement(maxValue)
             let packed = indexSubspace.pack(Tuple(maxTuple))
             if maxInclusive {
                 endKey = incrementKey(packed)
@@ -543,26 +570,29 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     // MARK: - Helpers
 
     /// Convert value to TupleElement for index lookup
-    private func convertToTupleElement(_ value: any Sendable) -> any TupleElement {
-        switch value {
-        case let v as String: return v
-        case let v as Int: return v
-        case let v as Int64: return v
-        case let v as Int32: return Int(v)
-        case let v as Int16: return Int(v)
-        case let v as Int8: return Int(v)
-        case let v as UInt: return Int(v)
-        case let v as UInt64: return Int64(v)
-        case let v as UInt32: return Int(v)
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        case let v as Bool: return v
-        default:
-            return String(describing: value)
-        }
+    ///
+    /// Uses TupleElementConverter for consistent type conversion
+    /// across all index modules. This ensures proper handling of:
+    /// - UInt64 overflow checking
+    /// - UUID as UUID (not String)
+    /// - Date as Double (timeIntervalSince1970, consistent with fdb-swift-bindings)
+    /// - Unsupported types throw errors instead of silent String conversion
+    private func convertToTupleElement(_ value: any Sendable) throws -> any TupleElement {
+        return try TupleElementConverter.convertFirst(value)
     }
 
-    /// Check if a value matches the range predicate
+    /// Check if a value matches the range predicate using type-aware comparison
+    ///
+    /// Compares values using their natural ordering, not string representation.
+    /// This fixes the issue where string comparison produces incorrect ordering
+    /// for numeric values (e.g., "9" > "10" in string order, but 9 < 10 numerically).
+    ///
+    /// **Comparison Rules**:
+    /// - Numeric types (Int, Int64, Double): Mathematical comparison
+    /// - String: Lexicographic comparison
+    /// - UUID: String representation comparison (valid because UUID format is fixed-length)
+    /// - Date: Converted to Double for comparison
+    /// - Unsupported types: Returns false (cannot compare)
     private func matchesRange(
         _ value: Any,
         min: (any Sendable)?,
@@ -570,24 +600,130 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         minInclusive: Bool,
         maxInclusive: Bool
     ) -> Bool {
-        // Convert to comparable string for simple comparison
-        let valueStr = "\(value)"
+        // Try numeric comparison first (Int64)
+        if let int64Value = asInt64(value) {
+            return compareNumericRange(
+                int64Value,
+                min: min.flatMap { asInt64($0) },
+                max: max.flatMap { asInt64($0) },
+                minInclusive: minInclusive,
+                maxInclusive: maxInclusive
+            )
+        }
 
+        // Try Double comparison
+        if let doubleValue = asDouble(value) {
+            return compareNumericRange(
+                doubleValue,
+                min: min.flatMap { asDouble($0) },
+                max: max.flatMap { asDouble($0) },
+                minInclusive: minInclusive,
+                maxInclusive: maxInclusive
+            )
+        }
+
+        // Try String comparison
+        if let stringValue = asString(value) {
+            return compareStringRange(
+                stringValue,
+                min: min.flatMap { asString($0) },
+                max: max.flatMap { asString($0) },
+                minInclusive: minInclusive,
+                maxInclusive: maxInclusive
+            )
+        }
+
+        // Unsupported type - cannot compare
+        return false
+    }
+
+    /// Convert value to Int64 if possible
+    private func asInt64(_ value: Any) -> Int64? {
+        switch value {
+        case let v as Int64: return v
+        case let v as Int: return Int64(v)
+        case let v as Int32: return Int64(v)
+        case let v as Int16: return Int64(v)
+        case let v as Int8: return Int64(v)
+        case let v as UInt: return v <= UInt(Int64.max) ? Int64(v) : nil
+        case let v as UInt64: return v <= UInt64(Int64.max) ? Int64(v) : nil
+        case let v as UInt32: return Int64(v)
+        case let v as UInt16: return Int64(v)
+        case let v as UInt8: return Int64(v)
+        default: return nil
+        }
+    }
+
+    /// Convert value to Double if possible
+    ///
+    /// Uses timeIntervalSince1970 for Date to be consistent with
+    /// fdb-swift-bindings Tuple encoding.
+    private func asDouble(_ value: Any) -> Double? {
+        switch value {
+        case let v as Double: return v
+        case let v as Float: return Double(v)
+        case let v as Date: return v.timeIntervalSince1970
+        default: return nil
+        }
+    }
+
+    /// Convert value to String if possible
+    private func asString(_ value: Any) -> String? {
+        switch value {
+        case let v as String: return v
+        case let v as UUID: return v.uuidString
+        default: return nil
+        }
+    }
+
+    /// Compare numeric values in a range
+    private func compareNumericRange<Value: Comparable>(
+        _ value: Value,
+        min: Value?,
+        max: Value?,
+        minInclusive: Bool,
+        maxInclusive: Bool
+    ) -> Bool {
         if let minVal = min {
-            let minStr = "\(minVal)"
             if minInclusive {
-                if valueStr < minStr { return false }
+                if value < minVal { return false }
             } else {
-                if valueStr <= minStr { return false }
+                if value <= minVal { return false }
             }
         }
 
         if let maxVal = max {
-            let maxStr = "\(maxVal)"
             if maxInclusive {
-                if valueStr > maxStr { return false }
+                if value > maxVal { return false }
             } else {
-                if valueStr >= maxStr { return false }
+                if value >= maxVal { return false }
+            }
+        }
+
+        return true
+    }
+
+    /// Compare string values in a range
+    private func compareStringRange(
+        _ value: String,
+        min: String?,
+        max: String?,
+        minInclusive: Bool,
+        maxInclusive: Bool
+    ) -> Bool {
+        if let minVal = min {
+            if minInclusive {
+                if value < minVal { return false }
+            } else {
+                if value <= minVal { return false }
+            }
+        }
+
+        if let maxVal = max {
+            if maxInclusive {
+                if value > maxVal { return false }
+            } else {
+                if value >= maxVal { return false }
             }
         }
 

@@ -162,7 +162,7 @@ public struct DataAccess: Sendable {
         }
 
         // Convert final value to TupleElement
-        return try convertAnyToTupleElements(currentValue)
+        return try convertToTupleElements(currentValue)
     }
 
     /// Extract id from an item using the id expression
@@ -203,7 +203,7 @@ public struct DataAccess: Sendable {
         keyPath: KeyPath<Item, Value>
     ) throws -> [any TupleElement] {
         let value = item[keyPath: keyPath]
-        return try convertAnyToTupleElements(value)
+        return try convertToTupleElements(value)
     }
 
     /// Extract multiple field values using KeyPaths (optimized batch extraction)
@@ -234,7 +234,7 @@ public struct DataAccess: Sendable {
             // Try to cast to PartialKeyPath<Item> for direct access
             if let partialKeyPath = anyKeyPath as? PartialKeyPath<Item> {
                 let value = item[keyPath: partialKeyPath]
-                let tupleElements = try convertAnyToTupleElements(value)
+                let tupleElements = try convertToTupleElements(value)
                 result.append(contentsOf: tupleElements)
             } else {
                 // Fallback: This shouldn't happen if keyPaths were created correctly
@@ -386,93 +386,33 @@ public struct DataAccess: Sendable {
         )
     }
 
-    // MARK: - Private Helpers
+    // MARK: - Private Type Conversion
 
-    /// Convert a Sendable value to TupleElements
+    /// Convert any value to TupleElements
+    ///
+    /// Delegates to TupleElementConverter and converts errors to DataAccessError
+    /// for backward compatibility with existing code.
     ///
     /// - Parameter value: The value to convert
     /// - Returns: Array of TupleElements
-    /// - Throws: DataAccessError.unsupportedType if type is not convertible to TupleElement
-    private static func convertToTupleElements(_ value: any Sendable) throws -> [any TupleElement] {
-        return try convertAnyToTupleElements(value)
-    }
-
-    /// Internal helper that works with Any to avoid Swift 6 Sendable casting restrictions
-    private static func convertAnyToTupleElements(_ value: Any) throws -> [any TupleElement] {
-        // Handle Optional types - nil values cannot be indexed
-        if let optional = value as? (any _OptionalProtocol) {
-            if optional._isNil {
+    /// - Throws: DataAccessError on failure
+    private static func convertToTupleElements(_ value: Any) throws -> [any TupleElement] {
+        do {
+            return try TupleElementConverter.convert(value)
+        } catch let error as TupleConversionError {
+            // Convert to DataAccessError for backward compatibility
+            switch error {
+            case .nilValueCannotBeConverted:
                 throw DataAccessError.nilValueCannotBeIndexed
+            case .integerOverflow(let val, let targetType):
+                throw DataAccessError.integerOverflow(value: val, targetType: targetType)
+            case .unsupportedType(let actualType):
+                throw DataAccessError.unsupportedType(actualType: actualType)
+            case .emptyConversionResult:
+                throw DataAccessError.unsupportedType(actualType: "empty result")
+            case .multipleElementsNotAllowed(let count):
+                throw DataAccessError.unsupportedType(actualType: "multiple elements (\(count))")
             }
-            // Unwrap and recursively process the wrapped value
-            if let unwrapped = optional._unwrappedAny {
-                return try convertAnyToTupleElements(unwrapped)
-            }
-            throw DataAccessError.nilValueCannotBeIndexed
-        }
-
-        // Handle common types
-        switch value {
-        case let stringValue as String:
-            return [stringValue]
-        case let intValue as Int:
-            return [Int64(intValue)]
-        case let int64Value as Int64:
-            return [int64Value]
-        case let int32Value as Int32:
-            return [Int64(int32Value)]
-        case let int16Value as Int16:
-            return [Int64(int16Value)]
-        case let int8Value as Int8:
-            return [Int64(int8Value)]
-        // Unsigned integers: keep as Int64 but check for overflow
-        case let uintValue as UInt:
-            guard uintValue <= UInt(Int64.max) else {
-                throw DataAccessError.integerOverflow(value: UInt64(uintValue), targetType: "Int64")
-            }
-            return [Int64(uintValue)]
-        case let uint64Value as UInt64:
-            guard uint64Value <= UInt64(Int64.max) else {
-                throw DataAccessError.integerOverflow(value: uint64Value, targetType: "Int64")
-            }
-            return [Int64(uint64Value)]
-        case let uint32Value as UInt32:
-            return [Int64(uint32Value)]
-        case let uint16Value as UInt16:
-            return [Int64(uint16Value)]
-        case let uint8Value as UInt8:
-            return [Int64(uint8Value)]
-        case let doubleValue as Double:
-            return [doubleValue]
-        case let floatValue as Float:
-            return [Double(floatValue)]
-        case let boolValue as Bool:
-            return [boolValue]
-        case let uuidValue as UUID:
-            return [uuidValue]
-        case let dataValue as Data:
-            return [Array(dataValue)]
-        case let bytesValue as [UInt8]:
-            return [bytesValue]
-        case let tupleValue as Tuple:
-            return [tupleValue]
-        // Vector/numeric arrays - convert each element to TupleElement
-        // IndexMaintainers handle individual Float/Double elements
-        case let floatArray as [Float]:
-            return floatArray.map { Double($0) as any TupleElement }
-        case let doubleArray as [Double]:
-            return doubleArray.map { $0 as any TupleElement }
-        case let intArray as [Int]:
-            return intArray.map { Int64($0) as any TupleElement }
-        case let int64Array as [Int64]:
-            return int64Array.map { $0 as any TupleElement }
-        case let stringArray as [String]:
-            return stringArray.map { $0 as any TupleElement }
-        case let arrayValue as [any TupleElement]:
-            return arrayValue
-        default:
-            // Throw error for unsupported types instead of silently converting to string
-            throw DataAccessError.unsupportedType(actualType: String(describing: type(of: value)))
         }
     }
 }
@@ -537,24 +477,6 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
         // For other expression types, just use the parent field
         // (this shouldn't happen in normal usage)
         return parentField
-    }
-}
-
-// MARK: - Optional Protocol Helper
-
-/// Internal protocol to detect and unwrap Optional types at runtime
-private protocol _OptionalProtocol {
-    var _isNil: Bool { get }
-    var _unwrappedAny: Any? { get }
-}
-
-extension Optional: _OptionalProtocol {
-    var _isNil: Bool { self == nil }
-    var _unwrappedAny: Any? {
-        switch self {
-        case .some(let value): return value
-        case .none: return nil
-        }
     }
 }
 
