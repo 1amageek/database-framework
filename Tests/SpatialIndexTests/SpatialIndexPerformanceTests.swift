@@ -122,7 +122,7 @@ private struct BenchmarkContext {
         }
     }
 
-    func searchRadius(lat: Double, lon: Double, radiusMeters: Double) async throws -> [[any TupleElement]] {
+    func searchRadius(lat: Double, lon: Double, radiusMeters: Double) async throws -> SpatialScanResult {
         try await database.withTransaction { transaction in
             try await maintainer.searchRadius(
                 latitude: lat,
@@ -133,7 +133,7 @@ private struct BenchmarkContext {
         }
     }
 
-    func searchBoundingBox(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) async throws -> [[any TupleElement]] {
+    func searchBoundingBox(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) async throws -> SpatialScanResult {
         try await database.withTransaction { transaction in
             try await maintainer.searchBoundingBox(
                 minLat: minLat,
@@ -307,7 +307,7 @@ struct SpatialIndexPerformanceTests {
                 lon: centerLon,
                 radiusMeters: 1000  // 1km
             )
-            _ = results.count
+            _ = results.keys.count
         }
 
         let endTime = DispatchTime.now()
@@ -363,7 +363,7 @@ struct SpatialIndexPerformanceTests {
                     lon: centerLon,
                     radiusMeters: radiusMeters
                 )
-                _ = results.count
+                _ = results.keys.count
             }
 
             let endTime = DispatchTime.now()
@@ -416,7 +416,7 @@ struct SpatialIndexPerformanceTests {
                 maxLat: 35.75,
                 maxLon: 139.85
             )
-            _ = results.count
+            _ = results.keys.count
         }
 
         let endTime = DispatchTime.now()
@@ -473,7 +473,7 @@ struct SpatialIndexPerformanceTests {
                     lon: centerLon,
                     radiusMeters: 2000
                 )
-                _ = results.count
+                _ = results.keys.count
             }
 
             let endTime = DispatchTime.now()
@@ -672,7 +672,7 @@ struct SpatialIndexPerformanceTests {
                     lon: centerLon,
                     radiusMeters: 2000
                 )
-                _ = results.count
+                _ = results.keys.count
             }
 
             let endTime = DispatchTime.now()

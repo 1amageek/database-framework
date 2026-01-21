@@ -140,7 +140,7 @@ private struct TestContext {
     }
 
     /// Search with small radius (realistic for local queries)
-    func searchRadius(lat: Double, lon: Double, radiusMeters: Double) async throws -> [[any TupleElement]] {
+    func searchRadius(lat: Double, lon: Double, radiusMeters: Double) async throws -> SpatialScanResult {
         try await database.withTransaction { transaction in
             try await maintainer.searchRadius(
                 latitude: lat,
@@ -152,7 +152,7 @@ private struct TestContext {
     }
 
     /// Search bounding box
-    func searchBoundingBox(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) async throws -> [[any TupleElement]] {
+    func searchBoundingBox(minLat: Double, minLon: Double, maxLat: Double, maxLon: Double) async throws -> SpatialScanResult {
         try await database.withTransaction { transaction in
             try await maintainer.searchBoundingBox(
                 minLat: minLat,
@@ -313,7 +313,7 @@ struct SpatialIndexBehaviorTests {
         let results = try await ctx.searchRadius(lat: 35.6812, lon: 139.7671, radiusMeters: 500)
 
         // With coarse cells and small radius, we should find the location
-        #expect(results.count >= 0, "Radius search should complete without error")
+        #expect(results.keys.count >= 0, "Radius search should complete without error")
 
         try await ctx.cleanup()
     }
@@ -343,7 +343,7 @@ struct SpatialIndexBehaviorTests {
             maxLon: 139.78
         )
 
-        #expect(results.count >= 0, "Bounding box search should complete without error")
+        #expect(results.keys.count >= 0, "Bounding box search should complete without error")
 
         try await ctx.cleanup()
     }

@@ -129,6 +129,9 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         return []
     }
 
+    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
+    private var maxScanKeys: Int { 100_000 }
+
     /// Get top K items (highest scores)
     ///
     /// **Type-Safe**: Returns Score type instead of forcing Int64.
@@ -136,6 +139,8 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// **Algorithm**: Uses max-heap to maintain top-k during O(n) scan.
     /// Previous implementation: O(n log n) full sort.
     /// Current implementation: O(n log k) using bounded heap.
+    ///
+    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     ///
     /// **Note**: Could be further optimized to O(k) with reverse range scan,
     /// but fdb-swift-bindings currently doesn't support reverse iteration.
@@ -165,8 +170,15 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
             snapshot: true
         )
 
+        var scannedKeys = 0
         for try await (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
+
+            // Resource limit: prevent DoS on large indexes
+            scannedKeys += 1
+            if scannedKeys >= maxScanKeys {
+                break
+            }
 
             // Unpack key: [score][primaryKey] - skip corrupt entries
             guard let keyTuple = try? scoresSubspace.unpack(key),
@@ -221,8 +233,11 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         // Build key for score + 1 (first key with score > target)
         // Convert Score to TupleElement for key building
-        let nextScore = score + 1 as! any TupleElement
-        let boundaryKey = scoresSubspace.pack(Tuple(nextScore))
+        let nextScore = score + 1
+        guard let nextScoreElement = convertScoreToTupleElement(nextScore) else {
+            throw RankIndexError.invalidScore("Score type \(Score.self) cannot be converted to TupleElement")
+        }
+        let boundaryKey = scoresSubspace.pack(Tuple(nextScoreElement))
 
         // Scan only entries with score > target
         let sequence = transaction.getRange(
@@ -346,7 +361,10 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         // Build key: [score][primaryKey...]
         // Score conforms to Numeric, which includes TupleElement-compatible types
-        var allElements: [any TupleElement] = [score as! any TupleElement]
+        guard let scoreElement = convertScoreToTupleElement(score) else {
+            throw RankIndexError.invalidScore("Score value \(score) cannot be converted to TupleElement")
+        }
+        var allElements: [any TupleElement] = [scoreElement]
         for i in 0..<primaryKeyTuple.count {
             if let element = primaryKeyTuple[i] {
                 allElements.append(element)
@@ -357,46 +375,93 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     }
 
     /// Extract score from tuple element (type-safe)
+    ///
+    /// Converts FDB Tuple elements (Int64, Double) to the generic Score type.
+    /// Uses conditional casts instead of force casts for safety.
     private func extractScore(from element: any TupleElement) throws -> Score {
+        // Try direct cast first (for Score types that match TupleElement directly)
+        if let directValue = element as? Score {
+            return directValue
+        }
+
+        // Handle numeric type conversions
+        // FDB stores integers as Int64, floats as Double
         switch Score.self {
         case is Int64.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = value as? Score else {
                 throw RankIndexError.invalidScore("Expected Int64, got \(type(of: element))")
             }
-            return value as! Score
+            return result
 
         case is Int.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = Int(value) as? Score else {
                 throw RankIndexError.invalidScore("Expected Int (as Int64), got \(type(of: element))")
             }
-            return Int(value) as! Score
+            return result
 
         case is Int32.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = Int32(value) as? Score else {
                 throw RankIndexError.invalidScore("Expected Int32 (as Int64), got \(type(of: element))")
             }
-            return Int32(value) as! Score
+            return result
 
         case is Double.Type:
-            guard let value = element as? Double else {
+            guard let value = element as? Double,
+                  let result = value as? Score else {
                 throw RankIndexError.invalidScore("Expected Double, got \(type(of: element))")
             }
-            return value as! Score
+            return result
 
         case is Float.Type:
-            guard let value = element as? Double else {
+            guard let value = element as? Double,
+                  let result = Float(value) as? Score else {
                 throw RankIndexError.invalidScore("Expected Float (as Double), got \(type(of: element))")
             }
-            return Float(value) as! Score
+            return result
 
         default:
-            // Fallback: try direct cast
-            guard let value = element as? Score else {
-                throw RankIndexError.invalidScore(
-                    "Cannot convert \(type(of: element)) to \(Score.self)"
-                )
+            throw RankIndexError.invalidScore(
+                "Cannot convert \(type(of: element)) to \(Score.self)"
+            )
+        }
+    }
+
+    /// Convert Score to TupleElement safely
+    ///
+    /// FDB Tuple supports: Int64, Double, String, Bytes, Bool, UUID, Versionstamp
+    /// Numeric Score types (Int64, Int, Int32, Double, Float) are converted appropriately.
+    private func convertScoreToTupleElement(_ score: Score) -> (any TupleElement)? {
+        // Try direct cast (for Score types that are already TupleElement)
+        if let tupleElement = score as? any TupleElement {
+            return tupleElement
+        }
+
+        // Handle numeric conversions
+        switch Score.self {
+        case is Int64.Type:
+            return score as? Int64
+        case is Int.Type:
+            if let intValue = score as? Int {
+                return Int64(intValue)
             }
-            return value
+            return nil
+        case is Int32.Type:
+            if let int32Value = score as? Int32 {
+                return Int64(int32Value)
+            }
+            return nil
+        case is Double.Type:
+            return score as? Double
+        case is Float.Type:
+            if let floatValue = score as? Float {
+                return Double(floatValue)
+            }
+            return nil
+        default:
+            return nil
         }
     }
 }

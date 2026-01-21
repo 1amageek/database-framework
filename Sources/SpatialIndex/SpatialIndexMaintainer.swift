@@ -97,14 +97,16 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     ///   - latitude: Center latitude
     ///   - longitude: Center longitude
     ///   - radiusMeters: Search radius in meters
+    ///   - limit: Optional maximum number of results
     ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys within the radius
+    /// - Returns: Scan result with primary keys and optional limit reason
     public func searchRadius(
         latitude: Double,
         longitude: Double,
         radiusMeters: Double,
+        limit: Int? = nil,
         transaction: any TransactionProtocol
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> SpatialScanResult {
         // Get covering cells for the search area
         let coveringCells = S2Geometry.getCoveringCells(
             latitude: latitude,
@@ -113,32 +115,52 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             level: level
         )
 
-        var results: [[any TupleElement]] = []
+        // Use SpatialCellScanner for efficient scanning
+        let scanner = SpatialCellScanner(
+            indexSubspace: subspace,
+            encoding: encoding,
+            level: level
+        )
 
-        for cellId in coveringCells {
-            let cellTuple = Tuple(cellId)
-            let cellSubspace = subspace.subspace(cellTuple)
-            let (begin, end) = cellSubspace.range()
+        let (keys, limitReason) = try await scanner.scanCells(
+            cellIds: coveringCells,
+            limit: limit,
+            transaction: transaction
+        )
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
-                snapshot: true
-            )
+        return SpatialScanResult(keys: keys, limitReason: limitReason)
+    }
 
-            for try await (key, _) in sequence {
-                guard cellSubspace.contains(key) else { break }
+    /// Search for items within a radius (legacy API for backwards compatibility)
+    ///
+    /// - Parameters:
+    ///   - latitude: Center latitude
+    ///   - longitude: Center longitude
+    ///   - radiusMeters: Search radius in meters
+    ///   - transaction: FDB transaction
+    /// - Returns: Array of primary keys within the radius
+    @available(*, deprecated, message: "Use searchRadius with SpatialScanResult instead")
+    public func searchRadiusLegacy(
+        latitude: Double,
+        longitude: Double,
+        radiusMeters: Double,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        let result = try await searchRadius(
+            latitude: latitude,
+            longitude: longitude,
+            radiusMeters: radiusMeters,
+            limit: nil,
+            transaction: transaction
+        )
 
-                // Extract primary key from the key - skip corrupt entries
-                guard let keyTuple = try? cellSubspace.unpack(key),
-                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
-                    continue
-                }
-                results.append(elements)
+        return result.keys.map { tuple in
+            var elements: [any TupleElement] = []
+            for i in 0..<tuple.count {
+                if let el = tuple[i] { elements.append(el) }
             }
+            return elements
         }
-
-        return results
     }
 
     /// Search for items within a bounding box
@@ -148,15 +170,17 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     ///   - minLon: Minimum longitude
     ///   - maxLat: Maximum latitude
     ///   - maxLon: Maximum longitude
+    ///   - limit: Optional maximum number of results
     ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys within the bounding box
+    /// - Returns: Scan result with primary keys and optional limit reason
     public func searchBoundingBox(
         minLat: Double,
         minLon: Double,
         maxLat: Double,
         maxLon: Double,
+        limit: Int? = nil,
         transaction: any TransactionProtocol
-    ) async throws -> [[any TupleElement]] {
+    ) async throws -> SpatialScanResult {
         // Get covering cells for the bounding box
         let coveringCells = S2Geometry.getCoveringCellsForBox(
             minLat: minLat,
@@ -166,32 +190,55 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             level: level
         )
 
-        var results: [[any TupleElement]] = []
+        // Use SpatialCellScanner for efficient scanning
+        let scanner = SpatialCellScanner(
+            indexSubspace: subspace,
+            encoding: encoding,
+            level: level
+        )
 
-        for cellId in coveringCells {
-            let cellTuple = Tuple(cellId)
-            let cellSubspace = subspace.subspace(cellTuple)
-            let (begin, end) = cellSubspace.range()
+        let (keys, limitReason) = try await scanner.scanCells(
+            cellIds: coveringCells,
+            limit: limit,
+            transaction: transaction
+        )
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
-                snapshot: true
-            )
+        return SpatialScanResult(keys: keys, limitReason: limitReason)
+    }
 
-            for try await (key, _) in sequence {
-                guard cellSubspace.contains(key) else { break }
+    /// Search for items within a bounding box (legacy API for backwards compatibility)
+    ///
+    /// - Parameters:
+    ///   - minLat: Minimum latitude
+    ///   - minLon: Minimum longitude
+    ///   - maxLat: Maximum latitude
+    ///   - maxLon: Maximum longitude
+    ///   - transaction: FDB transaction
+    /// - Returns: Array of primary keys within the bounding box
+    @available(*, deprecated, message: "Use searchBoundingBox with SpatialScanResult instead")
+    public func searchBoundingBoxLegacy(
+        minLat: Double,
+        minLon: Double,
+        maxLat: Double,
+        maxLon: Double,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        let result = try await searchBoundingBox(
+            minLat: minLat,
+            minLon: minLon,
+            maxLat: maxLat,
+            maxLon: maxLon,
+            limit: nil,
+            transaction: transaction
+        )
 
-                // Skip corrupt entries
-                guard let keyTuple = try? cellSubspace.unpack(key),
-                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
-                    continue
-                }
-                results.append(elements)
+        return result.keys.map { tuple in
+            var elements: [any TupleElement] = []
+            for i in 0..<tuple.count {
+                if let el = tuple[i] { elements.append(el) }
             }
+            return elements
         }
-
-        return results
     }
 
     // MARK: - Private Methods

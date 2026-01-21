@@ -1,11 +1,127 @@
 // SpatialQuery.swift
 // SpatialIndex - Query extension for spatial search
+//
+// Design: Follows GraphIndex Query patterns with SpatialCellScanner integration.
 
 import Foundation
 import DatabaseEngine
 import Core
 import FoundationDB
 import Spatial
+
+// MARK: - Spatial Query Result
+
+/// Result of a spatial query with metadata about completeness
+///
+/// **Design Reference**: Follows GraphIndex patterns with LimitReason support.
+public struct SpatialQueryResult<T: Persistable>: Sendable {
+    /// Items matching the query with optional distance information
+    public let items: [(item: T, distance: Double?)]
+
+    /// Reason why the query was incomplete, if applicable
+    public let limitReason: LimitReason?
+
+    /// Whether the query completed without hitting any limits
+    public var isComplete: Bool {
+        limitReason == nil
+    }
+
+    /// Number of items returned
+    public var count: Int {
+        items.count
+    }
+
+    public init(items: [(item: T, distance: Double?)], limitReason: LimitReason?) {
+        self.items = items
+        self.limitReason = limitReason
+    }
+}
+
+// MARK: - K-Nearest Neighbors Result
+
+/// Result of a K-nearest neighbors query
+///
+/// Unlike `SpatialQueryResult`, this always includes distance information
+/// and items are sorted by distance (ascending).
+///
+/// **Usage**:
+/// ```swift
+/// let result = try await context.findNearby(Store.self)
+///     .location(\.geoPoint)
+///     .nearest(k: 10, from: userLocation)
+///     .executeKNN()
+///
+/// for (store, distance) in result.items {
+///     print("\(store.name): \(distance)m away")
+/// }
+/// ```
+public struct SpatialKNNResult<T: Persistable>: Sendable {
+    /// Items sorted by distance (ascending), always includes distance
+    public let items: [(item: T, distance: Double)]
+
+    /// Requested K value
+    public let k: Int
+
+    /// Final search radius used (in meters)
+    public let searchRadiusMeters: Double
+
+    /// Reason why less than K results were returned, if applicable
+    public let limitReason: LimitReason?
+
+    /// Whether K or more items were found
+    public var isComplete: Bool {
+        items.count >= k
+    }
+
+    /// Number of items returned
+    public var count: Int {
+        items.count
+    }
+
+    public init(items: [(item: T, distance: Double)], k: Int, searchRadiusMeters: Double, limitReason: LimitReason?) {
+        self.items = items
+        self.k = k
+        self.searchRadiusMeters = searchRadiusMeters
+        self.limitReason = limitReason
+    }
+}
+
+// MARK: - Polygon Query Options
+
+/// Options for polygon spatial queries
+///
+/// **Usage**:
+/// ```swift
+/// let result = try await context.findNearby(Store.self)
+///     .location(\.geoPoint)
+///     .within(polygon: points, options: PolygonQueryOptions(type: .convex))
+///     .execute()
+/// ```
+public struct PolygonQueryOptions: Sendable {
+    /// Type of polygon for optimization hints
+    public enum PolygonType: Sendable {
+        /// Simple polygon (default) - uses ray casting algorithm
+        case simple
+        /// Convex polygon - can use optimized cross-product algorithm
+        case convex
+    }
+
+    /// The polygon type (affects algorithm selection)
+    public let type: PolygonType
+
+    /// Whether to validate input coordinates
+    public let validateInput: Bool
+
+    /// Create polygon query options
+    ///
+    /// - Parameters:
+    ///   - type: Polygon type for algorithm selection (default: .simple)
+    ///   - validateInput: Whether to validate coordinates (default: true)
+    public init(type: PolygonType = .simple, validateInput: Bool = true) {
+        self.type = type
+        self.validateInput = validateInput
+    }
+}
 
 // MARK: - Spatial Query Builder
 
@@ -15,11 +131,20 @@ import Spatial
 /// ```swift
 /// import SpatialIndex
 ///
-/// let stores = try await context.findNearby(Store.self)
+/// let result = try await context.findNearby(Store.self)
 ///     .location(\.geoPoint)
 ///     .within(radiusKm: 5.0, of: currentLocation)
+///     .orderByDistance()
 ///     .limit(10)
 ///     .execute()
+///
+/// for (store, distance) in result.items {
+///     print("\(store.name): \(distance ?? 0)m")
+/// }
+///
+/// if !result.isComplete {
+///     print("More results available: \(result.limitReason!)")
+/// }
 /// ```
 public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
@@ -28,6 +153,16 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private var fetchLimit: Int?
     private var shouldOrderByDistance: Bool = false
     private var referencePoint: GeoPoint?
+    private var polygonOptions: PolygonQueryOptions = PolygonQueryOptions()
+
+    // KNN parameters
+    private var knnK: Int?
+    private var knnInitialRadiusKm: Double = 1.0
+    private var knnMaxRadiusKm: Double = 100.0
+    private var knnExpansionFactor: Double = 2.0
+    private var knnMaxIterations: Int = 10
+    private var knnMaxKeysPerIteration: Int = 10000
+    private var knnMaxTotalKeys: Int = 50000
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
         self.queryContext = queryContext
@@ -71,16 +206,37 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
     /// Search within a polygon
     ///
-    /// - Parameter polygon: Array of points defining the polygon
+    /// Points are verified using ray casting algorithm to ensure they are
+    /// actually inside the polygon (not just inside the bounding box).
+    ///
+    /// **Validation**:
+    /// - Requires at least 3 points
+    /// - All coordinates must be in valid ranges (-90 to 90 for latitude, -180 to 180 for longitude)
+    ///
+    /// **Limitations**:
+    /// - Polygons crossing the antimeridian (±180° longitude) are not fully supported
+    /// - For such polygons, consider splitting into two separate queries
+    ///
+    /// - Parameter polygon: Array of points defining the polygon (minimum 3 points)
+    /// - Parameter options: Polygon query options (default: simple polygon with validation)
     /// - Returns: Updated query builder
-    public func within(polygon: [GeoPoint]) -> Self {
+    /// - Note: Invalid polygons will cause `execute()` to throw `SpatialQueryError.invalidPolygon`
+    public func within(polygon: [GeoPoint], options: PolygonQueryOptions = PolygonQueryOptions()) -> Self {
         var copy = self
         let points = polygon.map { (latitude: $0.latitude, longitude: $0.longitude) }
         copy.spatialConstraint = SpatialConstraint(type: .withinPolygon(points: points))
+        copy.polygonOptions = options
         return copy
     }
 
     /// Order results by distance from reference point (nearest first)
+    ///
+    /// **Note**: This only has effect when a reference point is set via:
+    /// - `within(radiusKm:of:)` - center point becomes reference
+    /// - `nearest(k:from:)` - center point becomes reference
+    ///
+    /// For `within(bounds:)` or `within(polygon:)` queries without a reference point,
+    /// this method has no effect and results are returned in index order.
     ///
     /// - Returns: Updated query builder
     public func orderByDistance() -> Self {
@@ -91,9 +247,18 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
     /// Limit the number of results
     ///
-    /// - Parameter count: Maximum number of results
+    /// Limit is applied during index scanning for efficiency,
+    /// not after fetching all items.
+    ///
+    /// **Note**: Values ≤ 0 are ignored (no limit applied).
+    ///
+    /// - Parameter count: Maximum number of results (must be > 0)
     /// - Returns: Updated query builder
     public func limit(_ count: Int) -> Self {
+        guard count > 0 else {
+            // Invalid limit values are ignored (no limit applied)
+            return self
+        }
         var copy = self
         copy.fetchLimit = count
         return copy
@@ -101,11 +266,18 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute the spatial search
     ///
-    /// - Returns: Array of (item, distance) tuples if orderByDistance, otherwise just items with nil distance
+    /// - Returns: SpatialQueryResult with items and metadata
     /// - Throws: Error if search fails or constraint not set
-    public func execute() async throws -> [(item: T, distance: Double?)] {
+    public func execute() async throws -> SpatialQueryResult<T> {
         guard let constraint = spatialConstraint else {
             throw SpatialQueryError.noConstraint
+        }
+
+        // Validate polygon if applicable
+        if case .withinPolygon(let points) = constraint.type {
+            if polygonOptions.validateInput {
+                try validatePolygon(points)
+            }
         }
 
         // Find index descriptor
@@ -113,12 +285,15 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             throw SpatialQueryError.indexNotFound(buildIndexName())
         }
 
-        // Get index level from kind
+        // Get index configuration from kind
         let level: Int
+        let encoding: SpatialEncoding
         if let kind = descriptor.kind as? SpatialIndexKind<T> {
             level = kind.level
+            encoding = kind.encoding
         } else {
             level = 15 // Default S2 level
+            encoding = .s2
         }
 
         let indexName = descriptor.name
@@ -127,56 +302,78 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        // Execute spatial search
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
+        // Execute spatial search with SpatialCellScanner
+        let scanResult: SpatialScanResult = try await queryContext.withTransaction { transaction in
             try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
+                encoding: encoding,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
         }
 
-        // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+        // Fetch items by primary keys (limit already applied during scanning)
+        var items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
 
-        // Apply limit if specified
-        if let limit = fetchLimit, items.count > limit {
-            items = Array(items.prefix(limit))
+        // Apply polygon filtering if needed
+        if case .withinPolygon(let points) = constraint.type {
+            items = items.filter { item in
+                guard let location = extractGeoPoint(from: item) else { return false }
+                return isPointInPolygon(point: location, polygon: points)
+            }
         }
 
-        // Calculate distances if we have a reference point and ordering is requested
-        if shouldOrderByDistance, let ref = referencePoint {
-            return items
-                .compactMap { item -> (item: T, distance: Double?, location: GeoPoint)? in
-                    // Try to get the GeoPoint from the item using the field name
-                    guard let location = extractGeoPoint(from: item) else {
-                        return (item: item, distance: nil, location: GeoPoint(0, 0))
-                    }
-                    let distance = ref.distance(to: location)
-                    return (item: item, distance: distance, location: location)
+        // Apply radius filtering for precise results
+        // Note: Covering cells may include points outside the exact radius
+        if case .withinDistance(let center, let radiusMeters) = constraint.type {
+            let centerPoint = GeoPoint(center.latitude, center.longitude)
+            items = items.filter { item in
+                // Items without location are excluded from radius-based queries
+                guard let location = extractGeoPoint(from: item) else { return false }
+                return distanceInMeters(from: centerPoint, to: location) <= radiusMeters
+            }
+        }
+
+        // Calculate distances if we have a reference point
+        // Distance is always calculated when referencePoint exists (e.g., radius query)
+        // orderByDistance() only controls whether results are sorted by distance
+        let resultsWithDistance: [(item: T, distance: Double?)]
+        if let ref = referencePoint {
+            let itemsWithDistances = items.map { item -> (item: T, distance: Double?) in
+                guard let location = extractGeoPoint(from: item) else {
+                    return (item: item, distance: nil)
                 }
-                .sorted { ($0.distance ?? Double.infinity) < ($1.distance ?? Double.infinity) }
-                .map { (item: $0.item, distance: $0.distance) }
+                return (item: item, distance: distanceInMeters(from: ref, to: location))
+            }
+
+            if shouldOrderByDistance {
+                resultsWithDistance = itemsWithDistances.sorted {
+                    ($0.distance ?? Double.infinity) < ($1.distance ?? Double.infinity)
+                }
+            } else {
+                resultsWithDistance = itemsWithDistances
+            }
+        } else {
+            resultsWithDistance = items.map { (item: $0, distance: nil) }
         }
 
-        // Return items without distance calculation
-        return items.map { (item: $0, distance: nil) }
+        return SpatialQueryResult(items: resultsWithDistance, limitReason: scanResult.limitReason)
     }
 
     // MARK: - Spatial Index Reading
 
-    /// Search spatial index
+    /// Search spatial index using SpatialCellScanner
     ///
-    /// Index structure:
-    /// - Key: `[indexSubspace][spatialCode][primaryKey]`
-    /// - Value: empty
+    /// **Design**: Uses centralized SpatialCellScanner for efficient scanning
+    /// with early limit application and proper deduplication.
     private func searchSpatial(
         constraint: SpatialConstraint,
         level: Int,
+        encoding: SpatialEncoding,
         indexSubspace: Subspace,
         transaction: any TransactionProtocol
-    ) async throws -> [Tuple] {
+    ) async throws -> SpatialScanResult {
         // Get covering cells based on constraint type
         let coveringCells: [UInt64]
         switch constraint.type {
@@ -208,45 +405,20 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             )
         }
 
-        var results: [Tuple] = []
-        var seenIds: Set<String> = []
+        // Use SpatialCellScanner for efficient, deduplicated scanning with early limit
+        let scanner = SpatialCellScanner(
+            indexSubspace: indexSubspace,
+            encoding: encoding,
+            level: level
+        )
 
-        for cellId in coveringCells {
-            let cellTuple = Tuple(cellId)
-            let cellSubspace = indexSubspace.subspace(cellTuple)
-            let (begin, end) = cellSubspace.range()
+        let (keys, limitReason) = try await scanner.scanCells(
+            cellIds: coveringCells,
+            limit: fetchLimit,
+            transaction: transaction
+        )
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
-                snapshot: true
-            )
-
-            for try await (key, _) in sequence {
-                guard cellSubspace.contains(key) else { break }
-
-                // Extract primary key from the key
-                guard let keyTuple = try? cellSubspace.unpack(key),
-                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
-                    continue
-                }
-
-                // Deduplicate (same item may appear in multiple cells)
-                let idKey = elementsToStableKey(elements)
-                if !seenIds.contains(idKey) {
-                    seenIds.insert(idKey)
-                    results.append(Tuple(elements))
-                }
-            }
-        }
-
-        return results
-    }
-
-    /// Convert TupleElements to a stable key for deduplication
-    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
-        let packed = Tuple(elements).pack()
-        return Data(packed).base64EncodedString()
+        return SpatialScanResult(keys: keys, limitReason: limitReason)
     }
 
     /// Execute and return only items (without distance)
@@ -255,7 +427,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     /// - Throws: Error if search fails
     public func executeItems() async throws -> [T] {
         let results = try await execute()
-        return results.map { $0.item }
+        return results.items.map { $0.item }
     }
 
     /// Find the index descriptor using kindIdentifier and fieldName
@@ -286,6 +458,357 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private func extractGeoPoint(from item: T) -> GeoPoint? {
         guard let value = item[dynamicMember: fieldName] else { return nil }
         return value as? GeoPoint
+    }
+
+    // MARK: - Distance Calculation
+
+    /// Calculate distance between two points in meters
+    ///
+    /// **Unit Convention**:
+    /// - `GeoPoint.distance(to:)` returns **kilometers** (Haversine formula)
+    /// - Internal spatial operations use **meters** (S2Geometry convention)
+    /// - This helper ensures consistent meter-based calculations
+    ///
+    /// - Parameters:
+    ///   - from: Source point
+    ///   - to: Destination point
+    /// - Returns: Distance in meters
+    private func distanceInMeters(from: GeoPoint, to: GeoPoint) -> Double {
+        from.distance(to: to) * 1000.0
+    }
+
+    // MARK: - Point-in-Polygon
+
+    /// Point-in-polygon test using ray casting algorithm
+    ///
+    /// **Algorithm**: Cast a ray from the point to infinity and count intersections
+    /// with polygon edges. Odd count = inside, even count = outside.
+    ///
+    /// **Reference**: "Computational Geometry: Algorithms and Applications"
+    /// (de Berg et al.) - Chapter 3
+    ///
+    /// **Time Complexity**: O(n) where n = number of polygon vertices
+    ///
+    /// - Parameters:
+    ///   - point: Point to test
+    ///   - polygon: Polygon vertices as (latitude, longitude) tuples
+    /// - Returns: true if point is inside polygon
+    private func isPointInPolygon(
+        point: GeoPoint,
+        polygon: [(latitude: Double, longitude: Double)]
+    ) -> Bool {
+        guard polygon.count >= 3 else { return false }
+
+        // Use optimized algorithm for convex polygons
+        if polygonOptions.type == .convex {
+            return isPointInConvexPolygon(point: point, polygon: polygon)
+        }
+
+        var inside = false
+        let n = polygon.count
+        var j = n - 1
+
+        for i in 0..<n {
+            let yi = polygon[i].latitude
+            let yj = polygon[j].latitude
+            let xi = polygon[i].longitude
+            let xj = polygon[j].longitude
+
+            // Ray casting: check if horizontal ray from point crosses edge
+            if ((yi > point.latitude) != (yj > point.latitude)) &&
+               (point.longitude < (xj - xi) * (point.latitude - yi) / (yj - yi) + xi) {
+                inside = !inside
+            }
+            j = i
+        }
+
+        return inside
+    }
+
+    /// Point-in-convex-polygon test using cross product
+    ///
+    /// **Algorithm**: For convex polygons, if the point is inside, it will be
+    /// on the same side of all edges. We check this using the cross product.
+    ///
+    /// **Time Complexity**: O(n) where n = number of polygon vertices
+    /// **Reference**: "Computational Geometry" (de Berg) - Chapter 1
+    ///
+    /// - Parameters:
+    ///   - point: Point to test
+    ///   - polygon: Convex polygon vertices (must be ordered consistently)
+    /// - Returns: true if point is inside the convex polygon
+    private func isPointInConvexPolygon(
+        point: GeoPoint,
+        polygon: [(latitude: Double, longitude: Double)]
+    ) -> Bool {
+        guard polygon.count >= 3 else { return false }
+
+        var sign: Int? = nil
+        let n = polygon.count
+
+        for i in 0..<n {
+            let p1 = polygon[i]
+            let p2 = polygon[(i + 1) % n]
+
+            // Cross product to determine which side of the edge the point is on
+            let cross = (p2.longitude - p1.longitude) * (point.latitude - p1.latitude) -
+                        (p2.latitude - p1.latitude) * (point.longitude - p1.longitude)
+
+            let currentSign = cross > 0 ? 1 : (cross < 0 ? -1 : 0)
+
+            if currentSign != 0 {
+                if sign == nil {
+                    sign = currentSign
+                } else if sign != currentSign {
+                    return false  // Point is outside (different side of an edge)
+                }
+            }
+        }
+
+        return true
+    }
+
+    // MARK: - Polygon Validation
+
+    /// Validate polygon for spatial query
+    ///
+    /// **Checks**:
+    /// 1. Minimum 3 points required
+    /// 2. All coordinates must be in valid ranges
+    ///
+    /// - Parameter points: Polygon vertices
+    /// - Throws: SpatialQueryError.invalidPolygon if validation fails
+    private func validatePolygon(_ points: [(latitude: Double, longitude: Double)]) throws {
+        guard points.count >= 3 else {
+            throw SpatialQueryError.invalidPolygon("Polygon requires at least 3 points, got \(points.count)")
+        }
+
+        for (index, point) in points.enumerated() {
+            guard (-90...90).contains(point.latitude) else {
+                throw SpatialQueryError.invalidPolygon(
+                    "Point \(index): Latitude \(point.latitude) must be between -90 and 90"
+                )
+            }
+            guard (-180...180).contains(point.longitude) else {
+                throw SpatialQueryError.invalidPolygon(
+                    "Point \(index): Longitude \(point.longitude) must be between -180 and 180"
+                )
+            }
+        }
+    }
+
+    // MARK: - K-Nearest Neighbors
+
+    /// Configure K-nearest neighbors search
+    ///
+    /// This sets up a KNN query that uses adaptive radius expansion to find
+    /// the K nearest items to a center point.
+    ///
+    /// **Algorithm**: Adaptive Radius Expansion
+    /// 1. Start with initial radius
+    /// 2. If fewer than K results, expand radius and retry
+    /// 3. Continue until K results found or max radius reached
+    /// 4. Sort all results by distance and return top K
+    ///
+    /// **Reference**: Lu et al., "Efficient Processing of k Nearest Neighbor
+    /// Joins using MapReduce", PVLDB 2012
+    ///
+    /// - Parameters:
+    ///   - k: Number of nearest neighbors to find
+    ///   - center: Center point to measure distances from
+    ///   - initialRadiusKm: Starting search radius (default: 1km)
+    ///   - maxRadiusKm: Maximum search radius (default: 100km)
+    ///   - expansionFactor: Radius multiplier for each iteration (default: 2.0)
+    /// - Returns: Updated query builder configured for KNN
+    public func nearest(
+        k: Int,
+        from center: GeoPoint,
+        initialRadiusKm: Double = 1.0,
+        maxRadiusKm: Double = 100.0,
+        expansionFactor: Double = 2.0
+    ) -> Self {
+        var copy = self
+        copy.knnK = k
+        copy.referencePoint = center
+        copy.knnInitialRadiusKm = initialRadiusKm
+        copy.knnMaxRadiusKm = maxRadiusKm
+        copy.knnExpansionFactor = expansionFactor
+        return copy
+    }
+
+    /// Execute K-nearest neighbors search
+    ///
+    /// Finds the K nearest items to the center point specified in `nearest(k:from:)`.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let result = try await context.findNearby(Store.self)
+    ///     .location(\.geoPoint)
+    ///     .nearest(k: 10, from: userLocation)
+    ///     .executeKNN()
+    ///
+    /// for (store, distance) in result.items {
+    ///     print("\(store.name): \(distance)m away")
+    /// }
+    ///
+    /// if !result.isComplete {
+    ///     print("Only found \(result.count) of \(result.k) requested items")
+    /// }
+    /// ```
+    ///
+    /// - Returns: SpatialKNNResult with K nearest items sorted by distance
+    /// - Throws: SpatialQueryError if KNN not configured, parameters invalid, or index not found
+    public func executeKNN() async throws -> SpatialKNNResult<T> {
+        guard let k = knnK else {
+            throw SpatialQueryError.noConstraint
+        }
+        guard let center = referencePoint else {
+            throw SpatialQueryError.noConstraint
+        }
+
+        // Validate KNN parameters
+        try validateKNNParameters(k: k)
+
+        // Find index descriptor
+        guard let descriptor = findIndexDescriptor() else {
+            throw SpatialQueryError.indexNotFound(buildIndexName())
+        }
+
+        // Get index configuration from kind
+        let level: Int
+        let encoding: SpatialEncoding
+        if let kind = descriptor.kind as? SpatialIndexKind<T> {
+            level = kind.level
+            encoding = kind.encoding
+        } else {
+            level = 15
+            encoding = .s2
+        }
+
+        let indexName = descriptor.name
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Adaptive radius expansion algorithm
+        var currentRadiusMeters = knnInitialRadiusKm * 1000.0
+        let maxRadiusMeters = knnMaxRadiusKm * 1000.0
+        var allCandidates: [(item: T, distance: Double)] = []
+        var seenIds: Set<AnyHashable> = []  // Use AnyHashable for stable ID comparison
+        var iterations = 0
+        var totalKeysScanned = 0
+        var lastUsedRadiusMeters = currentRadiusMeters  // Track actual last used radius
+        var limitReason: LimitReason? = nil
+
+        while allCandidates.count < k && currentRadiusMeters <= maxRadiusMeters && iterations < knnMaxIterations {
+            iterations += 1
+            lastUsedRadiusMeters = currentRadiusMeters
+
+            // Get covering cells for current radius
+            let coveringCells = S2Geometry.getCoveringCells(
+                latitude: center.latitude,
+                longitude: center.longitude,
+                radiusMeters: currentRadiusMeters,
+                level: level
+            )
+
+            // Scan cells with per-iteration limit to prevent DoS
+            let scanResult: SpatialScanResult = try await queryContext.withTransaction { transaction in
+                let scanner = SpatialCellScanner(
+                    indexSubspace: indexSubspace,
+                    encoding: encoding,
+                    level: level
+                )
+                let (keys, scanLimitReason) = try await scanner.scanCells(
+                    cellIds: coveringCells,
+                    limit: knnMaxKeysPerIteration,
+                    transaction: transaction
+                )
+                return SpatialScanResult(keys: keys, limitReason: scanLimitReason)
+            }
+
+            totalKeysScanned += scanResult.keys.count
+
+            // Check total keys budget
+            if totalKeysScanned >= knnMaxTotalKeys {
+                limitReason = .maxCellsReached(scanned: totalKeysScanned, limit: knnMaxTotalKeys)
+                break
+            }
+
+            // Fetch items
+            let items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
+
+            // Calculate distances and deduplicate using AnyHashable for stable comparison
+            for item in items {
+                let itemId = AnyHashable(item.id)
+                guard !seenIds.contains(itemId) else { continue }
+                seenIds.insert(itemId)
+
+                guard let location = extractGeoPoint(from: item) else { continue }
+
+                let distanceMeters = distanceInMeters(from: center, to: location)
+
+                // Only include if within current radius (covering cells may extend beyond)
+                if distanceMeters <= currentRadiusMeters {
+                    allCandidates.append((item: item, distance: distanceMeters))
+                }
+            }
+
+            // If we have enough candidates, we can stop
+            if allCandidates.count >= k {
+                break
+            }
+
+            // Expand radius for next iteration
+            currentRadiusMeters *= knnExpansionFactor
+        }
+
+        // Sort by distance and take top K
+        let sorted = allCandidates.sorted { $0.distance < $1.distance }
+        let topK = Array(sorted.prefix(k))
+
+        // Determine limit reason if not already set
+        if limitReason == nil && topK.count < k {
+            if iterations >= knnMaxIterations {
+                limitReason = .maxCellsReached(scanned: iterations, limit: knnMaxIterations)
+            } else {
+                // maxRadiusMeters exceeded or insufficient data in search area
+                limitReason = .maxResultsReached(returned: topK.count, limit: k)
+            }
+        }
+
+        return SpatialKNNResult(
+            items: topK,
+            k: k,
+            searchRadiusMeters: lastUsedRadiusMeters,  // Use actual last used radius
+            limitReason: limitReason
+        )
+    }
+
+    /// Validate KNN parameters
+    ///
+    /// - Parameter k: Number of nearest neighbors to find
+    /// - Throws: SpatialQueryError if parameters are invalid
+    private func validateKNNParameters(k: Int) throws {
+        // k must be positive
+        guard k > 0 else {
+            throw SpatialQueryError.invalidKNNParameters("k must be positive, got \(k)")
+        }
+
+        // Radius values must be positive and finite
+        guard knnInitialRadiusKm > 0 && knnInitialRadiusKm.isFinite else {
+            throw SpatialQueryError.invalidRadius("initialRadiusKm must be positive and finite, got \(knnInitialRadiusKm)")
+        }
+        guard knnMaxRadiusKm > 0 && knnMaxRadiusKm.isFinite else {
+            throw SpatialQueryError.invalidRadius("maxRadiusKm must be positive and finite, got \(knnMaxRadiusKm)")
+        }
+        guard knnMaxRadiusKm >= knnInitialRadiusKm else {
+            throw SpatialQueryError.invalidRadius("maxRadiusKm (\(knnMaxRadiusKm)) must be >= initialRadiusKm (\(knnInitialRadiusKm))")
+        }
+
+        // Expansion factor must be > 1.0 and finite
+        guard knnExpansionFactor > 1.0 && knnExpansionFactor.isFinite else {
+            throw SpatialQueryError.invalidKNNParameters("expansionFactor must be > 1.0 and finite, got \(knnExpansionFactor)")
+        }
     }
 }
 
@@ -334,13 +857,22 @@ extension FDBContext {
     /// ```swift
     /// import SpatialIndex
     ///
-    /// let stores = try await context.findNearby(Store.self)
+    /// let result = try await context.findNearby(Store.self)
     ///     .location(\.geoPoint)
     ///     .within(radiusKm: 5.0, of: currentLocation)
     ///     .orderByDistance()
     ///     .limit(10)
     ///     .execute()
-    /// // Returns: [(item: Store, distance: Double?)]
+    ///
+    /// // Access items with distances
+    /// for (store, distance) in result.items {
+    ///     print("\(store.name): \(distance ?? 0)m away")
+    /// }
+    ///
+    /// // Check if all results were returned
+    /// if !result.isComplete {
+    ///     print("More results available")
+    /// }
     /// ```
     ///
     /// - Parameter type: The Persistable type to search
@@ -363,6 +895,15 @@ public enum SpatialQueryError: Error, CustomStringConvertible {
     /// Invalid polygon (not enough points)
     case invalidPolygon(String)
 
+    /// Invalid KNN parameters (k, expansionFactor, etc.)
+    case invalidKNNParameters(String)
+
+    /// Invalid limit value
+    case invalidLimit(String)
+
+    /// Invalid radius value
+    case invalidRadius(String)
+
     public var description: String {
         switch self {
         case .noConstraint:
@@ -371,6 +912,12 @@ public enum SpatialQueryError: Error, CustomStringConvertible {
             return "Spatial index not found: \(name)"
         case .invalidPolygon(let reason):
             return "Invalid polygon: \(reason)"
+        case .invalidKNNParameters(let reason):
+            return "Invalid KNN parameters: \(reason)"
+        case .invalidLimit(let reason):
+            return "Invalid limit: \(reason)"
+        case .invalidRadius(let reason):
+            return "Invalid radius: \(reason)"
         }
     }
 }
