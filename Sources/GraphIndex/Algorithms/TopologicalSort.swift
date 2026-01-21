@@ -171,12 +171,13 @@ public final class TopologicalSorter<Edge: Persistable>: Sendable {
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
+        strategy: GraphIndexStrategy = .adjacency,
         configuration: TopologicalSortConfiguration = .default
     ) {
         self.database = database
         self.subspace = subspace
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
     }
 
     // MARK: - Public API

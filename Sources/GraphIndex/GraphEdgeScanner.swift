@@ -6,6 +6,7 @@
 
 import Foundation
 import Core
+import Graph
 import DatabaseEngine
 import FoundationDB
 
@@ -36,10 +37,19 @@ public struct EdgeInfo: Sendable, Equatable {
 /// Provides correct and consistent edge scanning for all graph algorithms.
 /// Centralizes key structure knowledge to prevent bugs from propagating.
 ///
-/// **Key Structure** (Adjacency Strategy):
+/// **Key Structures by Strategy**:
+///
+/// Adjacency (2-index):
 /// ```
-/// Outgoing: [out]/[edge]/[from]/[to]
-/// Incoming: [in]/[edge]/[to]/[from]
+/// Outgoing: [out]/[edge]/[from]/[to]  (subspace 0)
+/// Incoming: [in]/[edge]/[to]/[from]   (subspace 1)
+/// ```
+///
+/// TripleStore/Hexastore (3/6-index):
+/// ```
+/// SPO: [from]/[edge]/[to]   (subspace 2) - for outgoing edges
+/// POS: [edge]/[to]/[from]   (subspace 3) - for incoming with specific label
+/// OSP: [to]/[from]/[edge]   (subspace 4) - for incoming with wildcard label
 /// ```
 ///
 /// **edgeLabel Parameter Semantics**:
@@ -55,31 +65,41 @@ public struct EdgeInfo: Sendable, Equatable {
 ///
 /// **Usage**:
 /// ```swift
+/// // Adjacency strategy (default)
 /// let scanner = GraphEdgeScanner(indexSubspace: subspace)
+///
+/// // TripleStore strategy
+/// let scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: .tripleStore)
 ///
 /// // Scan ALL outgoing edges regardless of label
 /// for try await edge in scanner.scanOutgoing(from: "A", edgeLabel: nil, transaction: tx) {
 ///     print("\(edge.source) -> \(edge.target) via \(edge.edgeLabel)")
-/// }
-///
-/// // Scan only "follows" edges (efficient prefix scan)
-/// for try await edge in scanner.scanOutgoing(from: "A", edgeLabel: "follows", transaction: tx) {
-///     print("\(edge.source) -> \(edge.target)")
 /// }
 /// ```
 public struct GraphEdgeScanner: Sendable {
 
     // MARK: - Properties
 
-    /// Subspace for outgoing edges: [out]/[edge]/[from]/[to]
+    /// Storage strategy
+    private let strategy: GraphIndexStrategy
+
+    /// Subspace for outgoing edges
+    /// - Adjacency: [out]/[edge]/[from]/[to] (subspace 0)
+    /// - TripleStore/Hexastore: [spo]/[from]/[edge]/[to] (subspace 2)
     private let outgoingSubspace: Subspace
 
-    /// Subspace for incoming edges: [in]/[edge]/[to]/[from]
+    /// Subspace for incoming edges (primary)
+    /// - Adjacency: [in]/[edge]/[to]/[from] (subspace 1)
+    /// - TripleStore/Hexastore with specific label: [pos]/[edge]/[to]/[from] (subspace 3)
     private let incomingSubspace: Subspace
+
+    /// Subspace for incoming edges with wildcard label (tripleStore/hexastore only)
+    /// Uses OSP index: [osp]/[to]/[from]/[edge] (subspace 4)
+    private let incomingWildcardSubspace: Subspace?
 
     // MARK: - Initialization
 
-    /// Initialize with pre-configured subspaces
+    /// Initialize with pre-configured subspaces (for adjacency strategy only)
     ///
     /// - Parameters:
     ///   - outgoingSubspace: Subspace for outgoing edges (typically `indexSubspace.subspace(Int64(0))`)
@@ -88,18 +108,45 @@ public struct GraphEdgeScanner: Sendable {
         outgoingSubspace: Subspace,
         incomingSubspace: Subspace
     ) {
+        self.strategy = .adjacency
         self.outgoingSubspace = outgoingSubspace
         self.incomingSubspace = incomingSubspace
+        self.incomingWildcardSubspace = nil
     }
 
-    /// Initialize from index subspace
+    /// Initialize from index subspace with strategy
     ///
-    /// Automatically creates outgoing (key 0) and incoming (key 1) subspaces.
+    /// Creates appropriate subspaces based on the storage strategy.
+    ///
+    /// - Parameters:
+    ///   - indexSubspace: The base index subspace
+    ///   - strategy: Graph index storage strategy (default: .adjacency)
+    public init(indexSubspace: Subspace, strategy: GraphIndexStrategy = .adjacency) {
+        self.strategy = strategy
+
+        switch strategy {
+        case .adjacency:
+            // Adjacency: use subspaces 0 (out) and 1 (in)
+            self.outgoingSubspace = indexSubspace.subspace(Int64(0))
+            self.incomingSubspace = indexSubspace.subspace(Int64(1))
+            self.incomingWildcardSubspace = nil
+
+        case .tripleStore, .hexastore:
+            // TripleStore/Hexastore:
+            // - Outgoing: SPO (subspace 2) for (from, ?, ?) and (from, edge, ?) queries
+            // - Incoming with label: POS (subspace 3) for (?, edge, to) queries
+            // - Incoming wildcard: OSP (subspace 4) for (?, ?, to) queries
+            self.outgoingSubspace = indexSubspace.subspace(Int64(2))  // SPO
+            self.incomingSubspace = indexSubspace.subspace(Int64(3))  // POS
+            self.incomingWildcardSubspace = indexSubspace.subspace(Int64(4))  // OSP
+        }
+    }
+
+    /// Initialize from index subspace (backward compatible, assumes adjacency strategy)
     ///
     /// - Parameter indexSubspace: The base index subspace
     public init(indexSubspace: Subspace) {
-        self.outgoingSubspace = indexSubspace.subspace(Int64(0))
-        self.incomingSubspace = indexSubspace.subspace(Int64(1))
+        self.init(indexSubspace: indexSubspace, strategy: .adjacency)
     }
 
     // MARK: - Public API
@@ -172,54 +219,211 @@ public struct GraphEdgeScanner: Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    if let label = edgeLabel {
-                        // Specific label: Scan [out]/[label]/* prefix
-                        let prefix = Subspace(
-                            prefix: outgoingSubspace.prefix + Tuple([label]).pack()
+                    switch self.strategy {
+                    case .adjacency:
+                        try await self.scanAllEdgesAdjacency(
+                            edgeLabel: edgeLabel,
+                            transaction: transaction,
+                            continuation: continuation
                         )
-                        let (beginKey, endKey) = prefix.range()
-
-                        let stream = transaction.getRange(
-                            beginSelector: .firstGreaterOrEqual(beginKey),
-                            endSelector: .firstGreaterOrEqual(endKey),
-                            snapshot: true
+                    case .tripleStore, .hexastore:
+                        try await self.scanAllEdgesTripleStore(
+                            edgeLabel: edgeLabel,
+                            transaction: transaction,
+                            continuation: continuation
                         )
-
-                        for try await (key, _) in stream {
-                            if let edgeInfo = try self.extractEdgeFromAllEdgesScan(
-                                key: key,
-                                prefix: prefix,
-                                edgeLabel: label
-                            ) {
-                                continuation.yield(edgeInfo)
-                            }
-                        }
-                    } else {
-                        // Wildcard: Scan entire [out]/* subspace
-                        let (beginKey, endKey) = outgoingSubspace.range()
-
-                        let stream = transaction.getRange(
-                            beginSelector: .firstGreaterOrEqual(beginKey),
-                            endSelector: .firstGreaterOrEqual(endKey),
-                            snapshot: true
-                        )
-
-                        for try await (key, _) in stream {
-                            if let edgeInfo = try self.extractEdgeFromFullScan(
-                                key: key,
-                                subspace: outgoingSubspace
-                            ) {
-                                continuation.yield(edgeInfo)
-                            }
-                        }
                     }
-
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
                 }
             }
         }
+    }
+
+    /// Scan all edges using adjacency strategy
+    ///
+    /// Uses [out] subspace with key structure: [edge]/[from]/[to]
+    private func scanAllEdgesAdjacency(
+        edgeLabel: String?,
+        transaction: any TransactionProtocol,
+        continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
+    ) async throws {
+        if let label = edgeLabel {
+            // Specific label: Scan [out]/[label]/* prefix
+            let prefix = Subspace(
+                prefix: outgoingSubspace.prefix + Tuple([label]).pack()
+            )
+            let (beginKey, endKey) = prefix.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromAllEdgesScanAdjacency(
+                    key: key,
+                    prefix: prefix,
+                    edgeLabel: label
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+        } else {
+            // Wildcard: Scan entire [out]/* subspace
+            let (beginKey, endKey) = outgoingSubspace.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromFullScanAdjacency(
+                    key: key,
+                    subspace: outgoingSubspace
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+        }
+    }
+
+    /// Scan all edges using tripleStore/hexastore strategy
+    ///
+    /// **Optimization**:
+    /// - Specific label: Uses POS index `[edge]/[to]/[from]` with prefix scan O(E_label)
+    /// - Wildcard: Uses SPO index `[from]/[edge]/[to]` with full scan O(E)
+    private func scanAllEdgesTripleStore(
+        edgeLabel: String?,
+        transaction: any TransactionProtocol,
+        continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
+    ) async throws {
+        if let label = edgeLabel {
+            // Optimized: Use POS index for specific label
+            // POS key structure: [edge]/[to]/[from]
+            // Prefix scan on [label] is efficient O(E_label)
+            let prefix = Subspace(
+                prefix: incomingSubspace.prefix + Tuple([label]).pack()
+            )
+            let (beginKey, endKey) = prefix.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromPOSLabelScan(
+                    key: key,
+                    prefix: prefix,
+                    edgeLabel: label
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+        } else {
+            // Wildcard: Scan entire SPO subspace
+            // SPO key structure: [from]/[edge]/[to]
+            let (beginKey, endKey) = outgoingSubspace.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromFullScanTripleStore(
+                    key: key,
+                    subspace: outgoingSubspace,
+                    filterEdgeLabel: nil
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+        }
+    }
+
+    /// Extract edge info from POS key after label prefix
+    ///
+    /// Key structure after prefix [edge]: [to]/[from]
+    private func extractEdgeFromPOSLabelScan(
+        key: [UInt8],
+        prefix: Subspace,
+        edgeLabel: String
+    ) throws -> EdgeInfo? {
+        let elements = try prefix.unpack(key)
+
+        // Expecting [to, from] after prefix [edge]
+        guard elements.count >= 2 else { return nil }
+        guard let toElement = elements[0], let fromElement = elements[1] else { return nil }
+
+        let target: String
+        if let str = toElement as? String {
+            target = str
+        } else {
+            target = String(describing: toElement)
+        }
+
+        let source: String
+        if let str = fromElement as? String {
+            source = str
+        } else {
+            source = String(describing: fromElement)
+        }
+
+        return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
+    }
+
+    /// Extract edge info from SPO key with optional label filter
+    ///
+    /// Key structure: [from]/[edge]/[to]
+    private func extractEdgeFromFullScanTripleStore(
+        key: [UInt8],
+        subspace: Subspace,
+        filterEdgeLabel: String?
+    ) throws -> EdgeInfo? {
+        let elements = try subspace.unpack(key)
+
+        // Expecting [from, edge, to]
+        guard elements.count >= 3 else { return nil }
+
+        guard let fromElement = elements[0],
+              let edgeElement = elements[1],
+              let toElement = elements[2] else { return nil }
+
+        let source: String
+        if let str = fromElement as? String {
+            source = str
+        } else {
+            source = String(describing: fromElement)
+        }
+
+        let edgeLabel: String
+        if let str = edgeElement as? String {
+            edgeLabel = str
+        } else {
+            edgeLabel = String(describing: edgeElement)
+        }
+
+        let target: String
+        if let str = toElement as? String {
+            target = str
+        } else {
+            target = String(describing: toElement)
+        }
+
+        // Apply label filter if specified
+        if let filter = filterEdgeLabel, edgeLabel != filter {
+            return nil
+        }
+
+        return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
     }
 
     /// Batch scan outgoing edges for multiple source nodes
@@ -282,9 +486,13 @@ public struct GraphEdgeScanner: Sendable {
 
     /// Core edge scanning implementation
     ///
-    /// Handles two modes:
-    /// - Specific label (including ""): Efficient prefix scan on [edge]/[nodeID]/*
-    /// - Wildcard (nil): Full subspace scan + manual filter on nodeID
+    /// Handles two modes based on strategy:
+    /// - Adjacency: [edge]/[nodeID]/* prefix scan
+    /// - TripleStore/Hexastore: [nodeID]/[edge]/* or [nodeID]/* prefix scan
+    ///
+    /// And two label modes:
+    /// - Specific label (including ""): Efficient prefix scan
+    /// - Wildcard (nil): Full subspace scan + manual filter
     private func scanEdges(
         nodeID: String,
         edgeLabel: String?,
@@ -294,59 +502,24 @@ public struct GraphEdgeScanner: Sendable {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
-
-                    if let label = edgeLabel {
-                        // Specific label: Efficient prefix scan
-                        // Key structure:
-                        //   Outgoing: [edge]/[from]/[to] → prefix [edge]/[from] → extract [to]
-                        //   Incoming: [edge]/[to]/[from] → prefix [edge]/[to] → extract [from]
-                        let prefix = Subspace(
-                            prefix: scanSubspace.prefix + Tuple([label, nodeID]).pack()
+                    switch self.strategy {
+                    case .adjacency:
+                        try await self.scanEdgesAdjacency(
+                            nodeID: nodeID,
+                            edgeLabel: edgeLabel,
+                            direction: direction,
+                            transaction: transaction,
+                            continuation: continuation
                         )
-                        let (beginKey, endKey) = prefix.range()
-
-                        let stream = transaction.getRange(
-                            beginSelector: .firstGreaterOrEqual(beginKey),
-                            endSelector: .firstGreaterOrEqual(endKey),
-                            snapshot: true
+                    case .tripleStore, .hexastore:
+                        try await self.scanEdgesTripleStore(
+                            nodeID: nodeID,
+                            edgeLabel: edgeLabel,
+                            direction: direction,
+                            transaction: transaction,
+                            continuation: continuation
                         )
-
-                        for try await (key, _) in stream {
-                            if let otherNodeID = try self.extractNodeID(key: key, prefix: prefix) {
-                                let edgeInfo: EdgeInfo
-                                if direction == .outgoing {
-                                    edgeInfo = EdgeInfo(source: nodeID, target: otherNodeID, edgeLabel: label)
-                                } else {
-                                    edgeInfo = EdgeInfo(source: otherNodeID, target: nodeID, edgeLabel: label)
-                                }
-                                continuation.yield(edgeInfo)
-                            }
-                        }
-                    } else {
-                        // Wildcard: Full subspace scan + filter by nodeID
-                        // Key structure: [edge]/[from]/[to] or [edge]/[to]/[from]
-                        // We need to scan all edges and filter by nodeID
-                        let (beginKey, endKey) = scanSubspace.range()
-
-                        let stream = transaction.getRange(
-                            beginSelector: .firstGreaterOrEqual(beginKey),
-                            endSelector: .firstGreaterOrEqual(endKey),
-                            snapshot: true
-                        )
-
-                        for try await (key, _) in stream {
-                            if let edgeInfo = try self.extractEdgeFromWildcardScan(
-                                key: key,
-                                subspace: scanSubspace,
-                                direction: direction,
-                                filterNodeID: nodeID
-                            ) {
-                                continuation.yield(edgeInfo)
-                            }
-                        }
                     }
-
                     continuation.finish()
                 } catch {
                     continuation.finish(throwing: error)
@@ -355,11 +528,225 @@ public struct GraphEdgeScanner: Sendable {
         }
     }
 
+    /// Scan edges using adjacency strategy
+    ///
+    /// Key structure:
+    /// - Outgoing: [out]/[edge]/[from]/[to]
+    /// - Incoming: [in]/[edge]/[to]/[from]
+    private func scanEdgesAdjacency(
+        nodeID: String,
+        edgeLabel: String?,
+        direction: Direction,
+        transaction: any TransactionProtocol,
+        continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
+    ) async throws {
+        let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
+
+        if let label = edgeLabel {
+            // Specific label: prefix on [edge]/[nodeID]
+            let prefix = Subspace(
+                prefix: scanSubspace.prefix + Tuple([label, nodeID]).pack()
+            )
+            let (beginKey, endKey) = prefix.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let otherNodeID = try self.extractNodeID(key: key, prefix: prefix) {
+                    let edgeInfo: EdgeInfo
+                    if direction == .outgoing {
+                        edgeInfo = EdgeInfo(source: nodeID, target: otherNodeID, edgeLabel: label)
+                    } else {
+                        edgeInfo = EdgeInfo(source: otherNodeID, target: nodeID, edgeLabel: label)
+                    }
+                    continuation.yield(edgeInfo)
+                }
+            }
+        } else {
+            // Wildcard: full scan + filter
+            let (beginKey, endKey) = scanSubspace.range()
+
+            let stream = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+
+            for try await (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromWildcardScan(
+                    key: key,
+                    subspace: scanSubspace,
+                    direction: direction,
+                    filterNodeID: nodeID
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+        }
+    }
+
+    /// Scan edges using tripleStore/hexastore strategy
+    ///
+    /// Key structures:
+    /// - SPO (outgoing): [from]/[edge]/[to]
+    /// - POS (incoming with label): [edge]/[to]/[from]
+    /// - OSP (incoming wildcard): [to]/[from]/[edge]
+    private func scanEdgesTripleStore(
+        nodeID: String,
+        edgeLabel: String?,
+        direction: Direction,
+        transaction: any TransactionProtocol,
+        continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
+    ) async throws {
+        if direction == .outgoing {
+            // Use SPO index: [from]/[edge]/[to]
+            if let label = edgeLabel {
+                // Specific label: prefix on [from]/[edge]
+                let prefix = Subspace(
+                    prefix: outgoingSubspace.prefix + Tuple([nodeID, label]).pack()
+                )
+                let (beginKey, endKey) = prefix.range()
+
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+
+                for try await (key, _) in stream {
+                    // Extract [to] from key
+                    if let toNodeID = try self.extractNodeID(key: key, prefix: prefix) {
+                        continuation.yield(EdgeInfo(source: nodeID, target: toNodeID, edgeLabel: label))
+                    }
+                }
+            } else {
+                // Wildcard: prefix on [from], extract [edge, to]
+                let prefix = Subspace(
+                    prefix: outgoingSubspace.prefix + Tuple([nodeID]).pack()
+                )
+                let (beginKey, endKey) = prefix.range()
+
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+
+                for try await (key, _) in stream {
+                    // Extract [edge, to] from key
+                    if let edgeInfo = try self.extractEdgeToFromSPOWildcard(key: key, prefix: prefix, fromNodeID: nodeID) {
+                        continuation.yield(edgeInfo)
+                    }
+                }
+            }
+        } else {
+            // Incoming edges
+            if let label = edgeLabel {
+                // Use POS index: [edge]/[to]/[from]
+                // Prefix on [edge]/[to]
+                let prefix = Subspace(
+                    prefix: incomingSubspace.prefix + Tuple([label, nodeID]).pack()
+                )
+                let (beginKey, endKey) = prefix.range()
+
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+
+                for try await (key, _) in stream {
+                    // Extract [from] from key
+                    if let fromNodeID = try self.extractNodeID(key: key, prefix: prefix) {
+                        continuation.yield(EdgeInfo(source: fromNodeID, target: nodeID, edgeLabel: label))
+                    }
+                }
+            } else {
+                // Use OSP index: [to]/[from]/[edge]
+                // Prefix on [to]
+                guard let ospSubspace = incomingWildcardSubspace else {
+                    // Fallback to POS full scan if OSP not available (shouldn't happen)
+                    return
+                }
+
+                let prefix = Subspace(
+                    prefix: ospSubspace.prefix + Tuple([nodeID]).pack()
+                )
+                let (beginKey, endKey) = prefix.range()
+
+                let stream = transaction.getRange(
+                    beginSelector: .firstGreaterOrEqual(beginKey),
+                    endSelector: .firstGreaterOrEqual(endKey),
+                    snapshot: true
+                )
+
+                for try await (key, _) in stream {
+                    // Extract [from, edge] from key
+                    if let edgeInfo = try self.extractEdgeFromOSPWildcard(key: key, prefix: prefix, toNodeID: nodeID) {
+                        continuation.yield(edgeInfo)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Extract [edge, to] from SPO key after [from] prefix
+    private func extractEdgeToFromSPOWildcard(key: [UInt8], prefix: Subspace, fromNodeID: String) throws -> EdgeInfo? {
+        let elements = try prefix.unpack(key)
+
+        // Expecting [edge, to] after prefix [from]
+        guard elements.count >= 2 else { return nil }
+        guard let edgeElement = elements[0], let toElement = elements[1] else { return nil }
+
+        let edgeLabel: String
+        if let str = edgeElement as? String {
+            edgeLabel = str
+        } else {
+            edgeLabel = String(describing: edgeElement)
+        }
+
+        let toNodeID: String
+        if let str = toElement as? String {
+            toNodeID = str
+        } else {
+            toNodeID = String(describing: toElement)
+        }
+
+        return EdgeInfo(source: fromNodeID, target: toNodeID, edgeLabel: edgeLabel)
+    }
+
+    /// Extract [from, edge] from OSP key after [to] prefix
+    private func extractEdgeFromOSPWildcard(key: [UInt8], prefix: Subspace, toNodeID: String) throws -> EdgeInfo? {
+        let elements = try prefix.unpack(key)
+
+        // Expecting [from, edge] after prefix [to]
+        guard elements.count >= 2 else { return nil }
+        guard let fromElement = elements[0], let edgeElement = elements[1] else { return nil }
+
+        let fromNodeID: String
+        if let str = fromElement as? String {
+            fromNodeID = str
+        } else {
+            fromNodeID = String(describing: fromElement)
+        }
+
+        let edgeLabel: String
+        if let str = edgeElement as? String {
+            edgeLabel = str
+        } else {
+            edgeLabel = String(describing: edgeElement)
+        }
+
+        return EdgeInfo(source: fromNodeID, target: toNodeID, edgeLabel: edgeLabel)
+    }
+
     /// Batch scan implementation
     ///
-    /// Handles two modes:
-    /// - Specific label (including ""): Efficient per-node prefix scans
-    /// - Wildcard (nil): Full subspace scan + filter by nodeID set
+    /// Dispatches to strategy-specific implementation.
     private func batchScan(
         nodeIDs: [String],
         edgeLabel: String?,
@@ -368,11 +755,36 @@ public struct GraphEdgeScanner: Sendable {
     ) async throws -> [EdgeInfo] {
         guard !nodeIDs.isEmpty else { return [] }
 
+        switch strategy {
+        case .adjacency:
+            return try await batchScanAdjacency(
+                nodeIDs: nodeIDs,
+                edgeLabel: edgeLabel,
+                direction: direction,
+                transaction: transaction
+            )
+        case .tripleStore, .hexastore:
+            return try await batchScanTripleStore(
+                nodeIDs: nodeIDs,
+                edgeLabel: edgeLabel,
+                direction: direction,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Batch scan using adjacency strategy
+    private func batchScanAdjacency(
+        nodeIDs: [String],
+        edgeLabel: String?,
+        direction: Direction,
+        transaction: any TransactionProtocol
+    ) async throws -> [EdgeInfo] {
         let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
 
         if let label = edgeLabel {
             // Specific label: Efficient per-node prefix scans
-            return try await batchScanWithSpecificLabel(
+            return try await batchScanWithSpecificLabelAdjacency(
                 nodeIDs: nodeIDs,
                 label: label,
                 direction: direction,
@@ -381,7 +793,7 @@ public struct GraphEdgeScanner: Sendable {
             )
         } else {
             // Wildcard: Full subspace scan + filter by nodeID set
-            return try await batchScanWithWildcard(
+            return try await batchScanWithWildcardAdjacency(
                 nodeIDs: Set(nodeIDs),
                 direction: direction,
                 scanSubspace: scanSubspace,
@@ -390,8 +802,112 @@ public struct GraphEdgeScanner: Sendable {
         }
     }
 
-    /// Batch scan with specific edge label (efficient per-node prefix scans)
-    private func batchScanWithSpecificLabel(
+    /// Batch scan using tripleStore/hexastore strategy
+    private func batchScanTripleStore(
+        nodeIDs: [String],
+        edgeLabel: String?,
+        direction: Direction,
+        transaction: any TransactionProtocol
+    ) async throws -> [EdgeInfo] {
+        var results: [EdgeInfo] = []
+
+        if direction == .outgoing {
+            // Use SPO index: [from]/[edge]/[to]
+            if let label = edgeLabel {
+                // Specific label: prefix on [from]/[edge]
+                for nodeID in nodeIDs {
+                    let prefix = Subspace(
+                        prefix: outgoingSubspace.prefix + Tuple([nodeID, label]).pack()
+                    )
+                    let (beginKey, endKey) = prefix.range()
+
+                    let stream = transaction.getRange(
+                        beginSelector: .firstGreaterOrEqual(beginKey),
+                        endSelector: .firstGreaterOrEqual(endKey),
+                        snapshot: true
+                    )
+
+                    for try await (key, _) in stream {
+                        if let toNodeID = try extractNodeID(key: key, prefix: prefix) {
+                            results.append(EdgeInfo(source: nodeID, target: toNodeID, edgeLabel: label))
+                        }
+                    }
+                }
+            } else {
+                // Wildcard: prefix on [from]
+                for nodeID in nodeIDs {
+                    let prefix = Subspace(
+                        prefix: outgoingSubspace.prefix + Tuple([nodeID]).pack()
+                    )
+                    let (beginKey, endKey) = prefix.range()
+
+                    let stream = transaction.getRange(
+                        beginSelector: .firstGreaterOrEqual(beginKey),
+                        endSelector: .firstGreaterOrEqual(endKey),
+                        snapshot: true
+                    )
+
+                    for try await (key, _) in stream {
+                        if let edgeInfo = try extractEdgeToFromSPOWildcard(key: key, prefix: prefix, fromNodeID: nodeID) {
+                            results.append(edgeInfo)
+                        }
+                    }
+                }
+            }
+        } else {
+            // Incoming edges
+            if let label = edgeLabel {
+                // Use POS index: [edge]/[to]/[from]
+                for nodeID in nodeIDs {
+                    let prefix = Subspace(
+                        prefix: incomingSubspace.prefix + Tuple([label, nodeID]).pack()
+                    )
+                    let (beginKey, endKey) = prefix.range()
+
+                    let stream = transaction.getRange(
+                        beginSelector: .firstGreaterOrEqual(beginKey),
+                        endSelector: .firstGreaterOrEqual(endKey),
+                        snapshot: true
+                    )
+
+                    for try await (key, _) in stream {
+                        if let fromNodeID = try extractNodeID(key: key, prefix: prefix) {
+                            results.append(EdgeInfo(source: fromNodeID, target: nodeID, edgeLabel: label))
+                        }
+                    }
+                }
+            } else {
+                // Use OSP index: [to]/[from]/[edge]
+                guard let ospSubspace = incomingWildcardSubspace else {
+                    return results
+                }
+
+                for nodeID in nodeIDs {
+                    let prefix = Subspace(
+                        prefix: ospSubspace.prefix + Tuple([nodeID]).pack()
+                    )
+                    let (beginKey, endKey) = prefix.range()
+
+                    let stream = transaction.getRange(
+                        beginSelector: .firstGreaterOrEqual(beginKey),
+                        endSelector: .firstGreaterOrEqual(endKey),
+                        snapshot: true
+                    )
+
+                    for try await (key, _) in stream {
+                        if let edgeInfo = try extractEdgeFromOSPWildcard(key: key, prefix: prefix, toNodeID: nodeID) {
+                            results.append(edgeInfo)
+                        }
+                    }
+                }
+            }
+        }
+
+        return results
+    }
+
+    /// Batch scan with specific edge label (adjacency strategy)
+    private func batchScanWithSpecificLabelAdjacency(
         nodeIDs: [String],
         label: String,
         direction: Direction,
@@ -441,11 +957,11 @@ public struct GraphEdgeScanner: Sendable {
         return results
     }
 
-    /// Batch scan with wildcard (full subspace scan + filter)
+    /// Batch scan with wildcard (adjacency strategy)
     ///
     /// More efficient than per-node wildcard scans when nodeIDs set is large,
     /// as it only requires a single pass through the subspace.
-    private func batchScanWithWildcard(
+    private func batchScanWithWildcardAdjacency(
         nodeIDs: Set<String>,
         direction: Direction,
         scanSubspace: Subspace,
@@ -599,10 +1115,10 @@ public struct GraphEdgeScanner: Sendable {
         }
     }
 
-    /// Extract edge info from all-edges scan with specific label
+    /// Extract edge info from all-edges scan with specific label (adjacency)
     ///
     /// Key structure after edge label prefix: [from]/[to]
-    private func extractEdgeFromAllEdgesScan(
+    private func extractEdgeFromAllEdgesScanAdjacency(
         key: [UInt8],
         prefix: Subspace,
         edgeLabel: String
@@ -632,10 +1148,10 @@ public struct GraphEdgeScanner: Sendable {
         return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
     }
 
-    /// Extract edge info from full subspace scan (edgeLabel=nil)
+    /// Extract edge info from full subspace scan (edgeLabel=nil, adjacency)
     ///
     /// Key structure: [edge]/[from]/[to]
-    private func extractEdgeFromFullScan(
+    private func extractEdgeFromFullScanAdjacency(
         key: [UInt8],
         subspace: Subspace
     ) throws -> EdgeInfo? {

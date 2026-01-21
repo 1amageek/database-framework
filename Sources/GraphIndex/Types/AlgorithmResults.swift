@@ -56,6 +56,20 @@ public struct PageRankResult: Sendable {
     /// Computation duration in nanoseconds
     public let durationNs: UInt64
 
+    /// Whether the computation completed without hitting limits
+    ///
+    /// When `false`, the algorithm stopped due to a limit (e.g., maxNodes in collection phase).
+    /// In this case, the scores represent only a partial view of the graph.
+    ///
+    /// Note: This is different from convergence. Use `hasConverged(threshold:)` to check
+    /// whether the algorithm achieved the desired precision.
+    public let isComplete: Bool
+
+    /// Reason for incompleteness (if any)
+    ///
+    /// Non-nil when `isComplete` is false.
+    public let limitReason: LimitReason?
+
     // MARK: - Computed Properties
 
     /// Number of nodes in the result
@@ -87,12 +101,16 @@ public struct PageRankResult: Sendable {
         scores: [String: Double],
         iterations: Int,
         convergenceDelta: Double,
-        durationNs: UInt64
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.scores = scores
         self.iterations = iterations
         self.convergenceDelta = convergenceDelta
         self.durationNs = durationNs
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 
     // MARK: - Query Methods

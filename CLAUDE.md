@@ -132,6 +132,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | `DataStore` | Storage backend protocol (default: `FDBDataStore`) |
 | `SerializedModel` | Serialized data carrier for dual-write optimization |
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
+| `IndexMaintenanceService` | Centralized index maintenance: uniqueness checking, index updates, violation tracking |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
 | `OnlineIndexer` | Background index building for schema migrations |
 | `MultiTargetOnlineIndexer` | Build multiple indexes in single data scan |
@@ -688,7 +689,100 @@ hexastore (6-index):
   All 6 permutations for optimal single-index scan on any pattern
 ```
 
+**Key Structure Constraints (Adjacency Strategy)**:
+
+Adjacency strategy has `[direction][edge][from][to]` key structure, where `edge` comes before `from`:
+
+| Query Pattern | Adjacency | TripleStore | Hexastore |
+|---------------|-----------|-------------|-----------|
+| `(from, edge, ?)` | ✅ Prefix scan | ✅ Prefix scan | ✅ Prefix scan |
+| `(from, ?, ?)` | ❌ Full scan + filter | ✅ Prefix scan | ✅ Prefix scan |
+| `(?, edge, to)` | ✅ Prefix scan (via `in` index) | ✅ Prefix scan | ✅ Prefix scan |
+
+**API semantics for `edgeLabel` parameter**:
+- `edgeLabel = "follows"` → Filter by specific label (efficient prefix scan)
+- `edgeLabel = ""` → Filter by empty label (for unlabeled graphs, efficient prefix scan)
+- `edgeLabel = nil` → Match ALL labels (wildcard, requires full scan + filter for adjacency)
+
+**Performance Note**: When using adjacency strategy with `edgeLabel=nil` in `ShortestPathFinder`, `PageRankComputer`, or `GraphQuery`, the query must scan the entire edge subspace. For better performance, either specify an `edgeLabel` or use `tripleStore`/`hexastore` strategy.
+
 **Reference**: Weiss, C., Karras, P., & Bernstein, A. (2008). "Hexastore: sextuple indexing for semantic web data management" VLDB Endowment, 1(1), 1008-1019.
+
+### Uniqueness Enforcement
+
+Uniqueness constraints are enforced by `IndexMaintenanceService` before index entries are created.
+
+**Architecture**:
+```
+FDBDataStore.save()
+    │
+    ├── 1. Read existing record (if update)
+    │
+    └── 2. IndexMaintenanceService.updateIndexesUntyped()
+            │
+            ├── checkUniquenessConstraint()  ← Uniqueness check BEFORE index write
+            │       │
+            │       ├── Extract field values from model
+            │       ├── Build index key prefix
+            │       ├── Scan for existing entries with same values
+            │       ├── Skip self (update case) using Tuple equality
+            │       └── Throw UniquenessViolationError if conflict
+            │
+            └── IndexMaintainer.updateIndex()  ← Actual index write
+```
+
+**Array Field Uniqueness**:
+
+For array-typed fields (e.g., `tags: [String]`), each array element is checked individually:
+
+```swift
+// Model
+@Persistable
+struct Document {
+    var tags: [String]  // unique constraint
+}
+
+// Index entries created (one per element):
+// [subspace]["tag1"][id]
+// [subspace]["tag2"][id]
+
+// Uniqueness check: each element checked separately
+// If another document has "tag1", violation is thrown
+```
+
+**Self-Update Detection**:
+
+When updating an existing record, the system must skip the record's own index entries:
+
+```swift
+// Uses Tuple equality (type-agnostic, compares encoded bytes)
+// Supports all TupleElement ID types: String, Int64, UUID, etc.
+
+// Key structure: [subspace prefix][values...][id...]
+// ID is extracted from the END of the key tuple
+let idStartIndex = keyTuple.count - oldId.count
+let existingIdElements = keyTuple[idStartIndex..<keyTuple.count]
+
+if oldId == Tuple(existingIdElements) {
+    continue  // Skip our own entry
+}
+```
+
+**Sparse Index Behavior**:
+
+| Field Value | Index Entry | Uniqueness Check |
+|-------------|-------------|------------------|
+| `nil` | None (sparse) | Skipped |
+| `[]` (empty array) | None | Skipped |
+| `["a", "b"]` | Two entries | Each checked |
+
+**Index State Behavior**:
+
+| State | Behavior |
+|-------|----------|
+| `readable` | Throw `UniquenessViolationError` immediately |
+| `writeOnly` | Record violation for later resolution |
+| `disabled` | Skip uniqueness check |
 
 ### Online Indexing
 
@@ -773,10 +867,31 @@ TransactionRunner.run(configuration:readVersionCache:operation:)
        ├── 2. Apply configuration (priority, timeout, etc.)
        ├── 3. Apply cached read version (first attempt only, if weak read semantics)
        ├── 4. Execute operation
-       ├── 5. Commit transaction
+       ├── 5. Commit transaction  ← 自動コミット
        ├── 6. On retryable error: exponential backoff + retry
        └── 7. On success: update read version cache (commit version)
 ```
+
+**⚠️ 重要: withTransaction 内で commit() を呼ばないこと**
+
+`withTransaction` はクロージャが正常終了した後、自動的にコミットします。クロージャ内で明示的に `commit()` を呼ぶと二重コミットになり、FDB が "Operation issued while a commit was outstanding" エラーを返します。
+
+```swift
+// ❌ 悪い例: 二重コミット
+try await database.withTransaction { tx in
+    tx.setValue(value, for: key)
+    _ = try await tx.commit()  // ← 呼んではいけない
+}
+// withTransaction が再度 commit() を呼ぶ → エラー
+
+// ✅ 良い例: withTransaction に任せる
+try await database.withTransaction { tx in
+    tx.setValue(value, for: key)
+    // commit() は呼ばない - withTransaction が自動でコミット
+}
+```
+
+**注意**: `TransactionProtocol.commit()` は public API ですが、`withTransaction` パターンを使う場合は呼び出し不要です。この設計上の制約は fdb-swift-bindings の API 設計に起因します。
 
 **Backoff Algorithm** (AWS exponential backoff pattern):
 ```

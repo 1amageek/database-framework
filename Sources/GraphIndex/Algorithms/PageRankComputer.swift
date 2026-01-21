@@ -5,9 +5,9 @@
 
 import Foundation
 import Core
+import Graph
 import DatabaseEngine
 import FoundationDB
-import Graph
 
 // MARK: - PageRankComputer
 
@@ -67,14 +67,16 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     /// - Parameters:
     ///   - database: FDB database connection
     ///   - subspace: Index subspace
+    ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
+        strategy: GraphIndexStrategy = .adjacency,
         configuration: PageRankConfiguration = .default
     ) {
         self.database = database
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
         self.configuration = configuration
     }
 
@@ -115,9 +117,20 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
             iteration += 1
             var newScores: [String: Double] = [:]
 
-            // Initialize with teleportation probability
+            // Calculate dangling rank sum (nodes with no outgoing edges)
+            // Dangling nodes distribute their rank uniformly to all nodes
+            // Reference: Page, Brin et al., "The PageRank Citation Ranking" (1999)
+            var danglingRankSum = 0.0
             for node in nodes {
-                newScores[node] = (1.0 - d) / n
+                if (outDegrees[node] ?? 0) == 0 {
+                    danglingRankSum += scores[node] ?? 0
+                }
+            }
+            let danglingContribution = d * danglingRankSum / n
+
+            // Initialize with teleportation probability + dangling contribution
+            for node in nodes {
+                newScores[node] = (1.0 - d) / n + danglingContribution
             }
 
             // Distribute scores along edges in batches
@@ -137,7 +150,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
 
                 // Accumulate contributions
                 for (node, contribution) in contributions {
-                    newScores[node, default: (1.0 - d) / n] += contribution
+                    newScores[node, default: (1.0 - d) / n + danglingContribution] += contribution
                 }
             }
 
@@ -200,9 +213,25 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
             iteration += 1
             var newScores: [String: Double] = [:]
 
-            // Teleportation goes back to start node (not uniform)
+            // Calculate dangling rank sum (nodes with no outgoing edges)
+            // In personalized PageRank, dangling nodes teleport back to start node
+            // Reference: Haveliwala, "Topic-Sensitive PageRank" (2002)
+            var danglingRankSum = 0.0
             for node in nodes {
-                newScores[node] = node == startNode ? (1.0 - d) : 0.0
+                if (outDegrees[node] ?? 0) == 0 {
+                    danglingRankSum += scores[node] ?? 0
+                }
+            }
+            let danglingContribution = d * danglingRankSum
+
+            // Teleportation goes back to start node (not uniform)
+            // Dangling contribution also goes to start node
+            for node in nodes {
+                if node == startNode {
+                    newScores[node] = (1.0 - d) + danglingContribution
+                } else {
+                    newScores[node] = 0.0
+                }
             }
 
             // Distribute scores along edges

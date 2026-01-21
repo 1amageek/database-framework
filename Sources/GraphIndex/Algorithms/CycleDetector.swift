@@ -115,6 +115,56 @@ public struct CycleInfo: Sendable {
     }
 }
 
+// MARK: - CycleCheckResult
+
+/// Lightweight result for cycle existence check
+///
+/// Use this when you only need to know if a cycle exists,
+/// with explicit completeness tracking.
+///
+/// **Usage**:
+/// ```swift
+/// let result = try await detector.checkCycle(edgeLabel: "depends_on")
+///
+/// if result.isDefinitive {
+///     if result.hasCycle {
+///         print("Graph has a cycle")
+///     } else {
+///         print("Graph is acyclic (confirmed)")
+///     }
+/// } else {
+///     print("Could not determine: \(result.limitReason)")
+/// }
+/// ```
+public struct CycleCheckResult: Sendable {
+    /// Whether at least one cycle was detected.
+    ///
+    /// When `isComplete == false` and `hasCycle == false`,
+    /// this means "no cycle found yet" (not "definitely no cycle").
+    public let hasCycle: Bool
+
+    /// Whether the check is complete (all nodes explored).
+    public let isComplete: Bool
+
+    /// Reason for incompleteness (if any).
+    public let limitReason: LimitReason?
+
+    /// Whether the result is definitive.
+    ///
+    /// Returns `true` if:
+    /// - We found a cycle (definitive positive), OR
+    /// - We completed the full traversal (definitive negative)
+    public var isDefinitive: Bool {
+        hasCycle || isComplete
+    }
+
+    public init(hasCycle: Bool, isComplete: Bool, limitReason: LimitReason? = nil) {
+        self.hasCycle = hasCycle
+        self.isComplete = isComplete
+        self.limitReason = limitReason
+    }
+}
+
 // MARK: - CycleDetector
 
 /// Cycle detection using DFS with three-color algorithm
@@ -198,23 +248,49 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
+        strategy: GraphIndexStrategy = .adjacency,
         configuration: CycleDetectorConfiguration = .default
     ) {
         self.database = database
         self.subspace = subspace
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
     }
 
     // MARK: - Public API
 
     /// Check if the graph has any cycle
     ///
+    /// **Note**: This method returns a simple Bool and loses completeness information.
+    /// When `maxNodes` limit is reached before finding a cycle, this method returns `false`
+    /// even though a cycle may exist in unexplored parts of the graph.
+    ///
+    /// For definitive results, use `checkCycle()` instead, which returns completeness info.
+    ///
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: True if at least one cycle exists
     public func hasCycle(edgeLabel: String? = nil) async throws -> Bool {
         let result = try await findCycles(edgeLabel: edgeLabel, maxCycles: 1)
         return result.hasCycle
+    }
+
+    /// Check if the graph has any cycle with explicit completeness tracking
+    ///
+    /// Unlike `hasCycle()`, this method returns completeness information,
+    /// allowing the caller to distinguish between:
+    /// - "Definitely no cycle" (isComplete=true, hasCycle=false)
+    /// - "No cycle found yet" (isComplete=false, hasCycle=false)
+    /// - "Cycle found" (hasCycle=true)
+    ///
+    /// - Parameter edgeLabel: Optional edge label filter
+    /// - Returns: CycleCheckResult with cycle existence and completeness
+    public func checkCycle(edgeLabel: String? = nil) async throws -> CycleCheckResult {
+        let result = try await findCycles(edgeLabel: edgeLabel, maxCycles: 1)
+        return CycleCheckResult(
+            hasCycle: result.hasCycle,
+            isComplete: result.isComplete,
+            limitReason: result.limitReason
+        )
     }
 
     /// Find all cycles in the graph

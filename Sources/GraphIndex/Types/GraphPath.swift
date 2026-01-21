@@ -292,11 +292,34 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
     /// Search duration in nanoseconds
     public let durationNs: UInt64
 
+    /// Whether the search completed without hitting limits
+    ///
+    /// When `false`, the algorithm stopped due to a limit (e.g., maxNodesExplored).
+    /// In this case, `path == nil` does not definitively mean "no path exists".
+    public let isComplete: Bool
+
+    /// Reason for incompleteness (if any)
+    ///
+    /// Non-nil when `isComplete` is false.
+    public let limitReason: LimitReason?
+
     // MARK: - Computed Properties
 
     /// Whether source and target are connected
     public var isConnected: Bool {
         path != nil
+    }
+
+    /// Whether the result is definitive
+    ///
+    /// Returns `true` if:
+    /// - A path was found (definitive positive), OR
+    /// - The search completed without limits (definitive negative)
+    ///
+    /// Returns `false` if we hit a limit before completion,
+    /// meaning we cannot definitively say whether a path exists.
+    public var isDefinitive: Bool {
+        path != nil || isComplete
     }
 
     /// Search duration in milliseconds
@@ -318,16 +341,22 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
     ///   - distance: Path distance (nil if not found)
     ///   - nodesExplored: Number of nodes explored during search
     ///   - durationNs: Search duration in nanoseconds
+    ///   - isComplete: Whether the search completed without hitting limits
+    ///   - limitReason: Reason for incompleteness (if any)
     public init(
         path: GraphPath<T>?,
         distance: Double?,
         nodesExplored: Int,
-        durationNs: UInt64
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.path = path
         self.distance = distance
         self.nodesExplored = nodesExplored
         self.durationNs = durationNs
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 
     /// Create a "not found" result
@@ -335,12 +364,21 @@ public struct ShortestPathResult<T: Persistable>: Sendable {
     /// - Parameters:
     ///   - nodesExplored: Number of nodes explored
     ///   - durationNs: Search duration
-    public static func notFound(nodesExplored: Int, durationNs: UInt64) -> ShortestPathResult<T> {
+    ///   - isComplete: Whether the search completed without hitting limits
+    ///   - limitReason: Reason for incompleteness (if any)
+    public static func notFound(
+        nodesExplored: Int,
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
+    ) -> ShortestPathResult<T> {
         ShortestPathResult(
             path: nil,
             distance: nil,
             nodesExplored: nodesExplored,
-            durationNs: durationNs
+            durationNs: durationNs,
+            isComplete: isComplete,
+            limitReason: limitReason
         )
     }
 }
@@ -365,6 +403,18 @@ public struct AllShortestPathsResult<T: Persistable>: Sendable {
     /// Search duration in nanoseconds
     public let durationNs: UInt64
 
+    /// Whether the search completed without hitting limits
+    ///
+    /// When `false`, the algorithm stopped due to a limit.
+    /// In this case, `paths.isEmpty` does not definitively mean "no path exists",
+    /// and the path count may be incomplete.
+    public let isComplete: Bool
+
+    /// Reason for incompleteness (if any)
+    ///
+    /// Non-nil when `isComplete` is false.
+    public let limitReason: LimitReason?
+
     /// Whether source and target are connected
     public var isConnected: Bool {
         !paths.isEmpty
@@ -375,15 +425,30 @@ public struct AllShortestPathsResult<T: Persistable>: Sendable {
         paths.count
     }
 
+    /// Whether the result is definitive
+    ///
+    /// Returns `true` if:
+    /// - Paths were found (definitive positive), OR
+    /// - The search completed without limits (definitive negative)
+    ///
+    /// Returns `false` if we hit a limit before completion.
+    public var isDefinitive: Bool {
+        !paths.isEmpty || isComplete
+    }
+
     public init(
         paths: [GraphPath<T>],
         distance: Double?,
         nodesExplored: Int,
-        durationNs: UInt64
+        durationNs: UInt64,
+        isComplete: Bool = true,
+        limitReason: LimitReason? = nil
     ) {
         self.paths = paths
         self.distance = distance
         self.nodesExplored = nodesExplored
         self.durationNs = durationNs
+        self.isComplete = isComplete
+        self.limitReason = limitReason
     }
 }

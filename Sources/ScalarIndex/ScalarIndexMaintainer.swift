@@ -86,8 +86,9 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// For array-typed fields (e.g., `[String]` in To-Many relationships),
     /// creates one index entry per array element instead of a single entry.
     ///
-    /// **Uniqueness check**: Performed implicitly by FDB
-    /// - If unique constraint violated, transaction will fail
+    /// **Uniqueness check**: Performed by IndexMaintenanceService before index update
+    /// - This maintainer only handles index entry creation/deletion
+    /// - Uniqueness validation is handled at a higher level (see IndexMaintenanceService)
     ///
     /// - Parameters:
     ///   - oldItem: Previous item (nil for insert)

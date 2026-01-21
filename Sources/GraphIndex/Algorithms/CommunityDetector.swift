@@ -74,16 +74,18 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     /// - Parameters:
     ///   - database: FDB database connection
     ///   - subspace: Index subspace
+    ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     public init(
         database: any DatabaseProtocol,
         subspace: Subspace,
+        strategy: GraphIndexStrategy = .adjacency,
         configuration: CommunityDetectionConfiguration = .default
     ) {
         self.database = database
         self.subspace = subspace
         self.configuration = configuration
-        self.scanner = GraphEdgeScanner(indexSubspace: subspace)
+        self.scanner = GraphEdgeScanner(indexSubspace: subspace, strategy: strategy)
     }
 
     // MARK: - Public API

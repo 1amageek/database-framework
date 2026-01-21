@@ -456,6 +456,11 @@ internal final class IndexMaintenanceService: Sendable {
     ///
     /// - Readable state: throws `UniquenessViolationError` if duplicate exists
     /// - WriteOnly state: tracks violation using `violationTracker` (does not throw)
+    ///
+    /// **Array Field Handling**:
+    /// For single-field indexes on array types (e.g., `tags: [String]`), each array element
+    /// is checked separately. This matches how `ScalarIndexMaintainer` creates one index
+    /// entry per array element, enabling per-element uniqueness enforcement.
     private func checkUniquenessConstraint<T: Persistable>(
         descriptor: IndexDescriptor,
         model: T,
@@ -472,6 +477,55 @@ internal final class IndexMaintenanceService: Sendable {
             return
         }
 
+        // Detect array field: single keyPath but multiple values
+        // This matches the logic in buildIndexKeys() and ScalarIndexMaintainer
+        let keyPathCount = descriptor.keyPaths.count
+        let isArrayField = keyPathCount == 1 && values.count > 1
+
+        if isArrayField {
+            // Array field: check each element separately
+            // Index structure: [subspace][element][id] for each element
+            for value in values {
+                try await checkValuesUniqueness(
+                    values: [value],
+                    descriptor: descriptor,
+                    model: model,
+                    id: id,
+                    oldModel: oldModel,
+                    state: state,
+                    indexSubspace: indexSubspace,
+                    transaction: transaction
+                )
+            }
+        } else {
+            // Scalar or composite field: check all values together
+            // Index structure: [subspace][value1][value2]...[id]
+            try await checkValuesUniqueness(
+                values: values,
+                descriptor: descriptor,
+                model: model,
+                id: id,
+                oldModel: oldModel,
+                state: state,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Check uniqueness for a specific set of values
+    ///
+    /// Core uniqueness checking logic extracted for reuse with array fields.
+    private func checkValuesUniqueness<T: Persistable>(
+        values: [any TupleElement],
+        descriptor: IndexDescriptor,
+        model: T,
+        id: Tuple,
+        oldModel: T?,
+        state: IndexState,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws {
         // Build the index key (without ID suffix) to check for existing entries
         // Note: We use pack() to get the key prefix, not subspace() which creates a nested tuple
         let valueTuple = Tuple(values)
@@ -491,24 +545,27 @@ internal final class IndexMaintenanceService: Sendable {
             let keyTuple: Tuple? = (try? Tuple.unpack(from: key)).map { Tuple($0) }
 
             // Skip if this is the same record (update case)
+            // Uses Tuple equality which is type-agnostic (compares encoded bytes)
+            // This supports all TupleElement ID types: String, Int64, UUID, etc.
             if let oldModel = oldModel {
                 let oldId = try Self.extractIDTuple(from: oldModel)
-                if let keyTuple = keyTuple, keyTuple.count > values.count {
-                    // Check if the ID portion matches oldModel's ID
-                    var matches = true
-                    for i in 0..<oldId.count {
-                        let keyIdx = values.count + i
-                        if keyIdx < keyTuple.count {
-                            if let oldElement = oldId[i] as? String, let keyElement = keyTuple[keyIdx] as? String {
-                                if oldElement != keyElement { matches = false; break }
-                            } else if let oldElement = oldId[i] as? Int64, let keyElement = keyTuple[keyIdx] as? Int64 {
-                                if oldElement != keyElement { matches = false; break }
-                            } else {
-                                matches = false; break
-                            }
+                if let keyTuple = keyTuple, keyTuple.count >= oldId.count {
+                    // Extract ID portion from the END of the key tuple
+                    // Key structure: [subspace prefix][values...][id...]
+                    // The ID is always the last oldId.count elements
+                    let idStartIndex = keyTuple.count - oldId.count
+                    var existingIdElements: [any TupleElement] = []
+                    for i in idStartIndex..<keyTuple.count {
+                        if let element = keyTuple[i] {
+                            existingIdElements.append(element)
                         }
                     }
-                    if matches { continue } // Skip our own old entry
+
+                    // Use Tuple's type-agnostic equality (compares encoded bytes)
+                    // This matches the pattern used in IndexSearcher and AverageIndexMaintainer
+                    if oldId == Tuple(existingIdElements) {
+                        continue // Skip our own old entry
+                    }
                 }
             }
 
