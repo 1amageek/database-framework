@@ -42,6 +42,56 @@ PERCENTILE (t-digest):
   [indexSubspace][groupValue1][groupValue2]... = Serialized TDigest (~10KB binary)
 ```
 
+## Architecture
+
+AggregationIndex follows the EntryPoint → QueryBuilder pattern used by other index types (Vector, FullText, Spatial):
+
+```
+┌───────────────────────────────────────────────────────────────────────┐
+│                     AggregationQuery Architecture                      │
+├───────────────────────────────────────────────────────────────────────┤
+│                                                                        │
+│  context.aggregate(Order.self)                                         │
+│       │                                                                │
+│       ▼                                                                │
+│  AggregationEntryPoint<Order>                                          │
+│       │                                                                │
+│       ├── .groupBy(\.region) → AggregationQueryBuilder                 │
+│       ├── .count() / .sum() → AggregationQueryBuilder (global)         │
+│       └── .using(index:) → force specific index (optional)             │
+│                                                                        │
+│  AggregationQueryBuilder                                               │
+│       │                                                                │
+│       ├── .count(as:) / .sum(\_:as:) / .avg(\_:as:)                    │
+│       ├── .min(\_:as:) / .max(\_:as:)                                  │
+│       ├── .distinct(\_:as:) / .percentile(\_:p:as:)                    │
+│       ├── .having { predicate }                                        │
+│       └── .execute()                                                   │
+│              │                                                         │
+│              ▼                                                         │
+│       ┌─────────────────────────────────────────┐                      │
+│       │   Execution Strategy Selector           │                      │
+│       │   (AggregationIndexKindProtocol)        │                      │
+│       ├─────────────────────────────────────────┤                      │
+│       │ • Check matching indexes for each agg   │                      │
+│       │ • All matched? → Index-backed [O(1)]    │                      │
+│       │ • Any unmatched? → In-memory [O(n)]     │                      │
+│       └─────────────────────────────────────────┘                      │
+│              │                                                         │
+│              ▼                                                         │
+│       [AggregateResult<Order>]                                         │
+│                                                                        │
+└───────────────────────────────────────────────────────────────────────┘
+```
+
+**Key Components**:
+| Component | File | Role |
+|-----------|------|------|
+| `AggregationEntryPoint` | `AggregationEntryPoint.swift` | Entry point from `FDBContext.aggregate()` |
+| `AggregationQueryBuilder` | `AggregationQuery.swift` | Fluent API for building queries |
+| `AggregationIndexKindProtocol` | `AggregationIndexKindProtocol.swift` | Common protocol for index matching |
+| `*IndexMaintainer` | `*IndexMaintainer.swift` | Index-specific maintenance and query |
+
 ## Use Cases
 
 ### 1. Sales Analytics Dashboard
@@ -285,14 +335,14 @@ for result in stats {
 
 | Accessor Method | Return Type | Use For |
 |-----------------|-------------|---------|
-| `aggregateInt64(_:)` | `Int64?` | count |
-| `aggregateDouble(_:)` | `Double?` | sum, avg, numeric min/max |
+| `aggregateInt64(_:)` | `Int64?` | count, distinct |
+| `aggregateDouble(_:)` | `Double?` | sum, avg, percentile, numeric min/max |
 | `aggregateString(_:)` | `String?` | string min/max |
 | `groupKeyInt64(_:)` | `Int64?` | integer group keys |
 | `groupKeyString(_:)` | `String?` | string group keys |
 | `groupKeyDouble(_:)` | `Double?` | double group keys |
 
-**Note**: The query builder currently computes aggregates in-memory. For O(1) performance-critical single aggregations, use the maintainers directly (see "Direct Index Access" below).
+**Automatic Index Selection**: The query builder automatically uses precomputed indexes when available (see "Automatic Index Selection" below).
 
 ### 7. Sparse Aggregation (Optional Fields)
 
@@ -322,7 +372,7 @@ let avgRating = try await maintainer.getAverage(
 
 ### 8. Direct Index Access (O(1) Performance)
 
-For performance-critical single aggregations, use the maintainers directly instead of the query builder:
+For performance-critical single aggregations or MIN/MAX queries, use the maintainers directly:
 
 ```swift
 // O(1) count lookup
@@ -344,23 +394,23 @@ let result = try await averageMaintainer.getAverage(
 )
 print("Sum: \(result.sum), Count: \(result.count), Avg: \(result.average)")
 
-// O(1) min/max lookup
+// O(1) min/max lookup (direct access REQUIRED for index-backed MIN/MAX)
 let minPrice = try await minMaintainer.getMin(
     groupingValues: ["Electronics"],
     transaction: transaction
 )
 ```
 
-**Why Use Direct Access?**
+**When to Use Direct Access?**
 
-The query builder (`context.aggregate()`) computes aggregates in-memory by scanning all records. This is flexible (supports combining multiple aggregations) but has O(n) complexity.
+| Scenario | Recommended Approach |
+|----------|---------------------|
+| Single aggregation, high frequency | Direct Maintainer (O(1)) |
+| Multiple aggregations, same groupBy | Query Builder (automatic index selection) |
+| MIN/MAX queries | Direct Maintainer (not supported in batch queries) |
+| Ad-hoc analysis | Query Builder (flexible) |
 
-Direct index access provides O(1) lookups from precomputed values maintained atomically on each data change.
-
-| Approach | Complexity | Use Case |
-|----------|------------|----------|
-| Query Builder | O(n) | Ad-hoc queries, combined aggregations |
-| Direct Maintainer | O(1) | Performance-critical, single aggregation |
+**Note**: MIN/MAX indexes use sorted storage optimized for individual lookups (`getMin()`/`getMax()`), not batch queries. The Query Builder always uses in-memory computation for MIN/MAX aggregations.
 
 ## Type Preservation
 
@@ -601,21 +651,68 @@ The Query Builder automatically selects the optimal execution path:
 ```
 AggregationQueryBuilder.execute()
     │
-    └── For each aggregation:
-        │
-        ├── Matching index exists in schema?
-        │   │
-        │   ├── Yes → Use IndexMaintainer [O(1)]
-        │   │
-        │   └── No → Compute in-memory [O(n)]
-        │
-        └── Return combined results
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│              determineExecutionStrategies()                      │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  For each aggregation:                                           │
+│    1. Is it MIN or MAX?                                          │
+│       └── Yes → Always in-memory (no batch API)                  │
+│                                                                  │
+│    2. Find matching IndexDescriptor:                             │
+│       • Index kind conforms to AggregationIndexKindProtocol?     │
+│       • aggregationType matches? (count, sum, avg, etc.)         │
+│       • groupByFieldNames match exactly?                         │
+│       • aggregationValueField matches? (if applicable)           │
+│                                                                  │
+│    3. Match found?                                               │
+│       └── Yes → Use IndexMaintainer [O(1)]                       │
+│       └── No → Compute in-memory [O(n)]                          │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                  Execution Strategy                              │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  All aggregations have matching indexes?                         │
+│    └── Yes → executeWithIndexes() [O(groups)]                    │
+│    └── No → In-memory computation [O(n)]                         │
+│                                                                  │
+│  Note: "All-or-nothing" approach. If ANY aggregation requires    │
+│  in-memory, the entire query uses in-memory (O(n) anyway).       │
+│                                                                  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 **Index Matching Criteria**:
-1. `groupBy` fields match exactly
-2. `value` field matches
-3. Index type matches (DistinctIndexKind / PercentileIndexKind)
+1. Index kind conforms to `AggregationIndexKindProtocol`
+2. `aggregationType` matches (count, sum, average, distinct, percentile)
+3. `groupByFieldNames` match exactly (same fields, same order)
+4. `aggregationValueField` matches (for non-COUNT aggregations)
+
+**Supported for Index-Backed Batch Queries**:
+| Aggregation | Index Kind | Batch API |
+|-------------|------------|-----------|
+| COUNT | `CountIndexKind` | `getAllCounts()` |
+| SUM | `SumIndexKind` | `getAllSums()` |
+| AVG | `AverageIndexKind` | `getAllAverages()` |
+| DISTINCT | `DistinctIndexKind` | `getAllDistinctCounts()` |
+| PERCENTILE | `PercentileIndexKind` | `getAllPercentiles()` |
+| MIN | `MinIndexKind` | ❌ Not supported (use `getMin()` directly) |
+| MAX | `MaxIndexKind` | ❌ Not supported (use `getMax()` directly) |
+
+**Why MIN/MAX Are Excluded**:
+MIN/MAX indexes store individual values sorted by the value field, optimized for:
+- `getMin(groupingValues:)` - O(1) first key lookup
+- `getMax(groupingValues:)` - O(1) last key lookup
+
+They don't have batch APIs (`getAllMins()`/`getAllMaxs()`) because:
+1. Each group requires a separate range scan
+2. Storage is per-record, not per-group (unlike COUNT/SUM)
+3. The Query Builder's in-memory MIN/MAX is already efficient for batch results
 
 ## Implementation Status
 
@@ -630,10 +727,28 @@ AggregationQueryBuilder.execute()
 | AVERAGE aggregation | ✅ Complete | Sum + Count internally |
 | Composite grouping | ✅ Complete | Multiple grouping fields |
 | Sparse index (nil) | ✅ Complete | nil values excluded |
-| Query Builder API | ✅ Complete | In-memory computation |
-| Index-backed queries | ⚠️ Partial | Query builder uses O(n) scan |
+| Query Builder API | ✅ Complete | Fluent API with HAVING clause |
+| Index-backed queries | ✅ Complete | Automatic index selection for COUNT/SUM/AVG/DISTINCT/PERCENTILE |
 | DISTINCT aggregation | ✅ Complete | HyperLogLog++ (~0.81% error, add-only) |
 | PERCENTILE aggregation | ✅ Complete | t-digest (high accuracy at extremes, add-only) |
+| AggregationIndexKindProtocol | ✅ Complete | Common protocol for index matching |
+| AggregationEntryPoint | ✅ Complete | EntryPoint pattern (like Vector/FullText) |
+
+**Query Builder Execution Paths**:
+| Aggregation | Index Defined | Execution |
+|-------------|--------------|-----------|
+| COUNT | Yes | O(1) via `CountIndexMaintainer.getAllCounts()` |
+| COUNT | No | O(n) in-memory |
+| SUM | Yes | O(1) via `SumIndexMaintainer.getAllSums()` |
+| SUM | No | O(n) in-memory |
+| AVG | Yes | O(1) via `AverageIndexMaintainer.getAllAverages()` |
+| AVG | No | O(n) in-memory |
+| DISTINCT | Yes | O(1) via `DistinctIndexMaintainer.getAllDistinctCounts()` |
+| DISTINCT | No | O(n) in-memory (exact, using Set) |
+| PERCENTILE | Yes | O(1) via `PercentileIndexMaintainer.getAllPercentiles()` |
+| PERCENTILE | No | O(n) in-memory (exact, using sorted array) |
+| MIN | Any | O(n) in-memory (batch query not supported) |
+| MAX | Any | O(n) in-memory (batch query not supported) |
 
 ## Performance Characteristics
 

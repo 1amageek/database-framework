@@ -145,27 +145,67 @@ for docId in documentIds {
 // Use restoredDocuments for recovery
 ```
 
-### 5. Change Detection
+### 5. Change Detection with Diff API
 
-**Scenario**: Detect what changed between versions.
+**Scenario**: Detect what changed between versions using the built-in diff functionality.
 
 ```swift
-let history = try await context.versions(Document.self)
+// Get diff from previous version (most common use case)
+if let diff = try await context.versions(Document.self)
     .forItem(documentId)
-    .limit(2)  // Get last 2 versions
-    .execute()
+    .diffFromPrevious() {
+    print("Changed fields: \(diff.modifiedFields)")
+    print("Added fields: \(diff.addedFields)")
+    print("Removed fields: \(diff.removedFields)")
 
-if history.count >= 2 {
-    let current = history[0].item
-    let previous = history[1].item
-
-    if current.title != previous.title {
-        print("Title changed: '\(previous.title)' -> '\(current.title)'")
-    }
-    if current.content != previous.content {
-        print("Content was modified")
+    // Check specific field change
+    if let titleChange = diff.change(for: "title") {
+        print("Title: \(titleChange.oldValue) -> \(titleChange.newValue)")
     }
 }
+
+// Diff between specific versions
+let diff = try await context.versions(Document.self)
+    .forItem(documentId)
+    .diff(from: oldVersion, to: newVersion)
+
+print("From version: \(diff.oldVersion?.versionID ?? "unknown")")
+print("To version: \(diff.newVersion?.versionID ?? "unknown")")
+
+// Get all changes since a specific version
+let changes = try await context.versions(Document.self)
+    .forItem(documentId)
+    .diffFromLatest(since: baselineVersion)
+
+// Get complete change history as diffs
+let allDiffs = try await context.versions(Document.self)
+    .forItem(documentId)
+    .limit(10)
+    .allDiffs()
+
+for diff in allDiffs {
+    print("Version \(diff.oldVersion?.versionID ?? "?") -> \(diff.newVersion?.versionID ?? "?")")
+    print("  Changes: \(diff.changedFields)")
+}
+
+// Quick check if anything changed (no full diff computation)
+let hasChanges = try await context.versions(Document.self)
+    .forItem(documentId)
+    .hasChangesFromPrevious()
+```
+
+**Diff Options**:
+```swift
+import Core
+
+var options = DiffOptions()
+options.excludeFields = ["updatedAt", "modifiedBy"]  // Skip these fields
+options.detailedArrayDiff = true                      // Element-level array diff
+options.includeUnchanged = false                      // Only show changes
+
+let diff = try await context.versions(Document.self)
+    .forItem(documentId)
+    .diffFromPrevious(options: options)
 ```
 
 ## Design Patterns
@@ -259,6 +299,11 @@ This enables:
 | Limited history | `getVersionHistory(limit:)` | O(min(k, limit)) |
 | Version at point | `at(version)` | O(k) |
 | History for item | `forItem(id)` | Index lookup |
+| Diff from previous | `diffFromPrevious()` | O(1) fetch + O(f) diff |
+| Diff between versions | `diff(from:to:)` | O(k) fetch + O(f) diff |
+| All diffs | `allDiffs()` | O(k) fetch + O(k*f) diff |
+
+*Note: f = number of fields in the model*
 
 ## Implementation Status
 
@@ -273,7 +318,7 @@ This enables:
 | keepForDuration strategy | ✅ Complete | Time-based cleanup |
 | Batch indexing (scanItem) | ✅ Complete | For OnlineIndexer |
 | Cross-item point-in-time | ⚠️ Partial | Requires iteration |
-| Diff between versions | ❌ Not implemented | User-side comparison |
+| Diff between versions | ✅ Complete | `diffFromPrevious()`, `diff(from:to:)`, `allDiffs()` |
 | Branching/merging | ❌ Not implemented | Out of scope |
 
 ## Performance Characteristics

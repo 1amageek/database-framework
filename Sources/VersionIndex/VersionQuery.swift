@@ -71,7 +71,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Properties
 
     private let queryContext: IndexQueryContext
-    private let primaryKey: [any TupleElement & Sendable]
+    internal let primaryKey: [any TupleElement & Sendable]
     private var limitCount: Int?
     private var indexName: String?
 
