@@ -21,6 +21,7 @@ let package = Package(
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
         .library(name: "Database", targets: ["Database"]),
+        .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
@@ -169,6 +170,15 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
+            ]
+        ),
+        // DatabaseCLI - Interactive REPL for database access
+        .target(
+            name: "DatabaseCLI",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ]
         ),
         // Test Support (shared test utilities)
@@ -342,6 +352,20 @@ let package = Package(
             name: "LeaderboardIndexTests",
             dependencies: [
                 "LeaderboardIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // DatabaseCLI tests
+        .testTarget(
+            name: "DatabaseCLITests",
+            dependencies: [
+                "DatabaseCLI",
+                "DatabaseEngine",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
             ],
