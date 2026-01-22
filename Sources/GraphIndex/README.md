@@ -1,12 +1,17 @@
 # GraphIndex
 
-Unified graph edge and RDF triple indexing with configurable storage strategies.
+Unified graph edge and RDF triple indexing with configurable storage strategies and OWL DL reasoning.
 
 ## Overview
 
 GraphIndex provides a unified solution for both general graph edges and RDF triples. It supports multiple storage strategies with different trade-offs between write cost and query flexibility.
 
-**Algorithms**:
+**Key Features**:
+- **Multi-strategy storage**: Adjacency, TripleStore, Hexastore
+- **Graph algorithms**: PageRank, shortest path, community detection, cycle detection
+- **OWL DL reasoning**: Automatic classification, subsumption checking, instance reasoning
+
+**Storage Strategies**:
 - **Adjacency (2-index)**: Outgoing and incoming edge indexes for simple traversal
 - **TripleStore (3-index)**: SPO/POS/OSP indexes for SPARQL-like queries
 - **Hexastore (6-index)**: All permutations for maximum query flexibility
@@ -513,6 +518,233 @@ let largest = result.largestCommunities(k: 5)
 
 **Reference**: Raghavan et al. (2007)
 
+## OWL DL Reasoning
+
+GraphIndex includes a complete OWL DL reasoner based on the Tableaux algorithm (SHOIN(D)).
+
+### Overview
+
+The reasoner provides:
+- **Ontology validation**: Check OWL DL conformance
+- **Consistency checking**: Verify ontology has a valid model
+- **Classification**: Compute complete class hierarchy with inferred subsumptions
+- **Instance reasoning**: Check individual membership and types
+
+**Reference**: Baader, F., et al. (2003). "The Description Logic Handbook"
+
+### Creating an Ontology
+
+```swift
+import GraphIndex
+
+var ontology = OWLOntology(iri: "http://example.org/animals")
+
+// Define classes
+ontology.classes.append(OWLClass(iri: "ex:Animal"))
+ontology.classes.append(OWLClass(iri: "ex:Mammal"))
+ontology.classes.append(OWLClass(iri: "ex:Dog"))
+ontology.classes.append(OWLClass(iri: "ex:Cat"))
+ontology.classes.append(OWLClass(iri: "ex:Canine"))
+
+// Define class hierarchy (rdfs:subClassOf)
+ontology.axioms.append(.subClassOf(
+    sub: .named("ex:Mammal"),
+    sup: .named("ex:Animal")
+))
+ontology.axioms.append(.subClassOf(
+    sub: .named("ex:Dog"),
+    sup: .named("ex:Mammal")
+))
+ontology.axioms.append(.subClassOf(
+    sub: .named("ex:Cat"),
+    sup: .named("ex:Mammal")
+))
+
+// Define equivalence (owl:equivalentClass)
+ontology.axioms.append(.equivalentClasses([
+    .named("ex:Canine"),
+    .named("ex:Dog")
+]))
+
+// Define disjoint classes (owl:disjointWith)
+ontology.axioms.append(.disjointClasses([
+    .named("ex:Dog"),
+    .named("ex:Cat")
+]))
+```
+
+### Automatic Classification
+
+```swift
+let reasoner = OWLReasoner(ontology: ontology)
+
+// Compute complete class hierarchy (including inferred relationships)
+var hierarchy = reasoner.classify()
+
+// Query super-classes (transitive closure)
+let dogSupers = hierarchy.superClasses(of: "ex:Dog")
+// → ["ex:Mammal", "ex:Animal", "owl:Thing"]
+
+// Query sub-classes
+let mammalSubs = hierarchy.subClasses(of: "ex:Mammal")
+// → ["ex:Dog", "ex:Cat", "ex:Canine"]
+
+// Query equivalent classes
+let dogEquiv = hierarchy.equivalentClasses(of: "ex:Dog")
+// → ["ex:Canine"]
+
+// Query direct parents only
+let directSupers = hierarchy.directSuperClasses(of: "ex:Dog")
+// → ["ex:Mammal"]
+```
+
+### Subsumption and Equivalence Checking
+
+```swift
+// Check if Animal subsumes Dog (Dog ⊑ Animal)
+let result = reasoner.subsumes(
+    superClass: .named("ex:Animal"),
+    subClass: .named("ex:Dog")
+)
+print(result.value)  // true
+
+// Check equivalence
+let equiv = reasoner.areEquivalent(
+    .named("ex:Dog"),
+    .named("ex:Canine")
+)
+print(equiv.value)  // true
+
+// Check disjointness
+let disjoint = reasoner.areDisjoint(
+    .named("ex:Dog"),
+    .named("ex:Cat")
+)
+print(disjoint.value)  // true
+```
+
+### Instance Reasoning
+
+```swift
+// Add individuals
+ontology.individuals.append(OWLNamedIndividual(iri: "ex:fido"))
+ontology.axioms.append(.classAssertion(
+    individual: "ex:fido",
+    classExpr: .named("ex:Dog")
+))
+
+let reasoner = OWLReasoner(ontology: ontology)
+
+// Check instance membership
+let isDog = reasoner.isInstanceOf(
+    individual: "ex:fido",
+    classExpr: .named("ex:Dog")
+)
+print(isDog.value)  // true
+
+// Check inferred membership
+let isMammal = reasoner.isInstanceOf(
+    individual: "ex:fido",
+    classExpr: .named("ex:Mammal")
+)
+print(isMammal.value)  // true (inferred via class hierarchy)
+
+// Get all types of an individual
+let types = reasoner.types(of: "ex:fido")
+// → ["ex:Dog", "ex:Canine", "ex:Mammal", "ex:Animal", "owl:Thing"]
+```
+
+### Property Reasoning
+
+```swift
+// Define transitive property
+var ancestorOf = OWLObjectProperty(iri: "ex:ancestorOf")
+ancestorOf.characteristics.insert(.transitive)
+ontology.objectProperties.append(ancestorOf)
+
+// Define inverse property
+var descendantOf = OWLObjectProperty(iri: "ex:descendantOf")
+descendantOf.inverseOf = "ex:ancestorOf"
+ontology.objectProperties.append(descendantOf)
+
+let reasoner = OWLReasoner(ontology: ontology)
+
+// Query property characteristics
+print(reasoner.isTransitive("ex:ancestorOf"))  // true
+print(reasoner.inverseProperty(of: "ex:ancestorOf"))  // "ex:descendantOf"
+
+// Reachable individuals via transitive property
+let reachable = reasoner.reachableIndividuals(
+    from: "ex:alice",
+    via: "ex:ancestorOf",
+    includeInferred: true
+)
+```
+
+### Supported OWL Constructs
+
+| Construct | Status | Description |
+|-----------|--------|-------------|
+| **Class Axioms** | | |
+| `rdfs:subClassOf` | ✅ | Class hierarchy |
+| `owl:equivalentClass` | ✅ | Class equivalence |
+| `owl:disjointWith` | ✅ | Class disjointness |
+| `owl:disjointUnion` | ✅ | Disjoint union |
+| **Class Expressions** | | |
+| Named class | ✅ | `ex:Person` |
+| `owl:intersectionOf` | ✅ | `A ⊓ B` |
+| `owl:unionOf` | ✅ | `A ⊔ B` |
+| `owl:complementOf` | ✅ | `¬A` |
+| `owl:oneOf` | ✅ | Nominals `{a, b, c}` |
+| `owl:someValuesFrom` | ✅ | `∃R.C` |
+| `owl:allValuesFrom` | ✅ | `∀R.C` |
+| `owl:hasValue` | ✅ | `∃R.{a}` |
+| `owl:minCardinality` | ✅ | `≥n R.C` |
+| `owl:maxCardinality` | ✅ | `≤n R.C` |
+| `owl:exactCardinality` | ✅ | `=n R.C` |
+| **Property Axioms** | | |
+| `rdfs:subPropertyOf` | ✅ | Property hierarchy |
+| `owl:inverseOf` | ✅ | Inverse properties |
+| `owl:TransitiveProperty` | ✅ | Transitivity |
+| `owl:SymmetricProperty` | ✅ | Symmetry |
+| `owl:FunctionalProperty` | ✅ | Functionality |
+| `owl:InverseFunctionalProperty` | ✅ | Inverse functionality |
+| `owl:propertyChain` | ✅ | Property chains |
+| **Individual Axioms** | | |
+| `rdf:type` | ✅ | Class assertion |
+| Object property assertion | ✅ | Property assertion |
+| `owl:sameAs` | ✅ | Individual equality |
+| `owl:differentFrom` | ✅ | Individual difference |
+
+### Reasoning Configuration
+
+```swift
+let config = OWLReasoner.Configuration(
+    maxExpansionSteps: 10000,      // Safety limit for tableaux
+    enableIncrementalReasoning: true,
+    cacheClassification: true,     // Cache subsumption results
+    timeout: 60.0                  // Timeout in seconds
+)
+
+let reasoner = OWLReasoner(ontology: ontology, configuration: config)
+```
+
+### OWL DL Validation
+
+```swift
+// Check OWL DL conformance
+let (isValid, violations) = reasoner.validateOWLDL()
+
+if !isValid {
+    for violation in violations {
+        print("Violation: \(violation)")
+    }
+}
+
+// Check ontology structure
+let errors = reasoner.validateStructure()
+```
+
 ## Implementation Status
 
 | Feature | Status | Notes |
@@ -537,6 +769,14 @@ let largest = result.largestCommunities(k: 5)
 | Weighted shortest path | ✅ Complete | Dijkstra's algorithm |
 | PageRank | ✅ Complete | Power iteration |
 | Community detection | ✅ Complete | Label propagation |
+| **OWL DL Reasoning** | | |
+| Ontology validation | ✅ Complete | OWL DL conformance check |
+| Consistency checking | ✅ Complete | Tableaux algorithm |
+| Classification | ✅ Complete | Automatic class hierarchy |
+| Subsumption checking | ✅ Complete | With explanation |
+| Instance reasoning | ✅ Complete | Type inference |
+| Property reasoning | ✅ Complete | Transitive, inverse, chains |
+| Class expressions | ✅ Complete | Full SHOIN(D) support |
 | **Other** | | |
 | Sparse index (nil) | ✅ Complete | nil values not indexed |
 | Limit handling | ✅ Complete | isComplete, limitReason |
@@ -610,6 +850,13 @@ Run with: `swift test --filter GraphIndexPerformanceTests`
 - [Hexastore Paper](https://dl.acm.org/doi/10.14778/1453856.1453965) - Weiss, Karras, & Bernstein (2008)
 - [RDF Triple Stores](https://en.wikipedia.org/wiki/Triplestore) - Wikipedia
 - [SPARQL](https://www.w3.org/TR/sparql11-query/) - W3C Query Language
+
+### OWL & Description Logics
+- [The Description Logic Handbook](https://www.cambridge.org/core/books/description-logic-handbook/ABADB9C15A29EA93DF26B35BD4C5C73E) - Baader, Calvanese, et al. (2003)
+- [OWL 2 Web Ontology Language](https://www.w3.org/TR/owl2-overview/) - W3C Recommendation
+- [OWL 2 Profiles](https://www.w3.org/TR/owl2-profiles/) - W3C (RL, EL, QL)
+- [Tableaux Decision Procedure for SHOIQ](https://www.cs.ox.ac.uk/people/ian.horrocks/Publications/download/2007/HoSa07a.pdf) - Horrocks & Sattler (2007)
+- [Hypertableau Reasoning](https://www.cs.ox.ac.uk/people/boris.motik/pubs/msh09hypertableau.pdf) - Motik, Shearer, Horrocks (2009)
 
 ### Algorithms
 - [Introduction to Algorithms (CLRS)](https://mitpress.mit.edu/books/introduction-algorithms) - Cormen et al. (Chapter 22: Graph Algorithms)

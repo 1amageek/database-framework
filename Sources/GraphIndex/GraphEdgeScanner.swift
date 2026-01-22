@@ -149,6 +149,22 @@ public struct GraphEdgeScanner: Sendable {
         self.init(indexSubspace: indexSubspace, strategy: .adjacency)
     }
 
+    // MARK: - Helpers
+
+    /// Build a nested subspace from an array of tuple elements
+    ///
+    /// Uses the proper Subspace API pattern instead of manual byte concatenation.
+    private static func buildPrefixSubspace(
+        from base: Subspace,
+        elements: [any TupleElement]
+    ) -> Subspace {
+        var result = base
+        for element in elements {
+            result = result.subspace(element)
+        }
+        return result
+    }
+
     // MARK: - Public API
 
     /// Scan outgoing edges from a node
@@ -251,9 +267,7 @@ public struct GraphEdgeScanner: Sendable {
     ) async throws {
         if let label = edgeLabel {
             // Specific label: Scan [out]/[label]/* prefix
-            let prefix = Subspace(
-                prefix: outgoingSubspace.prefix + Tuple([label]).pack()
-            )
+            let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [label])
             let (beginKey, endKey) = prefix.range()
 
             let stream = transaction.getRange(
@@ -306,9 +320,7 @@ public struct GraphEdgeScanner: Sendable {
             // Optimized: Use POS index for specific label
             // POS key structure: [edge]/[to]/[from]
             // Prefix scan on [label] is efficient O(E_label)
-            let prefix = Subspace(
-                prefix: incomingSubspace.prefix + Tuple([label]).pack()
-            )
+            let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label])
             let (beginKey, endKey) = prefix.range()
 
             let stream = transaction.getRange(
@@ -544,9 +556,7 @@ public struct GraphEdgeScanner: Sendable {
 
         if let label = edgeLabel {
             // Specific label: prefix on [edge]/[nodeID]
-            let prefix = Subspace(
-                prefix: scanSubspace.prefix + Tuple([label, nodeID]).pack()
-            )
+            let prefix = Self.buildPrefixSubspace(from: scanSubspace, elements: [label, nodeID])
             let (beginKey, endKey) = prefix.range()
 
             let stream = transaction.getRange(
@@ -606,9 +616,7 @@ public struct GraphEdgeScanner: Sendable {
             // Use SPO index: [from]/[edge]/[to]
             if let label = edgeLabel {
                 // Specific label: prefix on [from]/[edge]
-                let prefix = Subspace(
-                    prefix: outgoingSubspace.prefix + Tuple([nodeID, label]).pack()
-                )
+                let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID, label])
                 let (beginKey, endKey) = prefix.range()
 
                 let stream = transaction.getRange(
@@ -625,9 +633,7 @@ public struct GraphEdgeScanner: Sendable {
                 }
             } else {
                 // Wildcard: prefix on [from], extract [edge, to]
-                let prefix = Subspace(
-                    prefix: outgoingSubspace.prefix + Tuple([nodeID]).pack()
-                )
+                let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID])
                 let (beginKey, endKey) = prefix.range()
 
                 let stream = transaction.getRange(
@@ -648,9 +654,7 @@ public struct GraphEdgeScanner: Sendable {
             if let label = edgeLabel {
                 // Use POS index: [edge]/[to]/[from]
                 // Prefix on [edge]/[to]
-                let prefix = Subspace(
-                    prefix: incomingSubspace.prefix + Tuple([label, nodeID]).pack()
-                )
+                let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label, nodeID])
                 let (beginKey, endKey) = prefix.range()
 
                 let stream = transaction.getRange(
@@ -673,9 +677,7 @@ public struct GraphEdgeScanner: Sendable {
                     return
                 }
 
-                let prefix = Subspace(
-                    prefix: ospSubspace.prefix + Tuple([nodeID]).pack()
-                )
+                let prefix = Self.buildPrefixSubspace(from: ospSubspace, elements: [nodeID])
                 let (beginKey, endKey) = prefix.range()
 
                 let stream = transaction.getRange(
@@ -816,9 +818,7 @@ public struct GraphEdgeScanner: Sendable {
             if let label = edgeLabel {
                 // Specific label: prefix on [from]/[edge]
                 for nodeID in nodeIDs {
-                    let prefix = Subspace(
-                        prefix: outgoingSubspace.prefix + Tuple([nodeID, label]).pack()
-                    )
+                    let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID, label])
                     let (beginKey, endKey) = prefix.range()
 
                     let stream = transaction.getRange(
@@ -836,9 +836,7 @@ public struct GraphEdgeScanner: Sendable {
             } else {
                 // Wildcard: prefix on [from]
                 for nodeID in nodeIDs {
-                    let prefix = Subspace(
-                        prefix: outgoingSubspace.prefix + Tuple([nodeID]).pack()
-                    )
+                    let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID])
                     let (beginKey, endKey) = prefix.range()
 
                     let stream = transaction.getRange(
@@ -859,9 +857,7 @@ public struct GraphEdgeScanner: Sendable {
             if let label = edgeLabel {
                 // Use POS index: [edge]/[to]/[from]
                 for nodeID in nodeIDs {
-                    let prefix = Subspace(
-                        prefix: incomingSubspace.prefix + Tuple([label, nodeID]).pack()
-                    )
+                    let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label, nodeID])
                     let (beginKey, endKey) = prefix.range()
 
                     let stream = transaction.getRange(
@@ -883,9 +879,7 @@ public struct GraphEdgeScanner: Sendable {
                 }
 
                 for nodeID in nodeIDs {
-                    let prefix = Subspace(
-                        prefix: ospSubspace.prefix + Tuple([nodeID]).pack()
-                    )
+                    let prefix = Self.buildPrefixSubspace(from: ospSubspace, elements: [nodeID])
                     let (beginKey, endKey) = prefix.range()
 
                     let stream = transaction.getRange(
@@ -917,9 +911,7 @@ public struct GraphEdgeScanner: Sendable {
         // Pre-compute scan parameters
         let scanParams: [(nodeID: String, beginKey: [UInt8], endKey: [UInt8], prefix: Subspace)] =
             nodeIDs.map { nodeID in
-                let prefix = Subspace(
-                    prefix: scanSubspace.prefix + Tuple([label, nodeID]).pack()
-                )
+                let prefix = Self.buildPrefixSubspace(from: scanSubspace, elements: [label, nodeID])
                 let (beginKey, endKey) = prefix.range()
                 return (nodeID, beginKey, endKey, prefix)
             }

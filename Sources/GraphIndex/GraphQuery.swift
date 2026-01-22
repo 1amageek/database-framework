@@ -234,25 +234,15 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute query and return matching items
     ///
-    /// - Returns: Array of matching items
+    /// - Throws: `GraphQueryError.executeItemsNotSupported` always.
+    ///
+    /// Graph indexes store edges `(from, edge, to)` without item IDs,
+    /// making it impossible to look up the original items from edges.
+    ///
+    /// **Alternative**: Use `execute()` to get edges, then query items
+    /// by their field values using `context.filter()` or `context.query()`.
     public func executeItems() async throws -> [T] {
-        let edges = try await execute()
-
-        // Build primary keys from edges - need to fetch items by their IDs
-        // For graph indexes, we need to look up the items that contain these edges
-        var items: [T] = []
-
-        for _ in edges {
-            // Construct a query to find items matching this edge
-            let results = try await queryContext.withTransaction { transaction in
-                // This is a simplified approach - in practice, you'd want to
-                // store the primary key in the graph index
-                return [T]()
-            }
-            items.append(contentsOf: results)
-        }
-
-        return items
+        throw GraphQueryError.executeItemsNotSupported
     }
 
     // MARK: - Private Methods
@@ -361,9 +351,30 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         if prefixElements.isEmpty {
             return subspace.range()
         } else {
-            let prefix = Subspace(prefix: subspace.prefix + Tuple(prefixElements).pack())
-            return prefix.range()
+            // Build prefix subspace using proper Subspace API
+            let prefixSubspace = Self.buildPrefixSubspace(from: subspace, elements: prefixElements)
+            return prefixSubspace.range()
         }
+    }
+
+    /// Build a nested subspace from an array of tuple elements
+    ///
+    /// Uses the proper Subspace API pattern instead of manual byte concatenation.
+    /// This is equivalent to chaining `subspace.subspace(elem1).subspace(elem2)...`
+    ///
+    /// - Parameters:
+    ///   - base: The base subspace to extend
+    ///   - elements: The tuple elements to nest
+    /// - Returns: A new subspace with all elements nested
+    private static func buildPrefixSubspace(
+        from base: Subspace,
+        elements: [any TupleElement]
+    ) -> Subspace {
+        var result = base
+        for element in elements {
+            result = result.subspace(element)
+        }
+        return result
     }
 
     private func parseKey(_ key: FDB.Bytes, ordering: GraphIndexOrdering, subspace: Subspace) throws -> GraphEdge? {
@@ -462,12 +473,21 @@ public enum GraphQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
+    /// executeItems() is not supported for graph indexes
+    ///
+    /// Graph indexes store edges (from, edge, to) without item IDs.
+    /// To fetch items, query by the edge field values directly using
+    /// `context.filter()` or `context.query()` instead.
+    case executeItemsNotSupported
+
     public var description: String {
         switch self {
         case .indexNotConfigured:
             return "Graph index not configured. Use .index() to specify fields or .defaultIndex()."
         case .indexNotFound(let name):
             return "Graph index not found: \(name)"
+        case .executeItemsNotSupported:
+            return "executeItems() is not supported for graph indexes. Graph indexes store edges without item IDs. Use execute() to get edges, or query by field values to fetch items."
         }
     }
 }

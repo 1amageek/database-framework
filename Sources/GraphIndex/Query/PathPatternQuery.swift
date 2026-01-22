@@ -338,7 +338,8 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         }
         prefixElements.append(nodeID)
 
-        let prefix = Subspace(prefix: outgoingSubspace.prefix + Tuple(prefixElements).pack())
+        // Build prefix subspace using proper Subspace API
+        let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: prefixElements)
         let (beginKey, endKey) = prefix.range()
 
         let hasEdgeLabel = edgeLabel != nil
@@ -386,6 +387,20 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
 
             return results
         }
+    }
+
+    /// Build a nested subspace from an array of tuple elements
+    ///
+    /// Uses the proper Subspace API pattern instead of manual byte concatenation.
+    private static func buildPrefixSubspace(
+        from base: Subspace,
+        elements: [any TupleElement]
+    ) -> Subspace {
+        var result = base
+        for element in elements {
+            result = result.subspace(element)
+        }
+        return result
     }
 }
 
