@@ -84,7 +84,8 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
             return
         }
 
-        guard allValues.count >= 2 else {
+        guard allValues.count >= 2,
+              let valueElement = allValues.last else {
             throw IndexError.invalidConfiguration(
                 "Average index requires at least 2 fields: [grouping_fields..., averaged_field]"
             )
@@ -95,7 +96,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         let sumKey = try buildSumKey(groupingTuple: groupingTuple)
         let countKey = try buildCountKey(groupingTuple: groupingTuple)
 
-        let numericValue = try NumericValueExtractor.extractNumeric(from: allValues.last!, as: Value.self)
+        let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
 
         atomicAdd(
             key: sumKey,
@@ -170,7 +171,12 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         return (sum: sum, count: count, average: average)
     }
 
+    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
+    private var maxScanKeys: Int { 100_000 }
+
     /// Get all averages in this index
+    ///
+    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func getAllAverages(
         transaction: any TransactionProtocol
     ) async throws -> [(grouping: [any TupleElement], sum: Double, count: Int64, average: Double)] {
@@ -178,8 +184,13 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         var countData: [String: Int64] = [:]
 
         let sequence = scanAllEntries(transaction: transaction)
+        var scannedKeys = 0
         for try await (key, value) in sequence {
             guard subspace.contains(key) else { break }
+
+            // Resource limit
+            scannedKeys += 1
+            if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
             let elements = try Tuple.unpack(from: keyTuple.pack())
@@ -231,10 +242,10 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         } catch DataAccessError.nilValueCannotBeIndexed {
             return nil
         }
-        guard allValues.count >= 2 else { return nil }
+        guard allValues.count >= 2,
+              let valueElement = allValues.last else { return nil }
 
         let groupingValues = Array(allValues.dropLast())
-        let valueElement = allValues.last!
 
         let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
 

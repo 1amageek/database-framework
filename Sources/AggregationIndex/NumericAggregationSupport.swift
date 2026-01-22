@@ -325,7 +325,12 @@ extension CountAggregationMaintainer {
         return readCount(bytes)
     }
 
+    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
+    private var maxScanKeys: Int { 100_000 }
+
     /// Scan all count entries
+    ///
+    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func scanAllCounts(
         transaction: any TransactionProtocol
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
@@ -338,8 +343,13 @@ extension CountAggregationMaintainer {
             snapshot: true
         )
 
+        var scannedKeys = 0
         for try await (key, value) in sequence {
             guard subspace.contains(key) else { break }
+
+            // Resource limit
+            scannedKeys += 1
+            if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
             let elements = try Tuple.unpack(from: keyTuple.pack())
@@ -374,40 +384,46 @@ public enum ComparableValueExtractor {
     ) throws -> Value {
         switch valueType {
         case is Int64.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = value as? Value else {
                 throw IndexError.invalidConfiguration("Expected Int64, got \(type(of: element))")
             }
-            return value as! Value
+            return result
 
         case is Int.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = Int(value) as? Value else {
                 throw IndexError.invalidConfiguration("Expected Int (as Int64), got \(type(of: element))")
             }
-            return Int(value) as! Value
+            return result
 
         case is Int32.Type:
-            guard let value = element as? Int64 else {
+            guard let value = element as? Int64,
+                  let result = Int32(value) as? Value else {
                 throw IndexError.invalidConfiguration("Expected Int32 (as Int64), got \(type(of: element))")
             }
-            return Int32(value) as! Value
+            return result
 
         case is Double.Type:
-            guard let value = element as? Double else {
+            guard let value = element as? Double,
+                  let result = value as? Value else {
                 throw IndexError.invalidConfiguration("Expected Double, got \(type(of: element))")
             }
-            return value as! Value
+            return result
 
         case is Float.Type:
-            guard let value = element as? Double else {
+            guard let value = element as? Double,
+                  let result = Float(value) as? Value else {
                 throw IndexError.invalidConfiguration("Expected Float (as Double), got \(type(of: element))")
             }
-            return Float(value) as! Value
+            return result
 
         case is String.Type:
-            guard let value = element as? String else {
+            guard let value = element as? String,
+                  let result = value as? Value else {
                 throw IndexError.invalidConfiguration("Expected String, got \(type(of: element))")
             }
-            return value as! Value
+            return result
 
         default:
             guard let value = element as? Value else {

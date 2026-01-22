@@ -173,18 +173,40 @@ let stats = try await context.aggregate(Sale.self)
     .count(as: "orderCount")
     .sum(\.amount, as: "totalSales")
     .avg(\.amount, as: "avgOrderValue")
-    .having { $0.aggregates["orderCount"] as? Int ?? 0 > 10 }
+    .having { $0.aggregateInt64("orderCount") ?? 0 > 10 }
     .execute()
 
 for result in stats {
-    print("Region: \(result.groupKey["region"]!)")
-    print("  Orders: \(result.aggregates["orderCount"]!)")
-    print("  Total Sales: \(result.aggregates["totalSales"]!)")
-    print("  Avg Order: \(result.aggregates["avgOrderValue"]!)")
+    // Type-safe accessors for group keys
+    if let region = result.groupKeyString("region") {
+        print("Region: \(region)")
+    }
+
+    // Type-safe accessors for aggregates
+    if let orderCount = result.aggregateInt64("orderCount") {
+        print("  Orders: \(orderCount)")
+    }
+    if let totalSales = result.aggregateDouble("totalSales") {
+        print("  Total Sales: \(totalSales)")
+    }
+    if let avgOrder = result.aggregateDouble("avgOrderValue") {
+        print("  Avg Order: \(avgOrder)")
+    }
 }
 ```
 
-**Note**: The query builder currently computes aggregates in-memory. Future optimization will use precomputed aggregation indexes for O(1) lookups when GROUP BY matches the index structure.
+**Type-Safe Result Access**:
+
+| Accessor Method | Return Type | Use For |
+|-----------------|-------------|---------|
+| `aggregateInt64(_:)` | `Int64?` | count |
+| `aggregateDouble(_:)` | `Double?` | sum, avg, numeric min/max |
+| `aggregateString(_:)` | `String?` | string min/max |
+| `groupKeyInt64(_:)` | `Int64?` | integer group keys |
+| `groupKeyString(_:)` | `String?` | string group keys |
+| `groupKeyDouble(_:)` | `Double?` | double group keys |
+
+**Note**: The query builder currently computes aggregates in-memory. For O(1) performance-critical single aggregations, use the maintainers directly (see "Direct Index Access" below).
 
 ### 5. Sparse Aggregation (Optional Fields)
 
@@ -211,6 +233,88 @@ let avgRating = try await maintainer.getAverage(
 ```
 
 **Sparse Index Behavior**: Records with nil values in the aggregated field are automatically excluded from the aggregate.
+
+### 6. Direct Index Access (O(1) Performance)
+
+For performance-critical single aggregations, use the maintainers directly instead of the query builder:
+
+```swift
+// O(1) count lookup
+let count = try await countMaintainer.getCount(
+    groupingValues: ["Tokyo"],
+    transaction: transaction
+)
+
+// O(1) sum lookup
+let sum = try await sumMaintainer.getSum(
+    groupingValues: ["Tokyo"],
+    transaction: transaction
+)
+
+// O(1) average lookup
+let result = try await averageMaintainer.getAverage(
+    groupingValues: ["Electronics"],
+    transaction: transaction
+)
+print("Sum: \(result.sum), Count: \(result.count), Avg: \(result.average)")
+
+// O(1) min/max lookup
+let minPrice = try await minMaintainer.getMin(
+    groupingValues: ["Electronics"],
+    transaction: transaction
+)
+```
+
+**Why Use Direct Access?**
+
+The query builder (`context.aggregate()`) computes aggregates in-memory by scanning all records. This is flexible (supports combining multiple aggregations) but has O(n) complexity.
+
+Direct index access provides O(1) lookups from precomputed values maintained atomically on each data change.
+
+| Approach | Complexity | Use Case |
+|----------|------------|----------|
+| Query Builder | O(n) | Ad-hoc queries, combined aggregations |
+| Direct Maintainer | O(1) | Performance-critical, single aggregation |
+
+## Type Preservation
+
+AggregateResult uses `FieldValue` enum internally for type-safe value handling:
+
+**Group Keys** preserve original types:
+```swift
+// Group keys retain their original types
+let year: Int64? = result.groupKeyInt64("year")      // Int fields
+let region: String? = result.groupKeyString("region") // String fields
+let rate: Double? = result.groupKeyDouble("rate")     // Double fields
+```
+
+**Aggregates** return typed results:
+| Aggregation | Return Type | Empty Group |
+|-------------|-------------|-------------|
+| count | `FieldValue.int64` | `0` |
+| sum | `FieldValue.double` | `0.0` |
+| avg | `FieldValue.double` | `0.0` |
+| min | `FieldValue?` | `nil` |
+| max | `FieldValue?` | `nil` |
+
+**Important**: `min`/`max` return `nil` for empty groups, not `0`. This distinguishes "no data" from "minimum is zero".
+
+```swift
+// Correctly handle empty groups
+if let minAmount = result.aggregateDouble("minAmount") {
+    print("Minimum: \(minAmount)")
+} else {
+    print("No data in this group")
+}
+```
+
+**Supported Numeric Types** (via `FieldValue`):
+- Integers: `Int`, `Int8`, `Int16`, `Int32`, `Int64`, `UInt`, `UInt8`, `UInt16`, `UInt32`, `UInt64`
+- Floating-point: `Float`, `Double`
+
+**Grouping Behavior**:
+- Empty `groupByFieldNames`: All items grouped into single group (global aggregation)
+- Null field values: Treated as `FieldValue.null` and grouped together
 
 ## Design Patterns
 
@@ -401,6 +505,69 @@ Run with: `swift test --filter AggregationIndexPerformanceTests`
 | Delete from group | ~1ms | Single atomic add |
 
 *Benchmarks run on M1 Mac with local FoundationDB cluster.*
+
+## Migration Guide
+
+### Breaking Changes (v2.0)
+
+The `AggregateResult` type has been updated for type-safe value handling:
+
+**1. Group Key Access**
+
+```swift
+// Before
+if let region = result.groupKey["region"] as? String { ... }
+
+// After
+if let region = result.groupKeyString("region") { ... }
+// Or access FieldValue directly
+if let fieldValue = result.groupKey["region"] {
+    let region = fieldValue.stringValue
+}
+```
+
+**2. Aggregate Access**
+
+```swift
+// Before
+if let count = result.aggregates["orderCount"] as? Int { ... }
+if let sum = result.aggregates["totalSales"] as? Double { ... }
+
+// After
+if let count = result.aggregateInt64("orderCount") { ... }
+if let sum = result.aggregateDouble("totalSales") { ... }
+```
+
+**3. Having Clause**
+
+```swift
+// Before
+.having { $0.aggregates["count"] as? Int ?? 0 > 10 }
+
+// After
+.having { $0.aggregateInt64("count") ?? 0 > 10 }
+```
+
+**4. Min/Max Empty Handling**
+
+```swift
+// Before: returned 0 for empty groups (ambiguous)
+let min = result.aggregates["minPrice"] as? Double ?? 0
+
+// After: returns nil for empty groups (explicit)
+if let min = result.aggregateDouble("minPrice") {
+    // Has data
+} else {
+    // Empty group - no data
+}
+```
+
+### Type Mapping
+
+| Old Type | New Type | Accessor |
+|----------|----------|----------|
+| `[String: any Sendable]` (groupKey) | `[String: FieldValue]` | `groupKeyString()`, `groupKeyInt64()`, `groupKeyDouble()` |
+| `[String: any Sendable]` (aggregates) | `[String: FieldValue?]` | `aggregateString()`, `aggregateInt64()`, `aggregateDouble()` |
 
 ## References
 

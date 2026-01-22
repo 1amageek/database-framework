@@ -126,23 +126,85 @@ public enum DistanceUnit: Sendable {
 // MARK: - Aggregate Result
 
 /// Result of a GROUP BY aggregation query
-public struct AggregateResult<T: Persistable>: @unchecked Sendable {
-    /// Group key values (field name -> value)
-    public let groupKey: [String: any Sendable]
+///
+/// **Type Preservation**:
+/// - `groupKey`: Preserves original types via `FieldValue` (int64, double, string, etc.)
+/// - `aggregates`: Returns typed results (int64 for count, double for sum/avg, original type for min/max)
+///
+/// **Empty Results**:
+/// - `min`/`max` return `nil` in `aggregates` for empty groups (not zero)
+/// - `count` returns `0` for empty groups
+/// - `sum`/`avg` return `FieldValue.double(0.0)` for empty groups
+public struct AggregateResult<T: Persistable>: Sendable {
+    /// Group key values (field name → typed value)
+    public let groupKey: [String: FieldValue]
 
-    /// Aggregation results (aggregation name -> value)
-    public let aggregates: [String: any Sendable]
+    /// Aggregation results (aggregation name → typed value)
+    /// - count: `FieldValue.int64`
+    /// - sum/avg: `FieldValue.double`
+    /// - min/max: `FieldValue?` (nil for empty groups)
+    public let aggregates: [String: FieldValue?]
 
     /// Number of records in this group
     public let count: Int
 
     public init(
-        groupKey: [String: any Sendable],
-        aggregates: [String: any Sendable],
+        groupKey: [String: FieldValue],
+        aggregates: [String: FieldValue?],
         count: Int
     ) {
         self.groupKey = groupKey
         self.aggregates = aggregates
         self.count = count
+    }
+
+    // MARK: - Convenience Accessors
+
+    /// Get aggregate value as Double (for sum, avg, or numeric min/max)
+    ///
+    /// - Parameter name: The aggregation name
+    /// - Returns: Double value, or nil if not found or not numeric
+    public func aggregateDouble(_ name: String) -> Double? {
+        aggregates[name]??.asDouble
+    }
+
+    /// Get aggregate value as Int64 (for count)
+    ///
+    /// - Parameter name: The aggregation name
+    /// - Returns: Int64 value, or nil if not found or not integer
+    public func aggregateInt64(_ name: String) -> Int64? {
+        aggregates[name]??.int64Value
+    }
+
+    /// Get aggregate value as String (for string min/max)
+    ///
+    /// - Parameter name: The aggregation name
+    /// - Returns: String value, or nil if not found or not string
+    public func aggregateString(_ name: String) -> String? {
+        aggregates[name]??.stringValue
+    }
+
+    /// Get group key value as Int64
+    ///
+    /// - Parameter name: The field name
+    /// - Returns: Int64 value, or nil if not found or not integer
+    public func groupKeyInt64(_ name: String) -> Int64? {
+        groupKey[name]?.int64Value
+    }
+
+    /// Get group key value as String
+    ///
+    /// - Parameter name: The field name
+    /// - Returns: String value, or nil if not found or not string
+    public func groupKeyString(_ name: String) -> String? {
+        groupKey[name]?.stringValue
+    }
+
+    /// Get group key value as Double
+    ///
+    /// - Parameter name: The field name
+    /// - Returns: Double value, or nil if not found or not double
+    public func groupKeyDouble(_ name: String) -> Double? {
+        groupKey[name]?.doubleValue
     }
 }

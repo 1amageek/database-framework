@@ -17,15 +17,30 @@ import Core
 ///     .groupBy(\.region)
 ///     .count(as: "orderCount")
 ///     .sum(\.amount, as: "totalSales")
-///     .having { $0.aggregates["orderCount"]?.value as? Int ?? 0 > 10 }
+///     .having { $0.aggregateInt64("orderCount") ?? 0 > 10 }
 ///     .execute()
 /// // Returns: [AggregateResult<Order>]
 /// ```
-public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
+///
+/// **Type Preservation**:
+/// - Group keys retain original types via `FieldValue` (int64, double, string, bool, data)
+/// - Aggregates return typed results:
+///   - count: `FieldValue.int64`
+///   - sum/avg: `FieldValue.double`
+///   - min/max: `FieldValue?` (original type, nil for empty groups)
+///
+/// **Grouping Behavior**:
+/// - Empty `groupByFieldNames`: All items grouped into single group (global aggregation)
+/// - Null field values: Treated as `FieldValue.null` and grouped together
+///
+/// **Numeric Type Support** (via FieldValue):
+/// - Integers: Int, Int8, Int16, Int32, Int64, UInt, UInt8, UInt16, UInt32, UInt64
+/// - Floating-point: Float, Double
+public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
     private var groupByFieldNames: [String] = []
     private var aggregations: [AggregationSpec] = []
-    private var havingPredicate: ((AggregateResult<T>) -> Bool)?
+    private var havingPredicate: (@Sendable (AggregateResult<T>) -> Bool)?
 
     /// Specification for an aggregation
     internal struct AggregationSpec: Sendable {
@@ -117,7 +132,7 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
     ///
     /// - Parameter predicate: Predicate to filter results
     /// - Returns: Updated query builder
-    public func having(_ predicate: @escaping (AggregateResult<T>) -> Bool) -> Self {
+    public func having(_ predicate: @escaping @Sendable (AggregateResult<T>) -> Bool) -> Self {
         var copy = self
         copy.havingPredicate = predicate
         return copy
@@ -128,53 +143,83 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
     /// - Returns: Array of aggregate results
     /// - Throws: Error if execution fails
     ///
-    /// **Performance Notes**:
-    /// - When no GROUP BY is specified and precomputed aggregation indexes exist
-    ///   (CountIndex, SumIndex, etc.), this could use O(1) lookups.
-    /// - With GROUP BY or without indexes, falls back to O(n) in-memory aggregation.
+    /// **Current Implementation**:
+    /// Fetches all items and computes aggregates in memory (O(n)).
     ///
-    /// **TODO**: Future optimization to use precomputed aggregation indexes:
-    /// - CountIndexMaintainer.getCount() for count queries
-    /// - SumIndexMaintainer.getSum() for sum queries
-    /// - This requires exposing aggregation query methods in IndexQueryContext.
+    /// **Why Not Using Precomputed Indexes**:
+    /// AggregationQuery allows combining multiple aggregation types (count + sum + avg)
+    /// in a single query. Using individual precomputed indexes would require:
+    /// 1. Multiple index lookups for combined queries
+    /// 2. Consistent grouping semantics across different index types
+    /// 3. Fallback logic when some indexes exist but others don't
+    ///
+    /// **Direct Index Access** (for O(1) lookups):
+    /// For performance-critical single aggregations, use the maintainers directly:
+    /// ```swift
+    /// // O(1) count lookup
+    /// let count = try await countMaintainer.getCount(groupingValues: [region], transaction: tx)
+    ///
+    /// // O(1) sum lookup
+    /// let sum = try await sumMaintainer.getSum(groupingValues: [region], transaction: tx)
+    /// ```
+    ///
+    /// **Precomputed Indexes Available**:
+    /// - `CountIndexMaintainer.getCount()` / `getAllCounts()`
+    /// - `SumIndexMaintainer.getSum()` / `getAllSums()`
+    /// - `AverageIndexMaintainer.getAverage()` / `getAllAverages()`
+    /// - `MinIndexMaintainer.getMin()`
+    /// - `MaxIndexMaintainer.getMax()`
     public func execute() async throws -> [AggregateResult<T>] {
         guard !aggregations.isEmpty else {
             throw AggregationQueryError.noAggregations
         }
 
         // Fetch all items and compute aggregates in memory
-        // TODO: Use precomputed aggregation indexes when available (CountIndex, SumIndex, etc.)
-        // For GROUP BY queries, in-memory calculation is required.
-        // For simple aggregates without GROUP BY, precomputed indexes could provide O(1) lookups.
         let items = try await queryContext.context.fetch(T.self).execute()
 
-        // Group items
-        var groups: [String: [T]] = [:]
+        // Group items using FieldValue for type preservation
+        // Key: stable hash of field values, Value: (typed field values, items)
+        var groups: [UInt64: (fieldValues: [FieldValue], items: [T])] = [:]
         for item in items {
-            let groupKeyParts = groupByFieldNames.map { fieldName -> String in
+            // Extract field values as FieldValue (type-preserving)
+            let groupFieldValues: [FieldValue] = groupByFieldNames.map { fieldName in
                 if let value = item[dynamicMember: fieldName] {
-                    return String(describing: value)
+                    return FieldValue(value) ?? .null
                 }
-                return "null"
+                return .null
             }
-            let groupKey = groupKeyParts.joined(separator: "|")
-            groups[groupKey, default: []].append(item)
+
+            // Compute stable hash for grouping (FNV-1a algorithm via FieldValue.stableHash)
+            // XOR combine hashes with position to preserve order
+            var groupKey: UInt64 = 0
+            for (index, fieldValue) in groupFieldValues.enumerated() {
+                let positionedHash = fieldValue.stableHash() &+ UInt64(index)
+                groupKey ^= positionedHash
+            }
+
+            if var existing = groups[groupKey] {
+                existing.items.append(item)
+                groups[groupKey] = existing
+            } else {
+                groups[groupKey] = (fieldValues: groupFieldValues, items: [item])
+            }
         }
 
         // Compute aggregates for each group
         var results: [AggregateResult<T>] = []
-        for (groupKeyString, groupItems) in groups {
-            // Build group key dictionary
-            var groupKeyDict: [String: any Sendable] = [:]
-            let keyParts = groupKeyString.split(separator: "|")
+        for (_, groupData) in groups {
+            let groupItems = groupData.items
+
+            // Build group key dictionary from stored FieldValue (type-preserving)
+            var groupKeyDict: [String: FieldValue] = [:]
             for (index, fieldName) in groupByFieldNames.enumerated() {
-                if index < keyParts.count {
-                    groupKeyDict[fieldName] = String(keyParts[index])
+                if index < groupData.fieldValues.count {
+                    groupKeyDict[fieldName] = groupData.fieldValues[index]
                 }
             }
 
             // Compute aggregates
-            var aggregateDict: [String: any Sendable] = [:]
+            var aggregateDict: [String: FieldValue?] = [:]
             for agg in aggregations {
                 let value = computeAggregate(items: groupItems, aggregation: agg)
                 aggregateDict[agg.name] = value
@@ -200,10 +245,16 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
     }
 
     /// Compute a single aggregate value
-    private func computeAggregate(items: [T], aggregation: AggregationSpec) -> any Sendable {
+    ///
+    /// **Return Values**:
+    /// - count: `FieldValue.int64(count)`
+    /// - sum: `FieldValue.double(sum)`
+    /// - avg: `FieldValue.double(avg)`
+    /// - min/max: `FieldValue?` (nil for empty groups)
+    private func computeAggregate(items: [T], aggregation: AggregationSpec) -> FieldValue? {
         switch aggregation.type {
         case .count:
-            return items.count
+            return .int64(Int64(items.count))
 
         case .sum(let field):
             var sum: Double = 0
@@ -212,7 +263,7 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
                     sum += value
                 }
             }
-            return sum
+            return .double(sum)
 
         case .avg(let field):
             var sum: Double = 0
@@ -224,76 +275,61 @@ public struct AggregationQueryBuilder<T: Persistable>: @unchecked Sendable {
                 }
             }
             let avg = count > 0 ? sum / Double(count) : 0.0
-            return avg
+            return .double(avg)
 
         case .min(let field):
-            var minDouble: Double?
-            var minInt: Int?
-            var minString: String?
+            var minValue: FieldValue?
 
             for item in items {
-                if let value = item[dynamicMember: field] {
-                    if let numVal = value as? Double {
-                        if minDouble == nil || numVal < minDouble! {
-                            minDouble = numVal
+                if let value = item[dynamicMember: field],
+                   let fieldValue = FieldValue(value) {
+                    if let current = minValue {
+                        // FieldValue is Comparable - use standard comparison
+                        if fieldValue < current {
+                            minValue = fieldValue
                         }
-                    } else if let intVal = value as? Int {
-                        if minInt == nil || intVal < minInt! {
-                            minInt = intVal
-                        }
-                    } else if let strVal = value as? String {
-                        if minString == nil || strVal < minString! {
-                            minString = strVal
-                        }
+                    } else {
+                        minValue = fieldValue
                     }
                 }
             }
 
-            if let d = minDouble { return d }
-            if let i = minInt { return i }
-            if let s = minString { return s }
-            return 0
+            // Return nil for empty groups (not zero)
+            return minValue
 
         case .max(let field):
-            var maxDouble: Double?
-            var maxInt: Int?
-            var maxString: String?
+            var maxValue: FieldValue?
 
             for item in items {
-                if let value = item[dynamicMember: field] {
-                    if let numVal = value as? Double {
-                        if maxDouble == nil || numVal > maxDouble! {
-                            maxDouble = numVal
+                if let value = item[dynamicMember: field],
+                   let fieldValue = FieldValue(value) {
+                    if let current = maxValue {
+                        // FieldValue is Comparable - use standard comparison
+                        if fieldValue > current {
+                            maxValue = fieldValue
                         }
-                    } else if let intVal = value as? Int {
-                        if maxInt == nil || intVal > maxInt! {
-                            maxInt = intVal
-                        }
-                    } else if let strVal = value as? String {
-                        if maxString == nil || strVal > maxString! {
-                            maxString = strVal
-                        }
+                    } else {
+                        maxValue = fieldValue
                     }
                 }
             }
 
-            if let d = maxDouble { return d }
-            if let i = maxInt { return i }
-            if let s = maxString { return s }
-            return 0
+            // Return nil for empty groups (not zero)
+            return maxValue
         }
     }
 
-    /// Extract numeric value from item field
+    /// Extract numeric value from item field using FieldValue
+    ///
+    /// **Supported Types** (via FieldValue):
+    /// - Int, Int8, Int16, Int32, Int64
+    /// - UInt, UInt8, UInt16, UInt32, UInt64
+    /// - Float, Double
     private func extractNumericValue(from item: T, field: String) -> Double? {
         guard let value = item[dynamicMember: field] else { return nil }
-
-        if let intValue = value as? Int { return Double(intValue) }
-        if let doubleValue = value as? Double { return doubleValue }
-        if let floatValue = value as? Float { return Double(floatValue) }
-        if let int64Value = value as? Int64 { return Double(int64Value) }
-
-        return nil
+        // FieldValue handles all numeric type conversions
+        guard let fieldValue = FieldValue(value) else { return nil }
+        return fieldValue.asDouble
     }
 }
 

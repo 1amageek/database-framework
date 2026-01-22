@@ -602,10 +602,10 @@ Subspace keys are single characters for storage efficiency. Use `SubspaceKey.ite
 | Vector | `VectorIndex` | Semantic search (Flat brute-force, HNSW approximate) |
 | FullText | `FullTextIndex` | Text search with stemming, fuzzy matching, highlighting |
 | Spatial | `SpatialIndex` | Geographic queries (Geohash, Morton Code, S2 cells) |
-| Rank | `RankIndex` | Leaderboard-style ranking with position queries |
+| Rank | `RankIndex` | Leaderboard-style ranking with top-K, percentile, rank lookup (see below) |
 | Permuted | `PermutedIndex` | Permutation-based multi-field queries |
 | Graph | `GraphIndex` | Unified graph/RDF index with multiple strategies (see below) |
-| Aggregation | `AggregationIndex` | Materialized aggregations (Count, Sum, Min/Max, Average) |
+| Aggregation | `AggregationIndex` | Precomputed aggregations with O(1) lookups (see below) |
 | Version | `VersionIndex` | Temporal versioning with FDB versionstamps |
 | Bitmap | `BitmapIndex` | Set membership queries using Roaring Bitmaps |
 | Leaderboard | `LeaderboardIndex` | Time-windowed leaderboards |
@@ -707,6 +707,183 @@ Adjacency strategy has `[direction][edge][from][to]` key structure, where `edge`
 **Performance Note**: When using adjacency strategy with `edgeLabel=nil` in `ShortestPathFinder`, `PageRankComputer`, or `GraphQuery`, the query must scan the entire edge subspace. For better performance, either specify an `edgeLabel` or use `tripleStore`/`hexastore` strategy.
 
 **Reference**: Weiss, C., Karras, P., & Bernstein, A. (2008). "Hexastore: sextuple indexing for semantic web data management" VLDB Endowment, 1(1), 1008-1019.
+
+### RankIndex (Leaderboard-Style Ranking)
+
+RankIndex provides efficient ranking queries for leaderboard-style use cases. Follows the GraphIndex implementation pattern where `execute()` uses the actual index.
+
+**Key Features**:
+- Top-K queries: O(n log k) using bounded min-heap
+- Bottom-K queries: O(k) direct scan (index stores ascending order)
+- Rank lookup: O(n - rank) optimized scan
+- Percentile queries: O(n log k) using heap-based top-k
+- Atomic count: O(1) using FDB atomic operations
+
+**Index Structure**:
+```
+Key: [indexSubspace]["scores"][score][primaryKey]
+Value: '' (empty)
+
+Key: [indexSubspace]["_count"]
+Value: Int64 (atomic counter)
+```
+
+**Usage Examples**:
+```swift
+// Model definition with RankIndex
+@Persistable
+struct Player {
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var score: Int64 = 0
+
+    #Index<Player>(RankIndexKind<Player, Int64>(
+        scoreField: \.score,
+        bucketSize: 100
+    ))
+}
+
+// Query API (requires `import RankIndex`)
+let leaderboard = try await context.rank(Player.self)
+    .by(\.score)
+    .top(100)
+    .execute()
+// Returns: [(item: Player, rank: Int)]
+
+// Bottom players
+let bottom = try await context.rank(Player.self)
+    .by(\.score)
+    .bottom(10)
+    .execute()
+
+// Rank range (positions 10-20)
+let range = try await context.rank(Player.self)
+    .by(\.score)
+    .range(from: 10, to: 20)
+    .execute()
+
+// Median player (50th percentile)
+let median = try await context.rank(Player.self)
+    .by(\.score)
+    .percentile(0.5)
+    .executeOne()
+// Returns: Player?
+```
+
+**Query Complexity**:
+
+| Query | Complexity | Description |
+|-------|------------|-------------|
+| `top(k)` | O(n log k) | Heap-based selection |
+| `bottom(k)` | O(k) | Direct ascending scan |
+| `range(from, to)` | O(n) | Full scan with skip |
+| `percentile(p)` | O(n log k) | Uses top-k internally |
+| `getCount()` | O(1) | Atomic counter read |
+| `getRank(score)` | O(n - rank) | Scan from score+1 |
+
+**Input Validation**:
+- `top(n)`: n ≤ 0 is ignored (returns self unchanged)
+- `bottom(n)`: n ≤ 0 is ignored
+- `range(from, to)`: from < 0 or to ≤ from is ignored
+- `percentile(p)`: p < 0.0 or p > 1.0 is ignored
+
+**Resource Limits**:
+- Maximum scan keys: 100,000 (prevents DoS on large indexes)
+- Applied to all scan operations in both `RankQuery` and `RankIndexMaintainer`
+
+**Fallback Behavior**:
+When no RankIndex exists for the specified field, `execute()` falls back to in-memory sorting:
+```swift
+// No index: fetches all items, sorts in memory O(n log n)
+// With index: uses efficient heap-based scan O(n log k)
+```
+
+**Type Safety**:
+`RankIndexMaintainer<Item, Score>` preserves the `Score` type at compile time. Score types supported:
+- `Int64`, `Int`, `Int32` (stored as Int64 in FDB Tuple)
+- `Double`, `Float` (stored as Double in FDB Tuple)
+
+### AggregationIndex (Precomputed Aggregations)
+
+AggregationIndex maintains precomputed aggregations (COUNT, SUM, AVG, MIN, MAX) using FDB atomic operations for O(1) lookups.
+
+**Index Types**:
+
+| Type | Maintainer | Storage | Query |
+|------|------------|---------|-------|
+| COUNT | `CountIndexMaintainer` | Int64 counter | O(1) |
+| SUM | `SumIndexMaintainer` | Int64 or scaled Double | O(1) |
+| AVG | `AverageIndexMaintainer` | sum + count | O(1) |
+| MIN | `MinIndexMaintainer` | Values in key (sorted) | O(1) via range scan |
+| MAX | `MaxIndexMaintainer` | Values in key (sorted) | O(1) via reverse scan |
+
+**Index Structure**:
+```
+COUNT/SUM:
+Key: [indexSubspace][groupValue1][groupValue2]...
+Value: Int64 (8 bytes little-endian)
+
+AVG:
+Key: [indexSubspace][groupValues...]["sum"]  → sum value
+Key: [indexSubspace][groupValues...]["count"] → count value
+
+MIN/MAX:
+Key: [indexSubspace][groupValues...][value][primaryKey]
+Value: '' (empty, uses key ordering)
+```
+
+**Query API** (requires `import AggregationIndex`):
+```swift
+// Fluent API (in-memory aggregation)
+let stats = try await context.aggregate(Order.self)
+    .groupBy(\.region)
+    .count(as: "orderCount")
+    .sum(\.amount, as: "totalSales")
+    .having { $0.count > 10 }
+    .execute()
+// Returns: [AggregateResult<Order>]
+
+// Direct O(1) lookups via Maintainers
+try await context.withTransaction { tx in
+    // COUNT
+    let count = try await countMaintainer.getCount(
+        groupingValues: ["us-west"],
+        transaction: tx
+    )
+
+    // SUM
+    let sum = try await sumMaintainer.getSum(
+        groupingValues: ["us-west"],
+        transaction: tx
+    )
+
+    // AVG
+    let (sum, count, avg) = try await avgMaintainer.getAverage(
+        groupingValues: ["us-west"],
+        transaction: tx
+    )
+
+    // MIN/MAX
+    let min = try await minMaintainer.getMin(
+        groupingValues: ["us-west"],
+        transaction: tx
+    )
+}
+```
+
+**Fluent API vs Direct Access**:
+
+| Approach | Complexity | Use Case |
+|----------|------------|----------|
+| `context.aggregate()` | O(n) in-memory | Complex queries with multiple aggregations |
+| `maintainer.getCount()` | O(1) | Performance-critical single aggregation |
+| `maintainer.getAllCounts()` | O(groups) | All groups enumeration |
+
+**Floating-Point Precision**:
+Sum/Average for floating-point types use scaled fixed-point representation (6 decimal places) to enable FDB atomic ADD operations.
+
+**Resource Limits**:
+- `getAllSums()`, `getAllCounts()`, `getAllAverages()`: max 100,000 keys scanned
 
 ### Uniqueness Enforcement
 

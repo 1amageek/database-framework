@@ -81,14 +81,14 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
             return
         }
 
-        guard allValues.count >= 2 else {
+        guard allValues.count >= 2,
+              let valueElement = allValues.last else {
             throw IndexError.invalidConfiguration(
                 "Sum index requires at least 2 fields: [grouping_fields..., sum_field]"
             )
         }
 
         let groupingValues = Array(allValues.dropLast())
-        let valueElement = allValues.last!
 
         let sumKey = try buildGroupingKey(groupingValues)
         let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
@@ -143,7 +143,12 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         return readNumericValue(bytes)
     }
 
+    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
+    private var maxScanKeys: Int { 100_000 }
+
     /// Get all sums in this index
+    ///
+    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     ///
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
@@ -153,8 +158,13 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         var results: [(grouping: [any TupleElement], sum: Double)] = []
 
         let sequence = scanAllEntries(transaction: transaction)
+        var scannedKeys = 0
         for try await (key, value) in sequence {
             guard subspace.contains(key) else { break }
+
+            // Resource limit
+            scannedKeys += 1
+            if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
             let elements = try Tuple.unpack(from: keyTuple.pack())
@@ -188,10 +198,10 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         } catch DataAccessError.nilValueCannotBeIndexed {
             return nil
         }
-        guard allValues.count >= 2 else { return nil }
+        guard allValues.count >= 2,
+              let valueElement = allValues.last else { return nil }
 
         let groupingValues = Array(allValues.dropLast())
-        let valueElement = allValues.last!
 
         let groupingKey = try buildGroupingKey(groupingValues)
         let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
