@@ -1,10 +1,10 @@
 # RelationshipIndex
 
-SwiftData-like relationship management with FK indexes, eager loading, and delete rule enforcement.
+Relationship management with FK indexes, eager loading, and delete rule enforcement.
 
 ## Overview
 
-RelationshipIndex provides type-safe relationship management between Persistable types using the `@Relationship` macro. It enables efficient cross-type queries, eager relationship loading via `joining()`, and automatic delete rule enforcement following SwiftData patterns.
+RelationshipIndex provides type-safe relationship management between Persistable types using the `@Relationship` macro. It enables efficient cross-type queries, eager relationship loading via `joining()`, and automatic delete rule enforcement following established ORM patterns.
 
 **Features**:
 - **@Relationship Macro**: Declarative relationship definition with delete rules
@@ -504,6 +504,4 @@ Run with: `swift test --filter RelationshipIndexPerformanceTests`
 
 ## References
 
-- [SwiftData @Relationship](https://developer.apple.com/documentation/swiftdata/relationship) - Apple documentation
-- [SwiftData DeleteRule](https://developer.apple.com/documentation/swiftdata/schema/relationship/deleterule) - Delete rule patterns
 - [FDB Record Layer Relationships](https://github.com/FoundationDB/fdb-record-layer) - Reference implementation

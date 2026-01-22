@@ -592,7 +592,7 @@ let results = try await context.fetch(User.self)
 | **Dynamic Directories** | フィールド値に基づくパーティショニング |
 | **Fusion Query** | 複数インデックスの結果統合 |
 | **@Persistable マクロ** | 宣言的モデル定義 |
-| **SwiftData風API** | `context.fetch(User.self).where(...)` |
+| **Fluent API** | `context.fetch(User.self).where(...)` |
 
 ### FDB Record Layer のみの機能
 

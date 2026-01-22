@@ -1,6 +1,6 @@
 import Core
 
-/// MigrationStage - SwiftData-compatible migration stage definition
+/// MigrationStage - Migration stage definition
 ///
 /// **Design**: Each migration step is represented as a MigrationStage.
 /// Stages can be lightweight (automatic) or custom (with manual code).

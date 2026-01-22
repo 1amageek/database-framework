@@ -383,6 +383,41 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
 
         case .max(let field):
             return computeMinMax(items: items, field: field, isMin: false)
+
+        case .distinct(let field):
+            var distinctValues = Set<AnyHashable>()
+            for item in items {
+                if let value = extractFieldValue(from: item, field: field) {
+                    if let hashable = value as? AnyHashable {
+                        distinctValues.insert(hashable)
+                    } else {
+                        // Fallback to string representation
+                        distinctValues.insert(String(describing: value) as AnyHashable)
+                    }
+                }
+            }
+            return Int64(distinctValues.count)
+
+        case .percentile(let field, let percentile):
+            var values: [Double] = []
+            for item in items {
+                if let value = extractNumericValue(from: item, field: field) {
+                    values.append(value)
+                }
+            }
+            if values.isEmpty {
+                return NullValue.instance
+            }
+            values.sort()
+            // Linear interpolation for percentile
+            let index = percentile * Double(values.count - 1)
+            let lower = Int(index.rounded(.down))
+            let upper = Int(index.rounded(.up))
+            if lower == upper || upper >= values.count {
+                return values[Swift.min(lower, values.count - 1)]
+            }
+            let fraction = index - Double(lower)
+            return values[lower] + fraction * (values[upper] - values[lower])
         }
     }
 

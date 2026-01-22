@@ -417,6 +417,118 @@ Max Query: Get last key in grouping subspace (reverse scan)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+## DISTINCT / PERCENTILE Aggregation (Planned)
+
+### Design Philosophy: Two-Layer Architecture
+
+DISTINCT and PERCENTILE aggregations support both **in-memory computation** and **precomputed indexes**:
+
+| Layer | Method | Index Required? | Complexity | Use Case |
+|-------|--------|-----------------|------------|----------|
+| **Query Builder** | In-memory | No | O(n) | Most users (90%) |
+| **IndexMaintainer** | Precomputed | Yes (`#Index`) | O(1) | High-frequency, large-scale |
+
+**User Experience**: Queries work without explicit index definition. When a matching index exists, it's automatically used for O(1) performance.
+
+### Usage Examples
+
+**Basic Usage (No Index Required)**:
+```swift
+// Works immediately - computed in-memory
+let stats = try await context.aggregate(PageView.self)
+    .groupBy(\.pageId)
+    .count(as: "totalViews")
+    .distinct(\.userId, as: "uniqueVisitors")
+    .execute()
+
+let latencyStats = try await context.aggregate(Request.self)
+    .groupBy(\.endpoint)
+    .avg(\.latencyMs, as: "avgLatency")
+    .percentile(\.latencyMs, p: 0.99, as: "p99Latency")
+    .execute()
+```
+
+**With Precomputed Index (Optional, for Performance)**:
+```swift
+@Persistable
+struct PageView {
+    var id: String = ULID().ulidString
+    var pageId: String = ""
+    var userId: String = ""
+
+    // Define index for O(1) distinct count
+    #Index<PageView>(type: DistinctIndexKind(groupBy: [\.pageId], value: \.userId))
+}
+
+// Same query - automatically uses index when available
+let stats = try await context.aggregate(PageView.self)
+    .groupBy(\.pageId)
+    .distinct(\.userId, as: "uniqueVisitors")  // O(1) from index
+    .execute()
+```
+
+### When to Define Precomputed Index?
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│        Should I define DISTINCT/PERCENTILE index?               │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  Dataset size > 1 million records?                              │
+│     └── No → Index not needed (in-memory is fast enough)        │
+│     └── Yes ↓                                                   │
+│                                                                 │
+│  Query executed multiple times per second?                      │
+│     └── No → Index not needed                                   │
+│     └── Yes ↓                                                   │
+│                                                                 │
+│  Frequent deletions? (HLL/TDigest are add-only)                 │
+│     └── Yes → Index not recommended (becomes inaccurate)        │
+│     └── No → ✅ Define the index                                │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Algorithms
+
+| Aggregation | Algorithm | Accuracy | Memory/Group | Reference |
+|-------------|-----------|----------|--------------|-----------|
+| **DISTINCT** | HyperLogLog++ | ~0.81% error | ~16KB | Heule et al. (Google, 2013) |
+| **PERCENTILE** | t-digest | High at extremes (p99.9) | ~10KB | Dunning & Ertl (2019) |
+
+### Important Limitations (Precomputed Index Only)
+
+| Operation | Behavior | Reason |
+|-----------|----------|--------|
+| Insert | Value added to sketch | Normal |
+| Update | New value added, old remains | Sketches are add-only |
+| Delete | **Count/percentile unchanged** | Cannot remove from sketch |
+
+**Note**: Precomputed DISTINCT/PERCENTILE indexes reflect "values ever seen", not "current values". For accurate current-state aggregations, use in-memory computation (no index).
+
+### Automatic Index Selection
+
+The Query Builder automatically selects the optimal execution path:
+
+```
+AggregationQueryBuilder.execute()
+    │
+    └── For each aggregation:
+        │
+        ├── Matching index exists in schema?
+        │   │
+        │   ├── Yes → Use IndexMaintainer [O(1)]
+        │   │
+        │   └── No → Compute in-memory [O(n)]
+        │
+        └── Return combined results
+```
+
+**Index Matching Criteria**:
+1. `groupBy` fields match exactly
+2. `value` field matches
+3. Index type matches (DistinctIndexKind / PercentileIndexKind)
+
 ## Implementation Status
 
 | Feature | Status | Notes |
@@ -432,8 +544,8 @@ Max Query: Get last key in grouping subspace (reverse scan)
 | Sparse index (nil) | ✅ Complete | nil values excluded |
 | Query Builder API | ✅ Complete | In-memory computation |
 | Index-backed queries | ⚠️ Partial | Query builder uses O(n) scan |
-| DISTINCT aggregation | ❌ Not implemented | Planned |
-| PERCENTILE aggregation | ❌ Not implemented | Would need different algorithm |
+| DISTINCT aggregation | 🔄 Planned | HyperLogLog++ (in-memory + optional index) |
+| PERCENTILE aggregation | 🔄 Planned | t-digest (in-memory + optional index) |
 
 ## Performance Characteristics
 

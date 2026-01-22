@@ -1,6 +1,6 @@
 import Core
 
-/// SchemaMigrationPlan - SwiftData-compatible migration plan protocol
+/// SchemaMigrationPlan - Migration plan protocol
 ///
 /// **Design**: A migration plan defines the complete migration path between
 /// schema versions. It lists all schemas (in version order) and the stages

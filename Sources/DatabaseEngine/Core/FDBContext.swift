@@ -4,7 +4,7 @@ import Core
 import Synchronization
 import Logging
 
-/// FDBContext - Central API for model persistence (like SwiftData's ModelContext)
+/// FDBContext - Central API for model persistence
 ///
 /// A model context is central to fdb-runtime as it's responsible for managing
 /// the entire lifecycle of your persistent models. You use a context to insert
@@ -12,7 +12,7 @@ import Logging
 /// models when you no longer need them.
 ///
 /// **Architecture** (Context-Centric Design):
-/// - FDBContext provides SwiftData-like high-level API
+/// - FDBContext provides high-level API for persistence
 /// - **FDBContext owns transactions and ReadVersionCache** (not FDBContainer)
 /// - Container resolves directories from Persistable type's `#Directory` declaration
 /// - FDBDataStore performs low-level FDB operations in the resolved directory

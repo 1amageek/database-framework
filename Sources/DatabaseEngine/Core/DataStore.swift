@@ -1,5 +1,5 @@
 // DataStore.swift
-// FDBRuntime - SwiftData-like protocol for storage backend abstraction
+// FDBRuntime - Protocol for storage backend abstraction
 //
 // This protocol enables different storage backend implementations:
 // - FDBDataStore: Default FoundationDB implementation
@@ -11,7 +11,7 @@
 import FoundationDB
 import Core
 
-/// SwiftData-like protocol for storage backend abstraction
+/// Protocol for storage backend abstraction
 ///
 /// **Purpose**: Abstract the storage layer to enable:
 /// - Different storage backends (FDB, in-memory, SQLite)
@@ -28,15 +28,6 @@ import Core
 ///     let context = container.newContext()
 ///     try await context.save()  // Security evaluated via delegate
 /// }
-/// ```
-///
-/// **SwiftData Comparison**:
-/// ```
-/// SwiftData                    fdb-runtime
-/// ─────────                    ───────────
-/// DataStore (protocol)    ←→   DataStore (protocol)
-/// DefaultStore            ←→   FDBDataStore
-/// DataStoreConfiguration  ←→   DataStoreConfiguration
 /// ```
 ///
 /// **Usage**:
@@ -264,9 +255,9 @@ public struct SerializedModel: Sendable {
 /// Defines the configuration requirements for a data store.
 /// Concrete implementations provide store-specific settings.
 ///
-/// **SwiftData Comparison**:
-/// - SwiftData's `DataStoreConfiguration` requires `name` and `schema`
-/// - fdb-runtime follows the same pattern
+/// **Configuration Pattern**:
+/// - DataStoreConfiguration requires `name` and `schema`
+/// - This follows standard ORM configuration patterns
 ///
 /// **Example Implementation**:
 /// ```swift

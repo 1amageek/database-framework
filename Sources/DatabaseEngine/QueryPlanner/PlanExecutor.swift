@@ -847,6 +847,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
             typeName = "MAX(\(field))"
         case .avg(let field):
             typeName = "AVG(\(field))"
+        case .distinct(let field):
+            typeName = "DISTINCT(\(field))"
+        case .percentile(let field, let percentile):
+            typeName = "PERCENTILE(\(field), \(percentile))"
         }
         throw PlanExecutionError.aggregationNotImplemented(type: typeName)
     }

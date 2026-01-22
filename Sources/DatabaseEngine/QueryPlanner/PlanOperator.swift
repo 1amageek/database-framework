@@ -414,6 +414,8 @@ public enum AggregationType: Sendable, Hashable {
     case min(field: String)
     case max(field: String)
     case avg(field: String)
+    case distinct(field: String)
+    case percentile(field: String, percentile: Double)
 }
 
 // MARK: - IN Operator Protocol

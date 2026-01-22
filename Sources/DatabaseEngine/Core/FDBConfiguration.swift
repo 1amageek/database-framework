@@ -2,9 +2,9 @@ import Foundation
 import FoundationDB
 import Core
 
-/// FDB configuration (SwiftData-inspired)
+/// FDB configuration
 ///
-/// Corresponds to SwiftData's ModelConfiguration:
+/// Configuration for FoundationDB connection:
 /// - Schema definition
 /// - FoundationDB cluster file URL
 /// - Index configurations for runtime parameters
@@ -47,7 +47,6 @@ public struct FDBConfiguration: DataStoreConfiguration, Sendable {
     /// FoundationDB cluster file URL (optional)
     ///
     /// URL pointing to the FoundationDB cluster file (fdb.cluster).
-    /// Similar to SwiftData's ModelConfiguration.url which specifies storage location.
     ///
     /// If nil, uses the default cluster file location.
     /// - macOS/Linux: `/etc/foundationdb/fdb.cluster`

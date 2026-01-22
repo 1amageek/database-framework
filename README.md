@@ -6,7 +6,7 @@ A Swift package providing server-side database operations powered by FoundationD
 
 Database provides:
 
-- **FDBContainer**: SwiftData-like container for database management
+- **FDBContainer**: Application resource manager for database operations
 - **FDBContext**: Change tracking and batch operations
 - **Index Maintainers**: Concrete implementations for all index types
 - **Migration System**: Schema versioning and online index building
@@ -540,7 +540,7 @@ try await context.fetchPolymorphic(Article.self)
 
 ## Relationship Support
 
-Database provides SwiftData-like relationship support via the `@Relationship` macro (defined in database-kit) and extension methods on `FDBContext`.
+Database provides relationship support via the `@Relationship` macro (defined in database-kit) and extension methods on `FDBContext`.
 
 ### Defining Relationships
 

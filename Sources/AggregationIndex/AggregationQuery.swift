@@ -42,6 +42,9 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private var aggregations: [AggregationSpec] = []
     private var havingPredicate: (@Sendable (AggregateResult<T>) -> Bool)?
 
+    /// Forced index name (set via AggregationEntryPoint.using(index:))
+    internal var forcedIndexName: String?
+
     /// Specification for an aggregation
     internal struct AggregationSpec: Sendable {
         let name: String
@@ -125,6 +128,48 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         let fieldName = T.fieldName(for: keyPath)
         let aggName = name ?? "max_\(fieldName)"
         copy.aggregations.append(AggregationSpec(name: aggName, type: .max(field: fieldName)))
+        return copy
+    }
+
+    /// Add a DISTINCT aggregation (approximate cardinality)
+    ///
+    /// Uses Set-based counting for in-memory computation.
+    /// When a matching DistinctIndexKind exists, uses HyperLogLog++ for O(1) lookup.
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the field to count distinct values
+    ///   - name: Name for the aggregation result (defaults to "distinct_fieldName")
+    /// - Returns: Updated query builder
+    ///
+    /// **Note**: In-memory computation is exact. Precomputed index (HyperLogLog++)
+    /// provides approximate results with ~1% error but O(1) lookup.
+    public func distinct<V>(_ keyPath: KeyPath<T, V>, as name: String? = nil) -> Self {
+        var copy = self
+        let fieldName = T.fieldName(for: keyPath)
+        let aggName = name ?? "distinct_\(fieldName)"
+        copy.aggregations.append(AggregationSpec(name: aggName, type: .distinct(field: fieldName)))
+        return copy
+    }
+
+    /// Add a PERCENTILE aggregation
+    ///
+    /// Uses sorted array interpolation for in-memory computation.
+    /// When a matching PercentileIndexKind exists, uses t-digest for O(1) lookup.
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the numeric field
+    ///   - p: Percentile to compute (0.0 to 1.0, e.g., 0.99 for p99)
+    ///   - name: Name for the aggregation result (defaults to "p{percentile}_fieldName")
+    /// - Returns: Updated query builder
+    ///
+    /// **Note**: In-memory computation is exact. Precomputed index (t-digest)
+    /// provides approximate results with high accuracy at extremes.
+    public func percentile<V: Numeric>(_ keyPath: KeyPath<T, V>, p: Double, as name: String? = nil) -> Self {
+        var copy = self
+        let fieldName = T.fieldName(for: keyPath)
+        let percentileLabel = String(format: "%.0f", p * 100)
+        let aggName = name ?? "p\(percentileLabel)_\(fieldName)"
+        copy.aggregations.append(AggregationSpec(name: aggName, type: .percentile(field: fieldName, percentile: p)))
         return copy
     }
 
@@ -316,6 +361,56 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
             // Return nil for empty groups (not zero)
             return maxValue
+
+        case .distinct(let field):
+            // In-memory distinct count using Set
+            var distinctValues = Set<AnyHashable>()
+
+            for item in items {
+                if let value = item[dynamicMember: field] {
+                    // Convert to AnyHashable for Set storage
+                    if let hashable = value as? AnyHashable {
+                        distinctValues.insert(hashable)
+                    } else if let fieldValue = FieldValue(value) {
+                        // Use FieldValue's hashable representation
+                        distinctValues.insert(fieldValue)
+                    }
+                }
+            }
+
+            return .int64(Int64(distinctValues.count))
+
+        case .percentile(let field, let percentile):
+            // In-memory percentile using sorted array interpolation
+            var values: [Double] = []
+
+            for item in items {
+                if let numericValue = extractNumericValue(from: item, field: field) {
+                    values.append(numericValue)
+                }
+            }
+
+            guard !values.isEmpty else {
+                return nil  // No values to compute percentile
+            }
+
+            // Sort values
+            values.sort()
+
+            // Linear interpolation for percentile
+            let p = Swift.max(0, Swift.min(1, percentile))
+            let index = p * Double(values.count - 1)
+            let lowerIndex = Int(floor(index))
+            let upperIndex = Int(ceil(index))
+
+            if lowerIndex == upperIndex {
+                return .double(values[lowerIndex])
+            }
+
+            // Interpolate between adjacent values
+            let fraction = index - Double(lowerIndex)
+            let result = values[lowerIndex] * (1 - fraction) + values[upperIndex] * fraction
+            return .double(result)
         }
     }
 
@@ -331,33 +426,131 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         guard let fieldValue = FieldValue(value) else { return nil }
         return fieldValue.asDouble
     }
-}
 
-// MARK: - FDBContext Extension
+    // MARK: - Index Selection (Execution Strategy Selector)
 
-extension FDBContext {
+    /// Find a matching index for an aggregation
+    ///
+    /// Searches the type's index descriptors for an `AggregationIndexKindProtocol`
+    /// conforming index that matches the aggregation's type, groupBy fields, and value field.
+    ///
+    /// **Matching Criteria**:
+    /// 1. Index kind conforms to `AggregationIndexKindProtocol`
+    /// 2. `aggregationType` matches (e.g., "count", "sum", "avg")
+    /// 3. `groupByFieldNames` match exactly (same fields in same order)
+    /// 4. `aggregationValueField` matches (for non-COUNT aggregations)
+    ///
+    /// - Parameter aggregation: The aggregation to find an index for
+    /// - Returns: Matching IndexDescriptor, or nil if no match found
+    private func findMatchingIndex(for aggregation: AggregationSpec) -> IndexDescriptor? {
+        let descriptors = queryContext.indexDescriptors(for: T.self)
 
-    /// Start an aggregation query
+        for descriptor in descriptors {
+            guard let indexKind = descriptor.kind as? (any AggregationIndexKindProtocol) else {
+                continue
+            }
+
+            // 1. Check aggregation type
+            let expectedType = aggregationTypeIdentifier(for: aggregation.type)
+            guard indexKind.aggregationType == expectedType else {
+                continue
+            }
+
+            // 2. Check groupBy fields match exactly
+            guard indexKind.groupByFieldNames == groupByFieldNames else {
+                continue
+            }
+
+            // 3. Check value field (for non-COUNT aggregations)
+            if let valueField = aggregationValueField(for: aggregation.type) {
+                guard indexKind.aggregationValueField == valueField else {
+                    continue
+                }
+            }
+
+            // Match found!
+            return descriptor
+        }
+
+        return nil
+    }
+
+    /// Get the aggregation type identifier for matching with index kinds
+    private func aggregationTypeIdentifier(for type: AggregationType) -> String {
+        switch type {
+        case .count:
+            return "count"
+        case .sum:
+            return "sum"
+        case .avg:
+            return "average"
+        case .min:
+            return "min"
+        case .max:
+            return "max"
+        case .distinct:
+            return "distinct"
+        case .percentile:
+            return "percentile"
+        }
+    }
+
+    /// Get the value field name for an aggregation type
+    private func aggregationValueField(for type: AggregationType) -> String? {
+        switch type {
+        case .count:
+            return nil
+        case .sum(let field):
+            return field
+        case .avg(let field):
+            return field
+        case .min(let field):
+            return field
+        case .max(let field):
+            return field
+        case .distinct(let field):
+            return field
+        case .percentile(let field, _):
+            return field
+        }
+    }
+
+    /// Execution strategy for an aggregation
+    internal enum ExecutionStrategy {
+        /// Use precomputed index (O(1))
+        case useIndex(IndexDescriptor)
+
+        /// Compute in memory (O(n))
+        case inMemory
+    }
+
+    /// Determine the execution strategy for each aggregation
     ///
-    /// This method is available when you import `AggregationIndex`.
+    /// Returns a mapping from aggregation name to execution strategy.
+    /// If `forcedIndexName` is set, attempts to use that specific index.
     ///
-    /// **Usage**:
-    /// ```swift
-    /// import AggregationIndex
-    ///
-    /// let stats = try await context.aggregate(Order.self)
-    ///     .groupBy(\.region)
-    ///     .count(as: "orderCount")
-    ///     .sum(\.amount, as: "totalSales")
-    ///     .having { $0.count > 10 }
-    ///     .execute()
-    /// // Returns: [AggregateResult<Order>]
-    /// ```
-    ///
-    /// - Parameter type: The Persistable type to aggregate
-    /// - Returns: Entry point for configuring the aggregation
-    public func aggregate<T: Persistable>(_ type: T.Type) -> AggregationQueryBuilder<T> {
-        AggregationQueryBuilder(queryContext: indexQueryContext)
+    /// - Returns: Dictionary mapping aggregation names to their execution strategy
+    internal func determineExecutionStrategies() -> [String: ExecutionStrategy] {
+        var strategies: [String: ExecutionStrategy] = [:]
+
+        for aggregation in aggregations {
+            // If forced index is specified, try to use it
+            if let forcedName = forcedIndexName {
+                if let descriptor = queryContext.findIndex(named: forcedName) {
+                    strategies[aggregation.name] = .useIndex(descriptor)
+                    continue
+                }
+            }
+
+            // Otherwise, find a matching index automatically
+            if let descriptor = findMatchingIndex(for: aggregation) {
+                strategies[aggregation.name] = .useIndex(descriptor)
+            } else {
+                strategies[aggregation.name] = .inMemory
+            }
+        }
+
+        return strategies
     }
 }
 

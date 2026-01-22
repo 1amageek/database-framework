@@ -4,7 +4,7 @@ import FoundationDB
 @testable import DatabaseEngine
 @testable import Core
 
-/// Tests for FDBContext functionality (SwiftData-like API)
+/// Tests for FDBContext functionality
 ///
 /// **Coverage**:
 /// - Autosave functionality

@@ -40,7 +40,7 @@ struct UserV3 {
     var createdAt: Double = 0
 }
 
-/// Tests for SwiftData-like Migration API
+/// Tests for Migration API
 ///
 /// **Coverage**:
 /// - VersionedSchema protocol

@@ -1,7 +1,5 @@
 // RelationshipMaintainer.swift
 // RelationshipIndex - Maintains relationship indexes and enforces delete rules
-//
-// Reference: SwiftData Schema.Relationship.DeleteRule
 
 import Foundation
 import Core

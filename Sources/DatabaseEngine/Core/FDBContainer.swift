@@ -4,10 +4,10 @@ import Core
 import Synchronization
 import Logging
 
-/// FDBContainer - SwiftData-like container for FoundationDB persistence
+/// FDBContainer - Application resource manager for FoundationDB persistence
 ///
 /// **Design Philosophy**:
-/// FDBContainer is a **resource manager** (like SwiftData's ModelContainer) that connects:
+/// FDBContainer is a **resource manager** that connects:
 /// - **Schema**: Defines entities and indexes
 /// - **Database**: Provides DirectoryLayer access for system operations
 /// - **Persistable types**: Define their own directory paths via `#Directory` macro
@@ -25,7 +25,7 @@ import Logging
 /// - Directory resolution from Persistable type metadata
 /// - DataStore factory
 ///
-/// **Architecture** (similar to SwiftData's ModelContainer):
+/// **Architecture**:
 /// ```
 /// FDBContainer (Resource Manager)
 ///     ├── database: DatabaseProtocol (for system operations only)
@@ -52,7 +52,7 @@ import Logging
 /// let schema = Schema([User.self])
 /// let container = try FDBContainer(for: schema)
 ///
-/// // 3. Use context (SwiftData-like API)
+/// // 3. Use context
 /// let context = container.newContext()
 /// context.insert(user)
 /// try await context.save()
@@ -90,7 +90,7 @@ public final class FDBContainer: Sendable {
     /// Directory cache for performance
     private let directoryCache: Mutex<[String: Subspace]>
 
-    /// Migration plan (SwiftData-like API)
+    /// Migration plan
     nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
 
     // MARK: - Initialization
