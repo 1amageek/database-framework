@@ -13,6 +13,8 @@ AggregationIndex provides pre-computed aggregation values that are maintained at
 - **SUM**: Sum of numeric values grouped by fields
 - **MIN/MAX**: Minimum/Maximum values using FDB tuple ordering
 - **AVERAGE**: Average values (maintains sum + count internally)
+- **DISTINCT**: Approximate cardinality using HyperLogLog++ (~0.81% error)
+- **PERCENTILE**: Streaming quantile estimation using t-digest (high accuracy at extremes)
 
 **Storage Layout**:
 ```
@@ -32,6 +34,12 @@ AVERAGE:
 
 COUNT_UPDATES:
   [indexSubspace][primaryKey] = Int64 (update count)
+
+DISTINCT (HyperLogLog++):
+  [indexSubspace][groupValue1][groupValue2]... = Serialized HLL (~16KB JSON)
+
+PERCENTILE (t-digest):
+  [indexSubspace][groupValue1][groupValue2]... = Serialized TDigest (~10KB binary)
 ```
 
 ## Use Cases
@@ -162,7 +170,85 @@ let frequentlyUpdated = try await updatesMaintainer.getFrequentlyUpdated(
 )
 ```
 
-### 4. Query Builder API
+### 4. Unique Visitor Tracking (DISTINCT)
+
+**Scenario**: Count unique visitors per page using approximate cardinality.
+
+```swift
+@Persistable
+struct PageView {
+    var id: String = ULID().uuidString
+    var pageId: String = ""
+    var userId: String = ""
+    var timestamp: Date = Date()
+
+    // Unique visitors per page (HyperLogLog++)
+    #Index<PageView>(type: DistinctIndexKind(groupBy: [\.pageId], value: \.userId))
+}
+
+// Get unique visitor count for a page (O(1) lookup, ~0.81% error)
+let (estimated, errorRate) = try await distinctMaintainer.getDistinctCount(
+    groupingValues: ["homepage"],
+    transaction: transaction
+)
+print("Unique visitors: ~\(estimated) (±\(errorRate * 100)%)")
+
+// Get all pages with their unique visitor counts
+let allCounts = try await distinctMaintainer.getAllDistinctCounts(
+    transaction: transaction
+)
+for (grouping, count, _) in allCounts {
+    print("\(grouping): \(count) unique visitors")
+}
+```
+
+**Important**: HyperLogLog is add-only. Deleting a PageView does NOT decrease the unique count. This index reflects "visitors ever seen", not "current visitors".
+
+### 5. Latency Percentile Monitoring (PERCENTILE)
+
+**Scenario**: Track API response time percentiles (p50, p90, p99).
+
+```swift
+@Persistable
+struct APIRequest {
+    var id: String = ULID().uuidString
+    var endpoint: String = ""
+    var latencyMs: Double = 0
+    var statusCode: Int64 = 200
+
+    // Latency percentiles per endpoint (t-digest)
+    #Index<APIRequest>(type: PercentileIndexKind(groupBy: [\.endpoint], value: \.latencyMs))
+}
+
+// Get p99 latency for an endpoint (O(1) lookup)
+let p99 = try await percentileMaintainer.getPercentile(
+    percentile: 0.99,
+    groupingValues: ["/api/users"],
+    transaction: transaction
+)
+print("p99 latency: \(p99 ?? 0)ms")
+
+// Get multiple percentiles efficiently
+let percentiles = try await percentileMaintainer.getPercentiles(
+    percentiles: [0.50, 0.90, 0.95, 0.99],
+    groupingValues: ["/api/users"],
+    transaction: transaction
+)
+// percentiles = [0.50: 45.2, 0.90: 120.5, 0.95: 180.3, 0.99: 350.1]
+
+// Get statistics (count, min, max, median)
+let stats = try await percentileMaintainer.getStatistics(
+    groupingValues: ["/api/users"],
+    transaction: transaction
+)
+if let s = stats {
+    print("Requests: \(s.count), Min: \(s.min)ms, Max: \(s.max)ms, Median: \(s.median)ms")
+}
+```
+
+**Important**: t-digest is add-only. Deleting a request does NOT update the percentiles. This index reflects "latencies ever recorded", not "current request latencies".
+
+### 6. Query Builder API
 
 **Scenario**: SQL-like aggregation queries using fluent API.
 
@@ -208,7 +294,7 @@ for result in stats {
 
 **Note**: The query builder currently computes aggregates in-memory. For O(1) performance-critical single aggregations, use the maintainers directly (see "Direct Index Access" below).
 
-### 5. Sparse Aggregation (Optional Fields)
+### 7. Sparse Aggregation (Optional Fields)
 
 **Scenario**: Aggregate only records with non-null values.
 
@@ -234,7 +320,7 @@ let avgRating = try await maintainer.getAverage(
 
 **Sparse Index Behavior**: Records with nil values in the aggregated field are automatically excluded from the aggregate.
 
-### 6. Direct Index Access (O(1) Performance)
+### 8. Direct Index Access (O(1) Performance)
 
 For performance-critical single aggregations, use the maintainers directly instead of the query builder:
 
@@ -391,6 +477,8 @@ Max Query: Get last key in grouping subspace (reverse scan)
 | Min value | `MinIndexKind` | ~20 bytes/record | O(1) |
 | Max value | `MaxIndexKind` | ~20 bytes/record | O(1) |
 | Average (sum/count) | `AverageIndexKind` | 16 bytes/group | O(1) |
+| Unique count (approx) | `DistinctIndexKind` | ~16KB/group | O(1) |
+| Percentiles (approx) | `PercentileIndexKind` | ~10KB/group | O(1) |
 
 ### Grouping Field Selection
 
@@ -417,7 +505,7 @@ Max Query: Get last key in grouping subspace (reverse scan)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## DISTINCT / PERCENTILE Aggregation (Planned)
+## DISTINCT / PERCENTILE Aggregation
 
 ### Design Philosophy: Two-Layer Architecture
 
@@ -544,8 +632,8 @@ AggregationQueryBuilder.execute()
 | Sparse index (nil) | ✅ Complete | nil values excluded |
 | Query Builder API | ✅ Complete | In-memory computation |
 | Index-backed queries | ⚠️ Partial | Query builder uses O(n) scan |
-| DISTINCT aggregation | 🔄 Planned | HyperLogLog++ (in-memory + optional index) |
-| PERCENTILE aggregation | 🔄 Planned | t-digest (in-memory + optional index) |
+| DISTINCT aggregation | ✅ Complete | HyperLogLog++ (~0.81% error, add-only) |
+| PERCENTILE aggregation | ✅ Complete | t-digest (high accuracy at extremes, add-only) |
 
 ## Performance Characteristics
 
@@ -571,6 +659,8 @@ AggregationQueryBuilder.execute()
 | SUM (Double) | 8 bytes (scaled) | - |
 | MIN/MAX | - | ~20-50 bytes |
 | AVERAGE | 16 bytes (sum + count) | - |
+| DISTINCT | ~16KB (HyperLogLog) | - |
+| PERCENTILE | ~10KB (t-digest) | - |
 
 ### FDB Considerations
 
@@ -687,3 +777,5 @@ if let min = result.aggregateDouble("minPrice") {
 - [Atomic Operations in FDB](https://apple.github.io/foundationdb/developer-guide.html#atomic-operations) - FoundationDB documentation
 - [Materialized Aggregates](https://en.wikipedia.org/wiki/Aggregate_function#Incremental_updates) - Database concept
 - [Fixed-Point Arithmetic](https://en.wikipedia.org/wiki/Fixed-point_arithmetic) - For floating-point storage
+- [HyperLogLog++](https://research.google/pubs/pub40671/) - Heule, Nunkesser, Hall (Google, 2013) - Cardinality estimation algorithm
+- [t-digest](https://github.com/tdunning/t-digest) - Dunning & Ertl (2019) - Streaming quantile estimation

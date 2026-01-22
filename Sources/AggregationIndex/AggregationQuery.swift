@@ -4,6 +4,7 @@
 import Foundation
 import DatabaseEngine
 import Core
+import FoundationDB
 
 // MARK: - Aggregation Query Builder
 
@@ -188,38 +189,43 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of aggregate results
     /// - Throws: Error if execution fails
     ///
-    /// **Current Implementation**:
-    /// Fetches all items and computes aggregates in memory (O(n)).
+    /// **Execution Strategy**:
+    /// 1. Check if all aggregations have matching precomputed indexes
+    /// 2. If yes: Use index-backed execution (O(1) per group)
+    /// 3. If no: Fall back to in-memory computation (O(n))
     ///
-    /// **Why Not Using Precomputed Indexes**:
-    /// AggregationQuery allows combining multiple aggregation types (count + sum + avg)
-    /// in a single query. Using individual precomputed indexes would require:
-    /// 1. Multiple index lookups for combined queries
-    /// 2. Consistent grouping semantics across different index types
-    /// 3. Fallback logic when some indexes exist but others don't
+    /// **Index Matching Criteria**:
+    /// - Index kind conforms to `AggregationIndexKindProtocol`
+    /// - `aggregationType` matches (count, sum, avg, min, max, distinct, percentile)
+    /// - `groupByFieldNames` match exactly
+    /// - `aggregationValueField` matches (for non-COUNT aggregations)
     ///
-    /// **Direct Index Access** (for O(1) lookups):
-    /// For performance-critical single aggregations, use the maintainers directly:
+    /// **Direct Index Access** (for single aggregations):
+    /// For maximum performance, use maintainers directly:
     /// ```swift
-    /// // O(1) count lookup
     /// let count = try await countMaintainer.getCount(groupingValues: [region], transaction: tx)
-    ///
-    /// // O(1) sum lookup
     /// let sum = try await sumMaintainer.getSum(groupingValues: [region], transaction: tx)
     /// ```
-    ///
-    /// **Precomputed Indexes Available**:
-    /// - `CountIndexMaintainer.getCount()` / `getAllCounts()`
-    /// - `SumIndexMaintainer.getSum()` / `getAllSums()`
-    /// - `AverageIndexMaintainer.getAverage()` / `getAllAverages()`
-    /// - `MinIndexMaintainer.getMin()`
-    /// - `MaxIndexMaintainer.getMax()`
     public func execute() async throws -> [AggregateResult<T>] {
         guard !aggregations.isEmpty else {
             throw AggregationQueryError.noAggregations
         }
 
-        // Fetch all items and compute aggregates in memory
+        // Determine execution strategy for each aggregation
+        let strategies = determineExecutionStrategies()
+
+        // Check if all aggregations can use indexes
+        let allIndexBacked = strategies.values.allSatisfy { strategy in
+            if case .useIndex = strategy { return true }
+            return false
+        }
+
+        // If all aggregations have matching indexes, use index-backed execution
+        if allIndexBacked {
+            return try await executeWithIndexes(strategies: strategies)
+        }
+
+        // Otherwise, fall back to in-memory computation
         let items = try await queryContext.context.fetch(T.self).execute()
 
         // Group items using FieldValue for type preservation
@@ -440,9 +446,23 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// 3. `groupByFieldNames` match exactly (same fields in same order)
     /// 4. `aggregationValueField` matches (for non-COUNT aggregations)
     ///
+    /// **Excluded Aggregation Types**:
+    /// - MIN/MAX: These indexes use sorted storage for individual value lookups,
+    ///   not batch queries. They don't have getAllMins/getAllMaxs methods.
+    ///
     /// - Parameter aggregation: The aggregation to find an index for
     /// - Returns: Matching IndexDescriptor, or nil if no match found
     private func findMatchingIndex(for aggregation: AggregationSpec) -> IndexDescriptor? {
+        // MIN/MAX indexes don't support batch queries (getAllMins/getAllMaxs)
+        // They use sorted storage for efficient single-group lookups and range queries.
+        // Always use in-memory computation for MIN/MAX in batch aggregation queries.
+        switch aggregation.type {
+        case .min, .max:
+            return nil
+        default:
+            break
+        }
+
         let descriptors = queryContext.indexDescriptors(for: T.self)
 
         for descriptor in descriptors {
@@ -551,6 +571,281 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         }
 
         return strategies
+    }
+
+    // MARK: - Index-Backed Execution
+
+    /// Execute aggregation query using precomputed indexes
+    ///
+    /// **Requirements**:
+    /// - All aggregations must have matching indexes (checked by caller)
+    /// - Supported: COUNT, SUM, AVG, DISTINCT, PERCENTILE
+    /// - NOT supported for index-backed: MIN, MAX (use in-memory)
+    ///
+    /// - Parameter strategies: Execution strategies with index descriptors
+    /// - Returns: Array of aggregate results from indexes
+    private func executeWithIndexes(
+        strategies: [String: ExecutionStrategy]
+    ) async throws -> [AggregateResult<T>] {
+        let indexSubspace = try await queryContext.indexSubspace(for: T.self)
+
+        // Standard idExpression for Persistable types
+        let idExpression = FieldKeyExpression(fieldName: "id")
+
+        // Type for results collected inside transaction
+        typealias AggregationIndexResult = (
+            aggregationName: String,
+            aggregationType: AggregationType,
+            results: [(grouping: [any TupleElement], value: FieldValue?)]
+        )
+
+        // Collect all aggregation results inside the transaction
+        let allAggregationResults: [AggregationIndexResult] = try await queryContext.withTransaction { transaction in
+            var collected: [AggregationIndexResult] = []
+
+            for aggregation in self.aggregations {
+                guard case .useIndex(let descriptor) = strategies[aggregation.name] else {
+                    continue
+                }
+
+                guard let indexKind = descriptor.kind as? any IndexKindMaintainable else {
+                    throw AggregationQueryError.indexNotFound("Index kind '\(descriptor.name)' is not maintainable")
+                }
+
+                let maintainerSubspace = indexSubspace.subspace(descriptor.name)
+                let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
+
+                let maintainer = indexKind.makeIndexMaintainer(
+                    index: index,
+                    subspace: maintainerSubspace,
+                    idExpression: idExpression,
+                    configurations: []
+                ) as any IndexMaintainer<T>
+
+                // Query results from maintainer based on aggregation type
+                let indexResults = try await self.queryFromMaintainer(
+                    maintainer: maintainer,
+                    aggregation: aggregation,
+                    transaction: transaction
+                )
+
+                collected.append((
+                    aggregationName: aggregation.name,
+                    aggregationType: aggregation.type,
+                    results: indexResults
+                ))
+            }
+
+            return collected
+        }
+
+        // Merge results outside the transaction (no Sendable restrictions)
+        var groupedResults: [UInt64: (groupKey: [String: FieldValue], aggregates: [String: FieldValue?], count: Int)] = [:]
+
+        for aggResult in allAggregationResults {
+            for (groupingElements, value) in aggResult.results {
+                let (hash, groupKeyDict) = computeGroupKeyHashAndDict(groupingElements)
+
+                if var existing = groupedResults[hash] {
+                    existing.aggregates[aggResult.aggregationName] = value
+                    // If this is a count aggregation, update the count field
+                    if case .count = aggResult.aggregationType, let countValue = value?.int64Value {
+                        existing.count = Int(countValue)
+                    }
+                    groupedResults[hash] = existing
+                } else {
+                    var count = 0
+                    if case .count = aggResult.aggregationType, let countValue = value?.int64Value {
+                        count = Int(countValue)
+                    }
+                    groupedResults[hash] = (
+                        groupKey: groupKeyDict,
+                        aggregates: [aggResult.aggregationName: value],
+                        count: count
+                    )
+                }
+            }
+        }
+
+        // Convert to AggregateResult array
+        var results = groupedResults.values.map { (groupKey, aggregates, count) in
+            AggregateResult<T>(
+                groupKey: groupKey,
+                aggregates: aggregates,
+                count: count
+            )
+        }
+
+        // Apply HAVING filter
+        if let havingPredicate = havingPredicate {
+            results = results.filter { havingPredicate($0) }
+        }
+
+        return results
+    }
+
+    /// Query all grouped results from a maintainer based on aggregation type
+    ///
+    /// Uses runtime type checking to call the appropriate getAll* method.
+    private func queryFromMaintainer(
+        maintainer: any IndexMaintainer<T>,
+        aggregation: AggregationSpec,
+        transaction: any TransactionProtocol
+    ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
+
+        switch aggregation.type {
+        case .count:
+            if let countMaintainer = maintainer as? CountIndexMaintainer<T> {
+                let counts = try await countMaintainer.getAllCounts(transaction: transaction)
+                return counts.map { ($0.grouping, FieldValue.int64($0.count)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected CountIndexMaintainer but got \(type(of: maintainer))")
+
+        case .sum:
+            if let sumMaintainer = maintainer as? SumIndexMaintainer<T, Double> {
+                let sums = try await sumMaintainer.getAllSums(transaction: transaction)
+                return sums.map { ($0.grouping, FieldValue.double($0.sum)) }
+            }
+            if let sumMaintainer = maintainer as? SumIndexMaintainer<T, Int64> {
+                let sums = try await sumMaintainer.getAllSums(transaction: transaction)
+                return sums.map { ($0.grouping, FieldValue.double($0.sum)) }
+            }
+            if let sumMaintainer = maintainer as? SumIndexMaintainer<T, Int> {
+                let sums = try await sumMaintainer.getAllSums(transaction: transaction)
+                return sums.map { ($0.grouping, FieldValue.double($0.sum)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected SumIndexMaintainer but got \(type(of: maintainer))")
+
+        case .avg:
+            if let avgMaintainer = maintainer as? AverageIndexMaintainer<T, Double> {
+                let averages = try await avgMaintainer.getAllAverages(transaction: transaction)
+                return averages.map { ($0.grouping, FieldValue.double($0.average)) }
+            }
+            if let avgMaintainer = maintainer as? AverageIndexMaintainer<T, Int64> {
+                let averages = try await avgMaintainer.getAllAverages(transaction: transaction)
+                return averages.map { ($0.grouping, FieldValue.double($0.average)) }
+            }
+            if let avgMaintainer = maintainer as? AverageIndexMaintainer<T, Int> {
+                let averages = try await avgMaintainer.getAllAverages(transaction: transaction)
+                return averages.map { ($0.grouping, FieldValue.double($0.average)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected AverageIndexMaintainer but got \(type(of: maintainer))")
+
+        case .distinct:
+            if let distinctMaintainer = maintainer as? DistinctIndexMaintainer<T> {
+                let distincts = try await distinctMaintainer.getAllDistinctCounts(transaction: transaction)
+                return distincts.map { ($0.grouping, FieldValue.int64($0.estimated)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected DistinctIndexMaintainer but got \(type(of: maintainer))")
+
+        case .percentile(_, let p):
+            if let percentileMaintainer = maintainer as? PercentileIndexMaintainer<T> {
+                let percentiles = try await percentileMaintainer.getAllPercentiles(
+                    percentiles: [p],
+                    transaction: transaction
+                )
+                return percentiles.map { result in
+                    let value = result.values[p]
+                    return (result.grouping, value.map { FieldValue.double($0) })
+                }
+            }
+            throw AggregationQueryError.indexNotFound("Expected PercentileIndexMaintainer but got \(type(of: maintainer))")
+
+        case .min, .max:
+            // MIN/MAX indexes don't have getAllMins/getAllMaxs methods
+            // They store individual values for range queries
+            throw AggregationQueryError.indexNotFound("MIN/MAX aggregations don't support batch index queries")
+        }
+    }
+
+    /// Compute stable hash and dictionary for grouping elements
+    ///
+    /// - Parameter elements: Array of TupleElements from index
+    /// - Returns: Tuple of (stable hash, dictionary mapping field names to FieldValues)
+    private func computeGroupKeyHashAndDict(_ elements: [any TupleElement]) -> (UInt64, [String: FieldValue]) {
+        var groupKeyDict: [String: FieldValue] = [:]
+        var hash: UInt64 = 0
+
+        for (index, element) in elements.enumerated() {
+            let fieldValue = tupleElementToFieldValue(element)
+            let fieldName = index < groupByFieldNames.count ? groupByFieldNames[index] : "group_\(index)"
+            groupKeyDict[fieldName] = fieldValue
+
+            let positionedHash = fieldValue.stableHash() &+ UInt64(index)
+            hash ^= positionedHash
+        }
+
+        return (hash, groupKeyDict)
+    }
+
+    /// Convert TupleElement to FieldValue
+    private func tupleElementToFieldValue(_ element: any TupleElement) -> FieldValue {
+        if let str = element as? String {
+            return .string(str)
+        }
+        if let int = element as? Int64 {
+            return .int64(int)
+        }
+        if let int = element as? Int {
+            return .int64(Int64(int))
+        }
+        if let double = element as? Double {
+            return .double(double)
+        }
+        if let bool = element as? Bool {
+            return .bool(bool)
+        }
+        if let bytes = element as? [UInt8] {
+            return .data(Data(bytes))
+        }
+        // Default to string representation
+        return .string(String(describing: element))
+    }
+
+    // MARK: - Helper Functions
+
+    /// Build Index from IndexDescriptor
+    ///
+    /// Creates an Index runtime object from the IndexDescriptor metadata.
+    /// Most IndexMaintainers prefer keyPaths over rootExpression.
+    private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+        // Build rootExpression from keyPaths
+        let rootExpression: KeyExpression
+        if descriptor.keyPaths.isEmpty {
+            rootExpression = EmptyKeyExpression()
+        } else {
+            // Use the first keyPath's field name as a simple expression
+            // IndexMaintainers should use Index.keyPaths directly for accurate field extraction
+            let firstKeyPathString = String(describing: descriptor.keyPaths.first!)
+            let fieldName = extractFieldName(from: firstKeyPathString)
+            rootExpression = FieldKeyExpression(fieldName: fieldName)
+        }
+
+        return Index(
+            name: descriptor.name,
+            kind: descriptor.kind,
+            rootExpression: rootExpression,
+            keyPaths: descriptor.keyPaths,
+            subspaceKey: descriptor.name,
+            itemTypes: Set([persistableType]),
+            isUnique: descriptor.isUnique
+        )
+    }
+
+    /// Extract field name from KeyPath string representation
+    private static func extractFieldName(from keyPathString: String) -> String {
+        // Try to extract field name from various formats
+        // Format 1: "\Type.fieldName"
+        if let dotIndex = keyPathString.lastIndex(of: ".") {
+            let afterDot = keyPathString[keyPathString.index(after: dotIndex)...]
+            // Remove any trailing type info
+            if let parenIndex = afterDot.firstIndex(of: "(") {
+                return String(afterDot[..<parenIndex])
+            }
+            return String(afterDot)
+        }
+        // Fallback: return as-is
+        return keyPathString
     }
 }
 
