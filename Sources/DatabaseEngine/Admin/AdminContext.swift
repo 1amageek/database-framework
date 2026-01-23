@@ -40,6 +40,33 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         self.watchManager = WatchManager(container: container)
     }
 
+    // MARK: - Private: Metadata Subspace
+
+    /// Get metadata subspace for index state storage using DirectoryLayer
+    private func getMetadataSubspace() async throws -> Subspace {
+        let directoryLayer = DirectoryLayer(database: container.database)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+        return dirSubspace.subspace.subspace("index")
+    }
+
+    /// Get index build state from IndexStateManager
+    ///
+    /// Converts internal IndexState to public IndexBuildState
+    private func getIndexBuildState(_ indexName: String) async throws -> PublicIndexBuildState {
+        let indexSubspace = try await getMetadataSubspace()
+        let indexStateManager = IndexStateManager(container: container, subspace: indexSubspace)
+        let internalState = try await indexStateManager.state(of: indexName)
+
+        switch internalState {
+        case .readable:
+            return .ready
+        case .writeOnly:
+            return .building
+        case .disabled:
+            return .disabled
+        }
+    }
+
     // MARK: - Collection Statistics
 
     public func collectionStatistics<T: Persistable>(_ type: T.Type) async throws -> CollectionStatisticsPublic {
@@ -119,8 +146,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             return (count, Int64(sizeBytes))
         }
 
-        // Determine index state
-        let state: PublicIndexBuildState = .ready // TODO: Check actual state from metadata
+        // Determine index state from IndexStateManager
+        let state = try await getIndexBuildState(indexName)
 
         return IndexStatisticsPublic(
             indexName: indexName,
@@ -218,70 +245,196 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     // MARK: - Index Management
 
+    /// Rebuild an index from scratch
+    ///
+    /// This method uses the EntityIndexBuilder to properly rebuild the index
+    /// using the correct IndexMaintainer for the index type.
+    ///
+    /// **Process**:
+    /// 1. Disable the index
+    /// 2. Clear existing index entries
+    /// 3. Enable index (write-only mode)
+    /// 4. Scan all items and rebuild index entries via IndexMaintainer
+    /// 5. Mark index as readable
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index to rebuild
+    ///   - progress: Optional progress callback (0.0 to 1.0)
     public func rebuildIndex(_ indexName: String, progress: (@Sendable (Double) -> Void)?) async throws {
         // Find the index and its owning entity
-        guard let (entity, _) = findEntityAndIndex(name: indexName) else {
+        guard let (entity, indexDescriptor) = findEntityAndIndex(name: indexName) else {
             throw AdminError.indexNotFound(indexName)
         }
 
+        progress?(0.05)
+
         // Resolve directory for the entity
         let subspace = try await resolveDirectoryForEntity(entity)
-        let indexSubspace = subspace.subspace(SubspaceKey.indexes).subspace(indexName)
-        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(entity.name)
+        let indexSubspace = subspace.subspace(SubspaceKey.indexes)
+        let metadataSubspace = try await getMetadataSubspace()
 
-        // Simple rebuild: clear and re-scan
-        // Note: For production use, this should use OnlineIndexer for non-blocking rebuilds
-        try await container.database.withTransaction(configuration: .batch) { transaction in
-            // Clear existing index entries
-            let (indexBegin, indexEnd) = indexSubspace.range()
-            transaction.clearRange(beginKey: indexBegin, endKey: indexEnd)
-        }
+        // Create IndexStateManager
+        let indexStateManager = IndexStateManager(container: container, subspace: metadataSubspace)
 
         progress?(0.1)
 
-        // Count items for progress tracking
-        let (itemBegin, itemEnd) = itemSubspace.range()
+        // Step 1: Disable index and clear existing entries atomically
+        let indexDataSubspace = indexSubspace.subspace(indexName)
+        let indexRange = indexDataSubspace.range()
 
-        let itemCount: Int64 = try await container.database.withTransaction(configuration: .batch) { transaction in
-            var count: Int64 = 0
-            for try await _ in transaction.getRange(begin: itemBegin, end: itemEnd, snapshot: true) {
-                count += 1
-            }
-            return count
+        try await container.database.withTransaction(configuration: .batch) { transaction in
+            // Disable index (from any state)
+            try await indexStateManager.disable(indexName, transaction: transaction)
+
+            // Clear existing index data
+            transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
+
+            // Enable index (disabled → writeOnly)
+            try await indexStateManager.enable(indexName, transaction: transaction)
         }
 
         progress?(0.2)
 
-        // Re-index items in batches
-        // Note: This is a simplified implementation. Full implementation would use OnlineIndexer
-        // with proper IndexMaintainer integration
-        let totalItems = itemCount
-        var processedCount: Int64 = 0
+        // Step 2: Build Index object from IndexDescriptor
+        let index = buildIndex(from: indexDescriptor, persistableType: entity.name)
 
-        try await container.database.withTransaction(configuration: .batch) { [totalItems] transaction in
-            for try await (key, value) in transaction.getRange(begin: itemBegin, end: itemEnd, snapshot: true) {
-                // Note: Actual indexing would require IndexMaintainer
-                // This is a placeholder showing the structure
-                _ = key
-                _ = value
-            }
+        // Step 3: Get index configurations from container
+        let configs = container.indexConfigurations[indexName] ?? []
+
+        progress?(0.3)
+
+        // Step 4: Build index using EntityIndexBuilder
+        // This handles type dispatch and uses OnlineIndexer internally
+        do {
+            try await EntityIndexBuilder.buildIndex(
+                forPersistableType: entity.persistableType,
+                container: container,
+                storeSubspace: subspace,
+                index: index,
+                indexStateManager: indexStateManager,
+                batchSize: 100,
+                configurations: configs
+            )
+        } catch EntityIndexBuilderError.entityNotRegistered {
+            throw AdminError.operationFailed(
+                "Cannot rebuild index '\(indexName)' for entity '\(entity.name)': " +
+                "Entity not registered in IndexBuilderRegistry. " +
+                "Ensure FDBContainer is created with Schema([YourType.self, ...])"
+            )
+        } catch EntityIndexBuilderError.typeNotBuildable(_, let reason) {
+            throw AdminError.operationFailed("Cannot rebuild index '\(indexName)': \(reason)")
         }
 
-        // Report final progress
-        _ = processedCount
-        _ = totalItems
         progress?(1.0)
     }
 
-    public func updateStatistics() async throws {
-        // Update statistics for all types - placeholder implementation
-        // Would ideally call StatisticsManager.collectStatistics for each type
+    /// Build Index from IndexDescriptor
+    ///
+    /// Creates an Index object from an IndexDescriptor for use with IndexMaintainers.
+    private func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
+        let rootExpression: KeyExpression
+        if descriptor.keyPaths.isEmpty {
+            rootExpression = EmptyKeyExpression()
+        } else {
+            let firstKeyPathString = String(describing: descriptor.keyPaths.first!)
+            let fieldName = extractFieldName(from: firstKeyPathString)
+            rootExpression = FieldKeyExpression(fieldName: fieldName)
+        }
+
+        return Index(
+            name: descriptor.name,
+            kind: descriptor.kind,
+            rootExpression: rootExpression,
+            keyPaths: descriptor.keyPaths,
+            subspaceKey: descriptor.name,
+            itemTypes: Set([persistableType]),
+            isUnique: descriptor.isUnique
+        )
     }
 
+    /// Extract field name from keyPath string representation
+    private func extractFieldName(from keyPathString: String) -> String {
+        if let dotIndex = keyPathString.lastIndex(of: ".") {
+            let afterDot = keyPathString[keyPathString.index(after: dotIndex)...]
+            if let parenIndex = afterDot.firstIndex(of: "(") {
+                return String(afterDot[..<parenIndex])
+            }
+            return String(afterDot)
+        }
+        return keyPathString
+    }
+
+    /// Update statistics for all types in the schema
+    ///
+    /// Collects PostgreSQL ANALYZE-style statistics for all entities:
+    /// - Table row counts and average row sizes
+    /// - Per-field cardinality (HyperLogLog++)
+    /// - Most Common Values (MCV) lists
+    /// - Histograms (equi-depth)
+    /// - Null fractions
+    ///
+    /// **Note**: For complete statistics collection, use the typed version
+    /// `updateStatistics(for: Type.self)` for each type. This bulk method
+    /// only collects index-level statistics due to type erasure limitations.
+    public func updateStatistics() async throws {
+        // Get statistics subspace from metadata
+        let statisticsSubspace = try await getStatisticsSubspace()
+        let manager = StatisticsManager(
+            container: container,
+            subspace: statisticsSubspace,
+            configuration: .default
+        )
+
+        // Collect index statistics for all indexes
+        for entity in container.schema.entities {
+            let subspace = try await resolveDirectoryForEntity(entity)
+            let indexSubspace = subspace.subspace(SubspaceKey.indexes)
+
+            for indexDescriptor in entity.indexDescriptors {
+                let indexDataSubspace = indexSubspace.subspace(indexDescriptor.name)
+                try await manager.collectIndexStatistics(
+                    index: indexDescriptor,
+                    indexSubspace: indexDataSubspace
+                )
+            }
+        }
+    }
+
+    /// Update statistics for a specific type
+    ///
+    /// Implements PostgreSQL ANALYZE-style statistics collection:
+    /// 1. Sample records using reservoir sampling
+    /// 2. Build MCV (Most Common Values) list
+    /// 3. Build histogram excluding MCV values
+    /// 4. Estimate cardinality using HyperLogLog++
+    ///
+    /// - Parameter type: The Persistable type to analyze
     public func updateStatistics<T: Persistable>(for type: T.Type) async throws {
-        // This would ideally use StatisticsManager.collectStatistics
-        // Placeholder implementation
-        _ = try await container.store(for: type)
+        // Get statistics subspace from metadata
+        let statisticsSubspace = try await getStatisticsSubspace()
+        let manager = StatisticsManager(
+            container: container,
+            subspace: statisticsSubspace,
+            configuration: .default
+        )
+
+        // Get data store for this type
+        let dataStore = try await container.store(for: type)
+
+        // Collect statistics using StatisticsManager
+        try await manager.collectStatistics(
+            for: type,
+            using: dataStore,
+            sampleRate: nil,
+            fields: nil
+        )
+    }
+
+    /// Get statistics subspace from DirectoryLayer
+    private func getStatisticsSubspace() async throws -> Subspace {
+        let directoryLayer = DirectoryLayer(database: container.database)
+        let dirSubspace = try await directoryLayer.createOrOpen(path: ["_metadata", "statistics"])
+        return dirSubspace.subspace
     }
 
     // MARK: - FDB-Specific Features
