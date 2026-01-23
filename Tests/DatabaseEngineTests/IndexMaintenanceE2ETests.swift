@@ -119,10 +119,38 @@ struct IndexMaintenanceE2ETests {
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
         for descriptor in type.indexDescriptors {
-            // Enable: disabled -> writeOnly
-            try await indexStateManager.enable(descriptor.name)
-            // Make readable: writeOnly -> readable
-            try await indexStateManager.makeReadable(descriptor.name)
+            // Use retry loop to handle concurrent state transitions from parallel tests
+            let maxAttempts = 3
+            for attempt in 1...maxAttempts {
+                let currentState = try await indexStateManager.state(of: descriptor.name)
+
+                switch currentState {
+                case .disabled:
+                    do {
+                        try await indexStateManager.enable(descriptor.name)
+                        try await indexStateManager.makeReadable(descriptor.name)
+                        break  // Success
+                    } catch let error as IndexStateError {
+                        // Another test may have enabled it concurrently
+                        if case .invalidTransition = error, attempt < maxAttempts {
+                            continue  // Retry
+                        }
+                        throw error
+                    }
+                case .writeOnly:
+                    do {
+                        try await indexStateManager.makeReadable(descriptor.name)
+                        break  // Success
+                    } catch let error as IndexStateError {
+                        if case .invalidTransition = error, attempt < maxAttempts {
+                            continue
+                        }
+                        throw error
+                    }
+                case .readable:
+                    break  // Already readable, success
+                }
+            }
         }
     }
 
