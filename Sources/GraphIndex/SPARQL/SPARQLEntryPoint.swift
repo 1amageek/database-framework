@@ -154,6 +154,9 @@ public enum SPARQLQueryError: Error, CustomStringConvertible {
     /// No patterns specified
     case noPatterns
 
+    /// Invalid GROUP BY
+    case invalidGroupBy(String)
+
     public var description: String {
         switch self {
         case .indexNotConfigured:
@@ -168,6 +171,8 @@ public enum SPARQLQueryError: Error, CustomStringConvertible {
             return "Variable \(variable) conflict: existing='\(existing)', new='\(new)'"
         case .noPatterns:
             return "No patterns specified in query"
+        case .invalidGroupBy(let reason):
+            return "Invalid GROUP BY: \(reason)"
         }
     }
 }
