@@ -9,6 +9,39 @@ import DatabaseEngine
 import FoundationDB
 import Graph
 
+// MARK: - Seeded Random Number Generator
+
+/// A seeded random number generator for deterministic shuffling
+///
+/// Uses xorshift128+ algorithm for fast, high-quality pseudo-random numbers.
+/// Reference: Vigna, S. (2017). "Further scramblings of Marsaglia's xorshift generators"
+private struct SeededRandomNumberGenerator: RandomNumberGenerator {
+    private var state: (UInt64, UInt64)
+
+    init(seed: UInt64) {
+        // Initialize state using SplitMix64 to expand the seed
+        var s = seed
+        func splitMix64() -> UInt64 {
+            s &+= 0x9e3779b97f4a7c15
+            var z = s
+            z = (z ^ (z >> 30)) &* 0xbf58476d1ce4e5b9
+            z = (z ^ (z >> 27)) &* 0x94d049bb133111eb
+            return z ^ (z >> 31)
+        }
+        state = (splitMix64(), splitMix64())
+    }
+
+    mutating func next() -> UInt64 {
+        var s1 = state.0
+        let s0 = state.1
+        let result = s0 &+ s1
+        state.0 = s0
+        s1 ^= s1 << 23
+        state.1 = s1 ^ s0 ^ (s1 >> 18) ^ (s0 >> 5)
+        return result
+    }
+}
+
 // MARK: - CommunityDetector
 
 /// Community detection using Label Propagation Algorithm (LPA)
@@ -118,29 +151,42 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         var iteration = 0
         var changed = true
 
+        // Create seeded RNG if seed is provided
+        var seededRNG: SeededRandomNumberGenerator? = configuration.seed.map { SeededRandomNumberGenerator(seed: $0) }
+
         while iteration < configuration.maxIterations && changed {
             iteration += 1
             changed = false
 
             // Shuffle nodes for randomization (important for LPA convergence)
-            let shuffled = Array(nodes).shuffled()
+            // Use seeded RNG for deterministic shuffling if seed is provided
+            //
+            // Note: When using seeded RNG, we sort nodes first to ensure deterministic
+            // ordering regardless of Set iteration order (which is unspecified in Swift).
+            let shuffled: [String]
+            if var rng = seededRNG {
+                var nodeArray = Array(nodes).sorted()  // Sort for deterministic base order
+                nodeArray.shuffle(using: &rng)
+                seededRNG = rng  // Update the RNG state
+                shuffled = nodeArray
+            } else {
+                shuffled = Array(nodes).shuffled()
+            }
 
-            // Process in batches
-            for batchStart in stride(from: 0, to: shuffled.count, by: configuration.batchSize) {
-                let batchEnd = min(batchStart + configuration.batchSize, shuffled.count)
-                let batch = Array(shuffled[batchStart..<batchEnd])
-
-                let updates = try await computeLabelUpdates(
-                    nodes: batch,
+            // Process nodes synchronously (update labels immediately after each node)
+            // This is the standard LPA approach that avoids oscillation on small cliques.
+            // Processing order is randomized to prevent bias.
+            for node in shuffled {
+                let newLabel = try await computeSingleNodeUpdate(
+                    node: node,
                     currentLabels: labels,
-                    edgeLabel: edgeLabel
+                    edgeLabel: edgeLabel,
+                    rng: &seededRNG
                 )
 
-                for (node, newLabel) in updates {
-                    if labels[node] != newLabel {
-                        labels[node] = newLabel
-                        changed = true
-                    }
+                if let label = newLabel, labels[node] != label {
+                    labels[node] = label
+                    changed = true
                 }
             }
         }
@@ -223,11 +269,26 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
         var changed = true
         var iteration = 0
 
+        // Create seeded RNG if seed is provided
+        var seededRNG: SeededRandomNumberGenerator? = configuration.seed.map { SeededRandomNumberGenerator(seed: $0) }
+
         while changed && iteration < configuration.maxIterations {
             iteration += 1
             changed = false
 
-            for n in neighborhood.shuffled() {
+            // Shuffle with determinism support
+            // Note: Sort before shuffle for deterministic results (Set order is unspecified)
+            let shuffledNeighborhood: [String]
+            if var rng = seededRNG {
+                var nodeArray = Array(neighborhood).sorted()
+                nodeArray.shuffle(using: &rng)
+                seededRNG = rng
+                shuffledNeighborhood = nodeArray
+            } else {
+                shuffledNeighborhood = Array(neighborhood).shuffled()
+            }
+
+            for n in shuffledNeighborhood {
                 let neighbors = try await getNeighbors(of: n, edgeLabel: edgeLabel)
                     .filter { neighborhood.contains($0) }
 
@@ -241,10 +302,23 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
                 }
 
                 let maxCount = labelCounts.values.max() ?? 0
-                let candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
+                var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
 
-                if let newLabel = candidates.randomElement(), newLabel != labels[n] {
-                    labels[n] = newLabel
+                // Sort for deterministic selection when using seeded RNG
+                if seededRNG != nil {
+                    candidates.sort()
+                }
+
+                let newLabel: String?
+                if var generator = seededRNG {
+                    newLabel = candidates.randomElement(using: &generator)
+                    seededRNG = generator
+                } else {
+                    newLabel = candidates.randomElement()
+                }
+
+                if let label = newLabel, label != labels[n] {
+                    labels[n] = label
                     changed = true
                 }
             }
@@ -264,6 +338,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     private func collectAllNodes(edgeLabel: String?) async throws -> Set<String> {
         try await database.withTransaction(configuration: .batch) { transaction in
             var nodes: Set<String> = []
+            var edgeCount = 0
 
             for try await edgeInfo in self.scanner.scanAllEdges(
                 edgeLabel: edgeLabel,
@@ -271,7 +346,12 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             ) {
                 nodes.insert(edgeInfo.source)
                 nodes.insert(edgeInfo.target)
+                edgeCount += 1
             }
+
+            #if DEBUG
+            print("[CommunityDetector] collectAllNodes: found \(nodes.count) nodes from \(edgeCount) edges")
+            #endif
 
             return nodes
         }
@@ -281,7 +361,8 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     private func computeLabelUpdates(
         nodes: [String],
         currentLabels: [String: String],
-        edgeLabel: String?
+        edgeLabel: String?,
+        rng: inout SeededRandomNumberGenerator?
     ) async throws -> [(node: String, label: String)] {
         var updates: [(node: String, label: String)] = []
 
@@ -298,16 +379,71 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
                 }
             }
 
-            // Find most common label (random tie-breaking)
+            // Find most common label (deterministic tie-breaking when seeded)
             let maxCount = labelCounts.values.max() ?? 0
-            let candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
+            var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
 
-            if let newLabel = candidates.randomElement() {
-                updates.append((node, newLabel))
+            // Sort candidates for deterministic selection when using seeded RNG
+            if rng != nil {
+                candidates.sort()
+            }
+
+            let newLabel: String?
+            if var generator = rng {
+                newLabel = candidates.randomElement(using: &generator)
+                rng = generator  // Update the RNG state
+            } else {
+                newLabel = candidates.randomElement()
+            }
+
+            if let label = newLabel {
+                updates.append((node, label))
             }
         }
 
         return updates
+    }
+
+    /// Compute label update for a single node (for synchronous LPA)
+    ///
+    /// Returns the new label for the node, or nil if no update is needed
+    /// (e.g., when the node has no neighbors).
+    private func computeSingleNodeUpdate(
+        node: String,
+        currentLabels: [String: String],
+        edgeLabel: String?,
+        rng: inout SeededRandomNumberGenerator?
+    ) async throws -> String? {
+        let neighbors = try await getNeighbors(of: node, edgeLabel: edgeLabel)
+
+        guard !neighbors.isEmpty else { return nil }
+
+        // Count label frequencies among neighbors
+        var labelCounts: [String: Int] = [:]
+        for neighbor in neighbors {
+            if let label = currentLabels[neighbor] {
+                labelCounts[label, default: 0] += 1
+            }
+        }
+
+        // Find most common label (deterministic tie-breaking when seeded)
+        let maxCount = labelCounts.values.max() ?? 0
+        var candidates = labelCounts.filter { $0.value == maxCount }.map { $0.key }
+
+        // Sort candidates for deterministic selection when using seeded RNG
+        if rng != nil {
+            candidates.sort()
+        }
+
+        let newLabel: String?
+        if var generator = rng {
+            newLabel = candidates.randomElement(using: &generator)
+            rng = generator  // Update the RNG state
+        } else {
+            newLabel = candidates.randomElement()
+        }
+
+        return newLabel
     }
 
     /// Get all neighbors of a node (both directions) using GraphEdgeScanner
@@ -335,6 +471,12 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             ) {
                 neighbors.insert(edgeInfo.source)
             }
+
+            #if DEBUG
+            if neighbors.isEmpty {
+                print("[CommunityDetector] getNeighbors(\(nodeID)): NO NEIGHBORS FOUND")
+            }
+            #endif
 
             return Array(neighbors)
         }
