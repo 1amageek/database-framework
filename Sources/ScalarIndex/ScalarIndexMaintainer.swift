@@ -85,6 +85,10 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// For array-typed fields (e.g., `[String]` in To-Many relationships),
     /// creates one index entry per array element instead of a single entry.
     ///
+    /// **Covering Index**:
+    /// When the index has `storedFieldNames`, the value contains a Tuple of those
+    /// field values. This enables index-only scans without primary key lookup.
+    ///
     /// **Uniqueness check**: Performed by IndexMaintenanceService before index update
     /// - This maintainer only handles index entry creation/deletion
     /// - Uniqueness validation is handled at a higher level (see IndexMaintenanceService)
@@ -109,9 +113,9 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Add new index entries
         if let newItem = newItem {
             let newKeys = try buildIndexKeys(for: newItem)
+            let value = try buildCoveringValue(for: newItem)
             for key in newKeys {
-                // Value is empty for scalar indexes
-                transaction.setValue([], for: key)
+                transaction.setValue(value, for: key)
             }
         }
     }
@@ -128,8 +132,9 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         let keys = try buildIndexKeys(for: item, id: id)
+        let value = try buildCoveringValue(for: item)
         for key in keys {
-            transaction.setValue([], for: key)
+            transaction.setValue(value, for: key)
         }
     }
 
@@ -249,5 +254,52 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
             try validateKeySize(key)
             return [key]
         }
+    }
+
+    /// Build covering index value for an item
+    ///
+    /// If the index has `storedFieldNames` (covering index), extracts those
+    /// field values and packs them into a Tuple. For non-covering indexes,
+    /// returns an empty value.
+    ///
+    /// **Covering Index Value Format**:
+    /// - Non-covering: `[]` (empty)
+    /// - Covering: `Tuple(field1Value, field2Value, ...)` packed as bytes
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Index on [\.category] with storedFields: [\.name, \.price]
+    /// // Item: Product(category: "electronics", name: "Laptop", price: 999)
+    /// // Value: Tuple("Laptop", 999) packed as bytes
+    /// ```
+    private func buildCoveringValue(for item: Item) throws -> [UInt8] {
+        // Check if this is a covering index
+        guard let coveringKind = index.kind as? any CoveringIndexKind else {
+            return []
+        }
+
+        let storedFieldNames = coveringKind.storedFieldNames
+        if storedFieldNames.isEmpty {
+            return []
+        }
+
+        // Extract stored field values using dynamicMember subscript
+        var storedElements: [any TupleElement] = []
+        for fieldName in storedFieldNames {
+            if let rawValue = item[dynamicMember: fieldName] {
+                if let tupleElement = rawValue as? any TupleElement {
+                    storedElements.append(tupleElement)
+                } else {
+                    // Convert to string as fallback
+                    storedElements.append(String(describing: rawValue))
+                }
+            } else {
+                // Use empty string for nil values
+                storedElements.append("")
+            }
+        }
+
+        // Pack as Tuple
+        return Tuple(storedElements).pack()
     }
 }
