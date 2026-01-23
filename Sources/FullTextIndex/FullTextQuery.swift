@@ -36,6 +36,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private var matchMode: TextMatchMode = .all
     private var fetchLimit: Int?
     private var bm25Params: BM25Parameters = .default
+    private var facetFields: [String] = []
+    private var facetLimit: Int = 10
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
         self.queryContext = queryContext
@@ -77,6 +79,32 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    /// Add faceted search for specified fields
+    ///
+    /// Facets provide aggregated counts for each unique value in the specified fields,
+    /// allowing users to filter search results by category, brand, etc.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let results = try await context.search(Product.self)
+    ///     .fullText(\.description)
+    ///     .terms(["laptop"])
+    ///     .facets(["category", "brand"], limit: 10)
+    ///     .executeWithFacets()
+    /// // results.facets["category"] = [("electronics", 42), ("computers", 35)]
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - fields: Field names to compute facets for
+    ///   - limit: Maximum number of values per field (default: 10)
+    /// - Returns: Updated query builder
+    public func facets(_ fields: [String], limit: Int = 10) -> Self {
+        var copy = self
+        copy.facetFields = fields
+        copy.facetLimit = limit
+        return copy
+    }
+
     /// Execute the full-text search
     ///
     /// - Returns: Array of matching items
@@ -111,6 +139,141 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         return items
+    }
+
+    /// Execute the full-text search with faceted results
+    ///
+    /// Returns matching items along with facet counts for specified fields.
+    /// Facet counts are computed directly from matching items, allowing flexible
+    /// faceting without requiring pre-indexed facet data.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let results = try await context.search(Product.self)
+    ///     .fullText(\.description)
+    ///     .terms(["laptop"])
+    ///     .facets(["category", "brand"], limit: 10)
+    ///     .executeWithFacets()
+    ///
+    /// print("Found \(results.items.count) items")
+    /// for (field, values) in results.facets {
+    ///     print("\(field):")
+    ///     for (value, count) in values {
+    ///         print("  \(value): \(count)")
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// - Returns: FacetedSearchResult containing items and facet counts
+    /// - Throws: Error if search fails
+    public func executeWithFacets() async throws -> FacetedSearchResult<T> {
+        guard !searchTerms.isEmpty else {
+            return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
+        }
+
+        let indexName = buildIndexName()
+
+        // Get index subspace
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute search within transaction
+        let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
+            try await self.searchFullText(
+                terms: self.searchTerms,
+                matchMode: self.matchMode,
+                indexSubspace: indexSubspace,
+                transaction: transaction
+            )
+        }
+
+        // Fetch all matching items
+        let allItems = try await queryContext.fetchItems(ids: matchingIds, type: T.self)
+        let totalCount = allItems.count
+
+        // Compute facet counts from items
+        var facetCounts: [String: [(value: String, count: Int64)]] = [:]
+
+        if !facetFields.isEmpty {
+            facetCounts = computeFacetsFromItems(allItems, fields: facetFields, limit: facetLimit)
+        }
+
+        // Apply limit if specified
+        var items = allItems
+        if let limit = fetchLimit, items.count > limit {
+            items = Array(items.prefix(limit))
+        }
+
+        return FacetedSearchResult(
+            items: items,
+            facets: facetCounts,
+            totalCount: totalCount
+        )
+    }
+
+    /// Compute facet counts directly from items
+    ///
+    /// This allows faceting without requiring pre-indexed facet data.
+    ///
+    /// - Parameters:
+    ///   - items: Items to compute facets for
+    ///   - fields: Field names to compute facets for
+    ///   - limit: Maximum number of values per field
+    /// - Returns: Dictionary of field -> [(value, count)] sorted by count descending
+    private func computeFacetsFromItems(
+        _ items: [T],
+        fields: [String],
+        limit: Int
+    ) -> [String: [(value: String, count: Int64)]] {
+        var fieldCounts: [String: [String: Int64]] = [:]
+
+        // Initialize counts for each field
+        for field in fields {
+            fieldCounts[field] = [:]
+        }
+
+        // Count values for each field
+        for item in items {
+            for field in fields {
+                let values = extractFieldValues(from: item, field: field)
+                for value in values {
+                    fieldCounts[field]![value, default: 0] += 1
+                }
+            }
+        }
+
+        // Sort and limit results
+        var result: [String: [(value: String, count: Int64)]] = [:]
+        for (field, counts) in fieldCounts {
+            let sorted = counts.sorted { $0.value > $1.value }
+            result[field] = Array(sorted.prefix(limit).map { (value: $0.key, count: $0.value) })
+        }
+
+        return result
+    }
+
+    /// Extract field values from an item for faceting
+    private func extractFieldValues(from item: T, field: String) -> [String] {
+        guard let value = item[dynamicMember: field] else {
+            return []
+        }
+
+        // Handle arrays
+        if let array = value as? [String] {
+            return array
+        }
+
+        // Handle single values
+        if let string = value as? String {
+            return [string]
+        }
+
+        // Handle other types by converting to string
+        if let convertible = value as? CustomStringConvertible {
+            return [convertible.description]
+        }
+
+        return []
     }
 
     /// Search full-text index and return matching IDs
