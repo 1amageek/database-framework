@@ -154,7 +154,10 @@ public final class OWLReasoner: Sendable {
 
         self.tableauxReasoner = TableauxReasoner(
             ontology: ontology,
-            maxExpansionSteps: configuration.maxExpansionSteps
+            configuration: TableauxReasoner.Configuration(
+                maxExpansionSteps: configuration.maxExpansionSteps,
+                timeout: configuration.timeout
+            )
         )
         self.regularityChecker = OWLDLRegularityChecker()
         self.datatypeValidator = OWLDatatypeValidator()
