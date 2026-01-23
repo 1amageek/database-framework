@@ -87,6 +87,38 @@ extension VectorIndexKind: IndexKindMaintainable {
                     idExpression: idExpression,
                     parameters: params
                 )
+
+            case .ivf(let ivfParams):
+                // IVF requested - create IVF maintainer
+                let params = IVFParameters(
+                    nlist: ivfParams.nlist,
+                    nprobe: ivfParams.nprobe,
+                    kmeansIterations: ivfParams.kmeansIterations
+                )
+                return IVFIndexMaintainer<Item>(
+                    index: index,
+                    dimensions: dimensions,
+                    metric: metric,
+                    subspace: indexSubspace,
+                    idExpression: idExpression,
+                    parameters: params
+                )
+
+            case .pq(let pqParams):
+                // PQ requested - create PQ maintainer
+                let params = PQParameters(
+                    m: pqParams.m,
+                    ksub: 256,
+                    niter: pqParams.niter
+                )
+                return PQIndexMaintainer<Item>(
+                    index: index,
+                    dimensions: dimensions,
+                    metric: metric,
+                    subspace: indexSubspace,
+                    idExpression: idExpression,
+                    parameters: params
+                )
             }
         }
 
