@@ -269,6 +269,21 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         return Int64(bitPattern: inverted)
     }
 
+    /// Extract Int64 from a TupleElement that may be decoded as Int or Int64
+    ///
+    /// FoundationDB's Tuple layer may decode small integers (including 0) as Int
+    /// instead of Int64. This helper handles both cases.
+    private func extractInt64(from element: (any TupleElement)?) -> Int64? {
+        guard let element = element else { return nil }
+        if let value = element as? Int64 {
+            return value
+        }
+        if let value = element as? Int {
+            return Int64(value)
+        }
+        return nil
+    }
+
     /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
         // The last field in keyPaths is the score field
@@ -408,8 +423,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let posTuple = try Tuple.unpack(from: posBytes)
-        guard let windowId = posTuple[0] as? Int64,
-              let score = posTuple[1] as? Int64 else {
+        guard let windowId = extractInt64(from: posTuple[0]),
+              let score = extractInt64(from: posTuple[1]) else {
             return
         }
 
@@ -444,8 +459,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let posKey = posSubspace.pack(pk)
         if let posBytes = try await transaction.getValue(for: posKey) {
             let posTuple = try Tuple.unpack(from: posBytes)
-            if let oldWindowId = posTuple[0] as? Int64,
-               let oldScore = posTuple[1] as? Int64 {
+            if let oldWindowId = extractInt64(from: posTuple[0]),
+               let oldScore = extractInt64(from: posTuple[1]) {
                 // Extract old grouping
                 var oldGrouping: [any TupleElement] = []
                 for i in 2..<posTuple.count {
@@ -486,36 +501,23 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     }
 
     /// Cleanup old windows beyond windowCount
+    ///
+    /// Uses `clearRange` for efficient bulk deletion without needing to scan keys.
+    /// This avoids issues with early `break` from async sequences conflicting with commit.
     private func cleanupOldWindows(
         currentWindowId: Int64,
         transaction: any TransactionProtocol
     ) async throws {
         let oldestAllowedWindow = currentWindowId - Int64(windowCount)
 
-        // Scan for old windows and delete
-        let range = windowSubspace.range()
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
-            snapshot: false
-        )
+        // Guard: nothing to clean up if oldestAllowedWindow <= 0
+        guard oldestAllowedWindow > 0 else { return }
 
-        var keysToDelete: [FDB.Bytes] = []
-        for try await (key, _) in sequence {
-            guard windowSubspace.contains(key) else { break }
-
-            let keyTuple = try windowSubspace.unpack(key)
-            if let keyWindowId = keyTuple[0] as? Int64, keyWindowId < oldestAllowedWindow {
-                keysToDelete.append(key)
-            } else {
-                // Windows are ordered, so we can stop early
-                break
-            }
-        }
-
-        for key in keysToDelete {
-            transaction.clear(key: key)
-        }
+        // Use clearRange for efficient bulk deletion
+        // Delete all window entries with windowId < oldestAllowedWindow
+        let startKey = windowSubspace.pack(Tuple([Int64(0)]))
+        let endKey = windowSubspace.pack(Tuple([oldestAllowedWindow]))
+        transaction.clearRange(beginKey: startKey, endKey: endKey)
     }
 
     // MARK: - Query Methods
@@ -639,8 +641,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let posTuple = try Tuple.unpack(from: posBytes)
-        guard let recordWindowId = posTuple[0] as? Int64,
-              let score = posTuple[1] as? Int64,
+        guard let recordWindowId = extractInt64(from: posTuple[0]),
+              let score = extractInt64(from: posTuple[1]),
               recordWindowId == currentWindowId else {
             return nil
         }
@@ -691,11 +693,353 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
         for try await (key, _) in sequence {
             let keyTuple = try metaSubspace.subspace("start").unpack(key)
-            if let wid = keyTuple[0] as? Int64 {
+            if let wid = extractInt64(from: keyTuple[0]) {
                 windowIds.append(wid)
             }
         }
 
         return windowIds.sorted(by: >)  // Newest first
+    }
+
+    // MARK: - Bottom-K Queries
+
+    /// Get bottom K entries (lowest scores) in current window
+    ///
+    /// **Performance**: O(total entries) due to reverse scan requirement.
+    /// For large datasets, consider using a separate index sorted by ascending score.
+    ///
+    /// - Parameters:
+    ///   - k: Number of entries to return
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Array of (primaryKey, score) tuples ordered by ascending score
+    public func getBottomK(
+        k: Int,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> [(pk: Tuple, score: Int64)] {
+        let now = Date()
+        let currentWindowId = windowId(for: now)
+
+        return try await getBottomK(
+            k: k,
+            windowId: currentWindowId,
+            grouping: grouping,
+            transaction: transaction
+        )
+    }
+
+    /// Get bottom K entries (lowest scores) in a specific window
+    ///
+    /// **Performance**: O(n) where n is total entries in the window.
+    /// The index is optimized for top-K queries (descending score order).
+    /// For bottom-K, we scan and keep a sliding window of the K lowest scores.
+    ///
+    /// - Parameters:
+    ///   - k: Number of entries to return
+    ///   - windowId: Window ID to query
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Array of (primaryKey, score) tuples ordered by ascending score
+    public func getBottomK(
+        k: Int,
+        windowId: Int64,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> [(pk: Tuple, score: Int64)] {
+        // Build range for this window (optionally with grouping)
+        var prefixElements: [any TupleElement] = [windowId]
+        if let g = grouping {
+            prefixElements.append(contentsOf: g)
+        }
+
+        let rangeStart = windowSubspace.pack(Tuple(prefixElements))
+        let rangeEnd: FDB.Bytes
+        do {
+            rangeEnd = try FDB.strinc(rangeStart)
+        } catch {
+            rangeEnd = rangeStart + [0xFF]
+        }
+
+        // Forward iteration - collect all entries, then return last K
+        // Since scores are stored inverted, forward scan gives highest scores first
+        // So we collect all and take the tail (lowest scores)
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(rangeStart),
+            endSelector: .firstGreaterOrEqual(rangeEnd),
+            snapshot: true
+        )
+
+        // Use a sliding window to keep only the last K entries (lowest scores)
+        var allEntries: [(pk: Tuple, score: Int64)] = []
+
+        for try await (key, _) in sequence {
+            guard windowSubspace.contains(key) else { break }
+
+            let keyTuple = try windowSubspace.unpack(key)
+
+            let groupingCount = grouping?.count ?? 0
+            let invertedScoreIndex = 1 + groupingCount
+
+            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
+                continue
+            }
+
+            // Reverse the inversion
+            let unsigned = UInt64(bitPattern: invertedScore)
+            let score = Int64(bitPattern: UInt64.max - unsigned)
+
+            // Extract primary key
+            var pkElements: [any TupleElement] = []
+            for i in (invertedScoreIndex + 1)..<keyTuple.count {
+                if let elem = keyTuple[i] {
+                    pkElements.append(elem)
+                }
+            }
+
+            allEntries.append((pk: Tuple(pkElements), score: score))
+        }
+
+        // Return last K entries (lowest scores), reversed to ascending order
+        let bottomK = Array(allEntries.suffix(k))
+        return bottomK.reversed()
+    }
+
+    // MARK: - Percentile Queries
+
+    /// Get score at a given percentile in current window
+    ///
+    /// **Time Complexity**: O(n) where n is the total number of entries
+    ///
+    /// **Percentile Calculation**: Uses the "exclusive" method where
+    /// percentile p returns the score where approximately p% of scores are below it.
+    ///
+    /// - Parameters:
+    ///   - percentile: Percentile value between 0.0 and 1.0 (e.g., 0.5 for median)
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Score at the given percentile, or nil if no entries
+    public func getPercentile(
+        _ percentile: Double,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> Int64? {
+        let now = Date()
+        let currentWindowId = windowId(for: now)
+
+        return try await getPercentile(
+            percentile,
+            windowId: currentWindowId,
+            grouping: grouping,
+            transaction: transaction
+        )
+    }
+
+    /// Get score at a given percentile in a specific window
+    ///
+    /// - Parameters:
+    ///   - percentile: Percentile value between 0.0 and 1.0
+    ///   - windowId: Window ID to query
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Score at the given percentile, or nil if no entries
+    public func getPercentile(
+        _ percentile: Double,
+        windowId: Int64,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> Int64? {
+        guard percentile >= 0 && percentile <= 1 else {
+            return nil
+        }
+
+        // First, count total entries
+        let totalCount = try await getTotalCount(
+            windowId: windowId,
+            grouping: grouping,
+            transaction: transaction
+        )
+
+        guard totalCount > 0 else {
+            return nil
+        }
+
+        // Calculate target rank (1-based from highest score)
+        // For percentile p, we want the score at rank ceil((1-p) * count)
+        // e.g., 90th percentile means top 10%, so rank = ceil(0.1 * count)
+        let targetRank = max(1, Int(ceil((1.0 - percentile) * Double(totalCount))))
+
+        // Get the entry at target rank
+        let entries = try await getTopK(
+            k: targetRank,
+            windowId: windowId,
+            grouping: grouping,
+            transaction: transaction
+        )
+
+        return entries.last?.score
+    }
+
+    /// Get total count of entries in a window
+    private func getTotalCount(
+        windowId: Int64,
+        grouping: [any TupleElement]?,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        var prefixElements: [any TupleElement] = [windowId]
+        if let g = grouping {
+            prefixElements.append(contentsOf: g)
+        }
+
+        let rangeStart = windowSubspace.pack(Tuple(prefixElements))
+        let rangeEnd: FDB.Bytes
+        do {
+            rangeEnd = try FDB.strinc(rangeStart)
+        } catch {
+            rangeEnd = rangeStart + [0xFF]
+        }
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(rangeStart),
+            endSelector: .firstGreaterOrEqual(rangeEnd),
+            snapshot: true
+        )
+
+        var count = 0
+        for try await _ in sequence {
+            count += 1
+        }
+
+        return count
+    }
+
+    // MARK: - Dense Ranking
+
+    /// Ranking strategy for getRank operations
+    public enum RankingStrategy: Sendable {
+        /// Competition ranking: ties get same rank, next rank is skipped
+        /// e.g., scores [100, 90, 90, 80] → ranks [1, 2, 2, 4]
+        case competition
+
+        /// Dense ranking: ties get same rank, next rank is NOT skipped
+        /// e.g., scores [100, 90, 90, 80] → ranks [1, 2, 2, 3]
+        case dense
+    }
+
+    /// Get rank of a specific record using dense ranking
+    ///
+    /// Dense ranking counts unique scores higher than the target.
+    /// Ties receive the same rank, but the next rank is incremented by 1.
+    ///
+    /// **Example**:
+    /// Scores: [100, 90, 90, 80, 70]
+    /// - Score 100: Dense rank = 1
+    /// - Score 90: Dense rank = 2 (both players with 90 share this rank)
+    /// - Score 80: Dense rank = 3 (not 4)
+    /// - Score 70: Dense rank = 4
+    ///
+    /// - Parameters:
+    ///   - pk: Primary key of the record
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Dense rank (1-based) or nil if not found
+    public func getRankDense(
+        pk: Tuple,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> Int? {
+        let now = Date()
+        let currentWindowId = windowId(for: now)
+
+        // Get current position
+        let posKey = posSubspace.pack(pk)
+        guard let posBytes = try await transaction.getValue(for: posKey) else {
+            return nil
+        }
+
+        let posTuple = try Tuple.unpack(from: posBytes)
+        guard let recordWindowId = extractInt64(from: posTuple[0]),
+              let targetScore = extractInt64(from: posTuple[1]),
+              recordWindowId == currentWindowId else {
+            return nil
+        }
+
+        // Count distinct scores higher than target
+        return try await countDistinctScoresAbove(
+            score: targetScore,
+            windowId: currentWindowId,
+            grouping: grouping,
+            transaction: transaction
+        ) + 1
+    }
+
+    /// Get rank using specified ranking strategy
+    ///
+    /// - Parameters:
+    ///   - pk: Primary key of the record
+    ///   - strategy: Ranking strategy (competition or dense)
+    ///   - grouping: Optional grouping filter
+    ///   - transaction: The transaction to use
+    /// - Returns: Rank (1-based) or nil if not found
+    public func getRank(
+        pk: Tuple,
+        strategy: RankingStrategy,
+        grouping: [any TupleElement]? = nil,
+        transaction: any TransactionProtocol
+    ) async throws -> Int? {
+        switch strategy {
+        case .competition:
+            return try await getRank(pk: pk, grouping: grouping, transaction: transaction)
+        case .dense:
+            return try await getRankDense(pk: pk, grouping: grouping, transaction: transaction)
+        }
+    }
+
+    /// Count distinct scores above a target score
+    private func countDistinctScoresAbove(
+        score: Int64,
+        windowId: Int64,
+        grouping: [any TupleElement]?,
+        transaction: any TransactionProtocol
+    ) async throws -> Int {
+        var prefixElements: [any TupleElement] = [windowId]
+        if let g = grouping {
+            prefixElements.append(contentsOf: g)
+        }
+
+        let rangeStart = windowSubspace.pack(Tuple(prefixElements))
+
+        // Build end key: prefix + inverted target score
+        // We want entries with inverted score < inverted target score
+        // (i.e., actual score > target score)
+        var endElements = prefixElements
+        endElements.append(invertScore(score))
+        let rangeEnd = windowSubspace.pack(Tuple(endElements))
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(rangeStart),
+            endSelector: .firstGreaterOrEqual(rangeEnd),
+            snapshot: true
+        )
+
+        var distinctScores = Set<Int64>()
+        let groupingCount = grouping?.count ?? 0
+        let invertedScoreIndex = 1 + groupingCount
+
+        for try await (key, _) in sequence {
+            guard windowSubspace.contains(key) else { break }
+
+            let keyTuple = try windowSubspace.unpack(key)
+            guard let invertedScore = keyTuple[invertedScoreIndex] as? Int64 else {
+                continue
+            }
+
+            // Reverse the inversion
+            let unsigned = UInt64(bitPattern: invertedScore)
+            let actualScore = Int64(bitPattern: UInt64.max - unsigned)
+            distinctScores.insert(actualScore)
+        }
+
+        return distinctScores.count
     }
 }

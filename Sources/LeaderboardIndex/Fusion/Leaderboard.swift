@@ -169,25 +169,28 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
 
     // MARK: - Index Discovery
 
-    /// Find the index descriptor for leaderboard
-    private func findIndexDescriptor() -> IndexDescriptor? {
-        T.indexDescriptors.first { descriptor in
+    /// Find the index descriptor and kind for leaderboard
+    private func findIndexDescriptorAndKind() -> (descriptor: IndexDescriptor, kind: TimeWindowLeaderboardIndexKind<T, Int64>)? {
+        for descriptor in T.indexDescriptors {
             // Use type-safe identifier from TimeWindowLeaderboardIndexKind
             guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T, Int64>.identifier else {
-                return false
+                continue
             }
             // Check if score field matches via kind's fieldNames
             guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> else {
-                return false
+                continue
             }
-            return kind.fieldNames.contains(scoreFieldName)
+            if kind.fieldNames.contains(scoreFieldName) {
+                return (descriptor, kind)
+            }
         }
+        return nil
     }
 
     // MARK: - FusionQuery
 
     public func execute(candidates: Set<String>?) async throws -> [ScoredResult<T>] {
-        guard let descriptor = findIndexDescriptor() else {
+        guard let (descriptor, indexKind) = findIndexDescriptorAndKind() else {
             throw FusionQueryError.indexNotFound(
                 type: T.persistableType,
                 field: scoreFieldName,
@@ -196,6 +199,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         }
 
         let indexName = descriptor.name
+        let windowDurationSeconds = Int64(indexKind.window.durationSeconds)
 
         // Get index subspace using public API
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -208,6 +212,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
                 k: self.k,
                 grouping: self.groupValue.map { [$0] },
                 windowId: self.windowId,
+                windowDurationSeconds: windowDurationSeconds,
                 transaction: transaction
             )
         }
@@ -261,15 +266,14 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         k: Int,
         grouping: [any TupleElement]?,
         windowId: Int64?,
+        windowDurationSeconds: Int64,
         transaction: any TransactionProtocol
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Calculate current window ID if not specified
         let effectiveWindowId = windowId ?? {
-            // Default window duration for daily (most common)
-            // Actual window type would be in the index kind, but we use a reasonable default
             let now = Date()
             let timestamp = Int64(now.timeIntervalSince1970)
-            return timestamp / 86400  // Daily window (24 * 60 * 60)
+            return timestamp / windowDurationSeconds
         }()
 
         let windowSubspace = indexSubspace.subspace("window")
