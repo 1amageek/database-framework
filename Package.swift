@@ -20,11 +20,15 @@ let package = Package(
         .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
+        .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
+        .executable(name: "fdb-cli", targets: ["fdb-cli"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        // Temporarily using local path for CoveringIndexKind development
+        .package(path: "../database-kit"),
+        // .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
@@ -155,6 +159,14 @@ let package = Package(
             ]
         ),
         .target(
+            name: "QueryAST",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        .target(
             name: "Database",
             dependencies: [
                 "DatabaseEngine",
@@ -170,6 +182,7 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
+                "QueryAST",
             ]
         ),
         // DatabaseCLI - Interactive REPL for database access
@@ -179,6 +192,19 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        // fdb-cli - Interactive CLI for dynamic schema operations
+        .executableTarget(
+            name: "fdb-cli",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
         // Test Support (shared test utilities)
@@ -365,6 +391,20 @@ let package = Package(
             name: "DatabaseCLITests",
             dependencies: [
                 "DatabaseCLI",
+                "DatabaseEngine",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // QueryAST tests
+        .testTarget(
+            name: "QueryASTTests",
+            dependencies: [
+                "QueryAST",
                 "DatabaseEngine",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
