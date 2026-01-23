@@ -200,6 +200,68 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
             let filtered = innerResult.bindings.filter { expression.evaluate($0) }
             return EvaluationResult(bindings: filtered, stats: stats)
                 .mergedStats(with: innerResult.stats)
+
+        case .groupBy(let sourcePattern, let groupVars, let aggs, let havingExpr):
+            // Note: groupBy is typically handled by executeGrouped, not evaluate.
+            // For completeness, we implement basic handling here.
+            let sourceResult = try await evaluate(
+                pattern: sourcePattern,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+
+            // Group the results using GroupValue for proper null handling
+            var groups: [[String: GroupValue]: [VariableBinding]] = [:]
+            for binding in sourceResult.bindings {
+                var key: [String: GroupValue] = [:]
+                for variable in groupVars {
+                    key[variable] = GroupValue(from: binding[variable])
+                }
+                if groups[key] == nil {
+                    groups[key] = []
+                }
+                groups[key]?.append(binding)
+            }
+
+            // Compute aggregates for each group
+            var resultBindings: [VariableBinding] = []
+            for (groupKey, groupBindingsInGroup) in groups {
+                var binding = VariableBinding()
+                for (variable, groupValue) in groupKey {
+                    // Only bind if not unbound (preserve SPARQL null semantics)
+                    if let stringValue = groupValue.stringValue {
+                        binding = binding.binding(variable, to: stringValue)
+                    }
+                }
+                for agg in aggs {
+                    if let value = agg.evaluate(groupBindingsInGroup) {
+                        binding = binding.binding(agg.alias, to: value)
+                    }
+                }
+                resultBindings.append(binding)
+            }
+
+            // Apply HAVING
+            if let having = havingExpr {
+                resultBindings = resultBindings.filter { having.evaluate($0) }
+            }
+
+            return EvaluationResult(bindings: resultBindings, stats: stats)
+                .mergedStats(with: sourceResult.stats)
+
+        case .propertyPath(let subject, let path, let object):
+            // Execute property path
+            let pathResult = try await evaluatePropertyPath(
+                subject: subject,
+                path: path,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+            return EvaluationResult(bindings: pathResult.bindings, stats: stats)
+                .mergedStats(with: pathResult.stats)
         }
     }
 
@@ -610,6 +672,21 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 substitutePattern(innerPattern, with: binding),
                 expression
             )
+
+        case .groupBy(let sourcePattern, let groupVars, let aggs, let havingExpr):
+            return .groupBy(
+                substitutePattern(sourcePattern, with: binding),
+                groupVariables: groupVars,
+                aggregates: aggs,
+                having: havingExpr
+            )
+
+        case .propertyPath(let subject, let path, let object):
+            return .propertyPath(
+                subject: subject.substitute(binding),
+                path: path,
+                object: object.substitute(binding)
+            )
         }
     }
 
@@ -617,6 +694,585 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
 
     private func buildIndexName() -> String {
         "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+    }
+
+    // MARK: - GROUP BY Execution
+
+    /// Execute a grouped query with aggregation
+    ///
+    /// - Parameters:
+    ///   - pattern: The graph pattern (expected to be groupBy)
+    ///   - groupVariables: Variables to group by
+    ///   - aggregates: Aggregate expressions to compute
+    ///   - having: Optional HAVING filter
+    /// - Returns: Grouped bindings and statistics
+    func executeGrouped(
+        pattern: GraphPattern,
+        groupVariables: [String],
+        aggregates: [AggregateExpression],
+        having: FilterExpression?
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        // Extract the source pattern
+        let sourcePattern: GraphPattern
+        switch pattern {
+        case .groupBy(let source, _, _, _):
+            sourcePattern = source
+        default:
+            sourcePattern = pattern
+        }
+
+        let indexName = buildIndexName()
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
+            throw SPARQLQueryError.indexNotFound(indexName)
+        }
+
+        let strategy = kind.strategy
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Execute source pattern
+        let evalResult = try await queryContext.withTransaction { transaction in
+            try await self.evaluate(
+                pattern: sourcePattern,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+        }
+
+        let stats = evalResult.stats
+
+        // Group the bindings using GroupValue for proper null handling
+        let groups = groupBindings(evalResult.bindings, by: groupVariables)
+
+        // Apply aggregates to each group
+        var resultBindings: [VariableBinding] = []
+
+        for (groupKey, groupBindingsInGroup) in groups {
+            var binding = VariableBinding()
+
+            // Add group variable values (only bind if not unbound)
+            for (variable, groupValue) in groupKey {
+                if let stringValue = groupValue.stringValue {
+                    binding = binding.binding(variable, to: stringValue)
+                }
+                // Unbound values are left unbound in the result binding
+            }
+
+            // Compute aggregates
+            for aggregate in aggregates {
+                if let value = aggregate.evaluate(groupBindingsInGroup) {
+                    binding = binding.binding(aggregate.alias, to: value)
+                }
+            }
+
+            resultBindings.append(binding)
+        }
+
+        // Apply HAVING filter
+        if let having = having {
+            resultBindings = resultBindings.filter { having.evaluate($0) }
+        }
+
+        // Sort by group key for deterministic output using GroupValue ordering
+        // GroupValue.Comparable ensures: bound("") < bound("a") < unbound
+        let sortedGroups = groups.keys.sorted { lhs, rhs in
+            for variable in groupVariables {
+                let lhsVal = lhs[variable] ?? .unbound
+                let rhsVal = rhs[variable] ?? .unbound
+                if lhsVal != rhsVal {
+                    return lhsVal < rhsVal
+                }
+            }
+            return false
+        }
+
+        // Rebuild result bindings in sorted order
+        var sortedResultBindings: [VariableBinding] = []
+        for groupKey in sortedGroups {
+            guard let groupBindingsInGroup = groups[groupKey] else { continue }
+
+            var binding = VariableBinding()
+            for (variable, groupValue) in groupKey {
+                if let stringValue = groupValue.stringValue {
+                    binding = binding.binding(variable, to: stringValue)
+                }
+            }
+            for aggregate in aggregates {
+                if let value = aggregate.evaluate(groupBindingsInGroup) {
+                    binding = binding.binding(aggregate.alias, to: value)
+                }
+            }
+            sortedResultBindings.append(binding)
+        }
+
+        // Apply HAVING filter to sorted results
+        if let having = having {
+            sortedResultBindings = sortedResultBindings.filter { having.evaluate($0) }
+        }
+
+        return (sortedResultBindings, stats)
+    }
+
+    /// Group bindings by specified variables
+    ///
+    /// Returns groups as dictionary mapping group keys to bindings.
+    /// Group keys use `GroupValue` to properly distinguish unbound from empty string.
+    ///
+    /// **SPARQL 1.1 Compliance**:
+    /// Per Section 11.2, unbound values must be distinct from any bound value.
+    /// Using `GroupValue.unbound` vs `GroupValue.bound("")` ensures proper separation.
+    private func groupBindings(
+        _ bindings: [VariableBinding],
+        by groupVariables: [String]
+    ) -> [[String: GroupValue]: [VariableBinding]] {
+        var groups: [[String: GroupValue]: [VariableBinding]] = [:]
+
+        for binding in bindings {
+            // Build group key using GroupValue to preserve null distinction
+            var key: [String: GroupValue] = [:]
+            for variable in groupVariables {
+                key[variable] = GroupValue(from: binding[variable])
+            }
+
+            if groups[key] == nil {
+                groups[key] = []
+            }
+            groups[key]?.append(binding)
+        }
+
+        return groups
+    }
+
+    // MARK: - Property Path Evaluation
+
+    /// Evaluate a property path pattern
+    ///
+    /// Handles all SPARQL 1.1 property path operators:
+    /// - Simple IRI: direct edge lookup
+    /// - Inverse: reverse direction lookup
+    /// - Sequence: multi-hop paths
+    /// - Alternative: union of paths
+    /// - ZeroOrMore/OneOrMore: transitive closure
+    /// - ZeroOrOne: optional single hop
+    private func evaluatePropertyPath(
+        subject: SPARQLTerm,
+        path: PropertyPath,
+        object: SPARQLTerm,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        config: PropertyPathConfiguration = .default,
+        depth: Int = 0
+    ) async throws -> EvaluationResult {
+        var stats = ExecutionStatistics()
+        stats.patternsEvaluated = 1
+
+        // Check max depth for recursive paths
+        if depth > config.maxDepth {
+            return EvaluationResult(bindings: [], stats: stats)
+        }
+
+        switch path {
+        case .iri(let predicate):
+            // Simple predicate - equivalent to a triple pattern
+            let pattern = TriplePattern(subject: subject, predicate: .value(predicate), object: object)
+            let (results, patternStats) = try await executePattern(
+                pattern,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+            return EvaluationResult(bindings: results, stats: stats).mergedStats(with: patternStats)
+
+        case .inverse(let innerPath):
+            // Reverse subject and object
+            return try await evaluatePropertyPath(
+                subject: object,
+                path: innerPath,
+                object: subject,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                depth: depth
+            )
+
+        case .sequence(let path1, let path2):
+            // Execute first path, then chain with second
+            let intermediateVar = "?_intermediate_\(depth)"
+            let firstResult = try await evaluatePropertyPath(
+                subject: subject,
+                path: path1,
+                object: .variable(intermediateVar),
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                depth: depth + 1
+            )
+
+            var allBindings: [VariableBinding] = []
+            for binding in firstResult.bindings {
+                // Get intermediate value
+                guard let intermediateValue = binding[intermediateVar] else { continue }
+
+                // Execute second path with intermediate as subject
+                let secondResult = try await evaluatePropertyPath(
+                    subject: .value(intermediateValue),
+                    path: path2,
+                    object: object,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction,
+                    config: config,
+                    depth: depth + 1
+                )
+
+                // Merge bindings
+                for secondBinding in secondResult.bindings {
+                    if let merged = binding.merged(with: secondBinding) {
+                        // Remove intermediate variable from result
+                        let projectionVars = merged.boundVariables.subtracting([intermediateVar])
+                        let cleanBinding = merged.project(projectionVars)
+                        allBindings.append(cleanBinding)
+                    }
+                }
+            }
+
+            return EvaluationResult(bindings: allBindings, stats: stats).mergedStats(with: firstResult.stats)
+
+        case .alternative(let path1, let path2):
+            // Union of both paths
+            let result1 = try await evaluatePropertyPath(
+                subject: subject,
+                path: path1,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                depth: depth + 1
+            )
+
+            let result2 = try await evaluatePropertyPath(
+                subject: subject,
+                path: path2,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                depth: depth + 1
+            )
+
+            // Combine and deduplicate
+            var seen = Set<VariableBinding>()
+            var combined: [VariableBinding] = []
+            for binding in result1.bindings + result2.bindings {
+                if seen.insert(binding).inserted {
+                    combined.append(binding)
+                }
+            }
+
+            return EvaluationResult(bindings: combined, stats: stats)
+                .mergedStats(with: result1.stats)
+                .mergedStats(with: result2.stats)
+
+        case .zeroOrMore(let innerPath):
+            // Transitive closure including self-loop (0 hops)
+            return try await evaluateTransitivePath(
+                subject: subject,
+                path: innerPath,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                includeZeroHop: true
+            )
+
+        case .oneOrMore(let innerPath):
+            // Transitive closure (at least 1 hop)
+            return try await evaluateTransitivePath(
+                subject: subject,
+                path: innerPath,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                includeZeroHop: false
+            )
+
+        case .zeroOrOne(let innerPath):
+            // Union of zero-hop (self) and one-hop
+            var results: [VariableBinding] = []
+            var seen = Set<VariableBinding>()
+
+            // Zero-hop: subject == object
+            if case .variable(let subjVar) = subject, case .variable(let objVar) = object {
+                // Both endpoints are unbound variables - generate identity bindings for all nodes
+                // SPARQL 1.1: For p?, when both ?s and ?o are unbound, return (?s=x, ?o=x) for all nodes x
+                let allNodes = try await getAllNodesForPropertyPath(
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    maxNodes: config.maxResults,
+                    transaction: transaction
+                )
+
+                for node in allNodes {
+                    if results.count >= config.maxResults { break }
+
+                    var binding = VariableBinding()
+                    binding = binding.binding(subjVar, to: node)
+                    if subjVar != objVar {
+                        binding = binding.binding(objVar, to: node)
+                    }
+                    if seen.insert(binding).inserted {
+                        results.append(binding)
+                    }
+                }
+            } else if case .value(let value) = subject, case .variable(let varName) = object {
+                // Subject bound, object variable - include identity
+                let identityBinding = VariableBinding().binding(varName, to: value)
+                results.append(identityBinding)
+                seen.insert(identityBinding)
+            } else if case .variable(let varName) = subject, case .value(let value) = object {
+                // Object bound, subject variable - include identity
+                let identityBinding = VariableBinding().binding(varName, to: value)
+                results.append(identityBinding)
+                seen.insert(identityBinding)
+            } else if case .value(let subjVal) = subject, case .value(let objVal) = object {
+                // Both bound - check equality
+                if subjVal == objVal {
+                    results.append(VariableBinding())
+                }
+            }
+
+            // One-hop
+            let oneHopResult = try await evaluatePropertyPath(
+                subject: subject,
+                path: innerPath,
+                object: object,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                config: config,
+                depth: depth + 1
+            )
+
+            for binding in oneHopResult.bindings {
+                if seen.insert(binding).inserted {
+                    results.append(binding)
+                }
+            }
+
+            return EvaluationResult(bindings: results, stats: stats).mergedStats(with: oneHopResult.stats)
+
+        case .negatedPropertySet(let iris):
+            // Match any edge NOT in the given set
+            // This requires scanning all edges and filtering
+            let irisSet = Set(iris)
+
+            // Scan all edges from/to the subject/object
+            var results: [VariableBinding] = []
+
+            if case .value(let subjValue) = subject {
+                // Scan outgoing edges from subject
+                let scanResult = try await scanOutgoingEdges(
+                    from: subjValue,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction
+                )
+
+                for (edge, target) in scanResult {
+                    if !irisSet.contains(edge) {
+                        var binding = VariableBinding()
+                        if case .variable(let varName) = object {
+                            binding = binding.binding(varName, to: target)
+                        } else if case .value(let objValue) = object, objValue == target {
+                            // Match
+                        } else {
+                            continue  // No match
+                        }
+                        results.append(binding)
+                    }
+                }
+            }
+
+            return EvaluationResult(bindings: results, stats: stats)
+        }
+    }
+
+    /// Evaluate transitive closure paths (*, +)
+    private func evaluateTransitivePath(
+        subject: SPARQLTerm,
+        path: PropertyPath,
+        object: SPARQLTerm,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        config: PropertyPathConfiguration,
+        includeZeroHop: Bool
+    ) async throws -> EvaluationResult {
+        var stats = ExecutionStatistics()
+        var allResults: [VariableBinding] = []
+        var seen = Set<VariableBinding>()
+        var visitedNodes = Set<String>()
+
+        // Handle zero-hop case for p*
+        if includeZeroHop {
+            if case .variable(let subjVar) = subject, case .variable(let objVar) = object {
+                // Both endpoints are unbound variables - generate identity bindings for all nodes
+                // SPARQL 1.1: For p*, when both ?s and ?o are unbound, zero-hop returns (?s=x, ?o=x) for all nodes x
+                let allNodes = try await getAllNodesForPropertyPath(
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    maxNodes: config.maxResults,
+                    transaction: transaction
+                )
+
+                for node in allNodes {
+                    if allResults.count >= config.maxResults { break }
+
+                    var binding = VariableBinding()
+                    binding = binding.binding(subjVar, to: node)
+                    if subjVar != objVar {
+                        binding = binding.binding(objVar, to: node)
+                    }
+                    if seen.insert(binding).inserted {
+                        allResults.append(binding)
+                    }
+                }
+            } else if case .value(let value) = subject, case .variable(let varName) = object {
+                let zeroHopBinding = VariableBinding().binding(varName, to: value)
+                allResults.append(zeroHopBinding)
+                seen.insert(zeroHopBinding)
+            } else if case .variable(let varName) = subject, case .value(let value) = object {
+                let zeroHopBinding = VariableBinding().binding(varName, to: value)
+                allResults.append(zeroHopBinding)
+                seen.insert(zeroHopBinding)
+            }
+        }
+
+        // BFS/iterative deepening for transitive closure
+        var frontier: [SPARQLTerm] = [subject]
+        var depth = 0
+
+        while !frontier.isEmpty && depth < config.maxDepth && allResults.count < config.maxResults {
+            var nextFrontier: [SPARQLTerm] = []
+            depth += 1
+
+            for currentSubject in frontier {
+                // Skip if we've visited this node (cycle detection)
+                if config.detectCycles, case .value(let nodeValue) = currentSubject {
+                    if visitedNodes.contains(nodeValue) {
+                        continue
+                    }
+                    visitedNodes.insert(nodeValue)
+                }
+
+                // Execute one hop
+                let result = try await evaluatePropertyPath(
+                    subject: currentSubject,
+                    path: path,
+                    object: object,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction,
+                    config: config,
+                    depth: depth
+                )
+
+                for binding in result.bindings {
+                    if seen.insert(binding).inserted {
+                        allResults.append(binding)
+
+                        // Add reached nodes to next frontier
+                        if case .variable(let varName) = object,
+                           let reachedValue = binding[varName] {
+                            nextFrontier.append(.value(reachedValue))
+                        }
+                    }
+                }
+
+                stats = stats.merged(with: result.stats)
+            }
+
+            frontier = nextFrontier
+        }
+
+        return EvaluationResult(bindings: allResults, stats: stats)
+    }
+
+    /// Scan all outgoing edges from a node
+    private func scanOutgoingEdges(
+        from source: String,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol
+    ) async throws -> [(edge: String, target: String)] {
+        let ordering: GraphIndexOrdering = strategy == .adjacency ? .out : .spo
+        let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)
+
+        // Build prefix for subject scan
+        let prefix: [any TupleElement] = strategy == .adjacency
+            ? [source]  // OUT: (from, edge, to)
+            : [source]  // SPO: (subject, predicate, object)
+
+        let prefixSubspace = orderingSubspace.subspace(Tuple(prefix))
+        let range = prefixSubspace.range()
+
+        var results: [(String, String)] = []
+
+        let stream = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(range.begin),
+            endSelector: .firstGreaterOrEqual(range.end),
+            snapshot: true
+        )
+
+        for try await (key, _) in stream {
+            // Parse key to get edge and target
+            guard let tuple = try? prefixSubspace.unpack(key) else {
+                continue
+            }
+
+            // After unpacking with prefixSubspace, we get just (edge, to) or (predicate, object)
+            // The source/subject was part of the prefix
+            guard tuple.count >= 2,
+                  let edge = tuple[0] as? String,
+                  let target = tuple[1] as? String else {
+                continue
+            }
+
+            results.append((edge, target))
+        }
+
+        return results
+    }
+
+    /// Get all unique nodes in the graph for Property Path evaluation
+    ///
+    /// Used when both subject and object are unbound variables (var, var case).
+    /// Returns identity bindings for zero-hop paths.
+    ///
+    /// - Parameters:
+    ///   - indexSubspace: The graph index subspace
+    ///   - strategy: The graph index strategy
+    ///   - maxNodes: Maximum number of nodes to return
+    ///   - transaction: FDB transaction
+    /// - Returns: Set of all unique node IDs
+    private func getAllNodesForPropertyPath(
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        maxNodes: Int,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        let scanner = GraphEdgeScanner(indexSubspace: indexSubspace, strategy: strategy)
+        return try await scanner.getAllNodes(edgeLabel: nil, maxNodes: maxNodes, transaction: transaction)
     }
 }
 
