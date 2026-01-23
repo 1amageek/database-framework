@@ -44,6 +44,29 @@ public indirect enum GraphPattern: Sendable {
     /// Pattern must match AND filter expression must evaluate to true.
     case filter(GraphPattern, FilterExpression)
 
+    /// Group by pattern with aggregation
+    ///
+    /// Groups results by specified variables and applies aggregate functions.
+    /// Optionally includes a HAVING filter applied after aggregation.
+    ///
+    /// - Parameters:
+    ///   - pattern: The source pattern to group
+    ///   - groupVariables: Variables to group by
+    ///   - aggregates: Aggregate expressions to compute
+    ///   - having: Optional filter on aggregate results
+    case groupBy(GraphPattern, groupVariables: [String], aggregates: [AggregateExpression], having: FilterExpression?)
+
+    /// Property path pattern
+    ///
+    /// Matches paths between subject and object using property path expression.
+    /// Supports transitive closure, inverse paths, sequences, and alternatives.
+    ///
+    /// - Parameters:
+    ///   - subject: The subject term (variable or value)
+    ///   - path: The property path expression
+    ///   - object: The object term (variable or value)
+    case propertyPath(subject: SPARQLTerm, path: PropertyPath, object: SPARQLTerm)
+
     // MARK: - Variables
 
     /// All variables referenced in this pattern
@@ -61,6 +84,18 @@ public indirect enum GraphPattern: Sendable {
             return left.variables.union(right.variables)
         case .filter(let pattern, _):
             return pattern.variables
+        case .groupBy(_, let groupVariables, let aggregates, _):
+            // Output variables are group variables + aggregate aliases
+            var result = Set(groupVariables)
+            for agg in aggregates {
+                result.insert(agg.alias)
+            }
+            return result
+        case .propertyPath(let subject, _, let object):
+            var result = Set<String>()
+            if case .variable(let name) = subject { result.insert(name) }
+            if case .variable(let name) = object { result.insert(name) }
+            return result
         }
     }
 
@@ -82,6 +117,18 @@ public indirect enum GraphPattern: Sendable {
             return left.requiredVariables.intersection(right.requiredVariables)
         case .filter(let pattern, _):
             return pattern.requiredVariables
+        case .groupBy(_, let groupVariables, let aggregates, _):
+            // All output variables are required after grouping
+            var result = Set(groupVariables)
+            for agg in aggregates {
+                result.insert(agg.alias)
+            }
+            return result
+        case .propertyPath(let subject, _, let object):
+            var result = Set<String>()
+            if case .variable(let name) = subject { result.insert(name) }
+            if case .variable(let name) = object { result.insert(name) }
+            return result
         }
     }
 
@@ -105,6 +152,10 @@ public indirect enum GraphPattern: Sendable {
             return left.isEmpty && right.isEmpty
         case .filter(let pattern, _):
             return pattern.isEmpty
+        case .groupBy(let pattern, _, _, _):
+            return pattern.isEmpty
+        case .propertyPath:
+            return false  // Property paths are never empty
         }
     }
 
@@ -121,6 +172,10 @@ public indirect enum GraphPattern: Sendable {
             return left.allTriplePatterns + right.allTriplePatterns
         case .filter(let pattern, _):
             return pattern.allTriplePatterns
+        case .groupBy(let pattern, _, _, _):
+            return pattern.allTriplePatterns
+        case .propertyPath:
+            return []  // Property paths don't have direct triple patterns
         }
     }
 
@@ -163,6 +218,17 @@ extension GraphPattern: CustomStringConvertible {
             return "\(left) UNION \(right)"
         case .filter(let pattern, let expr):
             return "\(pattern) FILTER(\(expr))"
+        case .groupBy(let pattern, let groupVars, let aggregates, let having):
+            var result = "\(pattern) GROUP BY \(groupVars.joined(separator: ", "))"
+            if !aggregates.isEmpty {
+                result += " AGGREGATES(\(aggregates.map { $0.description }.joined(separator: ", ")))"
+            }
+            if let having = having {
+                result += " HAVING(\(having))"
+            }
+            return result
+        case .propertyPath(let subject, let path, let object):
+            return "{ \(subject) \(path) \(object) }"
         }
     }
 }
@@ -182,6 +248,10 @@ extension GraphPattern: Equatable {
             return ll == rl && lr == rr
         case (.filter(let lp, let le), .filter(let rp, let re)):
             return lp == rp && le == re
+        case (.groupBy(let lp, let lgv, let lagg, let lh), .groupBy(let rp, let rgv, let ragg, let rh)):
+            return lp == rp && lgv == rgv && lagg == ragg && lh == rh
+        case (.propertyPath(let ls, let lp, let lo), .propertyPath(let rs, let rp, let ro)):
+            return ls == rs && lp == rp && lo == ro
         default:
             return false
         }
