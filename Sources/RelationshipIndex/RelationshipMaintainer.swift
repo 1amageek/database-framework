@@ -88,9 +88,53 @@ public final class RelationshipMaintainer: Sendable {
         handler: ModelPersistenceHandler,
         recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)? = nil
     ) async throws {
+        // Start with empty visited set for cycle detection
+        var visited = Set<String>()
+        try await enforceDeleteRules(
+            for: item,
+            transaction: transaction,
+            handler: handler,
+            recursiveDeleter: recursiveDeleter,
+            visited: &visited
+        )
+    }
+
+    /// Enforce delete rules with cycle detection
+    ///
+    /// **Cycle Detection**:
+    /// Tracks visited items to prevent infinite loops during cascade deletes.
+    /// If an item has already been visited in this delete chain, it's skipped.
+    ///
+    /// **Example Cycle**:
+    /// ```
+    /// A.cascade → B.cascade → A (detected and skipped)
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - item: The item being deleted
+    ///   - transaction: FDB transaction
+    ///   - handler: ModelPersistenceHandler for save/delete/load operations
+    ///   - recursiveDeleter: Optional closure for recursive deletes (cascade)
+    ///   - visited: Set of visited item keys (type:id) for cycle detection
+    public func enforceDeleteRules(
+        for item: any Persistable,
+        transaction: any TransactionProtocol,
+        handler: ModelPersistenceHandler,
+        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)?,
+        visited: inout Set<String>
+    ) async throws {
         let itemType = type(of: item)
         let itemTypeName = itemType.persistableType
         let itemId = try extractItemId(from: item)
+
+        // Create unique key for this item
+        let itemKey = makeItemKey(typeName: itemTypeName, id: itemId)
+
+        // Cycle detection: skip if already visited
+        if visited.contains(itemKey) {
+            return
+        }
+        visited.insert(itemKey)
 
         // Find all relationships that point TO this type
         // Iterate over all entities in the schema
@@ -103,18 +147,24 @@ public final class RelationshipMaintainer: Sendable {
                 guard descriptor.relatedTypeName == itemTypeName else { continue }
 
                 // This type has a relationship to the item being deleted
-                // Enforce the delete rule
-                try await enforceDeleteRule(
+                // Enforce the delete rule (passing visited set for cycle detection)
+                try await enforceDeleteRuleWithCycleDetection(
                     descriptor: descriptor,
                     owningTypeName: entity.name,
                     owningType: entity.persistableType,
                     relatedItemId: itemId,
                     transaction: transaction,
                     handler: handler,
-                    recursiveDeleter: recursiveDeleter
+                    recursiveDeleter: recursiveDeleter,
+                    visited: &visited
                 )
             }
         }
+    }
+
+    /// Create unique key for item (used in visited set)
+    private func makeItemKey(typeName: String, id: Tuple) -> String {
+        "\(typeName):\(id.pack().map { String(format: "%02x", $0) }.joined())"
     }
 
     /// Enforce a specific delete rule
@@ -159,6 +209,117 @@ public final class RelationshipMaintainer: Sendable {
                     if let recursiveDeleter = recursiveDeleter {
                         try await recursiveDeleter(owningItem, transaction)
                     } else {
+                        try await handler.delete(owningItem, transaction: transaction)
+                    }
+                }
+            }
+
+        case .deny:
+            // Throw error if related items exist
+            throw RelationshipError.deleteRuleDenied(
+                itemType: descriptor.relatedTypeName,
+                relationshipType: owningTypeName,
+                propertyName: descriptor.propertyName,
+                count: affectedItemIds.count
+            )
+
+        case .nullify:
+            // Nullify: Set FK field to nil and clear relationship index
+            let foreignKeyFieldName = descriptor.propertyName
+
+            for ownerId in affectedItemIds {
+                // Load the owning item
+                guard let owningItem = try await handler.load(owningTypeName, id: ownerId, transaction: transaction) else {
+                    continue
+                }
+
+                // Nullify the FK field and save
+                if let nullifiedItem = try nullifyForeignKey(owningItem, fieldName: foreignKeyFieldName) {
+                    try await handler.save(nullifiedItem, transaction: transaction)
+                }
+            }
+
+        case .noAction:
+            // Do nothing - may leave orphan references
+            break
+        }
+    }
+
+    /// Enforce a specific delete rule with cycle detection
+    ///
+    /// Similar to `enforceDeleteRule` but tracks visited items to prevent
+    /// infinite loops during cascade deletes.
+    ///
+    /// - Parameters:
+    ///   - descriptor: The relationship descriptor
+    ///   - owningTypeName: Name of the type that owns the relationship
+    ///   - owningType: The Persistable type that owns the relationship
+    ///   - relatedItemId: ID of the item being deleted
+    ///   - transaction: FDB transaction
+    ///   - handler: ModelPersistenceHandler for save/delete/load operations
+    ///   - recursiveDeleter: Optional closure for recursive deletes (cascade)
+    ///   - visited: Set of visited item keys for cycle detection
+    private func enforceDeleteRuleWithCycleDetection(
+        descriptor: RelationshipDescriptor,
+        owningTypeName: String,
+        owningType: any Persistable.Type,
+        relatedItemId: Tuple,
+        transaction: any TransactionProtocol,
+        handler: ModelPersistenceHandler,
+        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)?,
+        visited: inout Set<String>
+    ) async throws {
+        // Resolve the owning type's directory (not the deleted item's directory)
+        let owningSubspace = try await container.resolveDirectory(for: owningType)
+        let owningIndexSubspace = owningSubspace.subspace(SubspaceKey.indexes)
+
+        // Use descriptor.name directly (e.g., "Order_customer")
+        let relIndexSubspace = owningIndexSubspace.subspace(descriptor.name)
+        let prefixSubspace = relIndexSubspace.subspace(relatedItemId)
+
+        let (begin, end) = prefixSubspace.range()
+        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+
+        var affectedItemIds: [Tuple] = []
+        for try await (key, _) in sequence {
+            if let ownerId = extractOwnerIdFromRelationshipKey(key, prefixSubspace: prefixSubspace) {
+                affectedItemIds.append(ownerId)
+            }
+        }
+
+        // If no affected items, nothing to do
+        guard !affectedItemIds.isEmpty else { return }
+
+        // Apply delete rule
+        switch descriptor.deleteRule {
+        case .cascade:
+            // Delete all related items with cycle detection
+            for ownerId in affectedItemIds {
+                // Create unique key for this owning item
+                let owningItemKey = makeItemKey(typeName: owningTypeName, id: ownerId)
+
+                // Skip if already visited (cycle detected)
+                if visited.contains(owningItemKey) {
+                    continue
+                }
+
+                if let owningItem = try await handler.load(owningTypeName, id: ownerId, transaction: transaction) {
+                    // Mark as visited before processing
+                    visited.insert(owningItemKey)
+
+                    // Use recursive deleter if provided (for cascading relationship rule enforcement)
+                    if let recursiveDeleter = recursiveDeleter {
+                        try await recursiveDeleter(owningItem, transaction)
+                    } else {
+                        // First enforce delete rules for this item (with cycle detection)
+                        try await enforceDeleteRules(
+                            for: owningItem,
+                            transaction: transaction,
+                            handler: handler,
+                            recursiveDeleter: recursiveDeleter,
+                            visited: &visited
+                        )
+                        // Then delete the item
                         try await handler.delete(owningItem, transaction: transaction)
                     }
                 }
