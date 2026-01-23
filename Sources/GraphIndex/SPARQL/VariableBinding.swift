@@ -228,3 +228,99 @@ extension VariableBinding: ExpressibleByDictionaryLiteral {
         self.bindings = bindings
     }
 }
+
+// MARK: - GroupValue
+
+/// GROUP BY key value wrapper that distinguishes null/unbound from bound values
+///
+/// SPARQL 1.1 Section 11.2 requires that unbound values be distinct from any bound value,
+/// including the empty string. This enum provides type-safe handling of nullability
+/// in GROUP BY keys.
+///
+/// **Reference**: https://www.w3.org/TR/sparql11-query/#aggregateExample
+///
+/// **Example**:
+/// ```swift
+/// // These should produce 3 distinct groups:
+/// let binding1 = VariableBinding(["?id": "1"])              // ?name unbound
+/// let binding2 = VariableBinding(["?id": "2", "?name": ""]) // ?name = ""
+/// let binding3 = VariableBinding(["?id": "3", "?name": "Alice"])
+///
+/// // Group keys:
+/// // - GroupValue.unbound (for binding1)
+/// // - GroupValue.bound("") (for binding2)
+/// // - GroupValue.bound("Alice") (for binding3)
+/// ```
+public enum GroupValue: Sendable, Hashable, Comparable {
+
+    /// Variable is bound to a value (including empty string)
+    case bound(String)
+
+    /// Variable is unbound (NULL in SPARQL semantics)
+    case unbound
+
+    // MARK: - Initialization
+
+    /// Create from an optional string
+    ///
+    /// - Parameter optional: The optional value from VariableBinding subscript
+    public init(from optional: String?) {
+        if let value = optional {
+            self = .bound(value)
+        } else {
+            self = .unbound
+        }
+    }
+
+    // MARK: - Access
+
+    /// Get the string value if bound, nil if unbound
+    public var stringValue: String? {
+        switch self {
+        case .bound(let value):
+            return value
+        case .unbound:
+            return nil
+        }
+    }
+
+    /// Whether this value is bound
+    public var isBound: Bool {
+        if case .bound = self {
+            return true
+        }
+        return false
+    }
+
+    // MARK: - Comparable
+
+    /// Comparison: unbound sorts after all bound values
+    ///
+    /// This ordering ensures deterministic GROUP BY result ordering:
+    /// - bound("") < bound("a") < bound("z") < unbound
+    public static func < (lhs: GroupValue, rhs: GroupValue) -> Bool {
+        switch (lhs, rhs) {
+        case (.bound(let l), .bound(let r)):
+            return l < r
+        case (.unbound, .bound):
+            return false  // unbound sorts after bound
+        case (.bound, .unbound):
+            return true   // bound sorts before unbound
+        case (.unbound, .unbound):
+            return false
+        }
+    }
+}
+
+// MARK: - GroupValue CustomStringConvertible
+
+extension GroupValue: CustomStringConvertible {
+    public var description: String {
+        switch self {
+        case .bound(let value):
+            return "\"\(value)\""
+        case .unbound:
+            return "UNBOUND"
+        }
+    }
+}
