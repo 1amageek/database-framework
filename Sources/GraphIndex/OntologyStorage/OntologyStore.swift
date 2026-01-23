@@ -734,4 +734,67 @@ public struct OntologyStore: Sendable {
         let (beginKey, endKey) = subspace.ontology(ontologyIRI).range()
         transaction.clearRange(beginKey: beginKey, endKey: endKey)
     }
+
+    // MARK: - Additional Query Operations (for OWL2 RL Materialization)
+
+    /// Get equivalent classes
+    public func getEquivalentClasses(
+        of classIRI: String,
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        // Get class definition and return equivalent classes
+        if let classDef = try await getClass(classIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
+            return classDef.equivalentClasses
+        }
+        return []
+    }
+
+    /// Check if property is symmetric
+    public func isSymmetric(
+        property propertyIRI: String,
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Bool {
+        if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
+            return propDef.isSymmetric
+        }
+        return false
+    }
+
+    /// Check if property is irreflexive
+    public func isIrreflexive(
+        property propertyIRI: String,
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Bool {
+        if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
+            return propDef.isIrreflexive
+        }
+        return false
+    }
+
+    /// Get domain classes of a property
+    public func getDomains(
+        of propertyIRI: String,
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
+            return propDef.domains
+        }
+        return []
+    }
+
+    /// Get range classes of a property
+    public func getRanges(
+        of propertyIRI: String,
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        if let propDef = try await getProperty(propertyIRI, ontologyIRI: ontologyIRI, transaction: transaction) {
+            return propDef.ranges
+        }
+        return []
+    }
 }
