@@ -113,6 +113,12 @@ public final class TableauxReasoner: @unchecked Sendable {
         /// Maximum expansion steps (safety limit)
         public let maxExpansionSteps: Int
 
+        /// Timeout for reasoning operations (nil = no timeout)
+        ///
+        /// **Important**: Timeout is applied per-operation, not per-reasoner lifetime.
+        /// Each call to `checkSatisfiability` calculates a fresh deadline from this value.
+        public let timeout: TimeInterval?
+
         /// Whether to check OWL DL regularity before reasoning
         /// When enabled, the reasoner will validate that the ontology
         /// conforms to OWL DL restrictions for decidability.
@@ -127,10 +133,12 @@ public final class TableauxReasoner: @unchecked Sendable {
 
         public init(
             maxExpansionSteps: Int = 100000,
+            timeout: TimeInterval? = nil,
             checkRegularity: Bool = true,
             abortOnRegularityViolations: Bool = true
         ) {
             self.maxExpansionSteps = maxExpansionSteps
+            self.timeout = timeout
             self.checkRegularity = checkRegularity
             self.abortOnRegularityViolations = abortOnRegularityViolations
         }
@@ -277,6 +285,10 @@ public final class TableauxReasoner: @unchecked Sendable {
             return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
         }
 
+        // Calculate deadline at operation start time (not at Configuration init)
+        // This ensures each checkSatisfiability call gets a fresh deadline
+        let operationDeadline = configuration.timeout.map { Date().addingTimeInterval($0) }
+
         // Create completion graph
         let graph = CompletionGraph(roleHierarchy: roleHierarchy, classHierarchy: classHierarchy)
 
@@ -293,16 +305,26 @@ public final class TableauxReasoner: @unchecked Sendable {
         stats.nodesCreated = 1
 
         // Run expansion algorithm
-        let result = runExpansion(graph: graph, stats: &stats)
+        let result = runExpansion(graph: graph, stats: &stats, deadline: operationDeadline)
 
         return result
     }
 
     /// Run the Tableaux expansion algorithm
-    private func runExpansion(graph: CompletionGraph, stats: inout Statistics) -> SatisfiabilityResult {
+    ///
+    /// - Parameters:
+    ///   - graph: The completion graph to expand
+    ///   - stats: Statistics to update during expansion
+    ///   - deadline: Optional deadline for timeout (calculated at operation start)
+    private func runExpansion(graph: CompletionGraph, stats: inout Statistics, deadline: Date?) -> SatisfiabilityResult {
 
         while stats.expansionSteps < configuration.maxExpansionSteps {
             stats.expansionSteps += 1
+
+            // Check deadline before each expansion step
+            if let deadline = deadline, Date() > deadline {
+                return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
+            }
 
             // Phase 1: Update blocking
             graph.updateBlocking()
