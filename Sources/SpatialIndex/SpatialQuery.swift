@@ -104,6 +104,14 @@ public struct PolygonQueryOptions: Sendable {
         case simple
         /// Convex polygon - can use optimized cross-product algorithm
         case convex
+        /// Complex polygon - uses winding number algorithm (handles self-intersecting)
+        ///
+        /// **Advantages over Ray Casting**:
+        /// - Correctly handles self-intersecting polygons
+        /// - Better numerical stability at edges
+        ///
+        /// **Reference**: Hormann & Agathos (2001)
+        case complex
     }
 
     /// The polygon type (affects algorithm selection)
@@ -112,14 +120,25 @@ public struct PolygonQueryOptions: Sendable {
     /// Whether to validate input coordinates
     public let validateInput: Bool
 
+    /// Interior holes for polygon-with-holes queries
+    ///
+    /// When set, points must be inside the exterior polygon but NOT inside any hole.
+    public let holes: [[GeoPoint]]
+
     /// Create polygon query options
     ///
     /// - Parameters:
     ///   - type: Polygon type for algorithm selection (default: .simple)
     ///   - validateInput: Whether to validate coordinates (default: true)
-    public init(type: PolygonType = .simple, validateInput: Bool = true) {
+    ///   - holes: Interior holes to exclude (default: empty)
+    public init(
+        type: PolygonType = .simple,
+        validateInput: Bool = true,
+        holes: [[GeoPoint]] = []
+    ) {
         self.type = type
         self.validateInput = validateInput
+        self.holes = holes
     }
 }
 
@@ -499,11 +518,47 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     ) -> Bool {
         guard polygon.count >= 3 else { return false }
 
-        // Use optimized algorithm for convex polygons
-        if polygonOptions.type == .convex {
-            return isPointInConvexPolygon(point: point, polygon: polygon)
-        }
+        // Convert tuple polygon to GeoPoint array for winding number
+        let geoPolygon = polygon.map { GeoPoint($0.latitude, $0.longitude) }
 
+        // Select algorithm based on polygon type
+        switch polygonOptions.type {
+        case .convex:
+            // Use optimized cross-product algorithm for convex polygons
+            return isPointInConvexPolygon(point: point, polygon: polygon)
+
+        case .complex:
+            // Use Winding Number for complex/self-intersecting polygons
+            // Also handles holes if specified
+            if polygonOptions.holes.isEmpty {
+                return WindingNumber.isPointInPolygon(point: point, polygon: geoPolygon)
+            } else {
+                return WindingNumber.isPointInPolygonWithHoles(
+                    point: point,
+                    exterior: geoPolygon,
+                    holes: polygonOptions.holes
+                )
+            }
+
+        case .simple:
+            // Default: Ray Casting algorithm
+            // Check holes first if specified
+            if !polygonOptions.holes.isEmpty {
+                for hole in polygonOptions.holes {
+                    if isPointInSimplePolygon(point: point, polygon: hole.map { ($0.latitude, $0.longitude) }) {
+                        return false  // Inside a hole
+                    }
+                }
+            }
+            return isPointInSimplePolygon(point: point, polygon: polygon)
+        }
+    }
+
+    /// Ray casting point-in-polygon for simple polygons
+    private func isPointInSimplePolygon(
+        point: GeoPoint,
+        polygon: [(latitude: Double, longitude: Double)]
+    ) -> Bool {
         var inside = false
         let n = polygon.count
         var j = n - 1
@@ -809,6 +864,108 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         guard knnExpansionFactor > 1.0 && knnExpansionFactor.isFinite else {
             throw SpatialQueryError.invalidKNNParameters("expansionFactor must be > 1.0 and finite, got \(knnExpansionFactor)")
         }
+    }
+
+    // MARK: - True K-Nearest Neighbors (Priority Queue + Cell Pruning)
+
+    /// Execute True K-Nearest Neighbors search using Priority Queue + Cell Pruning
+    ///
+    /// This method uses a more efficient algorithm than `executeKNN()`:
+    ///
+    /// **Algorithm** (Samet, 2006):
+    /// 1. Start with the cell containing the query point
+    /// 2. Use a priority queue ordered by minimum distance to query
+    /// 3. For each cell, if minDistance > k-th best distance, prune
+    /// 4. Continue until k results found or no more cells to explore
+    ///
+    /// **Advantages over Adaptive Radius**:
+    /// - Guaranteed to find k nearest (if they exist)
+    /// - No arbitrary radius parameter needed
+    /// - Efficient pruning reduces unnecessary cell scans
+    /// - Works well with sparse data
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let result = try await context.findNearby(Store.self)
+    ///     .location(\.geoPoint)
+    ///     .nearest(k: 10, from: userLocation)
+    ///     .executeTrueKNN()
+    /// ```
+    ///
+    /// **Reference**: Samet, H. "Foundations of Multidimensional and Metric Data Structures", 2006
+    ///
+    /// - Returns: SpatialKNNResult with K nearest items sorted by distance
+    /// - Throws: SpatialQueryError if KNN not configured or index not found
+    public func executeTrueKNN() async throws -> SpatialKNNResult<T> {
+        guard let k = knnK else {
+            throw SpatialQueryError.noConstraint
+        }
+        guard let center = referencePoint else {
+            throw SpatialQueryError.noConstraint
+        }
+
+        // Validate k
+        guard k > 0 else {
+            throw SpatialQueryError.invalidKNNParameters("k must be positive, got \(k)")
+        }
+
+        // Find index descriptor
+        guard let descriptor = findIndexDescriptor() else {
+            throw SpatialQueryError.indexNotFound(buildIndexName())
+        }
+
+        // Get index configuration from kind
+        let level: Int
+        let encoding: SpatialEncoding
+        if let kind = descriptor.kind as? SpatialIndexKind<T> {
+            level = kind.level
+            encoding = kind.encoding
+        } else {
+            level = 15
+            encoding = .s2
+        }
+
+        let indexName = descriptor.name
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        // Create the true KNN search instance
+        let knnSearch = SpatialKNNSearch<T>(
+            queryContext: queryContext,
+            indexSubspace: indexSubspace,
+            encoding: encoding,
+            level: level,
+            fieldName: fieldName,
+            maxCellsToScan: knnMaxKeysPerIteration,
+            maxPointsToScan: knnMaxTotalKeys
+        )
+
+        // Execute true KNN search
+        let results: [(item: T, distance: Double)] = try await queryContext.withTransaction { transaction in
+            try await knnSearch.findKNearest(
+                k: k,
+                from: center,
+                transaction: transaction
+            )
+        }
+
+        // Determine limit reason if not enough results
+        let limitReason: LimitReason?
+        if results.count < k {
+            limitReason = .maxResultsReached(returned: results.count, limit: k)
+        } else {
+            limitReason = nil
+        }
+
+        // Get the search radius (maximum distance found)
+        let searchRadius = results.last?.distance ?? 0
+
+        return SpatialKNNResult(
+            items: results,
+            k: k,
+            searchRadiusMeters: searchRadius,
+            limitReason: limitReason
+        )
     }
 }
 
