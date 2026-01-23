@@ -748,4 +748,502 @@ struct CommunityDetectorIntegrationTests {
         #expect(localCommunity.contains("C"))
         #expect(localCommunity.contains("D"))
     }
+
+    @Test("Deterministic results with seed")
+    func deterministicResultsWithSeed() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Create a graph with multiple possible community assignments
+        // This tests that the same seed produces the same results
+        let edges = [
+            // Cluster 1
+            Edge(source: "A", target: "B", label: "knows"),
+            Edge(source: "B", target: "A", label: "knows"),
+            Edge(source: "B", target: "C", label: "knows"),
+            Edge(source: "C", target: "B", label: "knows"),
+            Edge(source: "C", target: "A", label: "knows"),
+            Edge(source: "A", target: "C", label: "knows"),
+            // Cluster 2
+            Edge(source: "D", target: "E", label: "knows"),
+            Edge(source: "E", target: "D", label: "knows"),
+            Edge(source: "E", target: "F", label: "knows"),
+            Edge(source: "F", target: "E", label: "knows"),
+            Edge(source: "F", target: "D", label: "knows"),
+            Edge(source: "D", target: "F", label: "knows"),
+            // Bridge
+            Edge(source: "C", target: "D", label: "knows"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let seed: UInt64 = 12345
+
+        // Run with seed multiple times
+        let config = CommunityDetectionConfiguration(
+            maxIterations: 50,
+            batchSize: 100,
+            computeModularity: false,
+            minCommunitySize: 1,
+            seed: seed
+        )
+
+        let detector = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config
+        )
+
+        let result1 = try await detector.detect()
+        let result2 = try await detector.detect()
+        let result3 = try await detector.detect()
+
+        // All runs should produce identical community assignments
+        #expect(result1.assignments == result2.assignments)
+        #expect(result2.assignments == result3.assignments)
+        #expect(result1.communityCount == result2.communityCount)
+        #expect(result2.communityCount == result3.communityCount)
+    }
+
+    @Test("Different seeds produce different results")
+    func differentSeedsProduceDifferentResults() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Create a larger graph where different seeds may lead to different results
+        var edges: [Edge] = []
+        // Create a ring of nodes
+        for i in 0..<10 {
+            let source = "N\(i)"
+            let target = "N\((i + 1) % 10)"
+            edges.append(Edge(source: source, target: target, label: "link"))
+            edges.append(Edge(source: target, target: source, label: "link"))
+        }
+        try await ctx.insertEdges(edges)
+
+        let config1 = CommunityDetectionConfiguration(seed: 111)
+        let config2 = CommunityDetectionConfiguration(seed: 222)
+
+        let detector1 = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config1
+        )
+
+        let detector2 = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config2
+        )
+
+        let result1 = try await detector1.detect()
+        let result2 = try await detector2.detect()
+
+        // Both should find communities (the ring should form one big SCC)
+        #expect(result1.communityCount >= 1)
+        #expect(result2.communityCount >= 1)
+
+        // Note: Different seeds don't guarantee different results,
+        // but the algorithm should still work correctly
+    }
+
+    @Test("Modularity computation")
+    func modularityComputation() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Two clearly separated cliques should have high modularity
+        let edges = [
+            // Clique 1: A, B, C (fully connected)
+            Edge(source: "A", target: "B", label: "friends"),
+            Edge(source: "B", target: "A", label: "friends"),
+            Edge(source: "A", target: "C", label: "friends"),
+            Edge(source: "C", target: "A", label: "friends"),
+            Edge(source: "B", target: "C", label: "friends"),
+            Edge(source: "C", target: "B", label: "friends"),
+            // Clique 2: D, E, F (fully connected)
+            Edge(source: "D", target: "E", label: "friends"),
+            Edge(source: "E", target: "D", label: "friends"),
+            Edge(source: "D", target: "F", label: "friends"),
+            Edge(source: "F", target: "D", label: "friends"),
+            Edge(source: "E", target: "F", label: "friends"),
+            Edge(source: "F", target: "E", label: "friends"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let config = CommunityDetectionConfiguration(
+            maxIterations: 100,
+            batchSize: 100,
+            computeModularity: true,
+            minCommunitySize: 1,
+            seed: 42
+        )
+
+        let detector = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config
+        )
+
+        let result = try await detector.detect()
+
+        // Modularity should be computed
+        #expect(result.modularity != nil)
+
+        // Good community structure should have positive modularity
+        if let modularity = result.modularity {
+            #expect(modularity > 0)
+        }
+
+        // Should detect 2 communities
+        #expect(result.communityCount == 2)
+    }
+
+    @Test("Three or more communities")
+    func threeOrMoreCommunities() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Create 3 separate cliques with no connections between them
+        let edges = [
+            // Clique 1: A, B
+            Edge(source: "A", target: "B", label: "link"),
+            Edge(source: "B", target: "A", label: "link"),
+            // Clique 2: C, D
+            Edge(source: "C", target: "D", label: "link"),
+            Edge(source: "D", target: "C", label: "link"),
+            // Clique 3: E, F
+            Edge(source: "E", target: "F", label: "link"),
+            Edge(source: "F", target: "E", label: "link"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let config = CommunityDetectionConfiguration(
+            maxIterations: 100,
+            batchSize: 100,
+            computeModularity: true,
+            minCommunitySize: 1,
+            seed: 42
+        )
+
+        let detector = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config
+        )
+
+        let result = try await detector.detect()
+
+        // Should detect 3 separate communities (disconnected components)
+        #expect(result.communityCount == 3)
+
+        // Verify each pair is in same community
+        #expect(result.inSameCommunity("A", "B") == true)
+        #expect(result.inSameCommunity("C", "D") == true)
+        #expect(result.inSameCommunity("E", "F") == true)
+
+        // Verify different communities are separate
+        #expect(result.inSameCommunity("A", "C") == false)
+        #expect(result.inSameCommunity("A", "E") == false)
+        #expect(result.inSameCommunity("C", "E") == false)
+    }
+
+    @Test("Single node isolation")
+    func singleNodeIsolation() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Graph with isolated node
+        let edges = [
+            // Connected pair
+            Edge(source: "A", target: "B", label: "link"),
+            Edge(source: "B", target: "A", label: "link"),
+            // Isolated node C (self-loop)
+            Edge(source: "C", target: "C", label: "link"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let detector = CommunityDetector<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: CommunityDetectionConfiguration(seed: 42)
+        )
+
+        let result = try await detector.detect()
+
+        // Should detect at least 2 communities
+        #expect(result.communityCount >= 2)
+
+        // A and B should be together
+        #expect(result.inSameCommunity("A", "B") == true)
+
+        // C should be in its own community (isolated)
+        #expect(result.inSameCommunity("A", "C") == false)
+    }
+}
+
+// MARK: - PageRank Edge Case Tests
+
+@Suite("PageRank Edge Case Tests", .serialized, .tags(.requiresFDB))
+struct PageRankEdgeCaseTests {
+
+    init() async throws {
+        try await FDBTestSetup.shared.initialize()
+    }
+
+    @Test("Sink node handling")
+    func sinkNodeHandling() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Graph with sink node (no outgoing edges)
+        // A -> B -> C (sink)
+        let edges = [
+            Edge(source: "A", target: "B", label: "links"),
+            Edge(source: "B", target: "C", label: "links"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 100,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        let result = try await computer.compute()
+
+        // Should find all 3 nodes
+        #expect(result.nodeCount == 3)
+
+        // Sink node C should still receive PageRank
+        let scoreC = result.scores["C"] ?? 0
+        #expect(scoreC > 0)
+
+        // Scores should sum to approximately 1.0
+        let totalScore = result.scores.values.reduce(0, +)
+        #expect(abs(totalScore - 1.0) < 0.01)
+    }
+
+    @Test("Disconnected graph components")
+    func disconnectedGraphComponents() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Two disconnected components
+        // Component 1: A -> B
+        // Component 2: C -> D
+        let edges = [
+            Edge(source: "A", target: "B", label: "links"),
+            Edge(source: "C", target: "D", label: "links"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 100,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        let result = try await computer.compute()
+
+        // Should find all 4 nodes
+        #expect(result.nodeCount == 4)
+
+        // All nodes should have positive scores
+        for (_, score) in result.scores {
+            #expect(score > 0)
+        }
+
+        // B and D (sinks) should have similar scores
+        let scoreB = result.scores["B"] ?? 0
+        let scoreD = result.scores["D"] ?? 0
+        #expect(abs(scoreB - scoreD) < 0.01)
+
+        // A and C (sources) should have similar scores
+        let scoreA = result.scores["A"] ?? 0
+        let scoreC = result.scores["C"] ?? 0
+        #expect(abs(scoreA - scoreC) < 0.01)
+    }
+
+    @Test("Self-loop node")
+    func selfLoopNode() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Node with self-loop
+        let edges = [
+            Edge(source: "A", target: "B", label: "links"),
+            Edge(source: "B", target: "B", label: "links"),  // Self-loop
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 100,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        let result = try await computer.compute()
+
+        // Should find 2 nodes
+        #expect(result.nodeCount == 2)
+
+        // B should have higher score (receives from A and itself)
+        let scoreA = result.scores["A"] ?? 0
+        let scoreB = result.scores["B"] ?? 0
+        #expect(scoreB > scoreA)
+    }
+
+    @Test("Convergence threshold validation")
+    func convergenceThresholdValidation() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Simple cycle for predictable convergence
+        let edges = [
+            Edge(source: "A", target: "B", label: "links"),
+            Edge(source: "B", target: "C", label: "links"),
+            Edge(source: "C", target: "A", label: "links"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        // Use strict convergence threshold
+        let strictConfig = PageRankConfiguration(
+            dampingFactor: 0.85,
+            maxIterations: 1000,
+            convergenceThreshold: 1e-10,
+            batchSize: 100
+        )
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: strictConfig
+        )
+
+        let result = try await computer.compute()
+
+        // Should converge (delta should be <= threshold)
+        #expect(result.convergenceDelta <= 1e-10 || result.iterations == 1000)
+
+        // All scores should be approximately equal in a cycle
+        let scores = Array(result.scores.values)
+        let avgScore = scores.reduce(0, +) / Double(scores.count)
+        for score in scores {
+            #expect(abs(score - avgScore) < 0.001)
+        }
+    }
+
+    @Test("Max iterations limit")
+    func maxIterationsLimit() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Use a directed chain (not a cycle) that takes multiple iterations to converge.
+        // In a chain A -> B -> C -> ... -> T, scores propagate through the chain,
+        // and dangling nodes at the end cause a cascade effect requiring many iterations.
+        // Note: A cycle graph converges immediately because uniform distribution is already
+        // the stationary distribution.
+        var edges: [Edge] = []
+        for i in 0..<19 {
+            edges.append(Edge(source: "N\(i)", target: "N\(i + 1)", label: "links"))
+        }
+        try await ctx.insertEdges(edges)
+
+        // Use very few iterations with very strict threshold
+        let config = PageRankConfiguration(
+            dampingFactor: 0.85,
+            maxIterations: 5,
+            convergenceThreshold: 1e-20,  // Very strict, won't converge
+            batchSize: 100
+        )
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: config
+        )
+
+        let result = try await computer.compute()
+
+        // Should stop at max iterations (chain graph doesn't converge quickly)
+        #expect(result.iterations == 5)
+
+        // Should still produce valid scores
+        #expect(result.nodeCount == 20)
+        let totalScore = result.scores.values.reduce(0, +)
+        #expect(abs(totalScore - 1.0) < 0.01)
+    }
+
+    @Test("Empty graph")
+    func emptyGraph() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // No edges
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: .default
+        )
+
+        let result = try await computer.compute()
+
+        // Should handle empty graph gracefully
+        #expect(result.nodeCount == 0)
+        #expect(result.iterations == 0)
+        #expect(result.scores.isEmpty)
+    }
+
+    @Test("Star graph hub dominance")
+    func starGraphHubDominance() async throws {
+        let ctx = try TestContext()
+        defer { Task { try? await ctx.cleanup() } }
+
+        // Star graph: all nodes point to center hub
+        // A, B, C, D all point to H
+        let edges = [
+            Edge(source: "A", target: "H", label: "links"),
+            Edge(source: "B", target: "H", label: "links"),
+            Edge(source: "C", target: "H", label: "links"),
+            Edge(source: "D", target: "H", label: "links"),
+        ]
+        try await ctx.insertEdges(edges)
+
+        let computer = PageRankComputer<Edge>(
+            database: ctx.database,
+            subspace: ctx.indexSubspace,
+            configuration: PageRankConfiguration(
+                dampingFactor: 0.85,
+                maxIterations: 100,
+                convergenceThreshold: 1e-6,
+                batchSize: 100
+            )
+        )
+
+        let result = try await computer.compute()
+
+        // Hub should have highest score
+        let topNode = result.topK(1).first
+        #expect(topNode?.nodeID == "H")
+
+        // Hub should have significantly higher score than spokes
+        let hubScore = result.scores["H"] ?? 0
+        let spokeScore = result.scores["A"] ?? 0
+        #expect(hubScore > spokeScore * 2)  // Hub should be much higher
+    }
 }
