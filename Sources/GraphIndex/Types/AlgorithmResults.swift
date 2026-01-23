@@ -521,6 +521,17 @@ public struct CommunityDetectionConfiguration: Sendable {
     /// Set to 1 to keep all communities.
     public let minCommunitySize: Int
 
+    /// Random seed for deterministic execution
+    ///
+    /// When set, the algorithm will produce the same results on repeated
+    /// runs with the same input data. This is useful for:
+    /// - Reproducible experiments
+    /// - Testing
+    /// - Debugging
+    ///
+    /// When `nil`, uses system random (non-deterministic).
+    public let seed: UInt64?
+
     /// Default configuration
     ///
     /// - maxIterations: 100
@@ -564,12 +575,28 @@ public struct CommunityDetectionConfiguration: Sendable {
         maxIterations: Int = 100,
         batchSize: Int = 500,
         computeModularity: Bool = false,
-        minCommunitySize: Int = 1
+        minCommunitySize: Int = 1,
+        seed: UInt64? = nil
     ) {
         self.maxIterations = Swift.max(1, maxIterations)
         self.batchSize = Swift.max(1, batchSize)
         self.computeModularity = computeModularity
         self.minCommunitySize = Swift.max(1, minCommunitySize)
+        self.seed = seed
+    }
+
+    /// Create a deterministic configuration with a specific seed
+    ///
+    /// - Parameter seed: Random seed for reproducible results
+    /// - Returns: Configuration with deterministic behavior
+    public func withSeed(_ seed: UInt64) -> CommunityDetectionConfiguration {
+        CommunityDetectionConfiguration(
+            maxIterations: maxIterations,
+            batchSize: batchSize,
+            computeModularity: computeModularity,
+            minCommunitySize: minCommunitySize,
+            seed: seed
+        )
     }
 }
 
