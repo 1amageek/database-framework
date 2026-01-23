@@ -114,6 +114,62 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    // MARK: - Property Path Patterns
+
+    /// Add a property path pattern to the WHERE clause
+    ///
+    /// Property paths allow complex navigation patterns including:
+    /// - Inverse paths: `^knows` (reverse direction)
+    /// - Sequences: `knows/worksAt` (multi-hop)
+    /// - Alternatives: `knows|friendOf` (either)
+    /// - Transitive: `knows+` (one or more hops)
+    /// - Optional: `knows?` (zero or one)
+    /// - Closure: `knows*` (zero or more hops)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// // Find all ancestors (transitive closure)
+    /// .wherePath("?person", path: .oneOrMore(.iri("parentOf")), "?ancestor")
+    ///
+    /// // Find friends or colleagues
+    /// .wherePath("?person", path: .alternative(.iri("knows"), .iri("worksAt")), "?related")
+    ///
+    /// // Find friends of friends
+    /// .wherePath("Alice", path: .sequence(.iri("knows"), .iri("knows")), "?fof")
+    /// ```
+    public func wherePath(
+        _ subject: String,
+        path: PropertyPath,
+        _ object: String
+    ) -> Self {
+        wherePath(
+            SPARQLTerm(stringLiteral: subject),
+            path: path,
+            SPARQLTerm(stringLiteral: object)
+        )
+    }
+
+    /// Add a property path pattern using SPARQLTerm values
+    public func wherePath(
+        _ subject: SPARQLTerm,
+        path: PropertyPath,
+        _ object: SPARQLTerm
+    ) -> Self {
+        var copy = self
+
+        // Convert property path to graph pattern
+        let pathPattern = GraphPattern.propertyPath(subject: subject, path: path, object: object)
+
+        switch copy.graphPattern {
+        case .basic(let patterns) where patterns.isEmpty:
+            copy.graphPattern = pathPattern
+        default:
+            copy.graphPattern = .join(copy.graphPattern, pathPattern)
+        }
+
+        return copy
+    }
+
     // MARK: - OPTIONAL
 
     /// Add an OPTIONAL pattern
@@ -242,6 +298,40 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// Filter: two variables are not equal
     public func filter(_ variable1: String, notEqualsVariable variable2: String) -> Self {
         filter(.variableNotEquals(variable1, variable2))
+    }
+
+    // MARK: - GROUP BY
+
+    /// Start a GROUP BY query
+    ///
+    /// Groups results by the specified variables and allows aggregate functions.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let results = try await context.sparql(Statement.self)
+    ///     .defaultIndex()
+    ///     .where("?person", "knows", "?friend")
+    ///     .groupBy("?person")
+    ///     .count("?friend", as: "friendCount")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameter variables: Variables to group by
+    /// - Returns: A grouped query builder for adding aggregates
+    public func groupBy(_ variables: String...) -> SPARQLGroupedQueryBuilder<T> {
+        groupBy(variables)
+    }
+
+    /// Start a GROUP BY query (array version)
+    public func groupBy(_ variables: [String]) -> SPARQLGroupedQueryBuilder<T> {
+        SPARQLGroupedQueryBuilder(
+            queryContext: queryContext,
+            fromFieldName: fromFieldName,
+            edgeFieldName: edgeFieldName,
+            toFieldName: toFieldName,
+            sourcePattern: graphPattern,
+            groupVariables: variables
+        )
     }
 
     // MARK: - Projection and Modifiers
