@@ -151,6 +151,13 @@ public struct VectorIndexConfiguration<Model: Persistable>: _VectorIndexConfigur
 /// - Space complexity: O(n × M × log n) for graph
 /// - Recall: ~95-99% (approximate)
 /// - Best for: >10K vectors, speed matters
+///
+/// **IVF**: Inverted File Index with K-means clustering
+/// - Time complexity: O(nprobe × n/nlist)
+/// - Space complexity: O(n) for vectors + O(k × d) for centroids
+/// - Recall: ~80-95% (depends on nprobe)
+/// - Best for: >100K vectors, memory-constrained environments
+/// - Reference: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
 public enum VectorAlgorithm: Sendable {
     /// Automatic algorithm selection
     ///
@@ -166,6 +173,21 @@ public enum VectorAlgorithm: Sendable {
 
     /// HNSW graph (approximate, fast)
     case hnsw(VectorHNSWParameters)
+
+    /// IVF (Inverted File Index) with K-means clustering
+    ///
+    /// Partitions vector space into clusters. At query time, only
+    /// searches the nearest clusters. Good for very large datasets
+    /// with limited memory.
+    case ivf(VectorIVFParameters)
+
+    /// PQ (Product Quantization) for vector compression
+    ///
+    /// Compresses vectors by splitting into subspaces and encoding
+    /// each subspace with a single byte. Trades accuracy for memory.
+    /// - Compression: d × 4 bytes → m bytes (typical m=8, 16x-64x compression)
+    /// - Best for: Memory-constrained environments, billion-scale datasets
+    case pq(VectorPQParameters)
 
     /// Default algorithm: auto with default parameters
     public static var `default`: VectorAlgorithm { .auto(.default) }
@@ -316,4 +338,147 @@ public struct VectorHNSWParameters: Sendable, Codable, Hashable {
     /// - efConstruction: 100
     /// - efSearch: 30
     public static let fast = VectorHNSWParameters(m: 8, efConstruction: 100, efSearch: 30)
+}
+
+// MARK: - IVF Parameters
+
+/// IVF algorithm parameters for VectorIndexConfiguration
+///
+/// **Parameters Guide**:
+/// - **nlist**: Number of clusters (partitions)
+///   - Rule of thumb: sqrt(n) to 4*sqrt(n) where n = dataset size
+///   - Range: 16-4096
+/// - **nprobe**: Number of clusters to search
+///   - Range: 1 to nlist
+///   - Higher = better recall, slower search
+///
+/// **Trade-offs**:
+/// - nlist too small: Each cluster is large, slow search
+/// - nlist too large: More overhead, some clusters may be empty
+/// - nprobe too small: Miss relevant vectors, low recall
+/// - nprobe too large: Approaches brute force, no speedup
+///
+/// **Presets**:
+/// - `.default`: Balanced (nlist=100, nprobe=10)
+/// - `.highRecall`: Better quality (nlist=100, nprobe=25)
+/// - `.fast`: Faster search (nlist=256, nprobe=5)
+///
+/// **Reference**: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
+public struct VectorIVFParameters: Sendable, Codable, Hashable {
+    /// Number of clusters (inverted lists)
+    public let nlist: Int
+
+    /// Number of clusters to probe during search
+    public let nprobe: Int
+
+    /// K-means training iterations
+    public let kmeansIterations: Int
+
+    /// Create IVF parameters
+    ///
+    /// - Parameters:
+    ///   - nlist: Number of clusters (default: 100)
+    ///   - nprobe: Clusters to search (default: 10)
+    ///   - kmeansIterations: Training iterations (default: 20)
+    public init(
+        nlist: Int = 100,
+        nprobe: Int = 10,
+        kmeansIterations: Int = 20
+    ) {
+        precondition(nlist > 0, "nlist must be positive")
+        precondition(nprobe > 0, "nprobe must be positive")
+        precondition(nprobe <= nlist, "nprobe cannot exceed nlist")
+
+        self.nlist = nlist
+        self.nprobe = nprobe
+        self.kmeansIterations = kmeansIterations
+    }
+
+    /// Default balanced parameters
+    public static let `default` = VectorIVFParameters(nlist: 100, nprobe: 10)
+
+    /// High recall parameters
+    public static let highRecall = VectorIVFParameters(nlist: 100, nprobe: 25)
+
+    /// Fast search parameters
+    public static let fast = VectorIVFParameters(nlist: 256, nprobe: 5)
+
+    /// Small dataset parameters (< 10K vectors)
+    public static let small = VectorIVFParameters(nlist: 32, nprobe: 8)
+
+    /// Large dataset parameters (> 100K vectors)
+    public static let large = VectorIVFParameters(nlist: 512, nprobe: 16)
+}
+
+// MARK: - PQ Parameters
+
+/// PQ algorithm parameters for VectorIndexConfiguration
+///
+/// **Parameters Guide**:
+/// - **m**: Number of subquantizers (subspaces)
+///   - Must divide vector dimensions evenly
+///   - Common values: 4, 8, 16, 32
+///   - Higher M = better accuracy, larger codes
+///
+/// **Compression**:
+/// - m=4: 4 bytes per vector
+/// - m=8: 8 bytes per vector (default)
+/// - m=16: 16 bytes per vector
+/// - m=32: 32 bytes per vector
+///
+/// **Trade-offs**:
+/// - More subquantizers → better accuracy, lower compression
+/// - Fewer subquantizers → higher compression, lower accuracy
+///
+/// **Presets**:
+/// - `.default`: Balanced (m=8)
+/// - `.highCompression`: Maximum compression (m=4)
+/// - `.highAccuracy`: Better accuracy (m=16)
+///
+/// **Reference**: Jégou et al., "Product Quantization for Nearest Neighbor Search", 2011
+public struct VectorPQParameters: Sendable, Codable, Hashable {
+    /// Number of subquantizers
+    ///
+    /// Must divide vector dimensions evenly.
+    public let m: Int
+
+    /// K-means training iterations per subspace
+    public let niter: Int
+
+    /// Create PQ parameters
+    ///
+    /// - Parameters:
+    ///   - m: Number of subquantizers (default: 8)
+    ///   - niter: Training iterations (default: 25)
+    public init(
+        m: Int = 8,
+        niter: Int = 25
+    ) {
+        precondition(m > 0, "m must be positive")
+        precondition(niter > 0, "niter must be positive")
+
+        self.m = m
+        self.niter = niter
+    }
+
+    /// Default balanced parameters (m=8)
+    public static let `default` = VectorPQParameters(m: 8)
+
+    /// High compression parameters (m=4)
+    ///
+    /// - 4 bytes per vector
+    /// - Maximum compression, lower accuracy
+    public static let highCompression = VectorPQParameters(m: 4)
+
+    /// High accuracy parameters (m=16)
+    ///
+    /// - 16 bytes per vector
+    /// - Better accuracy, larger codes
+    public static let highAccuracy = VectorPQParameters(m: 16)
+
+    /// Very high accuracy parameters (m=32)
+    ///
+    /// - 32 bytes per vector
+    /// - Best PQ accuracy
+    public static let veryHighAccuracy = VectorPQParameters(m: 32)
 }
