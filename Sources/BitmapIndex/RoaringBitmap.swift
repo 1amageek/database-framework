@@ -269,6 +269,73 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
             }
         }
 
+        /// Symmetric Difference (XOR)
+        ///
+        /// Returns elements that are in exactly one of the two containers.
+        static func symmetricDifference(_ a: Container, _ b: Container) -> Container? {
+            switch (a, b) {
+            case (.array(let arrA), .array(let arrB)):
+                let setA = Set(arrA)
+                let setB = Set(arrB)
+                let result = setA.symmetricDifference(setB).sorted()
+                return result.isEmpty ? nil : .array(result)
+
+            case (.array(let arr), .bitmap(let bits)):
+                var resultBits = bits
+                for value in arr {
+                    let wordIndex = Int(value) / 64
+                    let bitIndex = Int(value) % 64
+                    resultBits[wordIndex] ^= (1 << bitIndex)  // Toggle bit
+                }
+                let count = resultBits.reduce(0) { $0 + $1.nonzeroBitCount }
+                if count == 0 { return nil }
+                if count <= RoaringBitmap.arrayMaxSize {
+                    return bitmapToArray(resultBits)
+                }
+                return .bitmap(resultBits)
+
+            case (.bitmap(let bits), .array(let arr)):
+                // Same as above, just swap order
+                var resultBits = bits
+                for value in arr {
+                    let wordIndex = Int(value) / 64
+                    let bitIndex = Int(value) % 64
+                    resultBits[wordIndex] ^= (1 << bitIndex)
+                }
+                let count = resultBits.reduce(0) { $0 + $1.nonzeroBitCount }
+                if count == 0 { return nil }
+                if count <= RoaringBitmap.arrayMaxSize {
+                    return bitmapToArray(resultBits)
+                }
+                return .bitmap(resultBits)
+
+            case (.bitmap(let bitsA), .bitmap(let bitsB)):
+                var result = [UInt64](repeating: 0, count: 1024)
+                var hasAny = false
+                for i in 0..<1024 {
+                    result[i] = bitsA[i] ^ bitsB[i]
+                    if result[i] != 0 { hasAny = true }
+                }
+                if !hasAny { return nil }
+                let count = result.reduce(0) { $0 + $1.nonzeroBitCount }
+                if count <= RoaringBitmap.arrayMaxSize {
+                    return bitmapToArray(result)
+                }
+                return .bitmap(result)
+
+            default:
+                // Convert runs to arrays and compute XOR
+                let setA = Set(a.toArray())
+                let setB = Set(b.toArray())
+                let result = setA.symmetricDifference(setB).sorted()
+                if result.isEmpty { return nil }
+                if result.count > RoaringBitmap.arrayMaxSize {
+                    return arrayToBitmap(result)
+                }
+                return .array(result)
+            }
+        }
+
         /// Convert to array
         func toArray() -> [UInt16] {
             switch self {
@@ -432,6 +499,131 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
                 }
             }
         }
+        return result
+    }
+
+    /// XOR (Symmetric Difference)
+    ///
+    /// Returns elements that are in either bitmap but not in both.
+    ///
+    /// **Time Complexity**: O(n + m) where n, m are the sizes of the bitmaps
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let a = RoaringBitmap([1, 2, 3])
+    /// let b = RoaringBitmap([2, 3, 4])
+    /// let xor = a ^ b  // [1, 4]
+    /// ```
+    public static func ^ (lhs: RoaringBitmap, rhs: RoaringBitmap) -> RoaringBitmap {
+        var result = RoaringBitmap()
+
+        // Get all unique high parts
+        let allHighParts = Set(lhs.containers.keys).union(rhs.containers.keys)
+
+        for high in allHighParts {
+            let containerA = lhs.containers[high]
+            let containerB = rhs.containers[high]
+
+            switch (containerA, containerB) {
+            case (.some(let a), .some(let b)):
+                // Both have this container - compute XOR
+                if let xorContainer = Container.symmetricDifference(a, b) {
+                    result.containers[high] = xorContainer
+                }
+            case (.some(let a), .none):
+                // Only in lhs
+                result.containers[high] = a
+            case (.none, .some(let b)):
+                // Only in rhs
+                result.containers[high] = b
+            case (.none, .none):
+                // Neither (shouldn't happen)
+                break
+            }
+        }
+
+        return result
+    }
+
+    /// Complement/NOT within a universe
+    ///
+    /// Returns all values in [0, universeSize) that are NOT in this bitmap.
+    ///
+    /// **Note**: The universe size must be specified since RoaringBitmap doesn't
+    /// track a fixed universe. Values outside [0, universeSize) are ignored.
+    ///
+    /// **Time Complexity**: O(universeSize / 65536 + n)
+    ///
+    /// **Memory**: May create many containers for large universes
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let bitmap = RoaringBitmap([1, 3, 5])
+    /// let complement = bitmap.complement(universeSize: 10)  // [0, 2, 4, 6, 7, 8, 9]
+    /// ```
+    ///
+    /// - Parameter universeSize: The size of the universe (exclusive upper bound)
+    /// - Returns: A bitmap containing all values in [0, universeSize) not in this bitmap
+    public func complement(universeSize: UInt32) -> RoaringBitmap {
+        // Create a full universe bitmap and subtract self
+        let universe = RoaringBitmap.range(0..<universeSize)
+        return universe - self
+    }
+
+    /// Create a bitmap containing all values in a range
+    ///
+    /// **Time Complexity**: O(range.count / 65536)
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let bitmap = RoaringBitmap.range(0..<100)  // [0, 1, 2, ..., 99]
+    /// ```
+    ///
+    /// - Parameter range: The range of values to include
+    /// - Returns: A bitmap containing all values in the range
+    public static func range(_ range: Range<UInt32>) -> RoaringBitmap {
+        var result = RoaringBitmap()
+
+        guard !range.isEmpty else { return result }
+
+        let startHigh = UInt16(range.lowerBound >> 16)
+        let endHigh = UInt16((range.upperBound - 1) >> 16)
+
+        for high in startHigh...endHigh {
+            let containerStart: UInt16
+            let containerEnd: UInt16
+
+            if high == startHigh {
+                containerStart = UInt16(range.lowerBound & 0xFFFF)
+            } else {
+                containerStart = 0
+            }
+
+            if high == endHigh {
+                containerEnd = UInt16((range.upperBound - 1) & 0xFFFF)
+            } else {
+                containerEnd = 0xFFFF
+            }
+
+            // Create container for this range
+            let count = Int(containerEnd) - Int(containerStart) + 1
+            if count == 65536 {
+                // Full container - use run or bitmap
+                result.containers[high] = .run([(start: 0, length: 65535)])
+            } else if count > Self.arrayMaxSize {
+                // Large range - use run-length encoding
+                result.containers[high] = .run([(start: containerStart, length: UInt16(containerEnd - containerStart))])
+            } else {
+                // Small range - use array
+                var arr: [UInt16] = []
+                arr.reserveCapacity(count)
+                for i in containerStart...containerEnd {
+                    arr.append(i)
+                }
+                result.containers[high] = .array(arr)
+            }
+        }
+
         return result
     }
 
