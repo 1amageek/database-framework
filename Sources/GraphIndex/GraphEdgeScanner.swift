@@ -1179,4 +1179,201 @@ public struct GraphEdgeScanner: Sendable {
 
         return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
     }
+
+    // MARK: - Node Enumeration
+
+    /// Get all unique nodes in the graph
+    ///
+    /// Scans all edges and extracts unique source and target nodes.
+    /// Used for Property Path evaluation when both endpoints are unbound variables.
+    ///
+    /// **Performance Note**:
+    /// This requires a full scan of all edges and is O(E) where E is the number of edges.
+    /// Use sparingly and prefer bounded queries when possible.
+    ///
+    /// - Parameters:
+    ///   - edgeLabel: Edge label filter (nil for all edges)
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Set of all unique node IDs in the graph
+    public func getAllNodes(
+        edgeLabel: String?,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        var nodes = Set<String>()
+
+        for try await edge in scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
+            nodes.insert(edge.source)
+            nodes.insert(edge.target)
+        }
+
+        return nodes
+    }
+
+    /// Get all unique nodes in the graph with early termination
+    ///
+    /// Like `getAllNodes` but stops after collecting `maxNodes` unique nodes.
+    /// Useful for Property Path evaluation with result limits.
+    ///
+    /// - Parameters:
+    ///   - edgeLabel: Edge label filter (nil for all edges)
+    ///   - maxNodes: Maximum number of nodes to collect
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Set of unique node IDs (up to maxNodes)
+    public func getAllNodes(
+        edgeLabel: String?,
+        maxNodes: Int,
+        transaction: any TransactionProtocol
+    ) async throws -> Set<String> {
+        var nodes = Set<String>()
+
+        for try await edge in scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
+            nodes.insert(edge.source)
+            nodes.insert(edge.target)
+
+            if nodes.count >= maxNodes {
+                break
+            }
+        }
+
+        return nodes
+    }
+
+    // MARK: - Convenience Methods (Collected Results)
+
+    /// Scan all outgoing edges from a node and collect results
+    ///
+    /// Convenience method that collects stream results into an array.
+    ///
+    /// - Parameters:
+    ///   - nodeID: Source node ID
+    ///   - edgeLabel: Edge label filter (nil for wildcard)
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Array of EdgeInfo for outgoing edges
+    public func scanAllOutgoing(
+        from nodeID: String,
+        edgeLabel: String?,
+        transaction: any TransactionProtocol
+    ) async throws -> [EdgeInfo] {
+        var results: [EdgeInfo] = []
+        for try await edge in scanOutgoing(from: nodeID, edgeLabel: edgeLabel, transaction: transaction) {
+            results.append(edge)
+        }
+        return results
+    }
+
+    /// Scan all incoming edges to a node and collect results
+    ///
+    /// Convenience method that collects stream results into an array.
+    ///
+    /// - Parameters:
+    ///   - nodeID: Target node ID
+    ///   - edgeLabel: Edge label filter (nil for wildcard)
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Array of EdgeInfo for incoming edges
+    public func scanAllIncoming(
+        to nodeID: String,
+        edgeLabel: String?,
+        transaction: any TransactionProtocol
+    ) async throws -> [EdgeInfo] {
+        var results: [EdgeInfo] = []
+        for try await edge in scanIncoming(to: nodeID, edgeLabel: edgeLabel, transaction: transaction) {
+            results.append(edge)
+        }
+        return results
+    }
+
+    /// Scan all edges with a callback for each edge
+    ///
+    /// Iterates through all edges and calls the callback for each.
+    /// The callback can return `false` to stop iteration.
+    ///
+    /// - Parameters:
+    ///   - edgeLabel: Edge label filter (nil for wildcard)
+    ///   - transaction: FDB transaction for the scan
+    ///   - callback: Callback for each edge. Return `false` to stop.
+    public func scanAllEdges(
+        edgeLabel: String?,
+        transaction: any TransactionProtocol,
+        _ callback: (EdgeInfo) throws -> Bool
+    ) async throws {
+        for try await edge in scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
+            if try !callback(edge) {
+                break
+            }
+        }
+    }
+
+    // MARK: - Grouped Batch Methods
+
+    /// Batch scan outgoing edges for multiple source nodes, grouped by source
+    ///
+    /// Returns a dictionary mapping each source node to its outgoing edges.
+    /// More efficient than calling `scanAllOutgoing` for each node individually.
+    ///
+    /// **Performance Note**:
+    /// When using a specific edge label, this performs one prefix scan per node.
+    /// When using wildcard (nil), it performs a single full scan and filters.
+    ///
+    /// - Parameters:
+    ///   - sources: Array of source node IDs
+    ///   - edgeLabel: Edge label filter (nil for wildcard)
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Dictionary mapping source node ID to array of outgoing EdgeInfo
+    public func batchScanAllOutgoing(
+        from sources: [String],
+        edgeLabel: String?,
+        transaction: any TransactionProtocol
+    ) async throws -> [String: [EdgeInfo]] {
+        let edges = try await batchScanOutgoing(
+            from: sources,
+            edgeLabel: edgeLabel,
+            transaction: transaction
+        )
+
+        // Group edges by source node
+        var grouped: [String: [EdgeInfo]] = [:]
+        for source in sources {
+            grouped[source] = []
+        }
+        for edge in edges {
+            grouped[edge.source, default: []].append(edge)
+        }
+        return grouped
+    }
+
+    /// Batch scan incoming edges for multiple target nodes, grouped by target
+    ///
+    /// Returns a dictionary mapping each target node to its incoming edges.
+    /// More efficient than calling `scanAllIncoming` for each node individually.
+    ///
+    /// **Performance Note**:
+    /// When using a specific edge label, this performs one prefix scan per node.
+    /// When using wildcard (nil), it performs a single full scan and filters.
+    ///
+    /// - Parameters:
+    ///   - targets: Array of target node IDs
+    ///   - edgeLabel: Edge label filter (nil for wildcard)
+    ///   - transaction: FDB transaction for the scan
+    /// - Returns: Dictionary mapping target node ID to array of incoming EdgeInfo
+    public func batchScanAllIncoming(
+        to targets: [String],
+        edgeLabel: String?,
+        transaction: any TransactionProtocol
+    ) async throws -> [String: [EdgeInfo]] {
+        let edges = try await batchScanIncoming(
+            to: targets,
+            edgeLabel: edgeLabel,
+            transaction: transaction
+        )
+
+        // Group edges by target node
+        var grouped: [String: [EdgeInfo]] = [:]
+        for target in targets {
+            grouped[target] = []
+        }
+        for edge in edges {
+            grouped[edge.target, default: []].append(edge)
+        }
+        return grouped
+    }
 }
