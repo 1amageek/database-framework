@@ -247,7 +247,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                         vectorCount: vectorCount,
                         dimensions: self.dimensions
                     )
-                case .flat, .hnsw:
+                case .flat, .hnsw, .ivf, .pq:
                     resolvedAlgorithm = vectorConfig.algorithm
                 }
             } else {
@@ -303,6 +303,48 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                     metric: kind.metric,
                     subspace: indexSubspace,
                     idExpression: FieldKeyExpression(fieldName: "id")
+                )
+                return try await maintainer.search(
+                    queryVector: queryVector,
+                    k: k,
+                    transaction: transaction
+                )
+
+            case .ivf(let ivfParams):
+                // Use IVF search
+                let params = IVFParameters(
+                    nlist: ivfParams.nlist,
+                    nprobe: ivfParams.nprobe,
+                    kmeansIterations: ivfParams.kmeansIterations
+                )
+                let maintainer = IVFIndexMaintainer<T>(
+                    index: index,
+                    dimensions: self.dimensions,
+                    metric: kind.metric,
+                    subspace: indexSubspace,
+                    idExpression: FieldKeyExpression(fieldName: "id"),
+                    parameters: params
+                )
+                return try await maintainer.search(
+                    queryVector: queryVector,
+                    k: k,
+                    transaction: transaction
+                )
+
+            case .pq(let pqParams):
+                // Use PQ search
+                let params = PQParameters(
+                    m: pqParams.m,
+                    ksub: 256,
+                    niter: pqParams.niter
+                )
+                let maintainer = PQIndexMaintainer<T>(
+                    index: index,
+                    dimensions: self.dimensions,
+                    metric: kind.metric,
+                    subspace: indexSubspace,
+                    idExpression: FieldKeyExpression(fieldName: "id"),
+                    parameters: params
                 )
                 return try await maintainer.search(
                     queryVector: queryVector,
@@ -390,6 +432,10 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                 hnswParams = params
             case .flat:
                 throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. Configure the index with .hnsw() algorithm.")
+            case .ivf:
+                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. IVF does not support filtered search.")
+            case .pq:
+                throw VectorQueryError.filterNotSupported("ACORN filtering is only supported for HNSW indexes. PQ does not support filtered search.")
             }
         } else {
             // No explicit config - default is auto, but filtering requires explicit HNSW
