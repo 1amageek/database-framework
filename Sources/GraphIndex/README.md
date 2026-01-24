@@ -518,6 +518,214 @@ let largest = result.largestCommunities(k: 5)
 
 **Reference**: Raghavan et al. (2007)
 
+## Ontology Support
+
+GraphIndex provides comprehensive ontology support for building knowledge graphs with semantic reasoning capabilities.
+
+### What is an Ontology?
+
+An **ontology** is a formal specification of concepts (classes), relationships (properties), and constraints within a domain. In the context of knowledge graphs:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                         Ontology                                 │
+├─────────────────────────────────────────────────────────────────┤
+│  TBox (Terminological Box)                                       │
+│  ├── Class definitions: Person, Animal, Vehicle                 │
+│  ├── Class hierarchy: Dog ⊑ Mammal ⊑ Animal                     │
+│  ├── Property definitions: owns, livesIn, hasParent             │
+│  └── Constraints: Person ⊓ Animal = ⊥ (disjoint)                │
+├─────────────────────────────────────────────────────────────────┤
+│  ABox (Assertion Box)                                            │
+│  ├── Individuals: alice, bob, fido                               │
+│  ├── Class assertions: alice : Person                            │
+│  └── Property assertions: alice owns fido                        │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Why Use Ontologies?
+
+| Benefit | Description |
+|---------|-------------|
+| **Semantic Validation** | Ensure data conforms to domain rules |
+| **Automatic Classification** | Infer class membership from definitions |
+| **Consistency Checking** | Detect contradictions in knowledge base |
+| **Query Expansion** | Include inferred facts in query results |
+| **Knowledge Sharing** | Standard vocabulary for interoperability |
+
+### Ontology Use Cases
+
+#### 1. Enterprise Knowledge Management
+
+```swift
+var ontology = OWLOntology(iri: "http://company.org/employees")
+
+// Define organizational hierarchy
+ontology.axioms.append(.subClassOf(
+    sub: .named("co:Manager"),
+    sup: .named("co:Employee")
+))
+ontology.axioms.append(.subClassOf(
+    sub: .named("co:Executive"),
+    sup: .named("co:Manager")
+))
+
+// Define role constraints
+// Managers must have at least one direct report
+ontology.axioms.append(.subClassOf(
+    sub: .named("co:Manager"),
+    sup: .minCardinality(property: "co:manages", cardinality: 1, filler: .named("co:Employee"))
+))
+
+// Reasoning: If alice manages bob, is alice a Manager?
+let reasoner = OWLReasoner(ontology: ontology)
+let types = reasoner.types(of: "co:alice")
+// → ["co:Manager", "co:Employee", "owl:Thing"] (inferred)
+```
+
+#### 2. Product Catalog Classification
+
+```swift
+var ontology = OWLOntology(iri: "http://shop.org/products")
+
+// Define product taxonomy
+ontology.axioms.append(.subClassOf(sub: .named("shop:Laptop"), sup: .named("shop:Computer")))
+ontology.axioms.append(.subClassOf(sub: .named("shop:Desktop"), sup: .named("shop:Computer")))
+ontology.axioms.append(.subClassOf(sub: .named("shop:Computer"), sup: .named("shop:Electronics")))
+
+// Define "GamingLaptop" as intersection
+ontology.axioms.append(.equivalentClasses([
+    .named("shop:GamingLaptop"),
+    .intersection([
+        .named("shop:Laptop"),
+        .someValuesFrom(property: "shop:hasGPU", filler: .named("shop:DedicatedGPU"))
+    ])
+]))
+
+// Automatic classification: Any laptop with dedicated GPU becomes GamingLaptop
+ontology.axioms.append(.classAssertion(
+    individual: "shop:macbookPro16",
+    classExpr: .named("shop:Laptop")
+))
+ontology.axioms.append(.objectPropertyAssertion(
+    subject: "shop:macbookPro16",
+    property: "shop:hasGPU",
+    object: "shop:m3MaxGPU"
+))
+ontology.axioms.append(.classAssertion(
+    individual: "shop:m3MaxGPU",
+    classExpr: .named("shop:DedicatedGPU")
+))
+
+let reasoner = OWLReasoner(ontology: ontology)
+let isGaming = reasoner.isInstanceOf(
+    individual: "shop:macbookPro16",
+    classExpr: .named("shop:GamingLaptop")
+)
+// → true (automatically inferred)
+```
+
+#### 3. Medical Ontology (SNOMED CT style)
+
+```swift
+var ontology = OWLOntology(iri: "http://medical.org/conditions")
+
+// Define disease hierarchy
+ontology.axioms.append(.subClassOf(
+    sub: .named("med:Type2Diabetes"),
+    sup: .named("med:DiabetesMellitus")
+))
+ontology.axioms.append(.subClassOf(
+    sub: .named("med:DiabetesMellitus"),
+    sup: .named("med:MetabolicDisorder")
+))
+
+// Define condition by finding site
+ontology.axioms.append(.subClassOf(
+    sub: .named("med:HeartDisease"),
+    sup: .someValuesFrom(property: "med:findingSite", filler: .named("med:Heart"))
+))
+
+// Query: Find all disorders affecting the pancreas
+let reasoner = OWLReasoner(ontology: ontology)
+let pancreasDisorders = reasoner.instances(of: .someValuesFrom(
+    property: "med:findingSite",
+    filler: .named("med:Pancreas")
+))
+```
+
+#### 4. Access Control with Roles
+
+```swift
+var ontology = OWLOntology(iri: "http://security.org/rbac")
+
+// Define role hierarchy
+ontology.axioms.append(.subClassOf(sub: .named("sec:Admin"), sup: .named("sec:PowerUser")))
+ontology.axioms.append(.subClassOf(sub: .named("sec:PowerUser"), sup: .named("sec:User")))
+
+// Define permissions via roles
+ontology.axioms.append(.subClassOf(
+    sub: .named("sec:Admin"),
+    sup: .someValuesFrom(property: "sec:canAccess", filler: .named("sec:AdminPanel"))
+))
+
+// Check if user can access resource
+let reasoner = OWLReasoner(ontology: ontology)
+ontology.axioms.append(.classAssertion(individual: "sec:alice", classExpr: .named("sec:Admin")))
+
+let canAccess = reasoner.isInstanceOf(
+    individual: "sec:alice",
+    classExpr: .someValuesFrom(property: "sec:canAccess", filler: .named("sec:AdminPanel"))
+)
+// → true (alice is Admin, Admins can access AdminPanel)
+```
+
+### Integration with Graph Storage
+
+GraphIndex seamlessly combines RDF triple storage with ontology reasoning:
+
+```swift
+// 1. Define ontology (TBox)
+var ontology = OWLOntology(iri: "http://example.org/social")
+ontology.axioms.append(.subClassOf(sub: .named("ex:Friend"), sup: .named("ex:Acquaintance")))
+ontology.axioms.append(.transitiveProperty("ex:ancestorOf"))
+
+// 2. Store triples in FoundationDB (ABox)
+@Persistable
+struct Triple {
+    var id: String = ULID().ulidString
+    var subject: String = ""
+    var predicate: String = ""
+    var object: String = ""
+
+    #Index<Triple>(
+        type: GraphIndexKind.rdf(
+            subject: \.subject,
+            predicate: \.predicate,
+            object: \.object,
+            strategy: .tripleStore
+        )
+    )
+}
+
+// 3. Query with reasoning
+let reasoner = OWLReasoner(ontology: ontology)
+
+// Find all acquaintances (includes friends via subsumption)
+let acquaintances = try await context.graph(Triple.self)
+    .index(\.subject, \.predicate, \.object)
+    .from("alice")
+    .edge("ex:Acquaintance")  // Will match both Acquaintance and Friend
+    .execute()
+
+// Transitive closure: all ancestors
+let ancestors = reasoner.reachableIndividuals(
+    from: "alice",
+    via: "ex:ancestorOf",
+    includeInferred: true
+)
+```
+
 ## OWL DL Reasoning
 
 GraphIndex includes a complete OWL DL reasoner based on the Tableaux algorithm (SHOIN(D)).
@@ -855,8 +1063,15 @@ Run with: `swift test --filter GraphIndexPerformanceTests`
 - [The Description Logic Handbook](https://www.cambridge.org/core/books/description-logic-handbook/ABADB9C15A29EA93DF26B35BD4C5C73E) - Baader, Calvanese, et al. (2003)
 - [OWL 2 Web Ontology Language](https://www.w3.org/TR/owl2-overview/) - W3C Recommendation
 - [OWL 2 Profiles](https://www.w3.org/TR/owl2-profiles/) - W3C (RL, EL, QL)
+- [OWL 2 Direct Semantics](https://www.w3.org/TR/owl2-direct-semantics/) - W3C (Model-theoretic semantics)
+- [SPARQL Entailment Regimes](https://www.w3.org/TR/sparql11-entailment/) - W3C (RDFS, OWL entailment)
 - [Tableaux Decision Procedure for SHOIQ](https://www.cs.ox.ac.uk/people/ian.horrocks/Publications/download/2007/HoSa07a.pdf) - Horrocks & Sattler (2007)
 - [Hypertableau Reasoning](https://www.cs.ox.ac.uk/people/boris.motik/pubs/msh09hypertableau.pdf) - Motik, Shearer, Horrocks (2009)
+
+### Ontology Engineering
+- [Ontology Development 101](https://protege.stanford.edu/publications/ontology_development/ontology101.pdf) - Noy & McGuinness (2001)
+- [SNOMED CT](https://www.snomed.org/) - Medical ontology standard
+- [Schema.org](https://schema.org/) - Web vocabulary for structured data
 
 ### Algorithms
 - [Introduction to Algorithms (CLRS)](https://mitpress.mit.edu/books/introduction-algorithms) - Cormen et al. (Chapter 22: Graph Algorithms)
