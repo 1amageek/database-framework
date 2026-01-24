@@ -107,21 +107,31 @@ extension SQLParser {
             return
         }
 
-        // Strings
+        // Strings - SQL standard: use '' to escape single quotes
+        // Reference: ISO/IEC 9075:2023 Section 5.3 <character string literal>
         if char == "'" {
             position = input.index(after: position)
-            let start = position
-            while position < input.endIndex && input[position] != "'" {
-                if input[position] == "\\" {
+            var value = ""
+            while position < input.endIndex {
+                let c = input[position]
+                if c == "'" {
+                    // Check for escaped quote ('')
+                    let next = input.index(after: position)
+                    if next < input.endIndex && input[next] == "'" {
+                        // Escaped quote: '' -> '
+                        value.append("'")
+                        position = input.index(after: next)
+                    } else {
+                        // End of string
+                        position = next
+                        break
+                    }
+                } else {
+                    value.append(c)
                     position = input.index(after: position)
                 }
-                position = input.index(after: position)
             }
-            let str = String(input[start..<position])
-            if position < input.endIndex {
-                position = input.index(after: position)
-            }
-            currentToken = .string(str)
+            currentToken = .string(value)
             return
         }
 
@@ -233,6 +243,12 @@ extension SQLParser {
     }
 
     private func parseSelectQuery() throws -> SelectQuery {
+        // WITH clause (CTE) support
+        var subqueries: [NamedSubquery]?
+        if case .keyword("WITH") = currentToken {
+            subqueries = try parseWithClause()
+        }
+
         try expect("SELECT")
 
         // DISTINCT
@@ -311,8 +327,79 @@ extension SQLParser {
             orderBy: orderBy,
             limit: limit,
             offset: offset,
-            distinct: distinct
+            distinct: distinct,
+            subqueries: subqueries
         )
+    }
+
+    private func parseWithClause() throws -> [NamedSubquery] {
+        try expect("WITH")
+
+        // RECURSIVE keyword (semantic check only)
+        if case .keyword("RECURSIVE") = currentToken {
+            advance()
+        }
+
+        var subqueries: [NamedSubquery] = []
+        var first = true
+
+        while first || isSymbol(",") {
+            if !first { advance() }
+            first = false
+
+            guard case .identifier(let name) = currentToken else {
+                throw ParseError.unexpectedToken(
+                    expected: "CTE name",
+                    found: tokenDescription(currentToken),
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+            advance()
+
+            // Optional column list: name(col1, col2)
+            var columnList: [String]?
+            if isSymbol("(") {
+                advance()
+                columnList = []
+                var colFirst = true
+                while colFirst || isSymbol(",") {
+                    if !colFirst { advance() }
+                    colFirst = false
+                    if case .identifier(let col) = currentToken {
+                        columnList?.append(col)
+                        advance()
+                    }
+                }
+                try expect(")")
+            }
+
+            try expect("AS")
+
+            // Materialization hint (optional)
+            var materialized: Materialization?
+            if case .keyword("MATERIALIZED") = currentToken {
+                materialized = .materialized
+                advance()
+            } else if case .keyword("NOT") = currentToken {
+                advance()
+                // NOT must be followed by MATERIALIZED
+                try expect("MATERIALIZED")
+                materialized = .notMaterialized
+            }
+
+            try expect("(")
+            let query = try parseSelectQuery()
+            try expect(")")
+
+            subqueries.append(NamedSubquery(
+                name: name,
+                columns: columnList,
+                query: query,
+                materialized: materialized
+            ))
+        }
+
+        return subqueries
     }
 
     private func parseProjection() throws -> Projection {
@@ -382,6 +469,45 @@ extension SQLParser {
     }
 
     private func parseTableRef() throws -> DataSource {
+        // Check for subquery: (SELECT ...) or (WITH ...)
+        if isSymbol("(") {
+            advance()
+
+            // Verify it's a subquery (starts with SELECT or WITH)
+            switch currentToken {
+            case .keyword("SELECT"), .keyword("WITH"):
+                break  // Valid subquery start
+            default:
+                throw ParseError.invalidSyntax(
+                    message: "Expected SELECT or WITH after '(' in FROM clause",
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+
+            let subquery = try parseSelectQuery()
+            try expect(")")
+
+            // Alias is required for subqueries
+            var alias: String?
+            if case .keyword("AS") = currentToken {
+                advance()
+            }
+            if case .identifier(let a) = currentToken {
+                alias = a
+                advance()
+            }
+
+            guard let subqueryAlias = alias else {
+                throw ParseError.invalidSyntax(
+                    message: "Subquery in FROM clause requires an alias",
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+
+            return .subquery(subquery, alias: subqueryAlias)
+        }
+
+        // Existing table reference logic
         guard case .identifier(let name) = currentToken else {
             throw ParseError.unexpectedToken(
                 expected: "table name",
@@ -505,6 +631,22 @@ extension SQLParser {
         case .keyword("IN"):
             advance()
             try expect("(")
+
+            // Check if it's a subquery or value list
+            if case .keyword("SELECT") = currentToken {
+                let subquery = try parseSelectQuery()
+                try expect(")")
+                return .inSubquery(left, subquery: subquery)
+            }
+
+            // Handle WITH clause (CTE) that starts a subquery
+            if case .keyword("WITH") = currentToken {
+                let subquery = try parseSelectQuery()
+                try expect(")")
+                return .inSubquery(left, subquery: subquery)
+            }
+
+            // Value list (existing logic)
             var values: [Expression] = []
             var first = true
             while first || isSymbol(",") {
@@ -566,9 +708,28 @@ extension SQLParser {
         switch currentToken {
         case .symbol("("):
             advance()
+            // Disambiguate: subquery vs parenthesized expression
+            if case .keyword("SELECT") = currentToken {
+                let subquery = try parseSelectQuery()
+                try expect(")")
+                return .subquery(subquery)
+            }
+            // Handle WITH clause (CTE) that starts a subquery
+            if case .keyword("WITH") = currentToken {
+                let subquery = try parseSelectQuery()
+                try expect(")")
+                return .subquery(subquery)
+            }
             let expr = try parseExpression()
             try expect(")")
             return expr
+
+        case .keyword("EXISTS"):
+            advance()
+            try expect("(")
+            let subquery = try parseSelectQuery()
+            try expect(")")
+            return .exists(subquery)
 
         case .number(let n):
             advance()

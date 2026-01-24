@@ -422,52 +422,457 @@ extension PathMode {
 // MARK: - Expression SQL Generation
 
 extension Expression {
-    /// Generate basic SQL expression syntax (simplified)
+    /// Generate SQL expression syntax
+    /// Complete implementation covering all expression cases
     public func toSQL() -> String {
         switch self {
+        // Literals and references
         case .literal(let lit):
             return lit.toSQL()
+
         case .column(let col):
             return col.description
+
         case .variable(let v):
-            return v.name
+            // In SQL context, treat variable as parameter placeholder
+            return ":\(v.name)"
+
+        // Comparison operations
         case .equal(let l, let r):
             return "(\(l.toSQL()) = \(r.toSQL()))"
+
         case .notEqual(let l, let r):
             return "(\(l.toSQL()) <> \(r.toSQL()))"
+
         case .lessThan(let l, let r):
             return "(\(l.toSQL()) < \(r.toSQL()))"
+
         case .lessThanOrEqual(let l, let r):
             return "(\(l.toSQL()) <= \(r.toSQL()))"
+
         case .greaterThan(let l, let r):
             return "(\(l.toSQL()) > \(r.toSQL()))"
+
         case .greaterThanOrEqual(let l, let r):
             return "(\(l.toSQL()) >= \(r.toSQL()))"
+
+        // Logical operations
         case .and(let l, let r):
             return "(\(l.toSQL()) AND \(r.toSQL()))"
+
         case .or(let l, let r):
             return "(\(l.toSQL()) OR \(r.toSQL()))"
+
         case .not(let e):
-            return "NOT \(e.toSQL())"
-        case .isNull(let e):
-            return "\(e.toSQL()) IS NULL"
-        case .isNotNull(let e):
-            return "\(e.toSQL()) IS NOT NULL"
+            return "NOT (\(e.toSQL()))"
+
+        // Arithmetic operations
         case .add(let l, let r):
             return "(\(l.toSQL()) + \(r.toSQL()))"
+
         case .subtract(let l, let r):
             return "(\(l.toSQL()) - \(r.toSQL()))"
+
         case .multiply(let l, let r):
             return "(\(l.toSQL()) * \(r.toSQL()))"
+
         case .divide(let l, let r):
             return "(\(l.toSQL()) / \(r.toSQL()))"
-        default:
-            return "<expr>"
+
+        case .modulo(let l, let r):
+            return "(\(l.toSQL()) % \(r.toSQL()))"
+
+        case .negate(let e):
+            return "-(\(e.toSQL()))"
+
+        // NULL checks
+        case .isNull(let e):
+            return "(\(e.toSQL()) IS NULL)"
+
+        case .isNotNull(let e):
+            return "(\(e.toSQL()) IS NOT NULL)"
+
+        // BOUND (SPARQL-specific, map to IS NOT NULL)
+        case .bound(let v):
+            return "(:\(v.name) IS NOT NULL)"
+
+        // Pattern matching
+        case .like(let e, let pattern):
+            return "(\(e.toSQL()) LIKE \(SQLEscape.string(pattern)))"
+
+        case .regex(let text, let pattern, let flags):
+            // SQL doesn't have native REGEX, use LIKE approximation or REGEXP
+            if let f = flags, f.contains("i") {
+                return "(UPPER(\(text.toSQL())) LIKE UPPER(\(SQLEscape.string(pattern))))"
+            }
+            return "(REGEXP_LIKE(\(text.toSQL()), \(SQLEscape.string(pattern))))"
+
+        // Range operations
+        case .between(let e, let low, let high):
+            return "(\(e.toSQL()) BETWEEN \(low.toSQL()) AND \(high.toSQL()))"
+
+        case .inList(let e, let values):
+            let vals = values.map { $0.toSQL() }.joined(separator: ", ")
+            return "(\(e.toSQL()) IN (\(vals)))"
+
+        case .inSubquery(let e, let subquery):
+            return "(\(e.toSQL()) IN (\(subquery.toSQL())))"
+
+        // Aggregates
+        case .aggregate(let agg):
+            return agg.toSQL()
+
+        // Functions
+        case .function(let call):
+            let args = call.arguments.map { $0.toSQL() }.joined(separator: ", ")
+            return "\(call.name)(\(args))"
+
+        // Conditional
+        case .caseWhen(let cases, let elseResult):
+            var result = "CASE"
+            for (condition, res) in cases {
+                result += " WHEN \(condition.toSQL()) THEN \(res.toSQL())"
+            }
+            if let elseExpr = elseResult {
+                result += " ELSE \(elseExpr.toSQL())"
+            }
+            result += " END"
+            return result
+
+        case .coalesce(let exprs):
+            let args = exprs.map { $0.toSQL() }.joined(separator: ", ")
+            return "COALESCE(\(args))"
+
+        case .nullIf(let e1, let e2):
+            return "NULLIF(\(e1.toSQL()), \(e2.toSQL()))"
+
+        // Type conversion
+        case .cast(let e, let targetType):
+            return "CAST(\(e.toSQL()) AS \(targetType.sqlName))"
+
+        // RDF-star operations (not standard SQL, but included for completeness)
+        case .triple(let subject, let predicate, let object):
+            // Represent as JSON-like structure in SQL
+            return "JSON_OBJECT('s', \(subject.toSQL()), 'p', \(predicate.toSQL()), 'o', \(object.toSQL()))"
+
+        case .isTriple(let e):
+            return "(JSON_TYPE(\(e.toSQL())) = 'OBJECT')"
+
+        case .subject(let e):
+            return "JSON_VALUE(\(e.toSQL()), '$.s')"
+
+        case .predicate(let e):
+            return "JSON_VALUE(\(e.toSQL()), '$.p')"
+
+        case .object(let e):
+            return "JSON_VALUE(\(e.toSQL()), '$.o')"
+
+        // Subqueries
+        case .subquery(let query):
+            return "(\(query.toSQL()))"
+
+        case .exists(let query):
+            return "EXISTS (\(query.toSQL()))"
+        }
+    }
+}
+
+extension AggregateFunction {
+    /// Generate SQL aggregate syntax
+    public func toSQL() -> String {
+        switch self {
+        case .count(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            if let e = expr {
+                return "COUNT(\(distinctStr)\(e.toSQL()))"
+            }
+            return "COUNT(\(distinctStr)*)"
+
+        case .sum(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            return "SUM(\(distinctStr)\(expr.toSQL()))"
+
+        case .avg(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            return "AVG(\(distinctStr)\(expr.toSQL()))"
+
+        case .min(let expr):
+            return "MIN(\(expr.toSQL()))"
+
+        case .max(let expr):
+            return "MAX(\(expr.toSQL()))"
+
+        case .groupConcat(let expr, let separator, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            if let sep = separator {
+                return "GROUP_CONCAT(\(distinctStr)\(expr.toSQL()) SEPARATOR \(SQLEscape.string(sep)))"
+            }
+            return "GROUP_CONCAT(\(distinctStr)\(expr.toSQL()))"
+
+        case .sample(let expr):
+            // SQL doesn't have SAMPLE, use subquery with LIMIT 1
+            return "(SELECT \(expr.toSQL()) LIMIT 1)"
+
+        case .arrayAgg(let expr, let orderBy, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            var sql = "ARRAY_AGG(\(distinctStr)\(expr.toSQL())"
+            if let order = orderBy {
+                sql += " ORDER BY \(order.map { "\($0.expression.toSQL()) \($0.direction == .descending ? "DESC" : "ASC")" }.joined(separator: ", "))"
+            }
+            sql += ")"
+            return sql
+        }
+    }
+}
+
+extension DataType {
+    /// Get the SQL type name for CAST expressions
+    public var sqlName: String {
+        switch self {
+        case .boolean:
+            return "BOOLEAN"
+        case .smallint:
+            return "SMALLINT"
+        case .integer:
+            return "INTEGER"
+        case .bigint:
+            return "BIGINT"
+        case .real:
+            return "REAL"
+        case .doublePrecision:
+            return "DOUBLE PRECISION"
+        case .decimal(let precision, let scale):
+            if let p = precision, let s = scale {
+                return "DECIMAL(\(p), \(s))"
+            } else if let p = precision {
+                return "DECIMAL(\(p))"
+            }
+            return "DECIMAL"
+        case .char(let length):
+            if let len = length {
+                return "CHAR(\(len))"
+            }
+            return "CHAR"
+        case .varchar(let length):
+            if let len = length {
+                return "VARCHAR(\(len))"
+            }
+            return "VARCHAR"
+        case .text:
+            return "TEXT"
+        case .date:
+            return "DATE"
+        case .time(let withTimeZone):
+            return withTimeZone ? "TIME WITH TIME ZONE" : "TIME"
+        case .timestamp(let withTimeZone):
+            return withTimeZone ? "TIMESTAMP WITH TIME ZONE" : "TIMESTAMP"
+        case .binary(let length):
+            if let len = length {
+                return "BINARY(\(len))"
+            }
+            return "BINARY"
+        case .varbinary(let length):
+            if let len = length {
+                return "VARBINARY(\(len))"
+            }
+            return "VARBINARY"
+        case .blob:
+            return "BLOB"
+        case .uuid:
+            return "UUID"
+        case .json:
+            return "JSON"
+        case .jsonb:
+            return "JSONB"
+        case .interval:
+            return "INTERVAL"
+        case .array(let elementType):
+            return "\(elementType.sqlName) ARRAY"
+        case .custom(let name):
+            return name
+        }
+    }
+}
+
+extension SelectQuery {
+    /// Generate SQL SELECT query syntax
+    public func toSQL() -> String {
+        var sql = ""
+
+        // WITH clause (CTEs)
+        if let ctes = subqueries, !ctes.isEmpty {
+            sql += "WITH "
+            sql += ctes.map { cte in
+                var cteSQL = SQLEscape.identifier(cte.name)
+                if let cols = cte.columns {
+                    cteSQL += " (\(cols.map { SQLEscape.identifier($0) }.joined(separator: ", ")))"
+                }
+                cteSQL += " AS (\(cte.query.toSQL()))"
+                return cteSQL
+            }.joined(separator: ", ")
+            sql += " "
+        }
+
+        // SELECT clause
+        sql += "SELECT "
+        if distinct { sql += "DISTINCT " }
+        if reduced { sql += "REDUCED " }
+
+        switch projection {
+        case .all:
+            sql += "*"
+        case .allFrom(let table):
+            sql += "\(SQLEscape.identifier(table)).*"
+        case .items(let items), .distinctItems(let items):
+            sql += items.map { item in
+                var s = item.expression.toSQL()
+                if let alias = item.alias {
+                    s += " AS \(SQLEscape.identifier(alias))"
+                }
+                return s
+            }.joined(separator: ", ")
+        }
+
+        // FROM clause
+        sql += " FROM \(source.toSQL())"
+
+        // WHERE clause
+        if let filter = filter {
+            sql += " WHERE \(filter.toSQL())"
+        }
+
+        // GROUP BY clause
+        if let groupBy = groupBy, !groupBy.isEmpty {
+            sql += " GROUP BY \(groupBy.map { $0.toSQL() }.joined(separator: ", "))"
+        }
+
+        // HAVING clause
+        if let having = having {
+            sql += " HAVING \(having.toSQL())"
+        }
+
+        // ORDER BY clause
+        if let orderBy = orderBy, !orderBy.isEmpty {
+            sql += " ORDER BY "
+            sql += orderBy.map { key in
+                var s = key.expression.toSQL()
+                s += key.direction == .descending ? " DESC" : " ASC"
+                if let nulls = key.nulls {
+                    s += nulls == .first ? " NULLS FIRST" : " NULLS LAST"
+                }
+                return s
+            }.joined(separator: ", ")
+        }
+
+        // LIMIT clause
+        if let limit = limit {
+            sql += " LIMIT \(limit)"
+        }
+
+        // OFFSET clause
+        if let offset = offset {
+            sql += " OFFSET \(offset)"
+        }
+
+        return sql
+    }
+}
+
+extension DataSource {
+    /// Generate SQL data source syntax
+    public func toSQL() -> String {
+        switch self {
+        case .table(let ref):
+            return ref.description
+
+        case .subquery(let query, let alias):
+            return "(\(query.toSQL())) AS \(SQLEscape.identifier(alias))"
+
+        case .join(let clause):
+            let left = clause.left.toSQL()
+            let right = clause.right.toSQL()
+            var sql = "\(left) \(clause.type.toSQL()) \(right)"
+            if let cond = clause.condition {
+                switch cond {
+                case .on(let expr):
+                    sql += " ON \(expr.toSQL())"
+                case .using(let cols):
+                    sql += " USING (\(cols.map { SQLEscape.identifier($0) }.joined(separator: ", ")))"
+                }
+            }
+            return sql
+
+        case .graphTable(let gtSource):
+            return gtSource.toSQL()
+
+        case .graphPattern(let pattern):
+            // SPARQL-specific, not standard SQL
+            return "/* GRAPH PATTERN */ \(pattern.toSPARQL())"
+
+        case .namedGraph(let name, let pattern):
+            return "/* NAMED GRAPH \(name) */ \(pattern.toSPARQL())"
+
+        case .service(let endpoint, let pattern, let silent):
+            let silentStr = silent ? "SILENT " : ""
+            return "/* SERVICE \(silentStr)<\(endpoint)> */ \(pattern.toSPARQL())"
+
+        case .values(let rows, let columnNames):
+            var sql = "(VALUES "
+            sql += rows.map { row in
+                "(" + row.map { $0.toSQL() }.joined(separator: ", ") + ")"
+            }.joined(separator: ", ")
+            sql += ")"
+            if let names = columnNames {
+                sql += " AS t(\(names.map { SQLEscape.identifier($0) }.joined(separator: ", ")))"
+            }
+            return sql
+
+        case .union(let sources):
+            return "(" + sources.map { $0.toSQL() }.joined(separator: " UNION ") + ")"
+
+        case .unionAll(let sources):
+            return "(" + sources.map { $0.toSQL() }.joined(separator: " UNION ALL ") + ")"
+
+        case .intersect(let sources):
+            return "(" + sources.map { $0.toSQL() }.joined(separator: " INTERSECT ") + ")"
+
+        case .except(let left, let right):
+            return "(\(left.toSQL()) EXCEPT \(right.toSQL()))"
+        }
+    }
+}
+
+extension JoinType {
+    /// Generate SQL join type syntax
+    public func toSQL() -> String {
+        switch self {
+        case .inner: return "INNER JOIN"
+        case .left: return "LEFT JOIN"
+        case .right: return "RIGHT JOIN"
+        case .full: return "FULL JOIN"
+        case .cross: return "CROSS JOIN"
+        case .natural: return "NATURAL JOIN"
+        case .naturalLeft: return "NATURAL LEFT JOIN"
+        case .naturalRight: return "NATURAL RIGHT JOIN"
+        case .naturalFull: return "NATURAL FULL JOIN"
+        case .lateral: return "LATERAL JOIN"
+        case .leftLateral: return "LEFT LATERAL JOIN"
         }
     }
 }
 
 extension Literal {
+    /// Cached ISO8601DateFormatter for date serialization
+    /// Note: ISO8601DateFormatter is not Sendable but the formatter is immutable after creation
+    nonisolated(unsafe) private static let sqlDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return formatter
+    }()
+
+    /// Cached ISO8601DateFormatter for timestamp serialization
+    nonisolated(unsafe) private static let sqlTimestampFormatter = ISO8601DateFormatter()
+
     /// Generate SQL literal syntax
     public func toSQL() -> String {
         switch self {
@@ -480,9 +885,23 @@ extension Literal {
         case .double(let v):
             return String(v)
         case .string(let v):
-            return "'\(v.replacingOccurrences(of: "'", with: "''"))'"
-        default:
-            return description
+            return SQLEscape.string(v)
+        case .date(let v):
+            return "DATE '\(Self.sqlDateFormatter.string(from: v))'"
+        case .timestamp(let v):
+            return "TIMESTAMP '\(Self.sqlTimestampFormatter.string(from: v))'"
+        case .iri(let v):
+            return SQLEscape.string(v)
+        case .binary(let v):
+            return "X'\(v.map { String(format: "%02X", $0) }.joined())'"
+        case .blankNode(let v):
+            return SQLEscape.string("_:\(v)")
+        case .typedLiteral(let value, _):
+            return SQLEscape.string(value)
+        case .langLiteral(let value, _):
+            return SQLEscape.string(value)
+        case .array(let values):
+            return "ARRAY[\(values.map { $0.toSQL() }.joined(separator: ", "))]"
         }
     }
 }

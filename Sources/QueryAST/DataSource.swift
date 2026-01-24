@@ -42,6 +42,22 @@ extension TableRef: CustomStringConvertible {
     public var description: String {
         var result = ""
         if let schema = schema {
+            result += "\(SQLEscape.identifier(schema))."
+        }
+        result += SQLEscape.identifier(table)
+        if let alias = alias {
+            result += " AS \(SQLEscape.identifier(alias))"
+        }
+        return result
+    }
+}
+
+extension TableRef {
+    /// Generate unquoted table reference (for display purposes only)
+    /// WARNING: Do not use this for SQL generation - use description instead
+    public var displayName: String {
+        var result = ""
+        if let schema = schema {
             result += "\(schema)."
         }
         result += table

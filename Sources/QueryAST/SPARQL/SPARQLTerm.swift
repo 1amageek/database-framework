@@ -144,7 +144,7 @@ extension SPARQLTerm {
 // MARK: - SPARQL Serialization
 
 extension SPARQLTerm {
-    /// Generate SPARQL syntax
+    /// Generate SPARQL syntax with proper escaping
     public func toSPARQL(prefixes: [String: String] = [:]) -> String {
         switch self {
         case .variable(let name):
@@ -155,19 +155,42 @@ extension SPARQLTerm {
             for (prefix, base) in prefixes {
                 if iri.hasPrefix(base) {
                     let local = String(iri.dropFirst(base.count))
-                    return "\(prefix):\(local)"
+                    // Validate NCName for both prefix and local
+                    if SPARQLEscape.ncNameOrNil(prefix) != nil,
+                       local.isEmpty || SPARQLEscape.ncNameOrNil(local) != nil {
+                        return "\(prefix):\(local)"
+                    }
                 }
             }
-            return "<\(iri)>"
+            // Fall back to full IRI with proper escaping
+            return SPARQLEscape.iri(iri)
 
         case .prefixedName(let prefix, let local):
+            // Validate NCName components
+            if let validatedPrefix = SPARQLEscape.ncNameOrNil(prefix) {
+                // Local part can be empty or valid
+                let localPattern = "^[a-zA-Z0-9_.-]*$"
+                if local.isEmpty || local.range(of: localPattern, options: .regularExpression) != nil {
+                    return "\(validatedPrefix):\(local)"
+                }
+            }
+            // Fall back to expanding to full IRI if we have the prefix mapping
+            if let base = prefixes[prefix] {
+                return SPARQLEscape.iri(base + local)
+            }
+            // Last resort: return as-is with warning potential
             return "\(prefix):\(local)"
 
         case .literal(let lit):
             return lit.toSPARQL()
 
         case .blankNode(let id):
-            return "_:\(id)"
+            // Validate blank node ID
+            if SPARQLEscape.ncNameOrNil(id) != nil {
+                return "_:\(id)"
+            }
+            // Generate safe blank node ID
+            return "_:b\(abs(id.hashValue))"
 
         case .quotedTriple(let s, let p, let o):
             return "<< \(s.toSPARQL(prefixes: prefixes)) \(p.toSPARQL(prefixes: prefixes)) \(o.toSPARQL(prefixes: prefixes)) >>"
@@ -176,6 +199,17 @@ extension SPARQLTerm {
 }
 
 extension Literal {
+    /// Cached ISO8601DateFormatter for date serialization
+    /// Note: ISO8601DateFormatter is not Sendable but the formatter is immutable after creation
+    nonisolated(unsafe) private static let sparqlDateFormatter: ISO8601DateFormatter = {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withFullDate]
+        return formatter
+    }()
+
+    /// Cached ISO8601DateFormatter for timestamp serialization
+    nonisolated(unsafe) private static let sparqlTimestampFormatter = ISO8601DateFormatter()
+
     /// Generate SPARQL literal syntax
     public func toSPARQL() -> String {
         switch self {
@@ -188,34 +222,27 @@ extension Literal {
         case .double(let v):
             return String(v)
         case .string(let v):
-            return "\"\(escapeString(v))\""
+            return SPARQLEscape.string(v)
         case .date(let v):
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withFullDate]
-            return "\"\(formatter.string(from: v))\"^^<http://www.w3.org/2001/XMLSchema#date>"
+            return "\"\(Self.sparqlDateFormatter.string(from: v))\"^^<http://www.w3.org/2001/XMLSchema#date>"
         case .timestamp(let v):
-            return "\"\(ISO8601DateFormatter().string(from: v))\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"
+            return "\"\(Self.sparqlTimestampFormatter.string(from: v))\"^^<http://www.w3.org/2001/XMLSchema#dateTime>"
         case .binary(let v):
             return "\"\(v.base64EncodedString())\"^^<http://www.w3.org/2001/XMLSchema#base64Binary>"
         case .array(let v):
             return "(" + v.map { $0.toSPARQL() }.joined(separator: " ") + ")"
         case .iri(let v):
-            return "<\(v)>"
+            return SPARQLEscape.iri(v)
         case .blankNode(let v):
-            return "_:\(v)"
+            if SPARQLEscape.ncNameOrNil(v) != nil {
+                return "_:\(v)"
+            }
+            return "_:b\(abs(v.hashValue))"
         case .typedLiteral(let value, let datatype):
-            return "\"\(escapeString(value))\"^^<\(datatype)>"
+            return "\(SPARQLEscape.string(value))^^<\(datatype)>"
         case .langLiteral(let value, let language):
-            return "\"\(escapeString(value))\"@\(language)"
+            return "\(SPARQLEscape.string(value))@\(language)"
         }
-    }
-
-    private func escapeString(_ s: String) -> String {
-        s.replacingOccurrences(of: "\\", with: "\\\\")
-         .replacingOccurrences(of: "\"", with: "\\\"")
-         .replacingOccurrences(of: "\n", with: "\\n")
-         .replacingOccurrences(of: "\r", with: "\\r")
-         .replacingOccurrences(of: "\t", with: "\\t")
     }
 }
 

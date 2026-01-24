@@ -84,14 +84,28 @@ extension GraphTableSource {
     public func validate() -> [GraphTableValidationError] {
         var errors: [GraphTableValidationError] = []
 
+        // Check for empty pattern
+        if matchPattern.paths.isEmpty {
+            errors.append(.emptyPattern)
+        }
+
         // Validate match pattern
         let patternErrors = matchPattern.validate()
         errors.append(contentsOf: patternErrors.map { .patternError($0) })
 
-        // Validate columns reference valid variables
+        // Validate columns
         let definedVars = definedVariables
         if let cols = columns {
+            // Check for duplicate column aliases
+            var seenAliases = Set<String>()
             for col in cols {
+                if seenAliases.contains(col.alias) {
+                    errors.append(.duplicateColumnAlias(col.alias))
+                } else {
+                    seenAliases.insert(col.alias)
+                }
+
+                // Validate columns reference valid variables
                 let referencedVars = collectVariables(from: col.expression)
                 for v in referencedVars {
                     if !definedVars.contains(v) {

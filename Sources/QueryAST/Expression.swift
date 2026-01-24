@@ -50,6 +50,17 @@ public struct ColumnRef: Sendable, Equatable, Hashable {
 extension ColumnRef: CustomStringConvertible {
     public var description: String {
         if let table = table {
+            return "\(SQLEscape.identifier(table)).\(SQLEscape.identifier(column))"
+        }
+        return SQLEscape.identifier(column)
+    }
+}
+
+extension ColumnRef {
+    /// Generate unquoted column reference (for display purposes only)
+    /// WARNING: Do not use this for SQL generation - use description instead
+    public var displayName: String {
+        if let table = table {
             return "\(table).\(column)"
         }
         return column

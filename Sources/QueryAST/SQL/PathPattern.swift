@@ -342,14 +342,13 @@ extension PathPattern {
         )
     }
 
+    /// Remove duplicate patterns using Equatable comparison to avoid hash collisions
+    /// Reference: Using Equatable instead of hashValue ensures correctness
     private func removeDuplicates(_ patterns: [PathPattern]) -> [PathPattern] {
-        var seen = Set<Int>()
         var unique: [PathPattern] = []
 
         for pattern in patterns {
-            let hash = pattern.hashValue
-            if !seen.contains(hash) {
-                seen.insert(hash)
+            if !unique.contains(pattern) {
                 unique.append(pattern)
             }
         }

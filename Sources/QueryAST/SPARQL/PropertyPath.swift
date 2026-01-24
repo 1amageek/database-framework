@@ -24,14 +24,28 @@ extension PropertyPath {
     }
 
     /// Create a sequence path: path1 / path2
+    /// - Parameter paths: One or more paths to sequence
+    /// - Returns: A single path (if one element) or a sequence path
+    /// - Precondition: At least one path must be provided
     public static func seq(_ paths: PropertyPath...) -> PropertyPath {
-        guard !paths.isEmpty else { fatalError("Empty path sequence") }
+        precondition(!paths.isEmpty, "PropertyPath.seq requires at least one path")
+        // Single element: return as-is
+        if paths.count == 1 {
+            return paths[0]
+        }
         return paths.dropFirst().reduce(paths[0]) { .sequence($0, $1) }
     }
 
     /// Create an alternative path: path1 | path2
+    /// - Parameter paths: One or more paths to alternate between
+    /// - Returns: A single path (if one element) or an alternative path
+    /// - Precondition: At least one path must be provided
     public static func alt(_ paths: PropertyPath...) -> PropertyPath {
-        guard !paths.isEmpty else { fatalError("Empty path alternative") }
+        precondition(!paths.isEmpty, "PropertyPath.alt requires at least one path")
+        // Single element: return as-is
+        if paths.count == 1 {
+            return paths[0]
+        }
         return paths.dropFirst().reduce(paths[0]) { .alternative($0, $1) }
     }
 

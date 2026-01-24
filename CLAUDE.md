@@ -86,10 +86,10 @@ database-kit (client-safe)          database-framework (server-only)
 ```
 Database (re-export all)
     ↓
-┌───┴───┬───────┬───────┬───────┬───────┬───────┬───────┬───────┐
-Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
-    ↓      ↓       ↓        ↓      ↓       ↓       ↓        ↓        ↓
-    └──────┴───────┴────────┴──────┴───────┴───────┴────────┴────────┘
+┌───┴───┬───────┬───────┬───────┬───────┬───────┬───────┬───────┬─────────┐
+Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version QueryAST
+    ↓      ↓       ↓        ↓      ↓       ↓       ↓        ↓        ↓        ↓
+    └──────┴───────┴────────┴──────┴───────┴───────┴────────┴────────┴────────┘
                                    ↓
                             DatabaseEngine
                                    ↓
@@ -182,6 +182,28 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version
 | Bitmap | `BitmapIndex` | [README](Sources/BitmapIndex/README.md) |
 | Leaderboard | `LeaderboardIndex` | [README](Sources/LeaderboardIndex/README.md) |
 | Relationship | `RelationshipIndex` | [README](Sources/RelationshipIndex/README.md) |
+
+### QueryAST (クエリ抽象構文木)
+
+SQL/SPARQL クエリの解析・変換・シリアライズを提供するモジュール。詳細は [README](Sources/QueryAST/README.md) を参照。
+
+| コンポーネント | 説明 |
+|--------------|------|
+| `SQLParser` | SQL クエリのパーサー |
+| `SPARQLParser` | SPARQL クエリのパーサー |
+| `SelectQuery` | SELECT クエリの AST 表現 |
+| `Expression` | 式（比較、算術、論理、集約） |
+| `GraphTableSource` | SQL/PGQ GRAPH_TABLE 句 |
+| `GraphPattern` | SPARQL グラフパターン |
+| `SQLEscape` | SQL/SPARQL インジェクション対策ユーティリティ |
+
+**主な機能**:
+- SQL/SPARQL クエリの解析と AST 生成
+- プログラマティックなクエリ構築（ビルダーパターン）
+- AST から SQL/SPARQL への安全なシリアライズ（識別子エスケープ）
+- SQL/PGQ グラフパターンマッチング対応 (ISO/IEC 9075-16:2023)
+- SPARQL 1.1/1.2 プロパティパス対応
+- クエリ分析（変数参照、集約関数検出）
 
 ### Extension Pattern for Optional Features
 

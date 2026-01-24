@@ -99,14 +99,20 @@ struct QueryASTTests {
 
     @Test("TableRef description")
     func testTableRefDescription() throws {
+        // description now returns properly quoted SQL identifiers
         let ref1 = TableRef("users")
-        #expect(ref1.description == "users")
+        #expect(ref1.description == "\"users\"")
 
         let ref2 = TableRef(table: "users", alias: "u")
-        #expect(ref2.description == "users AS u")
+        #expect(ref2.description == "\"users\" AS \"u\"")
 
         let ref3 = TableRef(schema: "public", table: "users")
-        #expect(ref3.description == "public.users")
+        #expect(ref3.description == "\"public\".\"users\"")
+
+        // displayName returns unquoted names for display purposes
+        #expect(ref1.displayName == "users")
+        #expect(ref2.displayName == "users AS u")
+        #expect(ref3.displayName == "public.users")
     }
 
     @Test("JoinClause types")

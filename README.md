@@ -148,6 +148,7 @@ dependencies: [
 | `AggregationIndex` | COUNT, SUM, MIN, MAX, AVG |
 | `VersionIndex` | Version history with versionstamps |
 | `CrossTypeIndex` | Cross-type indexes spanning relationships |
+| `QueryAST` | SQL/SPARQL query AST parser, builder, and serializer |
 | `Database` | All-in-one re-export |
 
 ## Infrastructure Components

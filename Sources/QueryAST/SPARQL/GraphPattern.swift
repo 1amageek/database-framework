@@ -419,9 +419,240 @@ extension GraphPattern {
 }
 
 extension Expression {
-    /// Generate SPARQL expression syntax (extended from MatchPattern.swift)
-    public func toSPARQL() -> String {
-        toSQL()  // Reuse SQL generation as base
+    /// Generate SPARQL expression syntax
+    /// Independent implementation for proper SPARQL semantics
+    public func toSPARQL(prefixes: [String: String] = [:]) -> String {
+        switch self {
+        case .literal(let lit):
+            return lit.toSPARQL()
+
+        case .variable(let v):
+            return "?\(v.name)"
+
+        case .column(let col):
+            // In SPARQL context, columns are treated as variables
+            return "?\(col.column)"
+
+        // Comparison operations
+        case .equal(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) = \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .notEqual(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) != \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .lessThan(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) < \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .lessThanOrEqual(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) <= \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .greaterThan(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) > \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .greaterThanOrEqual(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) >= \(r.toSPARQL(prefixes: prefixes)))"
+
+        // Logical operations
+        case .and(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) && \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .or(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) || \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .not(let e):
+            return "!(\(e.toSPARQL(prefixes: prefixes)))"
+
+        // Arithmetic operations
+        case .add(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) + \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .subtract(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) - \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .multiply(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) * \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .divide(let l, let r):
+            return "(\(l.toSPARQL(prefixes: prefixes)) / \(r.toSPARQL(prefixes: prefixes)))"
+
+        case .modulo(let l, let r):
+            // SPARQL doesn't have modulo, use floor division
+            return "((\(l.toSPARQL(prefixes: prefixes))) - (FLOOR((\(l.toSPARQL(prefixes: prefixes))) / (\(r.toSPARQL(prefixes: prefixes)))) * (\(r.toSPARQL(prefixes: prefixes)))))"
+
+        case .negate(let e):
+            return "-(\(e.toSPARQL(prefixes: prefixes)))"
+
+        // NULL / BOUND checks
+        case .isNull(let e):
+            return "(!BOUND(\(e.toSPARQL(prefixes: prefixes))))"
+
+        case .isNotNull(let e):
+            return "BOUND(\(e.toSPARQL(prefixes: prefixes)))"
+
+        case .bound(let v):
+            return "BOUND(?\(v.name))"
+
+        // Pattern matching
+        case .like(let e, let pattern):
+            // Convert SQL LIKE to REGEX
+            let regexPattern = pattern
+                .replacingOccurrences(of: "%", with: ".*")
+                .replacingOccurrences(of: "_", with: ".")
+            return "REGEX(\(e.toSPARQL(prefixes: prefixes)), \"^\(regexPattern)$\", \"i\")"
+
+        case .regex(let text, let pattern, let flags):
+            if let f = flags {
+                return "REGEX(\(text.toSPARQL(prefixes: prefixes)), \"\(pattern)\", \"\(f)\")"
+            }
+            return "REGEX(\(text.toSPARQL(prefixes: prefixes)), \"\(pattern)\")"
+
+        // Range operations
+        case .between(let e, let low, let high):
+            return "((\(e.toSPARQL(prefixes: prefixes)) >= \(low.toSPARQL(prefixes: prefixes))) && (\(e.toSPARQL(prefixes: prefixes)) <= \(high.toSPARQL(prefixes: prefixes))))"
+
+        case .inList(let e, let values):
+            let vals = values.map { $0.toSPARQL(prefixes: prefixes) }.joined(separator: ", ")
+            return "(\(e.toSPARQL(prefixes: prefixes)) IN (\(vals)))"
+
+        case .inSubquery(let e, let subquery):
+            return "(\(e.toSPARQL(prefixes: prefixes)) IN { \(subquery.toSPARQL(prefixes: prefixes)) })"
+
+        // Aggregates
+        case .aggregate(let agg):
+            return agg.toSPARQL(prefixes: prefixes)
+
+        // Functions
+        case .function(let call):
+            let args = call.arguments.map { $0.toSPARQL(prefixes: prefixes) }.joined(separator: ", ")
+            return "\(call.name.uppercased())(\(args))"
+
+        // Conditional
+        case .caseWhen(let cases, let elseResult):
+            // SPARQL uses IF for conditionals
+            if cases.count == 1, let first = cases.first {
+                let elseStr = elseResult?.toSPARQL(prefixes: prefixes) ?? "UNDEF"
+                return "IF(\(first.condition.toSPARQL(prefixes: prefixes)), \(first.result.toSPARQL(prefixes: prefixes)), \(elseStr))"
+            }
+            // Nested IF for multiple cases
+            var result = elseResult?.toSPARQL(prefixes: prefixes) ?? "UNDEF"
+            for (condition, res) in cases.reversed() {
+                result = "IF(\(condition.toSPARQL(prefixes: prefixes)), \(res.toSPARQL(prefixes: prefixes)), \(result))"
+            }
+            return result
+
+        case .coalesce(let exprs):
+            let args = exprs.map { $0.toSPARQL(prefixes: prefixes) }.joined(separator: ", ")
+            return "COALESCE(\(args))"
+
+        case .nullIf(let e1, let e2):
+            return "IF(\(e1.toSPARQL(prefixes: prefixes)) = \(e2.toSPARQL(prefixes: prefixes)), UNDEF, \(e1.toSPARQL(prefixes: prefixes)))"
+
+        // Type conversion
+        case .cast(let e, let targetType):
+            return "\(targetType.sparqlFunction)(\(e.toSPARQL(prefixes: prefixes)))"
+
+        // RDF-star operations
+        case .triple(let subject, let predicate, let object):
+            return "<< \(subject.toSPARQL(prefixes: prefixes)) \(predicate.toSPARQL(prefixes: prefixes)) \(object.toSPARQL(prefixes: prefixes)) >>"
+
+        case .isTriple(let e):
+            return "isTRIPLE(\(e.toSPARQL(prefixes: prefixes)))"
+
+        case .subject(let e):
+            return "SUBJECT(\(e.toSPARQL(prefixes: prefixes)))"
+
+        case .predicate(let e):
+            return "PREDICATE(\(e.toSPARQL(prefixes: prefixes)))"
+
+        case .object(let e):
+            return "OBJECT(\(e.toSPARQL(prefixes: prefixes)))"
+
+        // Subqueries
+        case .subquery(let query):
+            return "{ \(query.toSPARQL(prefixes: prefixes)) }"
+
+        case .exists(let query):
+            return "EXISTS { \(query.toSPARQL(prefixes: prefixes)) }"
+        }
+    }
+}
+
+extension AggregateFunction {
+    /// Generate SPARQL aggregate syntax
+    public func toSPARQL(prefixes: [String: String] = [:]) -> String {
+        switch self {
+        case .count(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            if let e = expr {
+                return "COUNT(\(distinctStr)\(e.toSPARQL(prefixes: prefixes)))"
+            }
+            return "COUNT(\(distinctStr)*)"
+
+        case .sum(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            return "SUM(\(distinctStr)\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .avg(let expr, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            return "AVG(\(distinctStr)\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .min(let expr):
+            return "MIN(\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .max(let expr):
+            return "MAX(\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .groupConcat(let expr, let separator, let distinct):
+            let distinctStr = distinct ? "DISTINCT " : ""
+            if let sep = separator {
+                return "GROUP_CONCAT(\(distinctStr)\(expr.toSPARQL(prefixes: prefixes)); SEPARATOR=\"\(sep)\")"
+            }
+            return "GROUP_CONCAT(\(distinctStr)\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .sample(let expr):
+            return "SAMPLE(\(expr.toSPARQL(prefixes: prefixes)))"
+
+        case .arrayAgg(let expr, _, let distinct):
+            // SPARQL doesn't have ARRAY_AGG, use GROUP_CONCAT as approximation
+            let distinctStr = distinct ? "DISTINCT " : ""
+            return "GROUP_CONCAT(\(distinctStr)\(expr.toSPARQL(prefixes: prefixes)))"
+        }
+    }
+}
+
+extension DataType {
+    /// Get the SPARQL function name for this data type
+    public var sparqlFunction: String {
+        switch self {
+        case .boolean:
+            return "xsd:boolean"
+        case .smallint, .integer, .bigint:
+            return "xsd:integer"
+        case .real, .doublePrecision:
+            return "xsd:double"
+        case .decimal:
+            return "xsd:decimal"
+        case .char, .varchar, .text:
+            return "xsd:string"
+        case .date:
+            return "xsd:date"
+        case .time:
+            return "xsd:time"
+        case .timestamp:
+            return "xsd:dateTime"
+        case .binary, .varbinary, .blob:
+            return "xsd:base64Binary"
+        case .uuid:
+            return "xsd:string"
+        case .json, .jsonb:
+            return "xsd:string"
+        case .interval:
+            return "xsd:duration"
+        case .array:
+            return "xsd:string"
+        case .custom(let name):
+            return name
+        }
     }
 }
 
