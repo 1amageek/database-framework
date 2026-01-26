@@ -23,8 +23,8 @@ import Core
 /// - `AverageIndexKind`: AVG aggregation
 /// - `MinIndexKind`: MIN aggregation
 /// - `MaxIndexKind`: MAX aggregation
-/// - `DistinctIndexKind`: DISTINCT/cardinality (planned)
-/// - `PercentileIndexKind`: PERCENTILE (planned)
+/// - `DistinctIndexKind`: DISTINCT/cardinality (HyperLogLog-based)
+/// - `PercentileIndexKind`: PERCENTILE (T-Digest-based)
 ///
 /// **Usage in Query Optimization**:
 /// ```

@@ -56,7 +56,7 @@ import Core
 ///         subspace: Subspace,
 ///         idExpression: KeyExpression,
 ///         configurations: [any IndexConfiguration]
-///     ) -> any IndexMaintainer<Item> {
+///     ) throws -> any IndexMaintainer<Item> {
 ///         // Find matching configuration for this index
 ///         let config = configurations.first { $0.indexName == index.name }
 ///         if let vectorConfig = config as? VectorIndexConfiguration<Item> {
@@ -83,10 +83,11 @@ public protocol IndexKindMaintainable: IndexKind {
     ///   - idExpression: KeyExpression for extracting item's unique identifier
     ///   - configurations: Index configurations from FDBContainer (may contain runtime parameters)
     /// - Returns: IndexMaintainer instance for maintaining this index
+    /// - Throws: IndexError if required configuration is missing
     func makeIndexMaintainer<Item: Persistable>(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
         configurations: [any IndexConfiguration]
-    ) -> any IndexMaintainer<Item>
+    ) throws -> any IndexMaintainer<Item>
 }

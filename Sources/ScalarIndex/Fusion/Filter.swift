@@ -571,14 +571,14 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
     /// Convert value to TupleElement for index lookup
     ///
-    /// Uses TupleElementConverter for consistent type conversion
-    /// across all index modules. This ensures proper handling of:
+    /// Uses TupleEncoder for consistent type conversion across all index modules.
+    /// This ensures proper handling of:
     /// - UInt64 overflow checking
     /// - UUID as UUID (not String)
-    /// - Date as Double (timeIntervalSince1970, consistent with fdb-swift-bindings)
+    /// - Date as Date (fdb-swift-bindings handles encoding)
     /// - Unsupported types throw errors instead of silent String conversion
     private func convertToTupleElement(_ value: any Sendable) throws -> any TupleElement {
-        return try TupleElementConverter.convertFirst(value)
+        return try TupleEncoder.encode(value)
     }
 
     /// Check if a value matches the range predicate using type-aware comparison
@@ -589,10 +589,13 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     ///
     /// **Comparison Rules**:
     /// - Numeric types (Int, Int64, Double): Mathematical comparison
+    ///   - Mixed Int/Double comparisons use Double for precision
     /// - String: Lexicographic comparison
     /// - UUID: String representation comparison (valid because UUID format is fixed-length)
     /// - Date: Converted to Double for comparison
     /// - Unsupported types: Returns false (cannot compare)
+    ///
+    /// Uses `TypeConversion` for unified type conversion.
     private func matchesRange(
         _ value: Any,
         min: (any Sendable)?,
@@ -600,80 +603,69 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         minInclusive: Bool,
         maxInclusive: Bool
     ) -> Bool {
-        // Try numeric comparison first (Int64)
-        if let int64Value = asInt64(value) {
-            return compareNumericRange(
-                int64Value,
-                min: min.flatMap { asInt64($0) },
-                max: max.flatMap { asInt64($0) },
-                minInclusive: minInclusive,
-                maxInclusive: maxInclusive
-            )
+        // Strategy: Use Double comparison for mixed numeric types
+        // This handles Int vs Double comparisons correctly
+
+        // 1. Try Double comparison first (handles all numeric types including mixed Int/Double)
+        if let doubleValue = TypeConversion.asDouble(value) {
+            let minDouble = min.flatMap { TypeConversion.asDouble($0) }
+            let maxDouble = max.flatMap { TypeConversion.asDouble($0) }
+
+            // Verify bounds can be converted (if provided)
+            let minOk = min == nil || minDouble != nil
+            let maxOk = max == nil || maxDouble != nil
+
+            if minOk && maxOk {
+                return compareNumericRange(
+                    doubleValue,
+                    min: minDouble,
+                    max: maxDouble,
+                    minInclusive: minInclusive,
+                    maxInclusive: maxInclusive
+                )
+            }
         }
 
-        // Try Double comparison
-        if let doubleValue = asDouble(value) {
-            return compareNumericRange(
-                doubleValue,
-                min: min.flatMap { asDouble($0) },
-                max: max.flatMap { asDouble($0) },
-                minInclusive: minInclusive,
-                maxInclusive: maxInclusive
-            )
+        // 2. Try pure Int64 comparison (for non-numeric bounds like String)
+        if let int64Value = TypeConversion.asInt64(value) {
+            let minInt = min.flatMap { TypeConversion.asInt64($0) }
+            let maxInt = max.flatMap { TypeConversion.asInt64($0) }
+
+            let minOk = min == nil || minInt != nil
+            let maxOk = max == nil || maxInt != nil
+
+            if minOk && maxOk {
+                return compareNumericRange(
+                    int64Value,
+                    min: minInt,
+                    max: maxInt,
+                    minInclusive: minInclusive,
+                    maxInclusive: maxInclusive
+                )
+            }
         }
 
-        // Try String comparison
-        if let stringValue = asString(value) {
-            return compareStringRange(
-                stringValue,
-                min: min.flatMap { asString($0) },
-                max: max.flatMap { asString($0) },
-                minInclusive: minInclusive,
-                maxInclusive: maxInclusive
-            )
+        // 3. Try String comparison
+        if let stringValue = TypeConversion.asString(value) {
+            let minStr = min.flatMap { TypeConversion.asString($0) }
+            let maxStr = max.flatMap { TypeConversion.asString($0) }
+
+            let minOk = min == nil || minStr != nil
+            let maxOk = max == nil || maxStr != nil
+
+            if minOk && maxOk {
+                return compareStringRange(
+                    stringValue,
+                    min: minStr,
+                    max: maxStr,
+                    minInclusive: minInclusive,
+                    maxInclusive: maxInclusive
+                )
+            }
         }
 
-        // Unsupported type - cannot compare
+        // Unsupported type or incompatible bounds - cannot compare
         return false
-    }
-
-    /// Convert value to Int64 if possible
-    private func asInt64(_ value: Any) -> Int64? {
-        switch value {
-        case let v as Int64: return v
-        case let v as Int: return Int64(v)
-        case let v as Int32: return Int64(v)
-        case let v as Int16: return Int64(v)
-        case let v as Int8: return Int64(v)
-        case let v as UInt: return v <= UInt(Int64.max) ? Int64(v) : nil
-        case let v as UInt64: return v <= UInt64(Int64.max) ? Int64(v) : nil
-        case let v as UInt32: return Int64(v)
-        case let v as UInt16: return Int64(v)
-        case let v as UInt8: return Int64(v)
-        default: return nil
-        }
-    }
-
-    /// Convert value to Double if possible
-    ///
-    /// Uses timeIntervalSince1970 for Date to be consistent with
-    /// fdb-swift-bindings Tuple encoding.
-    private func asDouble(_ value: Any) -> Double? {
-        switch value {
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        case let v as Date: return v.timeIntervalSince1970
-        default: return nil
-        }
-    }
-
-    /// Convert value to String if possible
-    private func asString(_ value: Any) -> String? {
-        switch value {
-        case let v as String: return v
-        case let v as UUID: return v.uuidString
-        default: return nil
-        }
     }
 
     /// Compare numeric values in a range

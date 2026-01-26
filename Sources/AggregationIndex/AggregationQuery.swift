@@ -615,7 +615,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
                 let maintainerSubspace = indexSubspace.subspace(descriptor.name)
                 let index = Self.buildIndex(from: descriptor, persistableType: T.persistableType)
 
-                let maintainer = indexKind.makeIndexMaintainer(
+                let maintainer = try indexKind.makeIndexMaintainer(
                     index: index,
                     subspace: maintainerSubspace,
                     idExpression: idExpression,
@@ -779,6 +779,10 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     }
 
     /// Convert TupleElement to FieldValue
+    ///
+    /// Note: This conversion follows the same type mapping as TupleDecoder
+    /// (Int64 for integers, Double for floats, Bool, String, Data).
+    /// FieldValue is AggregationIndex-specific and cannot use TupleDecoder directly.
     private func tupleElementToFieldValue(_ element: any TupleElement) -> FieldValue {
         if let str = element as? String {
             return .string(str)

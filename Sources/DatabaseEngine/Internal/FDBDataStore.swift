@@ -467,28 +467,25 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Convert a value to a Tuple for index key construction
+    ///
+    /// Uses TupleEncoder for consistent type conversion across all index modules.
     private func valueToTuple(_ value: Any) -> Tuple {
         // Handle FieldValue first (most common case after refactoring)
         if let fieldValue = value as? FieldValue {
             return Tuple([fieldValue.toTupleElement()])
         }
 
+        // Handle values that are already TupleElement
         if let tupleElement = value as? any TupleElement {
             return Tuple([tupleElement])
         }
 
-        // Handle common types
-        switch value {
-        case let v as Int: return Tuple([Int64(v)])
-        case let v as Int32: return Tuple([Int64(v)])
-        case let v as Int16: return Tuple([Int64(v)])
-        case let v as Int8: return Tuple([Int64(v)])
-        case let v as UInt: return Tuple([Int64(v)])
-        case let v as UInt32: return Tuple([Int64(v)])
-        case let v as UInt16: return Tuple([Int64(v)])
-        case let v as UInt8: return Tuple([Int64(v)])
-        default:
-            // Convert to string as fallback
+        // Use TupleEncoder for consistent type conversion
+        do {
+            let element = try TupleEncoder.encode(value)
+            return Tuple([element])
+        } catch {
+            // Fallback for unsupported types
             return Tuple([String(describing: value)])
         }
     }

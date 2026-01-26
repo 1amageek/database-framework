@@ -11,6 +11,7 @@ import FoundationDB
 import Logging
 import Synchronization
 import SwiftHNSW
+import Vector
 
 // MARK: - HNSW Constants
 
@@ -546,7 +547,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return hnswIndex.count
     }
 
-    /// Extract vector from item
+    /// Extract vector from item using VectorConversion
     public func extractVector(from item: Item) throws -> [Float] {
         let fieldValues = try DataAccess.evaluateIndexFields(
             from: item,
@@ -554,22 +555,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             expression: index.rootExpression
         )
 
-        var result: [Float] = []
-        for element in fieldValues {
-            if let array = element as? [Float] {
-                result.append(contentsOf: array)
-            } else if let array = element as? [Float32] {
-                result.append(contentsOf: array.map { Float($0) })
-            } else if let array = element as? [Double] {
-                result.append(contentsOf: array.map { Float($0) })
-            } else if let f = element as? Float {
-                result.append(f)
-            } else if let d = element as? Double {
-                result.append(Float(d))
-            } else {
-                throw VectorIndexError.invalidArgument("Vector field must contain numeric values")
-            }
-        }
+        let result = try VectorConversion.extractFloatArray(from: fieldValues)
 
         guard result.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -584,12 +570,11 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     // MARK: - Byte Conversion
 
     private func uint64ToBytes(_ value: UInt64) -> [UInt8] {
-        return withUnsafeBytes(of: value.littleEndian) { Array($0) }
+        VectorConversion.uint64ToBytes(value)
     }
 
     private func bytesToUInt64(_ bytes: [UInt8]) -> UInt64 {
-        guard bytes.count == 8 else { return 0 }
-        return bytes.withUnsafeBytes { $0.load(as: UInt64.self) }
+        VectorConversion.bytesToUInt64(bytes)
     }
 }
 

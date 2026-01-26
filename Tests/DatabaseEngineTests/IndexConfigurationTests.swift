@@ -43,7 +43,7 @@ struct IndexConfigurationTests {
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
 
-        let maintainer: any IndexMaintainer<ConfigTestItem> = maintainable.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
@@ -86,7 +86,7 @@ struct IndexConfigurationTests {
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
 
-        let maintainer: any IndexMaintainer<ConfigTestItem> = maintainable.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,
@@ -133,7 +133,7 @@ struct IndexConfigurationTests {
         let subspace = Subspace(prefix: Tuple("test", UUID().uuidString).pack())
         let idExpression = FieldKeyExpression(fieldName: "id")
 
-        let maintainer: any IndexMaintainer<ConfigTestItem> = maintainable.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<ConfigTestItem> = try maintainable.makeIndexMaintainer(
             index: index,
             subspace: subspace,
             idExpression: idExpression,

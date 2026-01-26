@@ -156,7 +156,7 @@ extension SPARQLParser {
 
             if tripleQuote {
                 position = input.index(position, offsetBy: 3)
-                currentToken = try! parseLongString(quote: quote)
+                currentToken = parseLongString(quote: quote)
             } else {
                 position = input.index(after: position)
                 currentToken = parseShortString(quote: quote)
@@ -187,7 +187,7 @@ extension SPARQLParser {
                 position = input.index(before: position)
             }
 
-            var word = String(input[start..<position])
+            let word = String(input[start..<position])
 
             // Check for prefixed name
             if let colonIndex = word.firstIndex(of: ":") {
@@ -263,7 +263,6 @@ extension SPARQLParser {
     }
 
     private func parseShortString(quote: Character) -> Token {
-        let start = position
         var value = ""
         while position < input.endIndex && input[position] != quote {
             if input[position] == "\\" {
@@ -304,7 +303,7 @@ extension SPARQLParser {
         return .string(value, language: language, datatype: datatype)
     }
 
-    private func parseLongString(quote: Character) throws -> Token {
+    private func parseLongString(quote: Character) -> Token {
         var value = ""
         let endQuote = String(repeating: quote, count: 3)
 

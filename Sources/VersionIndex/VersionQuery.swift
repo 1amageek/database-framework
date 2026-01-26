@@ -198,14 +198,25 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     }
 
     private func createMaintainer(indexSubspace: Subspace, indexName: String) -> VersionIndexMaintainer<T> {
-        // Default strategy
-        let strategy: VersionHistoryStrategy = .keepAll
+        // Find the IndexDescriptor and extract actual configuration
+        let (strategy, fieldNames): (VersionHistoryStrategy, [String]) = {
+            for descriptor in T.indexDescriptors {
+                if descriptor.name == indexName,
+                   let versionKind = descriptor.kind as? VersionIndexKind<T> {
+                    return (versionKind.strategy, versionKind.fieldNames)
+                }
+            }
+            // Fallback to defaults if not found
+            return (.keepAll, ["id"])
+        }()
+
+        let rootFieldName = fieldNames.first ?? "id"
 
         return VersionIndexMaintainer<T>(
             index: Index(
                 name: indexName,
-                kind: VersionIndexKind<T>(fieldNames: ["id"], strategy: strategy),
-                rootExpression: FieldKeyExpression(fieldName: "id"),
+                kind: VersionIndexKind<T>(fieldNames: fieldNames, strategy: strategy),
+                rootExpression: FieldKeyExpression(fieldName: rootFieldName),
                 keyPaths: []
             ),
             strategy: strategy,

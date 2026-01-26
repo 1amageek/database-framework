@@ -107,7 +107,7 @@ internal final class IndexMaintenanceService: Sendable {
                 let idExpression = FieldKeyExpression(fieldName: "id")
 
                 // Create the appropriate IndexMaintainer via protocol bridge
-                let maintainer: any IndexMaintainer<T> = maintainable.makeIndexMaintainer(
+                let maintainer: any IndexMaintainer<T> = try maintainable.makeIndexMaintainer(
                     index: index,
                     subspace: indexSubspaceForIndex,
                     idExpression: idExpression,
@@ -321,7 +321,7 @@ internal final class IndexMaintenanceService: Sendable {
         // Use _openExistential to dispatch to the concrete type
         // This unwraps the existential and calls the generic helper with the concrete type
         func helper<T: Persistable>(_ type: T.Type) async throws {
-            let maintainer: any IndexMaintainer<T> = maintainable.makeIndexMaintainer(
+            let maintainer: any IndexMaintainer<T> = try maintainable.makeIndexMaintainer(
                 index: index,
                 subspace: subspace,
                 idExpression: idExpression,

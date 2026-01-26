@@ -376,93 +376,36 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
     /// Extract score from tuple element (type-safe)
     ///
+    /// Uses TupleDecoder for consistent type conversion across all index modules.
     /// Converts FDB Tuple elements (Int64, Double) to the generic Score type.
-    /// Uses conditional casts instead of force casts for safety.
     private func extractScore(from element: any TupleElement) throws -> Score {
         // Try direct cast first (for Score types that match TupleElement directly)
         if let directValue = element as? Score {
             return directValue
         }
 
-        // Handle numeric type conversions
-        // FDB stores integers as Int64, floats as Double
-        switch Score.self {
-        case is Int64.Type:
-            guard let value = element as? Int64,
-                  let result = value as? Score else {
-                throw RankIndexError.invalidScore("Expected Int64, got \(type(of: element))")
+        // Use TupleDecoder for numeric type conversions
+        do {
+            return try TupleDecoder.decode(element, as: Score.self)
+        } catch let error as TupleDecodingError {
+            // Convert TupleDecodingError to RankIndexError for consistent error handling
+            switch error {
+            case .typeMismatch(let expected, let actual):
+                throw RankIndexError.invalidScore("Expected \(expected), got \(actual)")
+            case .integerOverflow(let value, let targetType):
+                throw RankIndexError.invalidScore("Integer overflow: \(value) cannot fit in \(targetType)")
+            case .unsupportedType(let type):
+                throw RankIndexError.invalidScore("Unsupported type: \(type)")
             }
-            return result
-
-        case is Int.Type:
-            guard let value = element as? Int64,
-                  let result = Int(value) as? Score else {
-                throw RankIndexError.invalidScore("Expected Int (as Int64), got \(type(of: element))")
-            }
-            return result
-
-        case is Int32.Type:
-            guard let value = element as? Int64,
-                  let result = Int32(value) as? Score else {
-                throw RankIndexError.invalidScore("Expected Int32 (as Int64), got \(type(of: element))")
-            }
-            return result
-
-        case is Double.Type:
-            guard let value = element as? Double,
-                  let result = value as? Score else {
-                throw RankIndexError.invalidScore("Expected Double, got \(type(of: element))")
-            }
-            return result
-
-        case is Float.Type:
-            guard let value = element as? Double,
-                  let result = Float(value) as? Score else {
-                throw RankIndexError.invalidScore("Expected Float (as Double), got \(type(of: element))")
-            }
-            return result
-
-        default:
-            throw RankIndexError.invalidScore(
-                "Cannot convert \(type(of: element)) to \(Score.self)"
-            )
         }
     }
 
     /// Convert Score to TupleElement safely
     ///
+    /// Uses TupleEncoder for consistent type conversion across all index modules.
     /// FDB Tuple supports: Int64, Double, String, Bytes, Bool, UUID, Versionstamp
-    /// Numeric Score types (Int64, Int, Int32, Double, Float) are converted appropriately.
     private func convertScoreToTupleElement(_ score: Score) -> (any TupleElement)? {
-        // Try direct cast (for Score types that are already TupleElement)
-        if let tupleElement = score as? any TupleElement {
-            return tupleElement
-        }
-
-        // Handle numeric conversions
-        switch Score.self {
-        case is Int64.Type:
-            return score as? Int64
-        case is Int.Type:
-            if let intValue = score as? Int {
-                return Int64(intValue)
-            }
-            return nil
-        case is Int32.Type:
-            if let int32Value = score as? Int32 {
-                return Int64(int32Value)
-            }
-            return nil
-        case is Double.Type:
-            return score as? Double
-        case is Float.Type:
-            if let floatValue = score as? Float {
-                return Double(floatValue)
-            }
-            return nil
-        default:
-            return nil
-        }
+        return try? TupleEncoder.encode(score)
     }
 }
 

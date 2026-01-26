@@ -390,7 +390,7 @@ public struct DataAccess: Sendable {
 
     /// Convert any value to TupleElements
     ///
-    /// Delegates to TupleElementConverter and converts errors to DataAccessError
+    /// Delegates to TupleEncoder and converts errors to DataAccessError
     /// for backward compatibility with existing code.
     ///
     /// - Parameter value: The value to convert
@@ -398,20 +398,16 @@ public struct DataAccess: Sendable {
     /// - Throws: DataAccessError on failure
     private static func convertToTupleElements(_ value: Any) throws -> [any TupleElement] {
         do {
-            return try TupleElementConverter.convert(value)
-        } catch let error as TupleConversionError {
+            return try TupleEncoder.encodeToArray(value)
+        } catch let error as TupleEncodingError {
             // Convert to DataAccessError for backward compatibility
             switch error {
-            case .nilValueCannotBeConverted:
+            case .nilValueCannotBeEncoded:
                 throw DataAccessError.nilValueCannotBeIndexed
-            case .integerOverflow(let val, let targetType):
-                throw DataAccessError.integerOverflow(value: val, targetType: targetType)
+            case .integerOverflow(let val):
+                throw DataAccessError.integerOverflow(value: val, targetType: "Int64")
             case .unsupportedType(let actualType):
                 throw DataAccessError.unsupportedType(actualType: actualType)
-            case .emptyConversionResult:
-                throw DataAccessError.unsupportedType(actualType: "empty result")
-            case .multipleElementsNotAllowed(let count):
-                throw DataAccessError.unsupportedType(actualType: "multiple elements (\(count))")
             }
         }
     }

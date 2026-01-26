@@ -305,7 +305,11 @@ public struct AdminCommands {
         let records = try await storage.query(schemaName: schemaName, limit: 1_000_000)
 
         // Create index handler
-        let handler = try createIndexHandler(for: indexDef, schemaName: schemaName)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: indexDef.kind,
+            definition: indexDef,
+            schemaName: schemaName
+        )
 
         var count = 0
         for (id, values) in records {
@@ -325,38 +329,6 @@ public struct AdminCommands {
         }
 
         output.success("Rebuilt index '\(indexName)' with \(count) record(s)")
-    }
-
-    // MARK: - Index Handler Factory
-
-    /// Create an index handler for a given index definition
-    private func createIndexHandler(for indexDef: IndexDefinition, schemaName: String) throws -> any IndexHandler {
-        switch indexDef.kind {
-        case .scalar:
-            return ScalarIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .bitmap:
-            return BitmapIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .rank:
-            return RankIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .vector:
-            return VectorIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .fulltext:
-            return FullTextIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .spatial:
-            return SpatialIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .graph:
-            return GraphIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .aggregation:
-            return AggregationIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .version:
-            return VersionIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .leaderboard:
-            return LeaderboardIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .relationship:
-            return RelationshipIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .permuted:
-            return PermutedIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        }
     }
 }
 

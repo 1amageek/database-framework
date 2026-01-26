@@ -167,88 +167,9 @@ public final class RelationshipMaintainer: Sendable {
         "\(typeName):\(id.pack().map { String(format: "%02x", $0) }.joined())"
     }
 
-    /// Enforce a specific delete rule
-    private func enforceDeleteRule(
-        descriptor: RelationshipDescriptor,
-        owningTypeName: String,
-        owningType: any Persistable.Type,
-        relatedItemId: Tuple,
-        transaction: any TransactionProtocol,
-        handler: ModelPersistenceHandler,
-        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)?
-    ) async throws {
-        // Resolve the owning type's directory (not the deleted item's directory)
-        let owningSubspace = try await container.resolveDirectory(for: owningType)
-        let owningIndexSubspace = owningSubspace.subspace(SubspaceKey.indexes)
-
-        // Use descriptor.name directly (e.g., "Order_customer")
-        // Note: The index name is "{OwnerType}_{relationshipPropertyName}", not "{OwnerType}_{propertyName}"
-        let relIndexSubspace = owningIndexSubspace.subspace(descriptor.name)
-        let prefixSubspace = relIndexSubspace.subspace(relatedItemId)
-
-        let (begin, end) = prefixSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
-
-        var affectedItemIds: [Tuple] = []
-        for try await (key, _) in sequence {
-            if let ownerId = extractOwnerIdFromRelationshipKey(key, prefixSubspace: prefixSubspace) {
-                affectedItemIds.append(ownerId)
-            }
-        }
-
-        // If no affected items, nothing to do
-        guard !affectedItemIds.isEmpty else { return }
-
-        // Apply delete rule
-        switch descriptor.deleteRule {
-        case .cascade:
-            // Delete all related items
-            for ownerId in affectedItemIds {
-                if let owningItem = try await handler.load(owningTypeName, id: ownerId, transaction: transaction) {
-                    // Use recursive deleter if provided (for cascading relationship rule enforcement)
-                    if let recursiveDeleter = recursiveDeleter {
-                        try await recursiveDeleter(owningItem, transaction)
-                    } else {
-                        try await handler.delete(owningItem, transaction: transaction)
-                    }
-                }
-            }
-
-        case .deny:
-            // Throw error if related items exist
-            throw RelationshipError.deleteRuleDenied(
-                itemType: descriptor.relatedTypeName,
-                relationshipType: owningTypeName,
-                propertyName: descriptor.propertyName,
-                count: affectedItemIds.count
-            )
-
-        case .nullify:
-            // Nullify: Set FK field to nil and clear relationship index
-            let foreignKeyFieldName = descriptor.propertyName
-
-            for ownerId in affectedItemIds {
-                // Load the owning item
-                guard let owningItem = try await handler.load(owningTypeName, id: ownerId, transaction: transaction) else {
-                    continue
-                }
-
-                // Nullify the FK field and save
-                if let nullifiedItem = try nullifyForeignKey(owningItem, fieldName: foreignKeyFieldName) {
-                    try await handler.save(nullifiedItem, transaction: transaction)
-                }
-            }
-
-        case .noAction:
-            // Do nothing - may leave orphan references
-            break
-        }
-    }
-
     /// Enforce a specific delete rule with cycle detection
     ///
-    /// Similar to `enforceDeleteRule` but tracks visited items to prevent
-    /// infinite loops during cascade deletes.
+    /// Tracks visited items to prevent infinite loops during cascade deletes.
     ///
     /// - Parameters:
     ///   - descriptor: The relationship descriptor

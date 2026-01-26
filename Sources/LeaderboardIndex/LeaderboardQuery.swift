@@ -203,12 +203,19 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     }
 
     private func createMaintainer(indexSubspace: Subspace) -> TimeWindowLeaderboardIndexMaintainer<T, Int64> {
-        // Get index descriptor to retrieve window configuration
         let indexName = buildIndexName()
 
-        // Default window configuration
-        let window: LeaderboardWindowType = .daily
-        let windowCount: Int = 7
+        // Find the IndexDescriptor and extract actual configuration
+        let (window, windowCount, groupByFieldNames): (LeaderboardWindowType, Int, [String]) = {
+            for descriptor in T.indexDescriptors {
+                if descriptor.name == indexName,
+                   let leaderboardKind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> {
+                    return (leaderboardKind.window, leaderboardKind.windowCount, leaderboardKind.groupByFieldNames)
+                }
+            }
+            // Fallback to defaults if not found
+            return (.daily, 7, [])
+        }()
 
         return TimeWindowLeaderboardIndexMaintainer<T, Int64>(
             index: Index(
@@ -216,7 +223,7 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
                 kind: TimeWindowLeaderboardIndexKind<T, Int64>(
                     scoreFieldName: scoreFieldName,
                     scoreTypeName: "Int64",
-                    groupByFieldNames: [],
+                    groupByFieldNames: groupByFieldNames,
                     window: window,
                     windowCount: windowCount
                 ),

@@ -53,9 +53,7 @@ public struct DataCommands {
         try await validateRelationshipConstraints(schema: schema, values: coercedValues)
 
         // Create index handlers for this schema
-        let indexHandlers = schema.indexes.compactMap { indexDef -> (any IndexHandler)? in
-            try? createIndexHandler(for: indexDef, schemaName: schemaName)
-        }
+        let indexHandlers = IndexHandlerRegistry.createHandlers(for: schema)
 
         // Insert with index maintenance
         try await storage.insert(
@@ -219,9 +217,7 @@ public struct DataCommands {
         try await validateRelationshipConstraints(schema: schema, values: coercedValues)
 
         // Create index handlers for this schema
-        let indexHandlers = schema.indexes.compactMap { indexDef -> (any IndexHandler)? in
-            try? createIndexHandler(for: indexDef, schemaName: schemaName)
-        }
+        let indexHandlers = IndexHandlerRegistry.createHandlers(for: schema)
 
         // Update with index maintenance
         try await storage.update(
@@ -259,9 +255,7 @@ public struct DataCommands {
         }
 
         // Create index handlers for this schema
-        let indexHandlers = schema.indexes.compactMap { indexDef -> (any IndexHandler)? in
-            try? createIndexHandler(for: indexDef, schemaName: schemaName)
-        }
+        let indexHandlers = IndexHandlerRegistry.createHandlers(for: schema)
 
         // Handle relationship delete rules (for schemas that reference this one)
         let cascadeDeletes = try await handleRelationshipDeleteRules(
@@ -284,38 +278,6 @@ public struct DataCommands {
         }
 
         output.success("Deleted record '\(id)' from '\(schemaName)'")
-    }
-
-    // MARK: - Index Handler Factory
-
-    /// Create an index handler for a given index definition
-    private func createIndexHandler(for indexDef: IndexDefinition, schemaName: String) throws -> any IndexHandler {
-        switch indexDef.kind {
-        case .scalar:
-            return ScalarIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .bitmap:
-            return BitmapIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .rank:
-            return RankIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .vector:
-            return VectorIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .fulltext:
-            return FullTextIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .spatial:
-            return SpatialIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .graph:
-            return GraphIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .aggregation:
-            return AggregationIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .version:
-            return VersionIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .leaderboard:
-            return LeaderboardIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .relationship:
-            return RelationshipIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        case .permuted:
-            return PermutedIndexHandler(indexDefinition: indexDef, schemaName: schemaName)
-        }
     }
 
     // MARK: - Constraint Checking
@@ -460,9 +422,7 @@ public struct DataCommands {
         existing.removeValue(forKey: field)
         existing["id"] = id
 
-        let indexHandlers = schema.indexes.compactMap { indexDef -> (any IndexHandler)? in
-            try? createIndexHandler(for: indexDef, schemaName: schemaName)
-        }
+        let indexHandlers = IndexHandlerRegistry.createHandlers(for: schema)
 
         let oldValues = try await storage.get(schemaName: schemaName, id: id) ?? [:]
 
@@ -482,9 +442,7 @@ public struct DataCommands {
             return
         }
 
-        let indexHandlers = schema.indexes.compactMap { indexDef -> (any IndexHandler)? in
-            try? createIndexHandler(for: indexDef, schemaName: action.schemaName)
-        }
+        let indexHandlers = IndexHandlerRegistry.createHandlers(for: schema)
 
         for childId in action.ids {
             guard let existing = try await storage.get(schemaName: action.schemaName, id: childId) else {

@@ -536,7 +536,6 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     }
 
     private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        guard bytes.count >= 8 else { return 0 }
-        return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
+        ByteConversion.bytesToInt64(bytes)
     }
 }

@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import DatabaseEngine
 
 /// Handler for scalar indexes (equality, range queries)
 public struct ScalarIndexHandler: IndexHandler, Sendable {
@@ -140,24 +141,20 @@ public struct ScalarIndexHandler: IndexHandler, Sendable {
         case .lessThan(let value):
             let endKey = indexSubspace.pack(Tuple([Self.toTupleElement(value)]))
             return (indexSubspace.range().0, endKey)
+        case .fullRange:
+            return indexSubspace.range()
         }
     }
 
     /// Convert Any to TupleElement for index storage
+    ///
+    /// Uses TupleEncoder for consistent type conversion.
+    /// Falls back to string representation for unsupported types.
     private static func toTupleElement(_ value: Any) -> any TupleElement {
-        switch value {
-        case let s as String:
-            return s
-        case let i as Int:
-            return Int64(i)
-        case let i as Int64:
-            return i
-        case let d as Double:
-            // Encode as string to preserve ordering
-            return String(format: "%020.6f", d)
-        case let b as Bool:
-            return b ? Int64(1) : Int64(0)
-        default:
+        do {
+            return try TupleEncoder.encode(value)
+        } catch {
+            // Fallback for unsupported types in dynamic schema context
             return "\(value)"
         }
     }

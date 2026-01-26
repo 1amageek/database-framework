@@ -506,7 +506,7 @@ struct IndexMaintenanceE2ETests {
             itemTypes: Set([E2EGraphEdge.persistableType])
         )
 
-        let maintainer: any IndexMaintainer<E2EGraphEdge> = maintainable.makeIndexMaintainer(
+        let maintainer: any IndexMaintainer<E2EGraphEdge> = try maintainable.makeIndexMaintainer(
             index: index,
             subspace: graphIndexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),

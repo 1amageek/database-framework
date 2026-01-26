@@ -1,5 +1,7 @@
 import Foundation
 import FoundationDB
+import QueryAST
+import DatabaseEngine
 
 /// Storage layer for CLI schemas in FoundationDB
 ///
@@ -279,7 +281,7 @@ public final class SchemaStorage: Sendable {
     /// - Parameters:
     ///   - schemaName: The schema to query
     ///   - filter: Optional filter function (applied after fetching)
-    ///   - limit: Maximum records to return
+    ///   - limit: Maximum records to return (use Int.max for no limit)
     /// - Returns: Array of (id, values) tuples
     public func query(
         schemaName: String,
@@ -289,6 +291,15 @@ public final class SchemaStorage: Sendable {
         let dataSubspace = schemaDataSubspace(for: schemaName)
         let (begin, end) = dataSubspace.range()
 
+        // Calculate fetch limit safely to avoid overflow
+        // When limit is very large (e.g., Int.max for full scan), don't multiply
+        let fetchLimit: Int
+        if limit > Int.max / 2 {
+            fetchLimit = Int.max  // Full scan requested
+        } else {
+            fetchLimit = limit * 2  // Fetch more to account for filtering
+        }
+
         // First, fetch raw key-value pairs from FDB
         let rawResults: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.withTransaction { transaction in
             var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
@@ -296,7 +307,7 @@ public final class SchemaStorage: Sendable {
             let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
             for try await (key, value) in sequence {
                 results.append((key: key, value: value))
-                if results.count >= limit * 2 { break } // Fetch more to account for filtering
+                if fetchLimit != Int.max && results.count >= fetchLimit { break }
             }
 
             return results
@@ -306,7 +317,7 @@ public final class SchemaStorage: Sendable {
         var results: [(id: String, values: [String: Any])] = []
 
         for (key, value) in rawResults {
-            guard results.count < limit else { break }
+            if limit != Int.max && results.count >= limit { break }
 
             // Extract ID from key
             guard let tuple = try? dataSubspace.unpack(key),
@@ -349,19 +360,21 @@ public final class SchemaStorage: Sendable {
         let (begin, end): (FDB.Bytes, FDB.Bytes)
         switch operation {
         case .equals(let value):
-            let valueStr = Self.tupleElementString(from: value)
+            let valueStr = Self.toTupleElement(from: value)
             let valueSubspace = indexSubspace.subspace(Tuple([valueStr]))
             (begin, end) = valueSubspace.range()
         case .range(let lower, let upper):
-            let beginKey = lower.map { indexSubspace.pack(Tuple([Self.tupleElementString(from: $0)])) } ?? indexSubspace.range().0
-            let endKey = upper.map { indexSubspace.pack(Tuple([Self.tupleElementString(from: $0)])) } ?? indexSubspace.range().1
+            let beginKey = lower.map { indexSubspace.pack(Tuple([Self.toTupleElement(from: $0)])) } ?? indexSubspace.range().0
+            let endKey = upper.map { indexSubspace.pack(Tuple([Self.toTupleElement(from: $0)])) } ?? indexSubspace.range().1
             (begin, end) = (beginKey, endKey)
         case .greaterThan(let value):
-            let beginKey = indexSubspace.pack(Tuple([Self.tupleElementString(from: value)]))
+            let beginKey = indexSubspace.pack(Tuple([Self.toTupleElement(from: value)]))
             (begin, end) = (beginKey, indexSubspace.range().1)
         case .lessThan(let value):
-            let endKey = indexSubspace.pack(Tuple([Self.tupleElementString(from: value)]))
+            let endKey = indexSubspace.pack(Tuple([Self.toTupleElement(from: value)]))
             (begin, end) = (indexSubspace.range().0, endKey)
+        case .fullRange:
+            (begin, end) = indexSubspace.range()
         }
 
         // Compute dataSubspace outside the closure
@@ -406,20 +419,199 @@ public final class SchemaStorage: Sendable {
         return results
     }
 
-    /// Convert Any to a string for use as tuple element
-    private static func tupleElementString(from value: Any) -> String {
-        switch value {
-        case let s as String:
-            return s
-        case let i as Int:
-            return String(format: "%020d", i)  // Zero-pad for proper ordering
-        case let i as Int64:
-            return String(format: "%020lld", i)
-        case let d as Double:
-            return String(format: "%020.6f", d)
-        case let b as Bool:
-            return b ? "1" : "0"
+    // MARK: - Ordered Query
+
+    /// Query using a scalar index with ordering support
+    ///
+    /// When the sort field matches the index field, the index's natural
+    /// ordering is leveraged for efficient sorted results via reverse scan.
+    ///
+    /// - Parameters:
+    ///   - schemaName: The schema to query
+    ///   - indexName: The scalar index to use
+    ///   - operation: The filter operation
+    ///   - sortDescriptor: Optional sort descriptor
+    ///   - limit: Maximum records to return
+    /// - Returns: Array of (id, values) tuples in sorted order
+    public func queryByScalarIndexOrdered(
+        schemaName: String,
+        indexName: String,
+        operation: ScalarOperation,
+        sortDescriptor: DynamicSortDescriptor?,
+        limit: Int = 100
+    ) async throws -> [(id: String, values: [String: Any])] {
+        let indexSubspace = self.indexSubspace(schema: schemaName, kind: .scalar, indexName: indexName)
+
+        // Determine if we should use reverse scan
+        let useReverse = sortDescriptor?.direction == .descending
+
+        // Compute range keys based on operation
+        let (begin, end): (FDB.Bytes, FDB.Bytes)
+        switch operation {
+        case .equals(let value):
+            let valueStr = Self.toTupleElement(from: value)
+            let valueSubspace = indexSubspace.subspace(Tuple([valueStr]))
+            (begin, end) = valueSubspace.range()
+        case .range(let lower, let upper):
+            let beginKey = lower.map { indexSubspace.pack(Tuple([Self.toTupleElement(from: $0)])) } ?? indexSubspace.range().0
+            let endKey = upper.map { indexSubspace.pack(Tuple([Self.toTupleElement(from: $0)])) } ?? indexSubspace.range().1
+            (begin, end) = (beginKey, endKey)
+        case .greaterThan(let value):
+            let beginKey = indexSubspace.pack(Tuple([Self.toTupleElement(from: value)]))
+            (begin, end) = (beginKey, indexSubspace.range().1)
+        case .lessThan(let value):
+            let endKey = indexSubspace.pack(Tuple([Self.toTupleElement(from: value)]))
+            (begin, end) = (indexSubspace.range().0, endKey)
+        case .fullRange:
+            (begin, end) = indexSubspace.range()
+        }
+
+        let dataSubspace = self.schemaDataSubspace(for: schemaName)
+
+        // Fetch with appropriate scan direction
+        let rawData: [(id: String, bytes: FDB.Bytes)] = try await database.withTransaction { transaction in
+            var ids: [String] = []
+
+            // Use KeySelector-based getRange with reverse support
+            let beginSelector = FDB.KeySelector.firstGreaterOrEqual(begin)
+            let endSelector = FDB.KeySelector.firstGreaterOrEqual(end)
+
+            let sequence = transaction.getRange(
+                from: beginSelector,
+                to: endSelector,
+                limit: limit,
+                reverse: useReverse,
+                snapshot: true
+            )
+
+            for try await (key, _) in sequence {
+                guard ids.count < limit else { break }
+
+                if let tuple = try? indexSubspace.unpack(key),
+                   tuple.count >= 2,
+                   let id = tuple[1] as? String {
+                    ids.append(id)
+                }
+            }
+
+            // Fetch data for IDs
+            var data: [(id: String, bytes: FDB.Bytes)] = []
+            for id in ids {
+                let dataKey = dataSubspace.pack(Tuple([id]))
+                if let bytes = try await transaction.getValue(for: dataKey, snapshot: true) {
+                    data.append((id: id, bytes: bytes))
+                }
+            }
+
+            return data
+        }
+
+        // Parse JSON outside transaction
+        var results: [(id: String, values: [String: Any])] = []
+        for (id, bytes) in rawData {
+            if let dict = try JSONSerialization.jsonObject(with: Data(bytes), options: []) as? [String: Any] {
+                results.append((id: id, values: dict))
+            }
+        }
+
+        return results
+    }
+
+    /// Query with full scan and in-memory sorting
+    ///
+    /// Used when no suitable index exists for the sort field.
+    ///
+    /// **Important**: When sorting without an index, this method performs a full
+    /// scan of the schema's data to ensure correct ordering. For large datasets,
+    /// consider adding a scalar index on the sort field for better performance.
+    ///
+    /// - Parameters:
+    ///   - schemaName: The schema to query
+    ///   - filter: Optional filter function
+    ///   - sortDescriptor: Optional sort descriptor
+    ///   - limit: Maximum records to return
+    /// - Returns: Array of (id, values) tuples in sorted order
+    public func queryWithSort(
+        schemaName: String,
+        filter: (@Sendable (String, [String: Any]) -> Bool)? = nil,
+        sortDescriptor: DynamicSortDescriptor?,
+        limit: Int = 100
+    ) async throws -> [(id: String, values: [String: Any])] {
+        // When sorting is requested, we must scan all records to guarantee
+        // correct ordering. Without this, we might miss records that should
+        // appear in the final sorted result.
+        let needsFullScan = sortDescriptor != nil
+        let fetchLimit = needsFullScan ? Int.max : (filter != nil ? limit * 3 : limit * 2)
+
+        var results = try await query(schemaName: schemaName, filter: filter, limit: fetchLimit)
+
+        // Apply in-memory sort if requested
+        if let sort = sortDescriptor {
+            results = sortResults(results, by: sort)
+        }
+
+        // Apply limit after sorting
+        if results.count > limit {
+            results = Array(results.prefix(limit))
+        }
+
+        return results
+    }
+
+    /// Sort results in memory by a field
+    public func sortResults(
+        _ results: [(id: String, values: [String: Any])],
+        by descriptor: DynamicSortDescriptor
+    ) -> [(id: String, values: [String: Any])] {
+        return results.sorted { a, b in
+            let aValue = a.values[descriptor.field]
+            let bValue = b.values[descriptor.field]
+
+            let comparison = compareValues(aValue, bValue, nulls: descriptor.nulls)
+
+            return descriptor.direction == .ascending ? comparison < 0 : comparison > 0
+        }
+    }
+
+    /// Compare two Any values for sorting
+    ///
+    /// Handles NULL ordering according to SQL standard (NULLS FIRST/LAST).
+    /// Default behavior: NULLs sort first in ascending, last in descending.
+    public func compareValues(_ a: Any?, _ b: Any?, nulls: NullOrdering?) -> Int {
+        // NULL handling with configurable ordering
+        // Default: NULLS FIRST for ascending, NULLS LAST for descending (matches PostgreSQL)
+        let nullsFirst = (nulls == .first)
+        if a == nil && b == nil { return 0 }
+        if a == nil { return nullsFirst ? -1 : 1 }
+        if b == nil { return nullsFirst ? 1 : -1 }
+
+        // Type-specific comparisons
+        switch (a, b) {
+        case (let aStr as String, let bStr as String):
+            return aStr.compare(bStr).rawValue
+        case (let aInt as Int, let bInt as Int):
+            return aInt < bInt ? -1 : (aInt > bInt ? 1 : 0)
+        case (let aInt64 as Int64, let bInt64 as Int64):
+            return aInt64 < bInt64 ? -1 : (aInt64 > bInt64 ? 1 : 0)
+        case (let aDouble as Double, let bDouble as Double):
+            return aDouble < bDouble ? -1 : (aDouble > bDouble ? 1 : 0)
+        case (let aBool as Bool, let bBool as Bool):
+            return (!aBool && bBool) ? -1 : ((aBool && !bBool) ? 1 : 0)
         default:
+            // Fall back to string comparison
+            return "\(a!)".compare("\(b!)").rawValue
+        }
+    }
+
+    /// Convert Any to TupleElement for index storage
+    ///
+    /// Uses TupleEncoder for consistent type conversion.
+    /// Falls back to string representation for unsupported types.
+    private static func toTupleElement(from value: Any) -> any TupleElement {
+        do {
+            return try TupleEncoder.encode(value)
+        } catch {
+            // Fallback for unsupported types in dynamic schema context
             return "\(value)"
         }
     }
@@ -434,7 +626,7 @@ public final class SchemaStorage: Sendable {
         excludeId: String?
     ) async throws -> Bool {
         let indexSubspace = self.indexSubspace(schema: schemaName, kind: .scalar, indexName: indexName)
-        let valueStr = Self.tupleElementString(from: value)
+        let valueStr = Self.toTupleElement(from: value)
         let valueSubspace = indexSubspace.subspace(Tuple([valueStr]))
         let (begin, end) = valueSubspace.range()
 
@@ -469,6 +661,7 @@ public enum ScalarOperation {
     case range(lower: Any?, upper: Any?)
     case greaterThan(Any)
     case lessThan(Any)
+    case fullRange  // Scan entire index (for ORDER BY without WHERE)
 }
 
 // MARK: - Index Handler Protocol

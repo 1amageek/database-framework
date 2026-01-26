@@ -341,18 +341,10 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     }
 
     /// Convert Any to TupleElement
+    ///
+    /// Uses TupleEncoder for consistent type conversion across all modules.
     private func anyToTupleElement(_ value: Any) -> (any TupleElement)? {
-        switch value {
-        case let s as String: return s
-        case let i as Int: return i
-        case let i64 as Int64: return i64
-        case let d as Double: return d
-        case let f as Float: return Double(f)
-        case let b as Bool: return b
-        case let data as Data: return [UInt8](data)
-        case let bytes as [UInt8]: return bytes
-        default: return nil
-        }
+        return TupleEncoder.encodeOrNil(value)
     }
 
     // MARK: - Index Seek

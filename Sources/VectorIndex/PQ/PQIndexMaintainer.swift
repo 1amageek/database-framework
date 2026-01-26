@@ -423,7 +423,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return try? decoder.decode(PQMetadata.self, from: Data(data))
     }
 
-    /// Extract vector from item
+    /// Extract vector from item using VectorConversion
     private func extractVector(from item: Item) throws -> [Float] {
         let fieldValues = try DataAccess.evaluateIndexFields(
             from: item,
@@ -431,18 +431,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             expression: index.rootExpression
         )
 
-        var floatArray: [Float] = []
-        for element in fieldValues {
-            if let array = element as? [Float] {
-                floatArray.append(contentsOf: array)
-            } else if let array = element as? [Double] {
-                floatArray.append(contentsOf: array.map { Float($0) })
-            } else if let f = element as? Float {
-                floatArray.append(f)
-            } else if let d = element as? Double {
-                floatArray.append(Float(d))
-            }
-        }
+        let floatArray = try VectorConversion.extractFloatArray(from: fieldValues)
 
         guard floatArray.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: floatArray.count)
@@ -469,45 +458,24 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     // MARK: - Serialization Helpers
 
+    /// Convert vector to tuple using VectorConversion
     private func vectorToTuple(_ vector: [Float]) -> Tuple {
-        let elements: [any TupleElement] = vector.map { $0 as any TupleElement }
-        return Tuple(elements)
+        VectorConversion.vectorToTuple(vector)
     }
 
+    /// Convert tuple elements to vector using VectorConversion
     private func tupleElementsToVector(_ elements: [any TupleElement]) -> [Float] {
-        var vector: [Float] = []
-        for element in elements {
-            if let f = element as? Float {
-                vector.append(f)
-            } else if let d = element as? Double {
-                vector.append(Float(d))
-            } else if let i64 = element as? Int64 {
-                vector.append(Float(i64))
-            } else if let i = element as? Int {
-                vector.append(Float(i))
-            }
-        }
-        return vector
+        VectorConversion.tupleToVector(elements)
     }
 
+    /// Convert float array to bytes using VectorConversion
     private func floatArrayToBytes(_ floats: [Float]) -> [UInt8] {
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(floats.count * 4)
-        for f in floats {
-            var value = f
-            withUnsafeBytes(of: &value) { bytes.append(contentsOf: $0) }
-        }
-        return bytes
+        VectorConversion.floatArrayToBytes(floats)
     }
 
+    /// Convert bytes to float array using VectorConversion
     private func bytesToFloatArray(_ bytes: [UInt8]) -> [Float] {
-        var floats: [Float] = []
-        floats.reserveCapacity(bytes.count / 4)
-        for i in stride(from: 0, to: bytes.count - 3, by: 4) {
-            let value = bytes[i..<i+4].withUnsafeBytes { $0.load(as: Float.self) }
-            floats.append(value)
-        }
-        return floats
+        VectorConversion.bytesToFloatArray(bytes)
     }
 }
 

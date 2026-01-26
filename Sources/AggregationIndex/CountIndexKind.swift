@@ -1,11 +1,10 @@
-// CountIndexKind+Maintainable.swift
+// CountIndexKind.swift
 // AggregationIndexLayer - IndexKindMaintainable extension for CountIndexKind
 //
 // This file provides the bridge between CountIndexKind (defined in FDBModel)
 // and CountIndexMaintainer (defined in this package).
 
 import Foundation
-import Core
 import Core
 import DatabaseEngine
 import FoundationDB

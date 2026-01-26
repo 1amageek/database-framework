@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import DatabaseEngine
 
 /// Handler for leaderboard indexes (time-windowed rankings)
 ///
@@ -230,19 +231,14 @@ public struct LeaderboardIndexHandler: IndexHandler, Sendable {
     }
 
     /// Convert Any to TupleElement for index storage
+    ///
+    /// Uses TupleEncoder for consistent type conversion.
+    /// Falls back to string representation for unsupported types.
     private static func toTupleElement(_ value: Any) -> any TupleElement {
-        switch value {
-        case let s as String:
-            return s
-        case let i as Int:
-            return Int64(i)
-        case let i as Int64:
-            return i
-        case let d as Double:
-            return String(format: "%020.6f", d)
-        case let b as Bool:
-            return b ? Int64(1) : Int64(0)
-        default:
+        do {
+            return try TupleEncoder.encode(value)
+        } catch {
+            // Fallback for unsupported types in dynamic schema context
             return "\(value)"
         }
     }

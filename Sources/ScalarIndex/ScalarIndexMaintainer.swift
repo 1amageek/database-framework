@@ -289,8 +289,11 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
             if let rawValue = item[dynamicMember: fieldName] {
                 if let tupleElement = rawValue as? any TupleElement {
                     storedElements.append(tupleElement)
+                } else if let converted = TupleEncoder.encodeOrNil(rawValue) {
+                    // Use TupleEncoder for proper type conversion
+                    storedElements.append(converted)
                 } else {
-                    // Convert to string as fallback
+                    // Convert to string as last resort fallback
                     storedElements.append(String(describing: rawValue))
                 }
             } else {

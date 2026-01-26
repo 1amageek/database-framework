@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
+        .library(name: "FDBCLILib", targets: ["FDBCLILib"]),
         .executable(name: "fdb-cli", targets: ["fdb-cli"]),
     ],
     dependencies: [
@@ -192,14 +193,25 @@ let package = Package(
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ]
         ),
+        // FDBCLILib - Library containing fdb-cli logic (testable)
+        .target(
+            name: "FDBCLILib",
+            dependencies: [
+                "DatabaseEngine",
+                "QueryAST",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ],
+            path: "Sources/fdb-cli",
+            exclude: ["FDBCLIApp.swift"]
+        ),
         // fdb-cli - Interactive CLI for dynamic schema operations
         .executableTarget(
             name: "fdb-cli",
             dependencies: [
-                "DatabaseEngine",
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                "FDBCLILib",
             ],
+            path: "Sources/fdb-cli-main",
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -384,12 +396,14 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
-        // DatabaseCLI tests
+        // CLI tests (both DatabaseCLI and FDBCLILib)
         .testTarget(
             name: "DatabaseCLITests",
             dependencies: [
                 "DatabaseCLI",
+                "FDBCLILib",
                 "DatabaseEngine",
+                "QueryAST",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
             ],

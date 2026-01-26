@@ -175,7 +175,7 @@ public struct ProductQuantizer: Sendable {
             distances.reserveCapacity(ksub)
 
             for centroid in codebooks[subIndex] {
-                let dist = euclideanDistanceSquared(querySubvector, centroid)
+                let dist = VectorConversion.euclideanDistanceSquaredFloat(querySubvector, centroid)
                 distances.append(dist)
             }
             table.append(distances)
@@ -206,7 +206,7 @@ public struct ProductQuantizer: Sendable {
     /// - Returns: Squared Euclidean distance (approximate)
     public func computeDistanceDirect(query: [Float], codes: [UInt8]) -> Float {
         let reconstructed = decode(codes: codes)
-        return euclideanDistanceSquared(query, reconstructed)
+        return VectorConversion.euclideanDistanceSquaredFloat(query, reconstructed)
     }
 
     // MARK: - Codebook Access
@@ -246,7 +246,7 @@ public struct ProductQuantizer: Sendable {
         var bestDist = Float.infinity
 
         for (idx, centroid) in codebooks[subIndex].enumerated() {
-            let dist = euclideanDistanceSquared(subvector, centroid)
+            let dist = VectorConversion.euclideanDistanceSquaredFloat(subvector, centroid)
             if dist < bestDist {
                 bestDist = dist
                 bestIdx = idx
@@ -254,16 +254,6 @@ public struct ProductQuantizer: Sendable {
         }
 
         return bestIdx
-    }
-
-    /// Squared Euclidean distance
-    private func euclideanDistanceSquared(_ v1: [Float], _ v2: [Float]) -> Float {
-        var sum: Float = 0
-        for i in 0..<min(v1.count, v2.count) {
-            let diff = v1[i] - v2[i]
-            sum += diff * diff
-        }
-        return sum
     }
 }
 
@@ -328,7 +318,7 @@ private struct SubspaceKMeans {
             var total: Float = 0
 
             for vector in vectors {
-                let minDist = centroids.map { euclideanDistanceSquared(vector, $0) }.min() ?? 0
+                let minDist = centroids.map { VectorConversion.euclideanDistanceSquaredFloat(vector, $0) }.min() ?? 0
                 distances.append(minDist)
                 total += minDist
             }
@@ -356,7 +346,7 @@ private struct SubspaceKMeans {
             var bestIdx = 0
             var bestDist = Float.infinity
             for (i, c) in centroids.enumerated() {
-                let d = euclideanDistanceSquared(vector, c)
+                let d = VectorConversion.euclideanDistanceSquaredFloat(vector, c)
                 if d < bestDist {
                     bestDist = d
                     bestIdx = i
@@ -394,19 +384,10 @@ private struct SubspaceKMeans {
     private func hasConverged(old: [[Float]], new: [[Float]]) -> Bool {
         let threshold: Float = 1e-4
         for (o, n) in zip(old, new) {
-            if sqrt(euclideanDistanceSquared(o, n)) > threshold {
+            if sqrt(VectorConversion.euclideanDistanceSquaredFloat(o, n)) > threshold {
                 return false
             }
         }
         return true
-    }
-
-    private func euclideanDistanceSquared(_ v1: [Float], _ v2: [Float]) -> Float {
-        var sum: Float = 0
-        for i in 0..<min(v1.count, v2.count) {
-            let diff = v1[i] - v2[i]
-            sum += diff * diff
-        }
-        return sum
     }
 }

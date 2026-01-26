@@ -1,5 +1,6 @@
 import Foundation
 import FoundationDB
+import QueryAST
 
 /// Handler for unified search commands
 public struct FindCommands {
@@ -57,8 +58,8 @@ public struct FindCommands {
 
     private func executeScalarQuery(schema: DynamicSchema, args: [String], startIdx: Int) async throws {
         var limit = 100
-        var _orderBy: String? = nil  // TODO: implement ordering
-        var _orderDesc = false       // TODO: implement ordering
+        var orderBy: String? = nil
+        var orderDesc = false
 
         // Parse where clause
         var whereArgs: [String] = []
@@ -69,10 +70,10 @@ public struct FindCommands {
                 limit = Int(args[i + 1]) ?? 100
                 i += 2
             } else if arg == "order-by" && i + 1 < args.count {
-                _orderBy = args[i + 1]
+                orderBy = args[i + 1]
                 i += 2
                 if i < args.count && args[i].lowercased() == "desc" {
-                    _orderDesc = true
+                    orderDesc = true
                     i += 1
                 }
             } else {
@@ -81,44 +82,94 @@ public struct FindCommands {
             }
         }
 
+        // Build sort descriptor if ordering requested
+        let sortDescriptor: DynamicSortDescriptor? = orderBy.map {
+            DynamicSortDescriptor(field: $0, direction: orderDesc ? .descending : .ascending)
+        }
+
         // Parse the where clause
         let clauseString = whereArgs.joined(separator: " ")
         let (field, filterFn) = try parseWhereClause(clauseString)
 
-        // Check if field has a scalar index
-        if schema.hasScalarIndex(forField: field) {
-            // Use index-backed query
-            let operation = try parseScalarOperation(clauseString)
-            let results = try await storage.queryByScalarIndex(
+        // Find the scalar index for this field (need index name, not field name)
+        let scalarIndex = schema.indexes.first { $0.kind == .scalar && $0.fields.contains(field) }
+
+        // Check if field has a scalar index AND we're sorting by the same field (or no sort)
+        let canUseIndexOrdering = scalarIndex != nil &&
+                                  (orderBy == nil || orderBy == field)
+
+        if canUseIndexOrdering, let indexDef = scalarIndex {
+            // Get field type for proper value coercion
+            let fieldType = schema.field(named: field)?.type
+
+            // Use index-backed query with native ordering
+            let operation = try parseScalarOperation(clauseString, fieldType: fieldType)
+            let results = try await storage.queryByScalarIndexOrdered(
                 schemaName: schema.name,
-                indexName: field,
+                indexName: indexDef.name,  // Use index name, not field name
                 operation: operation,
+                sortDescriptor: sortDescriptor,
                 limit: limit
             )
             outputResults(results)
+        } else if let indexDef = scalarIndex {
+            // Use index for filtering, but need in-memory sort for different field
+            let fieldType = schema.field(named: field)?.type
+            let operation = try parseScalarOperation(clauseString, fieldType: fieldType)
+            var results = try await storage.queryByScalarIndex(
+                schemaName: schema.name,
+                indexName: indexDef.name,  // Use index name, not field name
+                operation: operation,
+                limit: limit * 2  // Fetch extra for post-sort limiting
+            )
+
+            // Apply in-memory sort if ordering by different field
+            if let sort = sortDescriptor {
+                results = storage.sortResults(results, by: sort)
+                if results.count > limit {
+                    results = Array(results.prefix(limit))
+                }
+            }
+
+            outputResults(results)
         } else {
-            // Fall back to scan
+            // Fall back to scan with filtering and sorting
             let capturedField = field
             let capturedFilter = filterFn
             let filter: @Sendable (String, [String: Any]) -> Bool = { _, values in
                 capturedFilter(values[capturedField])
             }
-            let results = try await storage.query(schemaName: schema.name, filter: filter, limit: limit)
+
+            let results = try await storage.queryWithSort(
+                schemaName: schema.name,
+                filter: filter,
+                sortDescriptor: sortDescriptor,
+                limit: limit
+            )
             outputResults(results)
         }
     }
 
-    private func parseScalarOperation(_ clause: String) throws -> ScalarOperation {
+    /// Parse a scalar operation from a WHERE clause, with optional type coercion
+    ///
+    /// - Parameters:
+    ///   - clause: The WHERE clause string (e.g., "age > 25")
+    ///   - fieldType: Optional field type for proper value coercion
+    /// - Returns: A ScalarOperation with properly typed values
+    private func parseScalarOperation(_ clause: String, fieldType: FieldType? = nil) throws -> ScalarOperation {
         let operators = [">=", "<=", "!=", "=", ">", "<"]
 
         for op in operators {
             if let range = clause.range(of: op) {
-                var value = String(clause[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+                var valueStr = String(clause[range.upperBound...]).trimmingCharacters(in: .whitespaces)
 
                 // Remove quotes
-                if value.hasPrefix("\"") && value.hasSuffix("\"") {
-                    value = String(value.dropFirst().dropLast())
+                if valueStr.hasPrefix("\"") && valueStr.hasSuffix("\"") {
+                    valueStr = String(valueStr.dropFirst().dropLast())
                 }
+
+                // Coerce value to appropriate type based on field definition
+                let value: Any = coerceValue(valueStr, to: fieldType)
 
                 switch op {
                 case "=":
@@ -141,6 +192,34 @@ public struct FindCommands {
         }
 
         throw CLIError.invalidArguments("Could not parse where clause: \(clause)")
+    }
+
+    /// Coerce a string value to the appropriate type
+    private func coerceValue(_ valueStr: String, to fieldType: FieldType?) -> Any {
+        guard let fieldType = fieldType else {
+            // No type info - try to infer
+            if let intValue = Int(valueStr) {
+                return intValue
+            } else if let doubleValue = Double(valueStr) {
+                return doubleValue
+            } else if valueStr == "true" || valueStr == "false" {
+                return valueStr == "true"
+            }
+            return valueStr
+        }
+
+        switch fieldType {
+        case .int:
+            return Int(valueStr) ?? 0
+        case .double:
+            return Double(valueStr) ?? 0.0
+        case .bool:
+            return valueStr.lowercased() == "true" || valueStr == "1"
+        case .string, .date:
+            return valueStr
+        case .stringArray, .doubleArray:
+            return valueStr  // Arrays aren't typically used in scalar operations
+        }
     }
 
     // MARK: - Vector Query
@@ -179,7 +258,11 @@ public struct FindCommands {
         }
 
         // Execute query
-        let handler = VectorIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .vector,
+            definition: indexDef,
+            schemaName: schema.name
+        )
         let query = VectorQuery(vector: queryVector, k: k, metric: metric)
 
         let ids = try await storage.databaseRef.withTransaction { transaction in
@@ -253,7 +336,11 @@ public struct FindCommands {
         }
 
         // Execute query
-        let handler = FullTextIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .fulltext,
+            definition: indexDef,
+            schemaName: schema.name
+        )
         let query = FullTextQuery(text: queryText, phrase: phrase, fuzzy: fuzzy)
 
         let ids = try await storage.databaseRef.withTransaction { transaction in
@@ -301,7 +388,11 @@ public struct FindCommands {
         }
 
         // Execute query
-        let handler = SpatialIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .spatial,
+            definition: indexDef,
+            schemaName: schema.name
+        )
         let query = SpatialQuery.near(lat: lat, lon: lon, radiusMeters: radiusMeters)
 
         let ids = try await storage.databaseRef.withTransaction { transaction in
@@ -340,7 +431,11 @@ public struct FindCommands {
             throw CLIError.validationError("No spatial index found")
         }
 
-        let handler = SpatialIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .spatial,
+            definition: indexDef,
+            schemaName: schema.name
+        )
         let query = SpatialQuery.bbox(minLat: minLat, minLon: minLon, maxLat: maxLat, maxLon: maxLon)
 
         let ids = try await storage.databaseRef.withTransaction { transaction in
@@ -394,7 +489,11 @@ public struct FindCommands {
             throw CLIError.validationError("No bitmap index found for field '\(field)'")
         }
 
-        let handler = BitmapIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .bitmap,
+            definition: indexDef,
+            schemaName: schema.name
+        )
 
         let query: BitmapQuery
         if countOnly {
@@ -437,7 +536,11 @@ public struct FindCommands {
             throw CLIError.validationError("No rank index found for field '\(field)'")
         }
 
-        let handler = RankIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .rank,
+            definition: indexDef,
+            schemaName: schema.name
+        )
 
         let query: RankQuery
         switch operation {
@@ -491,7 +594,11 @@ public struct FindCommands {
             throw CLIError.validationError("No leaderboard index '\(indexName)' found")
         }
 
-        let handler = LeaderboardIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .leaderboard,
+            definition: indexDef,
+            schemaName: schema.name
+        )
 
         let query: LeaderboardQuery
         switch operation {
@@ -539,7 +646,11 @@ public struct FindCommands {
             throw CLIError.validationError("No aggregation index '\(indexName)' found")
         }
 
-        let handler = AggregationIndexHandler(indexDefinition: indexDef, schemaName: schema.name)
+        let handler = try IndexHandlerRegistry.createHandler(
+            for: .aggregation,
+            definition: indexDef,
+            schemaName: schema.name
+        ) as! AggregationIndexHandler
         let query = AggregationQuery.all
 
         let result = try await storage.databaseRef.withTransaction { transaction in
@@ -597,15 +708,58 @@ public struct FindCommands {
 
     private func executeAllQuery(schema: DynamicSchema, args: [String]) async throws {
         var limit = 100
+        var orderBy: String? = nil
+        var orderDesc = false
 
-        for (i, arg) in args.enumerated() {
-            if arg.lowercased() == "limit" && i + 1 < args.count {
+        var i = 0
+        while i < args.count {
+            let arg = args[i].lowercased()
+            if arg == "limit" && i + 1 < args.count {
                 limit = Int(args[i + 1]) ?? 100
+                i += 2
+            } else if arg == "order-by" && i + 1 < args.count {
+                orderBy = args[i + 1]
+                i += 2
+                if i < args.count && args[i].lowercased() == "desc" {
+                    orderDesc = true
+                    i += 1
+                }
+            } else {
+                i += 1
             }
         }
 
-        let results = try await storage.query(schemaName: schema.name, limit: limit)
-        outputResults(results)
+        // Build sort descriptor if ordering requested
+        let sortDescriptor: DynamicSortDescriptor? = orderBy.map {
+            DynamicSortDescriptor(field: $0, direction: orderDesc ? .descending : .ascending)
+        }
+
+        // Find scalar index for the sort field
+        let sortIndex: IndexDefinition? = orderBy.flatMap { sortField in
+            schema.indexes.first { $0.kind == .scalar && $0.fields.contains(sortField) }
+        }
+
+        // Check if we can use an index for ordering
+        if let indexDef = sortIndex {
+            // Use index for ordering (full range scan with ordering)
+            let results = try await storage.queryByScalarIndexOrdered(
+                schemaName: schema.name,
+                indexName: indexDef.name,  // Use actual index name
+                operation: .fullRange,     // Full scan of the index
+                sortDescriptor: sortDescriptor,
+                limit: limit
+            )
+            outputResults(results)
+        } else {
+            // Use scan with in-memory sort
+            let results = try await storage.queryWithSort(
+                schemaName: schema.name,
+                filter: nil,
+                sortDescriptor: sortDescriptor,
+                limit: limit
+            )
+            outputResults(results)
+        }
     }
 
     // MARK: - Helpers

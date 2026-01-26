@@ -95,7 +95,7 @@ extension Persistable where Self: Codable {
         // Use IndexKindMaintainable protocol to create maintainer
         // This allows third-party IndexKinds to provide their own implementations
         if let maintainable = index.kind as? any IndexKindMaintainable {
-            return maintainable.makeIndexMaintainer(
+            return try maintainable.makeIndexMaintainer(
                 index: index,
                 subspace: indexSubspace,
                 idExpression: idExpression,

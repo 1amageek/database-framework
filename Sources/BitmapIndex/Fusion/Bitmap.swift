@@ -249,21 +249,14 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     }
 
     /// Convert value to TupleElement for bitmap lookup
+    ///
+    /// Uses TupleEncoder for consistent type conversion.
+    /// Falls back to string representation for unsupported types.
     private func convertToTupleElement(_ value: any Sendable & Hashable) -> any TupleElement {
-        switch value {
-        case let v as String: return v
-        case let v as Int: return v
-        case let v as Int64: return v
-        case let v as Int32: return Int(v)
-        case let v as Int16: return Int(v)
-        case let v as Int8: return Int(v)
-        case let v as UInt: return Int(v)
-        case let v as UInt64: return Int64(v)
-        case let v as UInt32: return Int(v)
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        case let v as Bool: return v
-        default:
+        do {
+            return try TupleEncoder.encode(value)
+        } catch {
+            // Fallback for unsupported types
             return String(describing: value)
         }
     }

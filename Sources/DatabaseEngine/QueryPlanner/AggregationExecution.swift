@@ -713,29 +713,9 @@ public struct PredicateEvaluator<T: Persistable> {
         }
     }
 
-    /// Convert Any value to FieldValue
+    /// Convert Any value to FieldValue using unified TypeConversion utility
     private func toFieldValue(_ value: Any) -> FieldValue {
-        switch value {
-        case let v as Bool: return .bool(v)
-        case let v as Int: return .int64(Int64(v))
-        case let v as Int8: return .int64(Int64(v))
-        case let v as Int16: return .int64(Int64(v))
-        case let v as Int32: return .int64(Int64(v))
-        case let v as Int64: return .int64(v)
-        case let v as UInt: return .int64(Int64(v))
-        case let v as UInt8: return .int64(Int64(v))
-        case let v as UInt16: return .int64(Int64(v))
-        case let v as UInt32: return .int64(Int64(v))
-        case let v as UInt64: return .int64(Int64(bitPattern: v))
-        case let v as Float: return .double(Double(v))
-        case let v as Double: return .double(v)
-        case let v as String: return .string(v)
-        case let v as Data: return .data(v)
-        case let v as UUID: return .string(v.uuidString)
-        case let v as Date: return .double(v.timeIntervalSince1970)
-        default:
-            return .string(String(describing: value))
-        }
+        TypeConversion.toFieldValue(value)
     }
 
     private func getFieldValue(from item: T, keyPath: AnyKeyPath, fieldName: String) -> Any? {

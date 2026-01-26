@@ -302,14 +302,12 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
 
     /// Convert Int64 to little-endian bytes
     private func int64ToBytes(_ value: Int64) -> [UInt8] {
-        var v = value
-        return withUnsafeBytes(of: &v) { Array($0) }
+        ByteConversion.int64ToBytes(value)
     }
 
     /// Convert little-endian bytes to Int64
     private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        guard bytes.count >= 8 else { return 0 }
-        return bytes.withUnsafeBytes { $0.load(as: Int64.self) }
+        ByteConversion.bytesToInt64(bytes)
     }
 }
 

@@ -272,14 +272,8 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         var coordinates: [Double] = []
         for value in fieldValues {
-            if let d = value as? Double {
+            if let d = TypeConversion.asDouble(value) {
                 coordinates.append(d)
-            } else if let f = value as? Float {
-                coordinates.append(Double(f))
-            } else if let i = value as? Int64 {
-                coordinates.append(Double(i))
-            } else if let i = value as? Int {
-                coordinates.append(Double(i))
             } else {
                 throw SpatialIndexError.invalidCoordinates("Spatial coordinates must be numeric")
             }

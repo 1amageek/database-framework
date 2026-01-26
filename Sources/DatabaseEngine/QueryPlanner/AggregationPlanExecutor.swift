@@ -529,15 +529,9 @@ private struct AggregationAccumulator {
         }
     }
 
+    /// Convert value to Double using unified TypeConversion utility
     private func toDouble(_ value: Any) -> Double? {
-        switch value {
-        case let v as Double: return v
-        case let v as Float: return Double(v)
-        case let v as Int: return Double(v)
-        case let v as Int64: return Double(v)
-        case let v as Int32: return Double(v)
-        default: return nil
-        }
+        TypeConversion.asDouble(value)
     }
 
     private func fieldValueToSendable(_ value: FieldValue) -> any Sendable {

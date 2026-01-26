@@ -178,7 +178,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         let range = scoresSubspace.range()
 
         // Use min-heap to track top-k highest scores
-        var topKHeap = RankTopKHeap<(score: Double, primaryKey: Tuple)>(
+        var topKHeap = TopKHeap<(score: Double, primaryKey: Tuple)>(
             k: k,
             comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
         )
@@ -435,73 +435,6 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         if let int64Value = value as? Int64 { return Double(int64Value) }
 
         return nil
-    }
-}
-
-// MARK: - RankTopKHeap
-
-/// A bounded min-heap for top-k queries in RankQueryBuilder.
-///
-/// Same algorithm as TopKHeap in RankIndexMaintainer but defined locally
-/// to avoid cross-module internal access issues.
-private struct RankTopKHeap<Element> {
-    private var elements: [Element] = []
-    private let k: Int
-    private let comparator: (Element, Element) -> Bool
-
-    init(k: Int, comparator: @escaping (Element, Element) -> Bool) {
-        self.k = k
-        self.comparator = comparator
-        elements.reserveCapacity(k)
-    }
-
-    var count: Int { elements.count }
-
-    mutating func insert(_ element: Element) {
-        if elements.count < k {
-            elements.append(element)
-            siftUp(elements.count - 1)
-        } else if let root = elements.first, comparator(root, element) {
-            elements[0] = element
-            siftDown(0)
-        }
-    }
-
-    func toSortedArrayDescending() -> [Element] {
-        return elements.sorted { comparator($1, $0) }
-    }
-
-    private mutating func siftUp(_ index: Int) {
-        var i = index
-        while i > 0 {
-            let parent = (i - 1) / 2
-            if comparator(elements[i], elements[parent]) {
-                elements.swapAt(i, parent)
-                i = parent
-            } else {
-                break
-            }
-        }
-    }
-
-    private mutating func siftDown(_ index: Int) {
-        var i = index
-        while true {
-            let left = 2 * i + 1
-            let right = 2 * i + 2
-            var smallest = i
-
-            if left < elements.count && comparator(elements[left], elements[smallest]) {
-                smallest = left
-            }
-            if right < elements.count && comparator(elements[right], elements[smallest]) {
-                smallest = right
-            }
-
-            if smallest == i { break }
-            elements.swapAt(i, smallest)
-            i = smallest
-        }
     }
 }
 

@@ -25,6 +25,8 @@ public enum NumericValueExtractor {
 
     /// Extract Int64 value from tuple element
     ///
+    /// Uses `TypeConversion` for unified type extraction.
+    ///
     /// - Parameters:
     ///   - element: The tuple element to extract from
     ///   - expectedType: The Swift type being extracted (for error messages)
@@ -34,15 +36,18 @@ public enum NumericValueExtractor {
         from element: any TupleElement,
         expectedType: Any.Type
     ) throws -> Int64 {
-        guard let value = element as? Int64 else {
+        do {
+            return try TypeConversion.int64(from: element)
+        } catch {
             throw IndexError.invalidConfiguration(
                 "Expected \(expectedType) (as Int64), got \(type(of: element))"
             )
         }
-        return value
     }
 
     /// Extract Double value from tuple element
+    ///
+    /// Uses `TypeConversion` for unified type extraction.
     ///
     /// - Parameters:
     ///   - element: The tuple element to extract from
@@ -53,12 +58,13 @@ public enum NumericValueExtractor {
         from element: any TupleElement,
         expectedType: Any.Type
     ) throws -> Double {
-        guard let value = element as? Double else {
+        do {
+            return try TypeConversion.double(from: element)
+        } catch {
             throw IndexError.invalidConfiguration(
                 "Expected \(expectedType) (as Double), got \(type(of: element))"
             )
         }
-        return value
     }
 
     /// Extract numeric value with type-safe conversion

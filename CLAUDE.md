@@ -269,6 +269,53 @@ execute()                      ← IndexQueryContext 経由で実行
 | Query Builder 型 | `{Index}QueryBuilder<T>` | `VectorQueryBuilder`, `SpatialQueryBuilder` |
 | Maintainer 型 | `{Algorithm}IndexMaintainer<T>` | `HNSWIndexMaintainer`, `FlatVectorIndexMaintainer` |
 
+## Tuple Encoding Convention
+
+### TupleEncoder / TupleDecoder
+
+**必須**: 全ての Index モジュールは `TupleEncoder` / `TupleDecoder` を使用すること。
+
+```swift
+// ✅ 正しい: TupleEncoder / TupleDecoder を使用
+import DatabaseEngine
+
+let element = try TupleEncoder.encode(value)
+let score = try TupleDecoder.decode(element, as: Int64.self)
+
+// ❌ 禁止: 独自のエンコーディング実装
+switch value {
+case let d as Double:
+    return String(format: "%020.6f", d)  // 禁止！順序が壊れる
+case let i as Int:
+    return String(format: "%020d", i)    // 禁止！
+}
+```
+
+### 型マッピング
+
+| Swift Type | TupleElement | Notes |
+|------------|--------------|-------|
+| String | String | そのまま |
+| Int, Int8-64 | Int64 | 拡張 |
+| UInt, UInt8-64 | Int64 | オーバーフローチェック付き |
+| Double | Double | IEEE 754 (FDBが順序保証) |
+| Float | Double | 拡張 |
+| Bool | Bool | そのまま |
+| Date | Date | fdb-swift-bindings が処理 |
+| UUID | UUID | そのまま |
+| Data | [UInt8] | バイト配列に変換 |
+
+### 理由
+
+- FDB Tuple Layer は Double の辞書順を保証する（IEEE 754 準拠）
+- String フォーマットへの変換は順序を破壊する
+- 型の一貫性がないとインデックスの整合性が失われる
+
+### 参照
+
+- `Sources/DatabaseEngine/Core/TupleEncoder.swift`
+- `Sources/DatabaseEngine/Core/TupleDecoder.swift`
+
 ## Testing Pattern
 
 ### FDB 初期化
@@ -333,6 +380,55 @@ struct MyTests {
 4. Implement `IndexMaintainer` struct
 5. Add module to `Package.swift` and `Database` target dependencies
 6. Create `README.md` with use cases and examples
+
+## 統一型変換規約
+
+**必須**: 全モジュールは `TypeConversion` を使用すること。独自の型変換実装は禁止。
+
+```swift
+import DatabaseEngine
+
+// ✅ 正しい: TypeConversion を使用
+let int64 = TypeConversion.asInt64(value)           // 値抽出 (比較用)
+let double = TypeConversion.asDouble(value)         // 値抽出 (集計用)
+let string = TypeConversion.asString(value)         // 値抽出 (文字列比較用)
+let fieldValue = TypeConversion.toFieldValue(value) // FieldValue 変換
+let element = try TypeConversion.toTupleElement(value)  // TupleElement 変換
+
+// TupleElement からの抽出
+let score = try TypeConversion.int64(from: element)
+let price = try TypeConversion.double(from: element)
+let name = try TypeConversion.string(from: element)
+
+// ❌ 禁止: 独自の型変換実装
+switch value {
+case let v as Int64: return v
+case let v as Int: return Int64(v)  // 禁止！
+...
+}
+```
+
+### 型マッピング仕様
+
+| Swift Type       | Int64 | Double | String | FieldValue      |
+|------------------|-------|--------|--------|-----------------|
+| Int, Int8-64     | ✓     | ✓      | -      | .int64          |
+| UInt, UInt8-64   | ✓*    | ✓      | -      | .int64          |
+| Double, Float    | -     | ✓      | -      | .double         |
+| String           | -     | -      | ✓      | .string         |
+| Bool             | ✓**   | -      | -      | .bool           |
+| Date             | -     | ✓***   | -      | .double         |
+| UUID             | -     | -      | ✓      | .string         |
+
+\* UInt64 > Int64.max はオーバーフロー（nil）
+\** Bool: true=1, false=0
+\*** Date: timeIntervalSince1970
+
+### 関連ファイル
+
+- `Sources/DatabaseEngine/Core/TypeConversion.swift` - 統一型変換ユーティリティ
+- `Sources/DatabaseEngine/Core/TupleEncoder.swift` - Any → TupleElement 変換
+- `Sources/DatabaseEngine/Core/TupleDecoder.swift` - TupleElement → T 変換
 
 ## Swift Concurrency Pattern
 

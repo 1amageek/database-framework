@@ -5,9 +5,9 @@
 
 import Foundation
 import Core
-import Core
 import DatabaseEngine
 import FoundationDB
+import Vector
 
 /// Maintainer for flat scan vector indexes
 ///
@@ -174,35 +174,9 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 continue // Skip corrupt entry
             }
 
-            var vector: [Float] = []
-            vector.reserveCapacity(dimensions)
-            var isValid = true
-
-            for i in 0..<dimensions {
-                guard i < vectorTuple.count else {
-                    isValid = false
-                    break // Incomplete vector
-                }
-
-                let element = vectorTuple[i]
-                let floatValue: Float
-                if let f = element as? Float {
-                    floatValue = f
-                } else if let d = element as? Double {
-                    floatValue = Float(d)
-                } else if let i64 = element as? Int64 {
-                    floatValue = Float(i64)
-                } else if let i = element as? Int {
-                    floatValue = Float(i)
-                } else {
-                    isValid = false
-                    break // Invalid element type
-                }
-
-                vector.append(floatValue)
-            }
-
-            guard isValid else { continue } // Skip invalid vector
+            // Convert tuple to vector using VectorConversion
+            let vector = VectorConversion.tupleToVector(vectorTuple)
+            guard vector.count == dimensions else { continue } // Skip invalid vector
 
             // Calculate distance
             let distance = calculateDistance(queryVector, vector)
@@ -244,25 +218,8 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             expression: index.rootExpression
         )
 
-        // Convert to Float array
-        var floatArray: [Float] = []
-        for element in fieldValues {
-            if let array = element as? [Float] {
-                floatArray.append(contentsOf: array)
-            } else if let array = element as? [Float32] {
-                floatArray.append(contentsOf: array.map { Float($0) })
-            } else if let array = element as? [Double] {
-                floatArray.append(contentsOf: array.map { Float($0) })
-            } else if let f = element as? Float {
-                floatArray.append(f)
-            } else if let d = element as? Double {
-                floatArray.append(Float(d))
-            } else {
-                throw VectorIndexError.invalidArgument(
-                    "Vector field must contain numeric values, got: \(type(of: element))"
-                )
-            }
-        }
+        // Convert to Float array using VectorConversion
+        let floatArray = try VectorConversion.extractFloatArray(from: fieldValues)
 
         // Validate dimensions
         guard floatArray.count == dimensions else {
@@ -272,54 +229,21 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             )
         }
 
-        // Encode as tuple
-        let tupleElements: [any TupleElement] = floatArray.map { $0 as any TupleElement }
-        let tuple = Tuple(tupleElements)
+        // Encode as tuple using VectorConversion
+        let tuple = VectorConversion.vectorToTuple(floatArray)
         return tuple.pack()
     }
 
-    /// Calculate distance between two vectors
+    /// Calculate distance between two vectors using VectorConversion
     private func calculateDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        precondition(v1.count == v2.count, "Vector dimensions must match")
-
         switch metric {
         case .cosine:
-            return cosineDistance(v1, v2)
+            return VectorConversion.cosineDistance(v1, v2)
         case .euclidean:
-            return euclideanDistance(v1, v2)
+            return VectorConversion.euclideanDistance(v1, v2)
         case .dotProduct:
-            return dotProductDistance(v1, v2)
+            return VectorConversion.dotProductDistance(v1, v2)
         }
-    }
-
-    /// Cosine distance: 1 - cosine_similarity
-    private func cosineDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        let dotProduct = zip(v1, v2).map { Double($0) * Double($1) }.reduce(0, +)
-        let norm1 = sqrt(v1.map { Double($0) * Double($0) }.reduce(0, +))
-        let norm2 = sqrt(v2.map { Double($0) * Double($0) }.reduce(0, +))
-
-        guard norm1 > 0 && norm2 > 0 else {
-            return 2.0  // Maximum distance for zero vectors
-        }
-
-        let cosineSimilarity = dotProduct / (norm1 * norm2)
-        return 1.0 - cosineSimilarity
-    }
-
-    /// Euclidean distance
-    private func euclideanDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        var sum: Double = 0.0
-        for (a, b) in zip(v1, v2) {
-            let diff = Double(a) - Double(b)
-            sum += diff * diff
-        }
-        return sqrt(sum)
-    }
-
-    /// Dot product distance: -dot_product
-    private func dotProductDistance(_ v1: [Float], _ v2: [Float]) -> Double {
-        let dotProduct = zip(v1, v2).map { Double($0) * Double($1) }.reduce(0, +)
-        return -dotProduct
     }
 }
 

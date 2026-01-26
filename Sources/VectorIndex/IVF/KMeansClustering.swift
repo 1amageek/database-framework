@@ -98,7 +98,7 @@ public struct KMeansClustering: Sendable {
         var bestDistance = Double.infinity
 
         for (i, centroid) in centroids.enumerated() {
-            let distance = euclideanDistanceSquared(vector, centroid)
+            let distance = VectorConversion.euclideanDistanceSquared(vector, centroid)
             if distance < bestDistance {
                 bestDistance = distance
                 bestIndex = i
@@ -123,7 +123,7 @@ public struct KMeansClustering: Sendable {
         var distances: [(index: Int, distance: Double)] = []
 
         for (i, centroid) in centroids.enumerated() {
-            let distance = euclideanDistanceSquared(query, centroid)
+            let distance = VectorConversion.euclideanDistanceSquared(query, centroid)
             distances.append((i, distance))
         }
 
@@ -151,7 +151,7 @@ public struct KMeansClustering: Sendable {
             var totalDistance: Double = 0
 
             for vector in vectors {
-                let minDist = centroids.map { euclideanDistanceSquared(vector, $0) }.min() ?? 0
+                let minDist = centroids.map { VectorConversion.euclideanDistanceSquared(vector, $0) }.min() ?? 0
                 distances.append(minDist)
                 totalDistance += minDist
             }
@@ -216,20 +216,10 @@ public struct KMeansClustering: Sendable {
         var maxMovement: Double = 0
 
         for (old, new) in zip(oldCentroids, newCentroids) {
-            let movement = sqrt(euclideanDistanceSquared(old, new))
+            let movement = sqrt(VectorConversion.euclideanDistanceSquared(old, new))
             maxMovement = max(maxMovement, movement)
         }
 
         return maxMovement < convergenceThreshold
-    }
-
-    /// Euclidean distance squared (faster than sqrt)
-    private func euclideanDistanceSquared(_ v1: [Float], _ v2: [Float]) -> Double {
-        var sum: Double = 0
-        for i in 0..<min(v1.count, v2.count) {
-            let diff = Double(v1[i]) - Double(v2[i])
-            sum += diff * diff
-        }
-        return sum
     }
 }
