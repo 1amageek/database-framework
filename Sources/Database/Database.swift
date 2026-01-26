@@ -16,3 +16,5 @@
 @_exported import VersionIndex
 @_exported import BitmapIndex
 @_exported import LeaderboardIndex
+@_exported import RelationshipIndex
+@_exported import QueryAST
