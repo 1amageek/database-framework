@@ -1,18 +1,18 @@
 # QueryAST
 
-SQL/SPARQL クエリの抽象構文木（AST）モジュール。クエリの解析、変換、シリアライズを提供します。
+Abstract Syntax Tree (AST) module for SQL/SPARQL queries. Provides query parsing, transformation, and serialization.
 
-## 概要
+## Overview
 
-QueryAST は以下の機能を提供します：
+QueryAST provides the following capabilities:
 
-- **SQL/SPARQL パーサー**: クエリ文字列からASTを構築
-- **クエリビルダー**: プログラマティックなクエリ構築
-- **シリアライザー**: ASTからSQL/SPARQL文字列を生成
-- **クエリ分析**: 変数参照、集約関数の検出
-- **SQL/PGQ サポート**: グラフパターンマッチング (ISO/IEC 9075-16:2023)
+- **SQL/SPARQL Parser**: Build AST from query strings
+- **Query Builder**: Programmatic query construction
+- **Serializer**: Generate SQL/SPARQL strings from AST
+- **Query Analysis**: Variable reference and aggregate function detection
+- **SQL/PGQ Support**: Graph pattern matching (ISO/IEC 9075-16:2023)
 
-## アーキテクチャ
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -33,44 +33,44 @@ QueryAST は以下の機能を提供します：
 │  └── QueryStatement        └── Projection                       │
 ├─────────────────────────────────────────────────────────────────┤
 │  Utils/                                                          │
-│  └── SQLEscape (識別子/文字列エスケープ)                          │
+│  └── SQLEscape (identifier/string escaping)                      │
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-## 主要な型
+## Key Types
 
-### クエリ表現
+### Query Representation
 
-| 型 | 説明 |
-|----|------|
-| `SelectQuery` | SELECT クエリのAST表現 |
-| `Expression` | 式（比較、算術、論理、集約など） |
-| `DataSource` | FROM句のデータソース（テーブル、JOIN、サブクエリ） |
-| `Projection` | SELECT句の射影（カラム、式、*） |
-| `Literal` | リテラル値（文字列、数値、日付など） |
+| Type | Description |
+|------|-------------|
+| `SelectQuery` | AST representation of SELECT queries |
+| `Expression` | Expressions (comparison, arithmetic, logical, aggregation, etc.) |
+| `DataSource` | FROM clause data sources (tables, JOINs, subqueries) |
+| `Projection` | SELECT clause projections (columns, expressions, *) |
+| `Literal` | Literal values (strings, numbers, dates, etc.) |
 
-### SQL/PGQ (グラフクエリ)
+### SQL/PGQ (Graph Queries)
 
-| 型 | 説明 |
-|----|------|
-| `GraphTableSource` | GRAPH_TABLE句 |
-| `MatchPattern` | MATCH句のパターン |
-| `PathPattern` | パスパターン（ノード、エッジ、量化子） |
-| `NodePattern` | ノードパターン |
-| `EdgePattern` | エッジパターン |
+| Type | Description |
+|------|-------------|
+| `GraphTableSource` | GRAPH_TABLE clause |
+| `MatchPattern` | MATCH clause patterns |
+| `PathPattern` | Path patterns (nodes, edges, quantifiers) |
+| `NodePattern` | Node patterns |
+| `EdgePattern` | Edge patterns |
 
 ### SPARQL
 
-| 型 | 説明 |
-|----|------|
-| `GraphPattern` | SPARQL グラフパターン（BGP、OPTIONAL、UNION等） |
-| `PropertyPath` | プロパティパス（シーケンス、代替、繰り返し） |
-| `SPARQLTerm` | RDF項（IRI、リテラル、変数、ブランクノード） |
-| `TriplePattern` | トリプルパターン |
+| Type | Description |
+|------|-------------|
+| `GraphPattern` | SPARQL graph patterns (BGP, OPTIONAL, UNION, etc.) |
+| `PropertyPath` | Property paths (sequence, alternative, repetition) |
+| `SPARQLTerm` | RDF terms (IRI, literal, variable, blank node) |
+| `TriplePattern` | Triple patterns |
 
-## 使用例
+## Usage Examples
 
-### SQL クエリのパース
+### Parsing SQL Queries
 
 ```swift
 import QueryAST
@@ -86,13 +86,13 @@ let query = try parser.parseSelect("""
     LIMIT 10
 """)
 
-// AST を走査
-print(query.projection)  // 射影
-print(query.source)      // FROM句
-print(query.filter)      // WHERE句
+// Traverse the AST
+print(query.projection)  // Projection
+print(query.source)      // FROM clause
+print(query.filter)      // WHERE clause
 ```
 
-### プログラマティックなクエリ構築
+### Programmatic Query Construction
 
 ```swift
 let query = SelectQuery(
@@ -121,11 +121,11 @@ let query = SelectQuery(
     limit: 10
 )
 
-// SQL に変換
+// Convert to SQL
 print(query.toSQL())
 ```
 
-### SPARQL クエリのパース
+### Parsing SPARQL Queries
 
 ```swift
 let parser = SPARQLParser()
@@ -142,10 +142,10 @@ let query = try parser.parse("""
 """)
 ```
 
-### SQL/PGQ グラフクエリ
+### SQL/PGQ Graph Queries
 
 ```swift
-// GRAPH_TABLE を使用したグラフパターンマッチング
+// Graph pattern matching using GRAPH_TABLE
 let graphQuery = GraphTableSource.match(
     graph: "social_network",
     from: NodePattern(variable: "p1", labels: ["Person"]),
@@ -163,106 +163,106 @@ print(graphQuery.toSQL())
 // )
 ```
 
-## セキュリティ
+## Security
 
-### SQL インジェクション対策
+### SQL Injection Prevention
 
-全ての識別子と文字列リテラルは適切にエスケープされます：
+All identifiers and string literals are properly escaped:
 
 ```swift
-// 識別子のエスケープ (ダブルクォート)
+// Identifier escaping (double quotes)
 SQLEscape.identifier("user name")  // "\"user name\""
 SQLEscape.identifier("table\"name") // "\"table\"\"name\""
 
-// 文字列リテラルのエスケープ (シングルクォート)
+// String literal escaping (single quotes)
 SQLEscape.string("O'Brien")  // "'O''Brien'"
 
-// SPARQL NCName 検証
+// SPARQL NCName validation
 try SPARQLEscape.ncName("validName")  // "validName"
 try SPARQLEscape.ncName("invalid name")  // throws SPARQLEscapeError.invalidNCName
 
-// IRI エスケープ
+// IRI escaping
 SPARQLEscape.iri("http://example.org/path")  // "<http://example.org/path>"
 ```
 
-### 参照規格
+### Reference Standards
 
-- **SQL識別子**: ISO/IEC 9075:2023 Section 5.2 (Delimited Identifier)
-- **SQL文字列**: ISO/IEC 9075:2023 Section 5.3 (Character String Literal)
+- **SQL Identifiers**: ISO/IEC 9075:2023 Section 5.2 (Delimited Identifier)
+- **SQL Strings**: ISO/IEC 9075:2023 Section 5.3 (Character String Literal)
 - **SPARQL NCName**: W3C XML Namespaces 1.0
 - **SPARQL IRI**: RFC 3987, SPARQL 1.1 Section 19.5
 
-## クエリ分析
+## Query Analysis
 
 ```swift
 let query = try SQLParser().parseSelect("SELECT name, email FROM users WHERE age > 18")
 
-// 参照されているカラムを取得
+// Get referenced columns
 let columns = query.referencedColumns
 // ["name", "email", "age"]
 
-// 集約関数が含まれているか
+// Check if query contains aggregation
 let hasAgg = query.hasAggregation
 // false
 
-// 変数参照を取得 (SPARQL)
+// Get variable references (SPARQL)
 let sparqlQuery = try SPARQLParser().parse("SELECT ?name WHERE { ?s foaf:name ?name }")
 let vars = sparqlQuery.referencedVariables
 // ["name", "s"]
 ```
 
-## クエリ最適化 (実験的)
+## Query Optimization (Experimental)
 
 ```swift
-// クエリプランの生成
+// Generate query plan
 let plan = QueryPlan(query: query, indexes: availableIndexes)
 
-// コスト見積もり
+// Cost estimation
 print(plan.estimatedCost)
 
-// 最適化されたプランの取得
+// Get optimized plan
 let optimizedPlan = plan.optimized()
 ```
 
-## 対応する SQL 機能
+## Supported SQL Features
 
-### SELECT句
-- [x] カラム、式、エイリアス
+### SELECT Clause
+- [x] Columns, expressions, aliases
 - [x] DISTINCT / ALL
-- [x] 集約関数 (COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT, ARRAY_AGG)
-- [x] ウィンドウ関数 (OVER, PARTITION BY)
+- [x] Aggregate functions (COUNT, SUM, AVG, MIN, MAX, GROUP_CONCAT, ARRAY_AGG)
+- [x] Window functions (OVER, PARTITION BY)
 
-### FROM句
-- [x] テーブル参照 (スキーマ修飾、エイリアス)
+### FROM Clause
+- [x] Table references (schema-qualified, aliases)
 - [x] JOIN (INNER, LEFT, RIGHT, FULL, CROSS, NATURAL, LATERAL)
-- [x] サブクエリ
+- [x] Subqueries
 - [x] GRAPH_TABLE (SQL/PGQ)
 - [x] VALUES
 
-### WHERE句
-- [x] 比較演算子
-- [x] 論理演算子 (AND, OR, NOT)
+### WHERE Clause
+- [x] Comparison operators
+- [x] Logical operators (AND, OR, NOT)
 - [x] LIKE, BETWEEN, IN
 - [x] IS NULL / IS NOT NULL
 - [x] EXISTS / NOT EXISTS
-- [x] サブクエリ
+- [x] Subqueries
 
-### その他
+### Other
 - [x] GROUP BY / HAVING
 - [x] ORDER BY (ASC, DESC, NULLS FIRST/LAST)
 - [x] LIMIT / OFFSET
 - [x] WITH (CTE)
-- [x] 集合演算 (UNION, INTERSECT, EXCEPT)
+- [x] Set operations (UNION, INTERSECT, EXCEPT)
 
-## 対応する SPARQL 機能
+## Supported SPARQL Features
 
-### クエリ形式
+### Query Forms
 - [x] SELECT
 - [x] CONSTRUCT
 - [x] ASK
 - [x] DESCRIBE
 
-### グラフパターン
+### Graph Patterns
 - [x] Basic Graph Pattern (BGP)
 - [x] OPTIONAL
 - [x] UNION
@@ -273,36 +273,36 @@ let optimizedPlan = plan.optimized()
 - [x] SERVICE (FEDERATED)
 - [x] GRAPH (Named Graph)
 
-### プロパティパス
-- [x] シーケンス (/)
-- [x] 代替 (|)
-- [x] 逆パス (^)
-- [x] ゼロ以上 (*)
-- [x] 一つ以上 (+)
-- [x] ゼロか一つ (?)
-- [x] 否定 (!)
-- [x] 範囲 ({n,m})
+### Property Paths
+- [x] Sequence (/)
+- [x] Alternative (|)
+- [x] Inverse path (^)
+- [x] Zero or more (*)
+- [x] One or more (+)
+- [x] Zero or one (?)
+- [x] Negation (!)
+- [x] Range ({n,m})
 
-### ソリューション修飾子
+### Solution Modifiers
 - [x] ORDER BY
 - [x] LIMIT / OFFSET
 - [x] DISTINCT / REDUCED
 - [x] GROUP BY / HAVING
-- [x] 集約関数
+- [x] Aggregate functions
 
-## テスト
+## Testing
 
 ```bash
-# QueryAST テストの実行
+# Run QueryAST tests
 swift test --filter QueryASTTests
 
-# 特定のテストスイートの実行
+# Run specific test suites
 swift test --filter "SQLParserTests"
 swift test --filter "SPARQLParserTests"
 swift test --filter "GraphTableTests"
 ```
 
-## 参照規格
+## Reference Standards
 
 - [ISO/IEC 9075:2023](https://www.iso.org/standard/76583.html) - SQL Standard
 - [ISO/IEC 9075-16:2023](https://www.iso.org/standard/76588.html) - SQL/PGQ (Property Graph Queries)
