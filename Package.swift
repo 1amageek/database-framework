@@ -26,9 +26,7 @@ let package = Package(
         .executable(name: "fdb-cli", targets: ["fdb-cli"]),
     ],
     dependencies: [
-        // Temporarily using local path for CoveringIndexKind development
-        .package(path: "../database-kit"),
-        // .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
