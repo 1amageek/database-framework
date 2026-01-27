@@ -241,15 +241,26 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
             return try await maintainer.scanAll(transaction: transaction)
         }
 
-        // Fetch items
+        // Build mapping: packed primary key → permutedFields
+        var fieldsByPackedKey: [Data: [any TupleElement]] = [:]
+        for result in rawResults {
+            let pkData = Data(Tuple(result.primaryKey).pack())
+            fieldsByPackedKey[pkData] = result.permutedFields
+        }
+
+        // Fetch items (order may differ from rawResults; missing IDs are skipped)
         let tuples = rawResults.map { Tuple($0.primaryKey) }
         let items = try await queryContext.fetchItems(ids: tuples, type: T.self)
 
-        // Match items with permuted fields
+        // Match items with permuted fields by ID
         var finalResults: [(permutedFields: [any TupleElement], item: T)] = []
-        for (index, result) in rawResults.enumerated() {
-            if index < items.count {
-                finalResults.append((permutedFields: result.permutedFields, item: items[index]))
+        for item in items {
+            let itemId: Any = item[dynamicMember: "id"] as Any
+            if let idElement = TupleEncoder.encodeOrNil(itemId) {
+                let pkData = Data(Tuple(idElement).pack())
+                if let fields = fieldsByPackedKey[pkData] {
+                    finalResults.append((permutedFields: fields, item: item))
+                }
             }
         }
 

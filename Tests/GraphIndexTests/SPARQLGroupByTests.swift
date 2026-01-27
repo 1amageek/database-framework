@@ -122,11 +122,11 @@ struct SPARQLGroupByTests {
         #expect(result.count == 2)
 
         // Find the counts for each person
-        let p1Result = result.bindings.first { $0["?person"] == p1 }
-        let p2Result = result.bindings.first { $0["?person"] == p2 }
+        let p1Result = result.bindings.first { $0.string("?person") == p1 }
+        let p2Result = result.bindings.first { $0.string("?person") == p2 }
 
-        #expect(p1Result?["friendCount"] == "2")
-        #expect(p2Result?["friendCount"] == "3")
+        #expect(p1Result?.string("friendCount") == "2")
+        #expect(p2Result?.string("friendCount") == "3")
     }
 
     @Test("GROUP BY with multiple aggregates")
@@ -161,16 +161,16 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 2)
 
-        let t1Result = result.bindings.first { $0["?team"] == team1 }
-        let t2Result = result.bindings.first { $0["?team"] == team2 }
+        let t1Result = result.bindings.first { $0.string("?team") == team1 }
+        let t2Result = result.bindings.first { $0.string("?team") == team2 }
 
-        #expect(t1Result?["scoreCount"] == "3")
-        #expect(t1Result?["minScore"] == "A")
-        #expect(t1Result?["maxScore"] == "C")
+        #expect(t1Result?.string("scoreCount") == "3")
+        #expect(t1Result?.string("minScore") == "A")
+        #expect(t1Result?.string("maxScore") == "C")
 
-        #expect(t2Result?["scoreCount"] == "2")
-        #expect(t2Result?["minScore"] == "D")
-        #expect(t2Result?["maxScore"] == "E")
+        #expect(t2Result?.string("scoreCount") == "2")
+        #expect(t2Result?.string("minScore") == "D")
+        #expect(t2Result?.string("maxScore") == "E")
     }
 
     @Test("GROUP BY with HAVING filter")
@@ -208,7 +208,7 @@ struct SPARQLGroupByTests {
         // Only P2 and P3 should pass the filter
         #expect(result.count == 2)
 
-        let persons = result.bindings.compactMap { $0["?person"] }
+        let persons = result.bindings.compactMap { $0.string("?person") }
         #expect(persons.contains(p2))
         #expect(persons.contains(p3))
         #expect(!persons.contains(p1))
@@ -265,7 +265,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let allFruits = result.firstAggregate("allFruits")
+        let allFruits = result.firstAggregateString("allFruits")
         #expect(allFruits != nil)
 
         // Check that all fruits are in the concatenated string
@@ -298,7 +298,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let sampleCity = result.firstAggregate("sampleCity")
+        let sampleCity = result.firstAggregateString("sampleCity")
         #expect(sampleCity != nil)
         #expect(["Paris", "London", "Tokyo"].contains(sampleCity!))
     }
@@ -342,16 +342,16 @@ struct SPARQLGroupByTests {
         #expect(result.count == 2)  // nature, travel
 
         // Find results for each tag
-        let natureResult = result.bindings.first { $0["?tag"] == "nature" }
-        let travelResult = result.bindings.first { $0["?tag"] == "travel" }
+        let natureResult = result.bindings.first { $0.string("?tag") == "nature" }
+        let travelResult = result.bindings.first { $0.string("?tag") == "travel" }
 
         // nature: 3 photos (photo1, photo2, photo3) - all unique
-        #expect(natureResult?["totalPhotos"] == "3")
-        #expect(natureResult?["uniquePhotos"] == "3")
+        #expect(natureResult?.string("totalPhotos") == "3")
+        #expect(natureResult?.string("uniquePhotos") == "3")
 
         // travel: 1 photo (photo1)
-        #expect(travelResult?["totalPhotos"] == "1")
-        #expect(travelResult?["uniquePhotos"] == "1")
+        #expect(travelResult?.string("totalPhotos") == "1")
+        #expect(travelResult?.string("uniquePhotos") == "1")
     }
 
     @Test("Empty group results")
@@ -433,11 +433,11 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 2)
 
-        let t1Result = result.bindings.first { $0["?team"] == team1 }
-        let t2Result = result.bindings.first { $0["?team"] == team2 }
+        let t1Result = result.bindings.first { $0.string("?team") == team1 }
+        let t2Result = result.bindings.first { $0.string("?team") == team2 }
 
-        #expect(t1Result?["totalScore"] == "60")
-        #expect(t2Result?["totalScore"] == "20")
+        #expect(t1Result?.string("totalScore") == "60")
+        #expect(t2Result?.string("totalScore") == "20")
     }
 
     @Test("SUM aggregate with decimal values")
@@ -467,7 +467,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let totalAmount = result.firstAggregate("totalAmount")
+        let totalAmount = result.firstAggregateString("totalAmount")
         #expect(totalAmount != nil)
 
         // Check that sum is 61.0
@@ -506,7 +506,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let totalValue = result.firstAggregate("totalValue")
+        let totalValue = result.firstAggregateString("totalValue")
         #expect(totalValue == "30")
     }
 
@@ -544,18 +544,18 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 2)
 
-        let c1Result = result.bindings.first { $0["?class"] == class1 }
-        let c2Result = result.bindings.first { $0["?class"] == class2 }
+        let c1Result = result.bindings.first { $0.string("?class") == class1 }
+        let c2Result = result.bindings.first { $0.string("?class") == class2 }
 
         // Check class1 average = 90
-        if let avgStr = c1Result?["avgGrade"], let avg = Double(avgStr) {
+        if let avgStr = c1Result?.string("avgGrade"), let avg = Double(avgStr) {
             #expect(abs(avg - 90.0) < 0.001)
         } else {
             Issue.record("Expected numeric average for class1")
         }
 
         // Check class2 average = 75
-        if let avgStr = c2Result?["avgGrade"], let avg = Double(avgStr) {
+        if let avgStr = c2Result?.string("avgGrade"), let avg = Double(avgStr) {
             #expect(abs(avg - 75.0) < 0.001)
         } else {
             Issue.record("Expected numeric average for class2")
@@ -589,7 +589,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let avgReading = result.firstAggregate("avgReading")
+        let avgReading = result.firstAggregateString("avgReading")
         #expect(avgReading != nil)
 
         // Check that average is approximately 24.333
@@ -625,7 +625,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let avgValue = result.firstAggregate("avgValue")
+        let avgValue = result.firstAggregateString("avgValue")
         #expect(avgValue != nil)
 
         // Average of single value should be that value
@@ -664,7 +664,7 @@ struct SPARQLGroupByTests {
         #expect(result.count == 1)
 
         // AVG of non-numeric values should return nil
-        let avgLabel = result.firstAggregate("avgLabel")
+        let avgLabel = result.firstAggregateString("avgLabel")
         // Non-numeric values cannot be averaged, so result should be nil
         #expect(avgLabel == nil)
     }
@@ -701,13 +701,13 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let deptResult = result.bindings.first { $0["?dept"] == dept }
+        let deptResult = result.bindings.first { $0.string("?dept") == dept }
         #expect(deptResult != nil)
 
-        #expect(deptResult?["totalSalary"] == "180000")
-        #expect(deptResult?["employeeCount"] == "3")
+        #expect(deptResult?.string("totalSalary") == "180000")
+        #expect(deptResult?.string("employeeCount") == "3")
 
-        if let avgStr = deptResult?["avgSalary"], let avg = Double(avgStr) {
+        if let avgStr = deptResult?.string("avgSalary"), let avg = Double(avgStr) {
             #expect(abs(avg - 60000.0) < 0.001)
         } else {
             Issue.record("Expected numeric average salary")
@@ -741,7 +741,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let netBalance = result.firstAggregate("netBalance")
+        let netBalance = result.firstAggregateString("netBalance")
         #expect(netBalance == "50")
     }
 
@@ -773,7 +773,7 @@ struct SPARQLGroupByTests {
 
         #expect(result.count == 1)
 
-        let avgValue = result.firstAggregate("avgValue")
+        let avgValue = result.firstAggregateString("avgValue")
         #expect(avgValue != nil)
 
         if let avgStr = avgValue, let avg = Double(avgStr) {

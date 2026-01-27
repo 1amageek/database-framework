@@ -529,7 +529,7 @@ public struct SchemaParser {
     /// Extract name and parameters from option format: --option name(params)
     private static func extractNameAndParameters(from str: String, prefix: String) throws -> (String, [String: String]) {
         // Remove prefix
-        var remaining = str.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
+        let remaining = str.dropFirst(prefix.count).trimmingCharacters(in: .whitespaces)
 
         // Extract name (before parenthesis)
         guard let parenStart = remaining.firstIndex(of: "(") else {

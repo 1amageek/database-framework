@@ -230,13 +230,13 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 var binding = VariableBinding()
                 for (variable, groupValue) in groupKey {
                     // Only bind if not unbound (preserve SPARQL null semantics)
-                    if let stringValue = groupValue.stringValue {
-                        binding = binding.binding(variable, to: stringValue)
+                    if let fieldValue = groupValue.fieldValue {
+                        binding = binding.binding(variable, to: fieldValue)
                     }
                 }
                 for agg in aggs {
-                    if let value = agg.evaluate(groupBindingsInGroup) {
-                        binding = binding.binding(agg.alias, to: value)
+                    if let aggValue = agg.evaluate(groupBindingsInGroup) {
+                        binding = binding.binding(agg.alias, to: aggValue)
                     }
                 }
                 resultBindings.append(binding)
@@ -389,10 +389,19 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 combinedStats.optionalMisses += 1
             } else {
                 // Merge each right binding with left
+                // SPARQL LeftJoin: if right is non-empty but ALL merges fail
+                // (incompatible bindings), the left binding must still be preserved
+                var anyMerged = false
                 for rightBinding in rightResult.bindings {
                     if let merged = leftBinding.merged(with: rightBinding) {
                         results.append(merged)
+                        anyMerged = true
                     }
+                }
+                if !anyMerged {
+                    // All right bindings were incompatible → preserve left binding
+                    results.append(leftBinding)
+                    combinedStats.optionalMisses += 1
                 }
             }
         }
@@ -501,10 +510,10 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         // Stop at first unbound term (variable or wildcard)
         for idx in elementOrder {
             let term = terms[idx]
-            guard term.isBound, case .value(let value) = term else {
+            guard term.isBound, case .value(let fieldValue) = term else {
                 break  // Stop at first unbound term
             }
-            prefixElements.append(value)
+            prefixElements.append(fieldValue.toTupleElement())
         }
 
         if prefixElements.isEmpty {
@@ -536,6 +545,10 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
     }
 
     /// Parse a key into variable bindings
+    ///
+    /// Extracts triple components from FDB key and creates typed variable bindings.
+    /// Uses `FieldValue(tupleElement:)` to preserve the native type from the hexastore,
+    /// eliminating the need for string-based type inference.
     private func parseKeyToBinding(
         _ key: FDB.Bytes,
         pattern: TriplePattern,
@@ -549,26 +562,22 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         }
 
         let elementOrder = ordering.elementOrder
-        var fromValue: String?
-        var edgeValue: String?
-        var toValue: String?
+        var fromValue: FieldValue?
+        var edgeValue: FieldValue?
+        var toValue: FieldValue?
 
         for (tupleIdx, componentIdx) in elementOrder.enumerated() {
             guard tupleIdx < tuple.count, let element = tuple[tupleIdx] else {
                 continue
             }
 
-            let stringValue: String
-            if let str = element as? String {
-                stringValue = str
-            } else {
-                stringValue = String(describing: element)
-            }
+            let fieldValue = FieldValue(tupleElement: element)
+                ?? .string(String(describing: element))
 
             switch componentIdx {
-            case 0: fromValue = stringValue
-            case 1: edgeValue = stringValue
-            case 2: toValue = stringValue
+            case 0: fromValue = fieldValue
+            case 1: edgeValue = fieldValue
+            case 2: toValue = fieldValue
             default: break
             }
         }
@@ -577,12 +586,12 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
             return nil
         }
 
-        // Check if values match bound terms
+        // Check if values match bound terms (FieldValue == with cross-type support)
         if case .value(let v) = pattern.subject, v != from { return nil }
         if case .value(let v) = pattern.predicate, v != edge { return nil }
         if case .value(let v) = pattern.object, v != to { return nil }
 
-        // Build binding from variables
+        // Build binding from variables (direct FieldValue, no inference needed)
         var binding = VariableBinding()
 
         if case .variable(let name) = pattern.subject {
@@ -746,35 +755,6 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         // Group the bindings using GroupValue for proper null handling
         let groups = groupBindings(evalResult.bindings, by: groupVariables)
 
-        // Apply aggregates to each group
-        var resultBindings: [VariableBinding] = []
-
-        for (groupKey, groupBindingsInGroup) in groups {
-            var binding = VariableBinding()
-
-            // Add group variable values (only bind if not unbound)
-            for (variable, groupValue) in groupKey {
-                if let stringValue = groupValue.stringValue {
-                    binding = binding.binding(variable, to: stringValue)
-                }
-                // Unbound values are left unbound in the result binding
-            }
-
-            // Compute aggregates
-            for aggregate in aggregates {
-                if let value = aggregate.evaluate(groupBindingsInGroup) {
-                    binding = binding.binding(aggregate.alias, to: value)
-                }
-            }
-
-            resultBindings.append(binding)
-        }
-
-        // Apply HAVING filter
-        if let having = having {
-            resultBindings = resultBindings.filter { having.evaluate($0) }
-        }
-
         // Sort by group key for deterministic output using GroupValue ordering
         // GroupValue.Comparable ensures: bound("") < bound("a") < unbound
         let sortedGroups = groups.keys.sorted { lhs, rhs in
@@ -795,8 +775,8 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
 
             var binding = VariableBinding()
             for (variable, groupValue) in groupKey {
-                if let stringValue = groupValue.stringValue {
-                    binding = binding.binding(variable, to: stringValue)
+                if let fieldValue = groupValue.fieldValue {
+                    binding = binding.binding(variable, to: fieldValue)
                 }
             }
             for aggregate in aggregates {
@@ -877,7 +857,7 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         switch path {
         case .iri(let predicate):
             // Simple predicate - equivalent to a triple pattern
-            let pattern = TriplePattern(subject: subject, predicate: .value(predicate), object: object)
+            let pattern = TriplePattern(subject: subject, predicate: .value(.string(predicate)), object: object)
             let (results, patternStats) = try await executePattern(
                 pattern,
                 indexSubspace: indexSubspace,
@@ -887,17 +867,60 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
             return EvaluationResult(bindings: results, stats: stats).mergedStats(with: patternStats)
 
         case .inverse(let innerPath):
-            // Reverse subject and object
-            return try await evaluatePropertyPath(
-                subject: object,
-                path: innerPath,
-                object: subject,
-                indexSubspace: indexSubspace,
-                strategy: strategy,
-                transaction: transaction,
-                config: config,
-                depth: depth
-            )
+            // Normalize inverse paths per SPARQL 1.1, Section 18.4
+            // Push inverse inside quantifiers so BFS expands from the correct end.
+            switch innerPath {
+            case .oneOrMore(let p):
+                // ^(p+) = (^p)+
+                return try await evaluatePropertyPath(
+                    subject: subject, path: .oneOrMore(.inverse(p)), object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            case .zeroOrMore(let p):
+                // ^(p*) = (^p)*
+                return try await evaluatePropertyPath(
+                    subject: subject, path: .zeroOrMore(.inverse(p)), object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            case .zeroOrOne(let p):
+                // ^(p?) = (^p)?
+                return try await evaluatePropertyPath(
+                    subject: subject, path: .zeroOrOne(.inverse(p)), object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            case .sequence(let p1, let p2):
+                // ^(p1/p2) = (^p2)/(^p1) — SPARQL 1.1 Section 18.4
+                // Reverse order AND invert each component
+                return try await evaluatePropertyPath(
+                    subject: subject, path: .sequence(.inverse(p2), .inverse(p1)), object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            case .alternative(let p1, let p2):
+                // ^(p1|p2) = (^p1)|(^p2) — distribute inverse over alternative
+                return try await evaluatePropertyPath(
+                    subject: subject, path: .alternative(.inverse(p1), .inverse(p2)), object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            case .inverse(let p):
+                // ^^p = p — double inverse cancels
+                return try await evaluatePropertyPath(
+                    subject: subject, path: p, object: object,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            default:
+                // Simple inverse (iri, negatedPropertySet): swap subject and object
+                return try await evaluatePropertyPath(
+                    subject: object, path: innerPath, object: subject,
+                    indexSubspace: indexSubspace, strategy: strategy,
+                    transaction: transaction, config: config, depth: depth
+                )
+            }
 
         case .sequence(let path1, let path2):
             // Execute first path, then chain with second
@@ -915,7 +938,7 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
 
             var allBindings: [VariableBinding] = []
             for binding in firstResult.bindings {
-                // Get intermediate value
+                // Get intermediate value as FieldValue (preserving type)
                 guard let intermediateValue = binding[intermediateVar] else { continue }
 
                 // Execute second path with intermediate as subject
@@ -1089,7 +1112,9 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 )
 
                 for (edge, target) in scanResult {
-                    if !irisSet.contains(edge) {
+                    // Edge labels are strings in the graph model
+                    guard case .string(let edgeStr) = edge else { continue }
+                    if !irisSet.contains(edgeStr) {
                         var binding = VariableBinding()
                         if case .variable(let varName) = object {
                             binding = binding.binding(varName, to: target)
@@ -1108,6 +1133,12 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
     }
 
     /// Evaluate transitive closure paths (*, +)
+    ///
+    /// BFS exploration uses an unbound variable for each hop to discover
+    /// intermediate nodes. When the original object is bound, results are
+    /// filtered at the end. This ensures multi-hop paths are traversable.
+    ///
+    /// Reference: SPARQL 1.1, Section 9.1 (Property Paths)
     private func evaluateTransitivePath(
         subject: SPARQLTerm,
         path: PropertyPath,
@@ -1121,9 +1152,25 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         var stats = ExecutionStatistics()
         var allResults: [VariableBinding] = []
         var seen = Set<VariableBinding>()
-        var visitedNodes = Set<String>()
+        var visitedNodes = Set<FieldValue>()
 
-        // Handle zero-hop case for p*
+        // Determine exploration variable:
+        // If object is bound, use a temporary unbound variable for BFS exploration
+        // so we can discover intermediate nodes, not just direct matches.
+        let explorationObject: SPARQLTerm
+        let explorationVarName: String
+        if case .variable(let varName) = object {
+            // Already unbound → use as-is
+            explorationObject = object
+            explorationVarName = varName
+        } else {
+            // Bound object → create temporary exploration variable
+            let tempVar = "?_bfs_explore_"
+            explorationObject = .variable(tempVar)
+            explorationVarName = tempVar
+        }
+
+        // Handle zero-hop case for p* and p?
         if includeZeroHop {
             if case .variable(let subjVar) = subject, case .variable(let objVar) = object {
                 // Both endpoints are unbound variables - generate identity bindings for all nodes
@@ -1147,14 +1194,24 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                         allResults.append(binding)
                     }
                 }
+            } else if case .value(let subjValue) = subject, case .value(let objValue) = object {
+                // Both bound: zero-hop matches only if subject == object
+                if subjValue == objValue {
+                    let emptyBinding = VariableBinding()
+                    if seen.insert(emptyBinding).inserted {
+                        allResults.append(emptyBinding)
+                    }
+                }
             } else if case .value(let value) = subject, case .variable(let varName) = object {
                 let zeroHopBinding = VariableBinding().binding(varName, to: value)
-                allResults.append(zeroHopBinding)
-                seen.insert(zeroHopBinding)
+                if seen.insert(zeroHopBinding).inserted {
+                    allResults.append(zeroHopBinding)
+                }
             } else if case .variable(let varName) = subject, case .value(let value) = object {
                 let zeroHopBinding = VariableBinding().binding(varName, to: value)
-                allResults.append(zeroHopBinding)
-                seen.insert(zeroHopBinding)
+                if seen.insert(zeroHopBinding).inserted {
+                    allResults.append(zeroHopBinding)
+                }
             }
         }
 
@@ -1175,11 +1232,12 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                     visitedNodes.insert(nodeValue)
                 }
 
-                // Execute one hop
+                // Execute one hop with exploration variable (always unbound)
+                // This discovers ALL reachable nodes, not just the target
                 let result = try await evaluatePropertyPath(
                     subject: currentSubject,
                     path: path,
-                    object: object,
+                    object: explorationObject,
                     indexSubspace: indexSubspace,
                     strategy: strategy,
                     transaction: transaction,
@@ -1188,13 +1246,33 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 )
 
                 for binding in result.bindings {
-                    if seen.insert(binding).inserted {
-                        allResults.append(binding)
+                    // Extract the reached node for frontier expansion
+                    guard let reachedValue = binding[explorationVarName] else { continue }
+                    nextFrontier.append(.value(reachedValue))
 
-                        // Add reached nodes to next frontier
-                        if case .variable(let varName) = object,
-                           let reachedValue = binding[varName] {
-                            nextFrontier.append(.value(reachedValue))
+                    // Build result binding based on original object type
+                    if case .value(let targetValue) = object {
+                        // Object is bound → only emit result if reached the target
+                        if reachedValue == targetValue {
+                            // Construct binding with only the original variables (not exploration var)
+                            var resultBinding = VariableBinding()
+                            if case .variable(let subjVar) = subject {
+                                if let subjVal = binding[subjVar] {
+                                    resultBinding = resultBinding.binding(subjVar, to: subjVal)
+                                } else if case .value(let currentVal) = currentSubject {
+                                    // Subject was bound at start, propagate through BFS
+                                    resultBinding = resultBinding.binding(subjVar, to: currentVal)
+                                }
+                            }
+                            if seen.insert(resultBinding).inserted {
+                                allResults.append(resultBinding)
+                            }
+                        }
+                        // If not the target, don't add to results (but still explored via frontier)
+                    } else {
+                        // Object is a variable → all reached nodes are results
+                        if seen.insert(binding).inserted {
+                            allResults.append(binding)
                         }
                     }
                 }
@@ -1210,23 +1288,22 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
 
     /// Scan all outgoing edges from a node
     private func scanOutgoingEdges(
-        from source: String,
+        from source: FieldValue,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         transaction: any TransactionProtocol
-    ) async throws -> [(edge: String, target: String)] {
+    ) async throws -> [(edge: FieldValue, target: FieldValue)] {
         let ordering: GraphIndexOrdering = strategy == .adjacency ? .out : .spo
         let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)
 
-        // Build prefix for subject scan
-        let prefix: [any TupleElement] = strategy == .adjacency
-            ? [source]  // OUT: (from, edge, to)
-            : [source]  // SPO: (subject, predicate, object)
+        // Build prefix for subject scan using typed TupleElement
+        let prefix: [any TupleElement] = [source.toTupleElement()]
 
-        let prefixSubspace = orderingSubspace.subspace(Tuple(prefix))
+        let prefixKey = orderingSubspace.pack(Tuple(prefix))
+        let prefixSubspace = Subspace(prefix: prefixKey)
         let range = prefixSubspace.range()
 
-        var results: [(String, String)] = []
+        var results: [(FieldValue, FieldValue)] = []
 
         let stream = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(range.begin),
@@ -1243,10 +1320,15 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
             // After unpacking with prefixSubspace, we get just (edge, to) or (predicate, object)
             // The source/subject was part of the prefix
             guard tuple.count >= 2,
-                  let edge = tuple[0] as? String,
-                  let target = tuple[1] as? String else {
+                  let edgeElement = tuple[0],
+                  let targetElement = tuple[1] else {
                 continue
             }
+
+            let edge = FieldValue(tupleElement: edgeElement)
+                ?? .string(String(describing: edgeElement))
+            let target = FieldValue(tupleElement: targetElement)
+                ?? .string(String(describing: targetElement))
 
             results.append((edge, target))
         }
@@ -1264,15 +1346,17 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
     ///   - strategy: The graph index strategy
     ///   - maxNodes: Maximum number of nodes to return
     ///   - transaction: FDB transaction
-    /// - Returns: Set of all unique node IDs
+    /// - Returns: Set of all unique node FieldValues
     private func getAllNodesForPropertyPath(
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         maxNodes: Int,
         transaction: any TransactionProtocol
-    ) async throws -> Set<String> {
+    ) async throws -> Set<FieldValue> {
         let scanner = GraphEdgeScanner(indexSubspace: indexSubspace, strategy: strategy)
-        return try await scanner.getAllNodes(edgeLabel: nil, maxNodes: maxNodes, transaction: transaction)
+        let stringNodes = try await scanner.getAllNodes(edgeLabel: nil, maxNodes: maxNodes, transaction: transaction)
+        // Convert String node IDs to FieldValue at the boundary
+        return Set(stringNodes.map { FieldValue.string($0) })
     }
 }
 

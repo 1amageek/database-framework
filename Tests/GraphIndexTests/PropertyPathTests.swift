@@ -111,7 +111,7 @@ struct PropertyPathTests {
             .execute()
 
         #expect(result.count == 2)
-        let friends = result.bindings.compactMap { $0["?friend"] }
+        let friends = result.bindings.compactMap { $0.string("?friend") }
         #expect(friends.contains(bob))
         #expect(friends.contains(carol))
     }
@@ -146,7 +146,7 @@ struct PropertyPathTests {
             .execute()
 
         #expect(result.count == 2)
-        let persons = result.bindings.compactMap { $0["?person"] }
+        let persons = result.bindings.compactMap { $0.string("?person") }
         #expect(persons.contains(alice))
         #expect(persons.contains(carol))
     }
@@ -181,7 +181,7 @@ struct PropertyPathTests {
             .execute()
 
         #expect(result.count == 2)
-        let fofs = result.bindings.compactMap { $0["?fof"] }
+        let fofs = result.bindings.compactMap { $0.string("?fof") }
         #expect(fofs.contains(carol))
         #expect(fofs.contains(dave))
     }
@@ -214,7 +214,7 @@ struct PropertyPathTests {
             .execute()
 
         #expect(result.count == 2)
-        let related = result.bindings.compactMap { $0["?related"] }
+        let related = result.bindings.compactMap { $0.string("?related") }
         #expect(related.contains(bob))
         #expect(related.contains(carol))
     }
@@ -250,7 +250,7 @@ struct PropertyPathTests {
 
         // Should find Bob (1 hop), Carol (2 hops), Dave (3 hops)
         #expect(result.count == 3)
-        let descendants = result.bindings.compactMap { $0["?descendant"] }
+        let descendants = result.bindings.compactMap { $0.string("?descendant") }
         #expect(descendants.contains(bob))
         #expect(descendants.contains(carol))
         #expect(descendants.contains(dave))
@@ -282,7 +282,7 @@ struct PropertyPathTests {
 
         // Should include Alice (0 hops), Bob (1 hop), Carol (2 hops)
         #expect(result.count == 3)
-        let descendants = result.bindings.compactMap { $0["?descendant"] }
+        let descendants = result.bindings.compactMap { $0.string("?descendant") }
         #expect(descendants.contains(alice))  // Zero hop = self
         #expect(descendants.contains(bob))
         #expect(descendants.contains(carol))
@@ -312,7 +312,7 @@ struct PropertyPathTests {
 
         // Should include Alice (0 hops) and Bob (1 hop)
         #expect(result.count == 2)
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         #expect(targets.contains(alice))  // Zero hop = self
         #expect(targets.contains(bob))
     }
@@ -347,7 +347,7 @@ struct PropertyPathTests {
 
         // Should find Bob, Carol, Alice (loop back) - each only once
         #expect(result.count == 3)
-        let reachable = result.bindings.compactMap { $0["?reachable"] }
+        let reachable = result.bindings.compactMap { $0.string("?reachable") }
         #expect(reachable.contains(bob))
         #expect(reachable.contains(carol))
         #expect(reachable.contains(alice))
@@ -391,7 +391,7 @@ struct PropertyPathTests {
 
         // Both paths lead to Dave
         #expect(result.count >= 1)
-        let colleagues = result.bindings.compactMap { $0["?colleague"] }
+        let colleagues = result.bindings.compactMap { $0.string("?colleague") }
         #expect(colleagues.contains(dave))
     }
 
@@ -403,7 +403,7 @@ struct PropertyPathTests {
         #expect(PropertyPath.iri("test").isRecursive == false)
         #expect(PropertyPath.oneOrMore(.iri("test")).isRecursive == true)
         #expect(PropertyPath.zeroOrMore(.iri("test")).isRecursive == true)
-        #expect(PropertyPath.zeroOrOne(.iri("test")).isRecursive == true)
+        #expect(PropertyPath.zeroOrOne(.iri("test")).isRecursive == false)
 
         // Test isSimpleIRI
         #expect(PropertyPath.iri("test").isSimpleIRI == true)

@@ -479,7 +479,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 normB += b[i] * b[i]
             }
             let denom = (normA.squareRoot() * normB.squareRoot())
-            if denom == 0 { return 1.0 }
+            if denom == 0 { return 2.0 }  // Zero vector has no direction → maximum distance
             return Double(1.0 - dot / denom)
 
         case .dotProduct:

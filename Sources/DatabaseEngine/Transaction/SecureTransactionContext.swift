@@ -95,7 +95,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
 
         // Get existing record for CREATE/UPDATE determination and index updates
         let oldData = try await storage.read(for: key)
-        let oldModel: T? = oldData.flatMap { try? DataAccess.deserialize($0) }
+        let oldModel: T? = try oldData.map { try DataAccess.deserialize($0) }
 
         // Security evaluation
         if let old = oldModel {
@@ -168,7 +168,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
             // Compute old index keys
             var oldKeys: Set<[UInt8]> = []
             if let old = oldModel {
-                let oldValues = IndexMaintenanceService.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
+                let oldValues = try IndexMaintenanceService.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
                 if !oldValues.isEmpty {
                     for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: oldValues, id: id, keyPathCount: keyPathCount) {
                         oldKeys.insert(key)
@@ -179,7 +179,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
             // Compute new index keys
             var newKeys: Set<[UInt8]> = []
             if let new = newModel {
-                let newValues = IndexMaintenanceService.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
+                let newValues = try IndexMaintenanceService.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
                 if !newValues.isEmpty {
                     for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: newValues, id: id, keyPathCount: keyPathCount) {
                         newKeys.insert(key)

@@ -126,12 +126,12 @@ struct SPARQLSetOperationTests {
         // Simulate UNION: combine results
         var allTargets = Set<String>()
         for binding in knowsResult.bindings {
-            if let target = binding["?target"] {
+            if let target = binding.string("?target") {
                 allTargets.insert(target)
             }
         }
         for binding in followsResult.bindings {
-            if let target = binding["?target"] {
+            if let target = binding.string("?target") {
                 allTargets.insert(target)
             }
         }
@@ -188,7 +188,7 @@ struct SPARQLSetOperationTests {
         var allTargets = Set<String>()
         for result in [knowsResult, followsResult, likesResult] {
             for binding in result.bindings {
-                if let target = binding["?target"] {
+                if let target = binding.string("?target") {
                     allTargets.insert(target)
                 }
             }
@@ -239,12 +239,12 @@ struct SPARQLSetOperationTests {
         // Combined
         var displayNames = Set<String>()
         for binding in nameResult.bindings {
-            if let name = binding["?displayName"] {
+            if let name = binding.string("?displayName") {
                 displayNames.insert(name)
             }
         }
         for binding in nicknameResult.bindings {
-            if let name = binding["?displayName"] {
+            if let name = binding.string("?displayName") {
                 displayNames.insert(name)
             }
         }
@@ -294,8 +294,8 @@ struct SPARQLSetOperationTests {
             .execute()
 
         // Compute difference
-        let allUserSet = Set(allUsers.bindings.compactMap { $0["?person"] })
-        let bannedSet = Set(bannedUsers.bindings.compactMap { $0["?person"] })
+        let allUserSet = Set(allUsers.bindings.compactMap { $0.string("?person") })
+        let bannedSet = Set(bannedUsers.bindings.compactMap { $0.string("?person") })
         let activeUsers = allUserSet.subtracting(bannedSet)
 
         #expect(activeUsers.count == 2)
@@ -333,8 +333,8 @@ struct SPARQLSetOperationTests {
             .where("?entity", predB, "?val")
             .execute()
 
-        let setA = Set(withA.bindings.compactMap { $0["?entity"] })
-        let setB = Set(withB.bindings.compactMap { $0["?entity"] })
+        let setA = Set(withA.bindings.compactMap { $0.string("?entity") })
+        let setB = Set(withB.bindings.compactMap { $0.string("?entity") })
         let diff = setA.subtracting(setB)
 
         // E1, E2 have A but not B
@@ -369,8 +369,8 @@ struct SPARQLSetOperationTests {
             .where("?item", predFlag, "true")
             .execute()
 
-        let widgetSet = Set(widgets.bindings.compactMap { $0["?item"] })
-        let flaggedSet = Set(flagged.bindings.compactMap { $0["?item"] })
+        let widgetSet = Set(widgets.bindings.compactMap { $0.string("?item") })
+        let flaggedSet = Set(flagged.bindings.compactMap { $0.string("?item") })
         let unflagged = widgetSet.subtracting(flaggedSet)
 
         // All widgets are flagged, so difference is empty
@@ -405,25 +405,25 @@ struct SPARQLSetOperationTests {
         let cheapProducts = try await context.sparql(SetOpTestEdge.self)
             .defaultIndex()
             .where("?product", pricePred, "?price")
-            .filter(.lessThan("?price", "100"))
+            .filter(.lessThan("?price", 100))
             .execute()
 
         // Branch 2: discount > 0.5
         let highDiscountProducts = try await context.sparql(SetOpTestEdge.self)
             .defaultIndex()
             .where("?product", discountPred, "?discount")
-            .filter(.greaterThan("?discount", "0.5"))
+            .filter(.greaterThan("?discount", 0.5))
             .execute()
 
         // Combine
         var qualifyingProducts = Set<String>()
         for binding in cheapProducts.bindings {
-            if let product = binding["?product"] {
+            if let product = binding.string("?product") {
                 qualifyingProducts.insert(product)
             }
         }
         for binding in highDiscountProducts.bindings {
-            if let product = binding["?product"] {
+            if let product = binding.string("?product") {
                 qualifyingProducts.insert(product)
             }
         }
@@ -466,14 +466,14 @@ struct SPARQLSetOperationTests {
         // Combine and filter for val > 15
         var results = [(String, String)]()
         for binding in fromA.bindings {
-            if let entity = binding["?entity"], let val = binding["?val"],
-               let numVal = Int(val), numVal > 15 {
+            if let entity = binding.string("?entity"), let val = binding.string("?val"),
+               let numVal = binding.int("?val"), numVal > 15 {
                 results.append((entity, val))
             }
         }
         for binding in fromB.bindings {
-            if let entity = binding["?entity"], let val = binding["?val"],
-               let numVal = Int(val), numVal > 15 {
+            if let entity = binding.string("?entity"), let val = binding.string("?val"),
+               let numVal = binding.int("?val"), numVal > 15 {
                 results.append((entity, val))
             }
         }
@@ -514,10 +514,10 @@ struct SPARQLSetOperationTests {
         // Using Set automatically deduplicates
         var targets = Set<String>()
         for binding in result1.bindings {
-            if let t = binding["?target"] { targets.insert(t) }
+            if let t = binding.string("?target") { targets.insert(t) }
         }
         for binding in result2.bindings {
-            if let t = binding["?target"] { targets.insert(t) }
+            if let t = binding.string("?target") { targets.insert(t) }
         }
 
         #expect(targets.count == 1)
@@ -553,10 +553,10 @@ struct SPARQLSetOperationTests {
 
         var combined = Set<String>()
         for binding in emptyResult.bindings {
-            if let v = binding["?v"] { combined.insert(v) }
+            if let v = binding.string("?v") { combined.insert(v) }
         }
         for binding in nonEmptyResult.bindings {
-            if let v = binding["?v"] { combined.insert(v) }
+            if let v = binding.string("?v") { combined.insert(v) }
         }
 
         #expect(combined.count == 1)
@@ -590,10 +590,10 @@ struct SPARQLSetOperationTests {
 
         var combined = Set<String>()
         for binding in nonEmptyResult.bindings {
-            if let v = binding["?v"] { combined.insert(v) }
+            if let v = binding.string("?v") { combined.insert(v) }
         }
         for binding in emptyResult.bindings {
-            if let v = binding["?v"] { combined.insert(v) }
+            if let v = binding.string("?v") { combined.insert(v) }
         }
 
         #expect(combined.count == 1)
@@ -649,8 +649,8 @@ struct SPARQLSetOperationTests {
             .where("?e", pred2, "?v")
             .execute()
 
-        let emptySet = Set(emptyResult.bindings.compactMap { $0["?e"] })
-        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0["?e"] })
+        let emptySet = Set(emptyResult.bindings.compactMap { $0.string("?e") })
+        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0.string("?e") })
 
         // Empty MINUS nonEmpty = Empty
         let diff = emptySet.subtracting(nonEmptySet)
@@ -683,8 +683,8 @@ struct SPARQLSetOperationTests {
             .where("?e", pred2, "?v")
             .execute()
 
-        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0["?e"] })
-        let emptySet = Set(emptyResult.bindings.compactMap { $0["?e"] })
+        let nonEmptySet = Set(nonEmptyResult.bindings.compactMap { $0.string("?e") })
+        let emptySet = Set(emptyResult.bindings.compactMap { $0.string("?e") })
 
         // NonEmpty MINUS Empty = NonEmpty
         let diff = nonEmptySet.subtracting(emptySet)

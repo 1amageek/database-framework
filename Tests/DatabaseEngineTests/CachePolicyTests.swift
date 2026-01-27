@@ -450,6 +450,6 @@ struct CachePolicyTests {
             self.value = value
         }
 
-        #Index<CachePolicyTestModel>(ScalarIndexKind<CachePolicyTestModel>(fields: [\.value]))
+        #Index(ScalarIndexKind<CachePolicyTestModel>(fields: [\.value]))
     }
 }

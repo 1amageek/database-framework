@@ -417,8 +417,8 @@ internal final class IndexMaintenanceService: Sendable {
     ///   - model: The model to extract values from
     ///   - keyPaths: KeyPaths defining which fields to extract
     /// - Returns: Array of extracted values as TupleElements
-    static func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) -> [any TupleElement] {
-        (try? DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)) ?? []
+    static func extractIndexValues(from model: any Persistable, keyPaths: [AnyKeyPath]) throws -> [any TupleElement] {
+        try DataAccess.extractFieldsUsingKeyPaths(from: model, keyPaths: keyPaths)
     }
 
     /// Extract ID as Tuple from model
@@ -471,7 +471,7 @@ internal final class IndexMaintenanceService: Sendable {
         transaction: any TransactionProtocol
     ) async throws {
         // Extract index values from the new model
-        let values = Self.extractIndexValues(from: model, keyPaths: descriptor.keyPaths)
+        let values = try Self.extractIndexValues(from: model, keyPaths: descriptor.keyPaths)
         logger.trace("checkUniquenessConstraint: index=\(descriptor.name), values=\(values), state=\(state)")
         guard !values.isEmpty else {
             return

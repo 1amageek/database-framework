@@ -1198,7 +1198,7 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     private func evaluatePredicate(_ predicate: Predicate<T>, on model: T) -> Bool {
         switch predicate {
         case .comparison(let comparison):
-            return evaluateComparison(comparison, on: model)
+            return comparison.evaluate(on: model)
 
         case .and(let predicates):
             return predicates.allSatisfy { evaluatePredicate($0, on: model) }
@@ -1217,120 +1217,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
         }
     }
 
-    /// Evaluate a comparison against a model
-    private func evaluateComparison(_ comparison: FieldComparison<T>, on model: T) -> Bool {
-        // Get the field value from the model using the KeyPath
-        let modelRaw = getFieldValue(from: model, keyPath: comparison.keyPath, fieldName: comparison.fieldName)
-        let modelFieldValue = modelRaw.flatMap { FieldValue($0) } ?? .null
-
-        // Handle nil check operators first
-        switch comparison.op {
-        case .isNil:
-            return modelFieldValue.isNull
-
-        case .isNotNil:
-            return !modelFieldValue.isNull
-
-        default:
-            break
-        }
-
-        // For other operators with null model value, comparison fails
-        if modelFieldValue.isNull {
-            return false
-        }
-
-        let expectedValue = comparison.value
-
-        switch comparison.op {
-        case .equal:
-            return modelFieldValue.isEqual(to: expectedValue)
-
-        case .notEqual:
-            return !modelFieldValue.isEqual(to: expectedValue)
-
-        case .lessThan:
-            return modelFieldValue.isLessThan(expectedValue)
-
-        case .lessThanOrEqual:
-            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
-
-        case .greaterThan:
-            return expectedValue.isLessThan(modelFieldValue)
-
-        case .greaterThanOrEqual:
-            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
-
-        case .contains:
-            if let str = modelRaw as? String, let substr = expectedValue.stringValue {
-                return str.contains(substr)
-            }
-            return false
-
-        case .hasPrefix:
-            if let str = modelRaw as? String, let prefix = expectedValue.stringValue {
-                return str.hasPrefix(prefix)
-            }
-            return false
-
-        case .hasSuffix:
-            if let str = modelRaw as? String, let suffix = expectedValue.stringValue {
-                return str.hasSuffix(suffix)
-            }
-            return false
-
-        case .in:
-            // Check if model value is in the expected array
-            if let arrayValues = expectedValue.arrayValue {
-                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
-            }
-            return false
-
-        case .isNil, .isNotNil:
-            // Already handled above
-            return false
-        }
-    }
-
-    /// Get field value from model using KeyPath or dynamicMember subscript
-    private func getFieldValue(from model: T, keyPath: AnyKeyPath, fieldName: String) -> Any? {
-        // Try to use the KeyPath directly if possible
-        if let typedKeyPath = keyPath as? PartialKeyPath<T> {
-            return model[keyPath: typedKeyPath]
-        }
-
-        // Fallback to dynamicMember-based access for nested fields
-        return getFieldValueByDynamicMember(from: model, fieldName: fieldName)
-    }
-
-    /// Get field value using Persistable's dynamicMember subscript
-    ///
-    /// Uses dynamicMember for first-level access (Persistable requirement),
-    /// then falls back to Mirror for nested non-Persistable types.
-    private func getFieldValueByDynamicMember(from model: T, fieldName: String) -> Any? {
-        let components = fieldName.split(separator: ".").map(String.init)
-        guard let firstComponent = components.first else { return nil }
-
-        // First level: use Persistable's dynamicMember subscript
-        guard let firstValue = model[dynamicMember: firstComponent] else { return nil }
-
-        if components.count == 1 {
-            return firstValue
-        }
-
-        // Nested levels: use Mirror for non-Persistable types
-        var current: Any = firstValue
-        for component in components.dropFirst() {
-            let mirror = Mirror(reflecting: current)
-            guard let child = mirror.children.first(where: { $0.label == component }) else {
-                return nil
-            }
-            current = child.value
-        }
-
-        return current
-    }
-
     // MARK: - Sorting
 
     /// Sort results by sort descriptors
@@ -1339,26 +1225,9 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
 
         return results.sorted { lhs, rhs in
             for descriptor in sortDescriptors {
-                let lhsRaw = getFieldValue(from: lhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
-                let rhsRaw = getFieldValue(from: rhs, keyPath: descriptor.keyPath, fieldName: descriptor.fieldName)
-
-                let lhsField = lhsRaw.flatMap { FieldValue($0) } ?? .null
-                let rhsField = rhsRaw.flatMap { FieldValue($0) } ?? .null
-
-                // null sorts first in ascending, last in descending
-                if case .null = lhsField, case .null = rhsField { continue }
-                if case .null = lhsField { return descriptor.order == .ascending }
-                if case .null = rhsField { return descriptor.order == .descending }
-
-                if let comparison = lhsField.compare(to: rhsField) {
-                    switch comparison {
-                    case .orderedAscending:
-                        return descriptor.order == .ascending
-                    case .orderedDescending:
-                        return descriptor.order == .descending
-                    case .orderedSame:
-                        continue
-                    }
+                let result = descriptor.orderedComparison(lhs, rhs)
+                if result != .orderedSame {
+                    return result == .orderedAscending
                 }
             }
             return false

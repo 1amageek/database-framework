@@ -353,15 +353,21 @@ public struct SPARQLGroupedResult: Sendable {
         bindings.isEmpty
     }
 
-    /// Get aggregate value from first result
-    public func firstAggregate(_ alias: String) -> String? {
+    /// Get aggregate value from first result as FieldValue
+    public func firstAggregate(_ alias: String) -> FieldValue? {
         bindings.first?[alias]
+    }
+
+    /// Get aggregate value from first result as String
+    public func firstAggregateString(_ alias: String) -> String? {
+        bindings.first?.string(alias)
     }
 
     /// Get numeric aggregate from first result
     public func firstNumericAggregate(_ alias: String) -> Int? {
-        guard let str = firstAggregate(alias) else { return nil }
-        return Int(str)
+        guard let value = firstAggregate(alias) else { return nil }
+        if let i = value.int64Value { return Int(i) }
+        return nil
     }
 }
 

@@ -114,7 +114,12 @@ public struct TypeConversion: Sendable {
         case let v as UInt8: return .int64(Int64(v))
         case let v as UInt16: return .int64(Int64(v))
         case let v as UInt32: return .int64(Int64(v))
-        case let v as UInt64: return .int64(Int64(bitPattern: v))
+        case let v as UInt64:
+            if v <= UInt64(Int64.max) {
+                return .int64(Int64(v))
+            } else {
+                return .double(Double(v))
+            }
         case let v as Float: return .double(Double(v))
         case let v as Double: return .double(v)
         case let v as String: return .string(v)

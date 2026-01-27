@@ -225,23 +225,25 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         score: Score,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // Optimization: Start scan from score + 1 (only count entries with higher scores)
+        // Count entries with score strictly greater than target.
         // Key structure: [scoresSubspace][score][pk]
-        // Tuple encoding preserves numeric ordering
+        // Tuple encoding preserves numeric ordering.
+        //
+        // Use score prefix + 0xFF as boundary to skip all entries with
+        // the same score (regardless of primary key suffix).
+        // This works correctly for both Int64 and Double score types.
 
         let rangeEnd = scoresSubspace.range().end
 
-        // Build key for score + 1 (first key with score > target)
-        // Convert Score to TupleElement for key building
-        let nextScore = score + 1
-        guard let nextScoreElement = convertScoreToTupleElement(nextScore) else {
+        guard let scoreElement = convertScoreToTupleElement(score) else {
             throw RankIndexError.invalidScore("Score type \(Score.self) cannot be converted to TupleElement")
         }
-        let boundaryKey = scoresSubspace.pack(Tuple(nextScoreElement))
 
-        // Scan only entries with score > target
+        // Build prefix for this score, then append 0xFF to get past all entries with this score
+        let scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement)) + [0xFF]
+
         let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(boundaryKey),
+            beginSelector: .firstGreaterOrEqual(scorePrefixEnd),
             endSelector: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )

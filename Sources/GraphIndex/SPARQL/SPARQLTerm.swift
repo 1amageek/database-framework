@@ -4,6 +4,7 @@
 // Represents terms in triple patterns following SPARQL semantics.
 
 import Foundation
+import Core
 
 /// Represents a term in a SPARQL-like triple pattern
 ///
@@ -28,8 +29,8 @@ public enum SPARQLTerm: Sendable, Hashable {
     /// Variables are bound during pattern matching and can be projected in results
     case variable(String)
 
-    /// Exact value to match
-    case value(String)
+    /// Exact value to match (typed)
+    case value(FieldValue)
 
     /// Anonymous wildcard - matches anything but doesn't bind
     /// Equivalent to an unnamed variable that isn't referenced elsewhere
@@ -58,7 +59,7 @@ public enum SPARQLTerm: Sendable, Hashable {
     }
 
     /// Get the value if this is a literal
-    public var literalValue: String? {
+    public var literalValue: FieldValue? {
         if case .value(let v) = self {
             return v
         }
@@ -125,7 +126,7 @@ extension SPARQLTerm: ExpressibleByStringLiteral {
         if value.hasPrefix("?") {
             self = .variable(value)
         } else {
-            self = .value(value)
+            self = .value(.string(value))
         }
     }
 }
@@ -138,7 +139,13 @@ extension SPARQLTerm: CustomStringConvertible {
         case .variable(let name):
             return name
         case .value(let v):
-            return "\"\(v)\""
+            switch v {
+            case .string(let s): return "\"\(s)\""
+            case .int64(let i): return String(i)
+            case .double(let d): return String(d)
+            case .bool(let b): return String(b)
+            default: return "\"\(v)\""
+            }
         case .wildcard:
             return "_"
         }
@@ -158,8 +165,33 @@ extension SPARQLTerm {
         }
     }
 
-    /// Create a literal value term
+    /// Create a literal value term (string)
     public static func literal(_ value: String) -> SPARQLTerm {
+        .value(.string(value))
+    }
+
+    /// Create a literal value term (integer)
+    public static func literal(_ value: Int) -> SPARQLTerm {
+        .value(.int64(Int64(value)))
+    }
+
+    /// Create a literal value term (Int64)
+    public static func literal(_ value: Int64) -> SPARQLTerm {
+        .value(.int64(value))
+    }
+
+    /// Create a literal value term (double)
+    public static func literal(_ value: Double) -> SPARQLTerm {
+        .value(.double(value))
+    }
+
+    /// Create a literal value term (bool)
+    public static func literal(_ value: Bool) -> SPARQLTerm {
+        .value(.bool(value))
+    }
+
+    /// Create a literal value term (FieldValue)
+    public static func literal(_ value: FieldValue) -> SPARQLTerm {
         .value(value)
     }
 

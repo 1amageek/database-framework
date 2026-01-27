@@ -127,35 +127,62 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         var versions: [(Version, [UInt8])] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
-            snapshot: true
-        )
+        if let limit = limit {
+            // Reverse scan: fetch newest N versions directly.
+            // FDB stores versionstamps in ascending order (oldest first).
+            // Reverse scan returns newest first, so limit correctly returns newest N.
+            let result = try await transaction.getRangeNative(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                limit: limit,
+                targetBytes: 0,
+                streamingMode: .wantAll,
+                iteration: 1,
+                reverse: true,
+                snapshot: true
+            )
 
-        for try await (key, value) in sequence {
-            // Extract 10-byte versionstamp from end of key
-            guard key.count >= 10 else { continue }
-            let versionBytes = Array(key.suffix(10))
-            let version = Version(bytes: versionBytes)
+            for (key, value) in result.records {
+                guard key.count >= 10 else { continue }
+                let versionBytes = Array(key.suffix(10))
+                let version = Version(bytes: versionBytes)
 
-            // Extract item data (skip first 8 bytes which is timestamp)
-            let data: [UInt8]
-            if value.count > 8 {
-                data = Array(value.dropFirst(8))
-            } else {
-                data = []
+                let data: [UInt8]
+                if value.count > 8 {
+                    data = Array(value.dropFirst(8))
+                } else {
+                    data = []
+                }
+
+                versions.append((version, data))
             }
+            // Already in descending order (newest first) from reverse scan
+        } else {
+            // No limit: forward scan all versions, then reverse
+            let sequence = transaction.getRange(
+                beginSelector: .firstGreaterOrEqual(beginKey),
+                endSelector: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
 
-            versions.append((version, data))
+            for try await (key, value) in sequence {
+                guard key.count >= 10 else { continue }
+                let versionBytes = Array(key.suffix(10))
+                let version = Version(bytes: versionBytes)
 
-            if let limit = limit, versions.count >= limit {
-                break
+                let data: [UInt8]
+                if value.count > 8 {
+                    data = Array(value.dropFirst(8))
+                } else {
+                    data = []
+                }
+
+                versions.append((version, data))
             }
+            versions.reverse()
         }
 
-        // Return in descending order (newest first)
-        return versions.reversed()
+        return versions
     }
 
     /// Get latest version of an item

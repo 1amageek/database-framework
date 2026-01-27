@@ -142,11 +142,6 @@ struct IndexStateBehaviorTests {
             let initialState = try await indexStateManager.state(of: indexName)
             #expect(initialState == .disabled)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
@@ -174,11 +169,6 @@ struct IndexStateBehaviorTests {
             let state = try await indexStateManager.state(of: indexName)
             #expect(state == .disabled)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert two users with same email - should NOT throw because index is disabled
@@ -215,11 +205,6 @@ struct IndexStateBehaviorTests {
             let state = try await indexStateManager.state(of: indexName)
             #expect(state == .writeOnly)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
@@ -246,11 +231,6 @@ struct IndexStateBehaviorTests {
             // Enable index (puts it in writeOnly state)
             try await indexStateManager.enable(indexName)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
@@ -283,11 +263,6 @@ struct IndexStateBehaviorTests {
             try await indexStateManager.enable(indexName)
             try await indexStateManager.makeReadable(indexName)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert first user
@@ -322,11 +297,6 @@ struct IndexStateBehaviorTests {
             let state = try await indexStateManager.state(of: indexName)
             #expect(state == .readable)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user
@@ -356,11 +326,6 @@ struct IndexStateBehaviorTests {
             try await indexStateManager.enable(indexName)
             try await indexStateManager.makeReadable(indexName)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Insert user (index entry created)
@@ -459,11 +424,6 @@ struct IndexStateBehaviorTests {
             let state = try await indexStateManager.state(of: indexName)
             #expect(state == .disabled)
 
-            // Create data store
-            let schema = Schema(
-                entities: [Schema.Entity(from: IndexedUser.self)],
-                version: Schema.Version(1, 0, 0)
-            )
             let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
 
             // Batch insert via executeBatch

@@ -351,7 +351,7 @@ public final class AggregationPlanExecutor<T: Persistable & Codable>: @unchecked
     private func evaluatePredicate(_ predicate: Predicate<T>, on record: T) -> Bool {
         switch predicate {
         case .comparison(let comparison):
-            return evaluateComparison(comparison, on: record)
+            return comparison.evaluate(on: record)
         case .and(let predicates):
             return predicates.allSatisfy { evaluatePredicate($0, on: record) }
         case .or(let predicates):
@@ -361,36 +361,6 @@ public final class AggregationPlanExecutor<T: Persistable & Codable>: @unchecked
         case .true:
             return true
         case .false:
-            return false
-        }
-    }
-
-    /// Evaluate a field comparison
-    private func evaluateComparison(_ comparison: FieldComparison<T>, on record: T) -> Bool {
-        guard let rawValue = record[dynamicMember: comparison.fieldName] else {
-            return comparison.op == .isNil
-        }
-
-        let fieldValue = FieldValue(rawValue) ?? .null
-
-        switch comparison.op {
-        case .equal:
-            return fieldValue.isEqual(to: comparison.value)
-        case .notEqual:
-            return !fieldValue.isEqual(to: comparison.value)
-        case .lessThan:
-            return fieldValue.isLessThan(comparison.value)
-        case .lessThanOrEqual:
-            return fieldValue.isLessThan(comparison.value) || fieldValue.isEqual(to: comparison.value)
-        case .greaterThan:
-            return comparison.value.isLessThan(fieldValue)
-        case .greaterThanOrEqual:
-            return comparison.value.isLessThan(fieldValue) || fieldValue.isEqual(to: comparison.value)
-        case .isNil:
-            return fieldValue.isNull
-        case .isNotNil:
-            return !fieldValue.isNull
-        default:
             return false
         }
     }

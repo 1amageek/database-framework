@@ -122,7 +122,15 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         // Execute search within transaction
         let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
-            try await self.searchFullText(
+            if self.matchMode == .phrase {
+                // Phrase search requires position-verified matching via maintainer
+                return try await self.searchPhrase(
+                    indexName: indexName,
+                    indexSubspace: indexSubspace,
+                    transaction: transaction
+                )
+            }
+            return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 indexSubspace: indexSubspace,
@@ -179,7 +187,14 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
         // Execute search within transaction
         let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
-            try await self.searchFullText(
+            if self.matchMode == .phrase {
+                return try await self.searchPhrase(
+                    indexName: indexName,
+                    indexSubspace: indexSubspace,
+                    transaction: transaction
+                )
+            }
+            return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
                 indexSubspace: indexSubspace,
@@ -276,6 +291,43 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return []
     }
 
+    /// Search for an exact phrase using position-verified matching
+    ///
+    /// Creates a FullTextIndexMaintainer to call `searchPhrase()` which verifies
+    /// term positions form a consecutive sequence. Requires `storePositions=true`
+    /// on the index — throws `FullTextIndexError.invalidQuery` otherwise.
+    private func searchPhrase(
+        indexName: String,
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [Tuple] {
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? FullTextIndexKind<T> else {
+            throw FullTextQueryError.indexNotFound(indexName)
+        }
+
+        let index = Index(
+            name: indexName,
+            kind: kind,
+            rootExpression: FieldKeyExpression(fieldName: self.fieldName),
+            keyPaths: indexDescriptor.keyPaths
+        )
+
+        let maintainer = FullTextIndexMaintainer<T>(
+            index: index,
+            tokenizer: kind.tokenizer,
+            storePositions: kind.storePositions,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        let phraseString = searchTerms.joined(separator: " ")
+        let results = try await maintainer.searchPhrase(phraseString, transaction: transaction)
+        return results.map { Tuple($0) }
+    }
+
     /// Search full-text index and return matching IDs
     private func searchFullText(
         terms: [String],
@@ -304,6 +356,8 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 transaction: transaction
             )
         case .phrase:
+            // Phrase search is handled by searchPhrase() in execute()/executeWithFacets().
+            // This path should not be reached, but fall back to AND as a safety measure.
             matchingIds = try await searchTermsAND(
                 normalizedTerms,
                 termsSubspace: termsSubspace,

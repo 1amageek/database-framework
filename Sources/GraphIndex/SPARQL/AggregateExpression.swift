@@ -6,11 +6,13 @@
 // Reference: W3C SPARQL 1.1, Section 11 (Aggregates)
 
 import Foundation
+import Core
 
 /// Aggregate expression for SPARQL GROUP BY queries
 ///
 /// **Design**: Represents aggregate functions that operate over groups of bindings.
 /// Each aggregate is applied to a specific variable or expression.
+/// Returns `FieldValue` to preserve type information in results.
 ///
 /// **Usage**:
 /// ```swift
@@ -31,55 +33,24 @@ public enum AggregateExpression: Sendable, Hashable {
     // MARK: - Aggregate Functions
 
     /// COUNT aggregate: count number of bindings (or non-null values if variable specified)
-    ///
-    /// - Parameters:
-    ///   - variable: Variable to count (nil for COUNT(*))
-    ///   - distinct: Whether to count only distinct values
-    ///   - alias: Result variable name
     case count(variable: String?, distinct: Bool, alias: String)
 
     /// SUM aggregate: sum numeric values
-    ///
-    /// - Parameters:
-    ///   - variable: Variable containing numeric values
-    ///   - alias: Result variable name
     case sum(variable: String, alias: String)
 
     /// AVG aggregate: average of numeric values
-    ///
-    /// - Parameters:
-    ///   - variable: Variable containing numeric values
-    ///   - alias: Result variable name
     case avg(variable: String, alias: String)
 
-    /// MIN aggregate: minimum value (lexicographic for strings, numeric for numbers)
-    ///
-    /// - Parameters:
-    ///   - variable: Variable to find minimum
-    ///   - alias: Result variable name
+    /// MIN aggregate: minimum value
     case min(variable: String, alias: String)
 
     /// MAX aggregate: maximum value
-    ///
-    /// - Parameters:
-    ///   - variable: Variable to find maximum
-    ///   - alias: Result variable name
     case max(variable: String, alias: String)
 
     /// SAMPLE aggregate: any single value from the group
-    ///
-    /// - Parameters:
-    ///   - variable: Variable to sample
-    ///   - alias: Result variable name
     case sample(variable: String, alias: String)
 
     /// GROUP_CONCAT aggregate: concatenate all values in the group
-    ///
-    /// - Parameters:
-    ///   - variable: Variable to concatenate
-    ///   - separator: Separator string (default is space)
-    ///   - distinct: Whether to concatenate only distinct values
-    ///   - alias: Result variable name
     case groupConcat(variable: String, separator: String, distinct: Bool, alias: String)
 
     // MARK: - Properties
@@ -130,8 +101,8 @@ public enum AggregateExpression: Sendable, Hashable {
     /// Evaluate this aggregate over a group of bindings
     ///
     /// - Parameter bindings: Array of variable bindings in the group
-    /// - Returns: The aggregate result as a string
-    public func evaluate(_ bindings: [VariableBinding]) -> String? {
+    /// - Returns: The aggregate result as a FieldValue
+    public func evaluate(_ bindings: [VariableBinding]) -> FieldValue? {
         switch self {
         case .count(let variable, let distinct, _):
             return evaluateCount(bindings, variable: variable, distinct: distinct)
@@ -158,104 +129,117 @@ public enum AggregateExpression: Sendable, Hashable {
 
     // MARK: - Private Evaluation Methods
 
-    private func evaluateCount(_ bindings: [VariableBinding], variable: String?, distinct: Bool) -> String {
+    private func evaluateCount(_ bindings: [VariableBinding], variable: String?, distinct: Bool) -> FieldValue {
         if let variable = variable {
             // Count non-null values for the variable
             let values = bindings.compactMap { $0[variable] }
             if distinct {
-                return String(Set(values).count)
+                return .int64(Int64(Set(values).count))
             }
-            return String(values.count)
+            return .int64(Int64(values.count))
         } else {
             // COUNT(*) - count all bindings
             if distinct {
-                // For distinct COUNT(*), we need to compare entire bindings
                 let uniqueBindings = Set(bindings)
-                return String(uniqueBindings.count)
+                return .int64(Int64(uniqueBindings.count))
             }
-            return String(bindings.count)
+            return .int64(Int64(bindings.count))
         }
     }
 
-    private func evaluateSum(_ bindings: [VariableBinding], variable: String) -> String? {
-        let values = bindings.compactMap { $0[variable] }
-
-        // Try to sum as Double
+    private func evaluateSum(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
         var sum: Double = 0
-        for value in values {
-            if let num = Double(value) {
-                sum += num
-            }
+        var hasValue = false
+        for binding in bindings {
+            guard let value = binding[variable],
+                  let num = Self.numericValue(value) else { continue }
+            sum += num
+            hasValue = true
         }
 
-        // Return as integer if possible
-        if sum == sum.rounded() && sum >= Double(Int.min) && sum <= Double(Int.max) {
-            return String(Int(sum))
+        guard hasValue else { return nil }
+
+        // Return as integer if possible.
+        // Int64(exactly:) returns nil for non-integer values and values outside
+        // Int64 range, avoiding the trap that Int64(_:) causes at boundary values
+        // (Double(Int64.max) rounds to 9223372036854775808.0 > Int64.max).
+        if let intValue = Int64(exactly: sum) {
+            return .int64(intValue)
         }
-        return String(sum)
+        return .double(sum)
     }
 
-    private func evaluateAvg(_ bindings: [VariableBinding], variable: String) -> String? {
-        let values = bindings.compactMap { binding -> Double? in
-            guard let str = binding[variable] else { return nil }
-            return Double(str)
+    private func evaluateAvg(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
+        var sum: Double = 0
+        var count = 0
+        for binding in bindings {
+            guard let value = binding[variable],
+                  let num = Self.numericValue(value) else { continue }
+            sum += num
+            count += 1
         }
 
-        guard !values.isEmpty else { return nil }
+        guard count > 0 else { return nil }
 
-        let avg = values.reduce(0, +) / Double(values.count)
-        return String(avg)
+        return .double(sum / Double(count))
     }
 
-    private func evaluateMin(_ bindings: [VariableBinding], variable: String) -> String? {
-        let values = bindings.compactMap { $0[variable] }
-        guard !values.isEmpty else { return nil }
-
-        // Try numeric comparison first
-        let numericValues = values.compactMap { Double($0) }
-        if numericValues.count == values.count, let minNum = numericValues.min() {
-            if minNum == minNum.rounded() && minNum >= Double(Int.min) && minNum <= Double(Int.max) {
-                return String(Int(minNum))
-            }
-            return String(minNum)
-        }
-
-        // Fall back to string comparison
+    private func evaluateMin(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
+        let values = bindings.compactMap { $0[variable] }.map { Self.promoteToNumeric($0) }
         return values.min()
     }
 
-    private func evaluateMax(_ bindings: [VariableBinding], variable: String) -> String? {
-        let values = bindings.compactMap { $0[variable] }
-        guard !values.isEmpty else { return nil }
-
-        // Try numeric comparison first
-        let numericValues = values.compactMap { Double($0) }
-        if numericValues.count == values.count, let maxNum = numericValues.max() {
-            if maxNum == maxNum.rounded() && maxNum >= Double(Int.min) && maxNum <= Double(Int.max) {
-                return String(Int(maxNum))
-            }
-            return String(maxNum)
-        }
-
-        // Fall back to string comparison
+    private func evaluateMax(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
+        let values = bindings.compactMap { $0[variable] }.map { Self.promoteToNumeric($0) }
         return values.max()
     }
 
-    private func evaluateSample(_ bindings: [VariableBinding], variable: String) -> String? {
+    // MARK: - Numeric Coercion
+
+    /// Extract numeric value from a FieldValue, with string-to-number coercion
+    ///
+    /// SPARQL semantics: SUM/AVG aggregate functions operate on numeric values.
+    /// String values that represent numbers are coerced to numeric.
+    /// Non-numeric values are skipped.
+    ///
+    /// Reference: SPARQL 1.1, Section 11.5
+    private static func numericValue(_ value: FieldValue) -> Double? {
+        switch value {
+        case .int64(let v): return Double(v)
+        case .double(let v): return v
+        case .string(let s): return Double(s)
+        default: return nil
+        }
+    }
+
+    /// Promote a FieldValue to numeric if it's a numeric-looking string
+    ///
+    /// Used by MIN/MAX to ensure numeric ordering for string-stored numbers.
+    /// Non-numeric strings are left unchanged.
+    private static func promoteToNumeric(_ value: FieldValue) -> FieldValue {
+        guard case .string(let s) = value else { return value }
+        if let i = Int64(s) { return .int64(i) }
+        if let d = Double(s), d.isFinite { return .double(d) }
+        return value
+    }
+
+    private func evaluateSample(_ bindings: [VariableBinding], variable: String) -> FieldValue? {
         // Return any value (first non-null)
         return bindings.compactMap { $0[variable] }.first
     }
 
-    private func evaluateGroupConcat(_ bindings: [VariableBinding], variable: String, separator: String, distinct: Bool) -> String {
-        var values = bindings.compactMap { $0[variable] }
+    private func evaluateGroupConcat(_ bindings: [VariableBinding], variable: String, separator: String, distinct: Bool) -> FieldValue {
+        var strings = bindings.compactMap { binding -> String? in
+            binding.string(variable)
+        }
 
         if distinct {
             // Preserve order while removing duplicates
             var seen = Set<String>()
-            values = values.filter { seen.insert($0).inserted }
+            strings = strings.filter { seen.insert($0).inserted }
         }
 
-        return values.joined(separator: separator)
+        return .string(strings.joined(separator: separator))
     }
 }
 

@@ -556,10 +556,10 @@ struct FilterExpressionTests {
         let ageFilter = FilterExpression.numeric("?age", ">=", 18)
 
         var adultBinding = VariableBinding()
-        adultBinding = adultBinding.binding("?age", to: "25")
+        adultBinding = adultBinding.binding("?age", to: .int64(25))
 
         var minorBinding = VariableBinding()
-        minorBinding = minorBinding.binding("?age", to: "15")
+        minorBinding = minorBinding.binding("?age", to: .int64(15))
 
         #expect(ageFilter.evaluate(adultBinding))
         #expect(!ageFilter.evaluate(minorBinding))
@@ -715,9 +715,9 @@ struct SPARQLResultTests {
         let names = result.nonNilValues(for: "?name")
         let ages = result.values(for: "?age")
 
-        #expect(names == ["Alice", "Bob"])
+        #expect(names == [FieldValue.string("Alice"), FieldValue.string("Bob")])
         #expect(ages.count == 2)
-        #expect(ages[0] == "30")
+        #expect(ages[0] == FieldValue.string("30"))
         #expect(ages[1] == nil)
     }
 
@@ -772,7 +772,7 @@ struct SPARQLResultTests {
         var bindings: [VariableBinding] = []
         for i in 1...10 {
             var b = VariableBinding()
-            b = b.binding("?i", to: "\(i)")
+            b = b.binding("?i", toString: "\(i)")
             bindings.append(b)
         }
 
@@ -815,7 +815,7 @@ struct SPARQLResultTests {
 
         var values: [String] = []
         for binding in result {
-            if let v = binding["?x"] {
+            if let v = binding.string("?x") {
                 values.append(v)
             }
         }

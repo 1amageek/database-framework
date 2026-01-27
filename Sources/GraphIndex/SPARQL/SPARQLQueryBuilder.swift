@@ -251,13 +251,19 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     }
 
     /// Filter: variable equals value
+    ///
+    /// The value is treated as a string. For typed comparisons, use
+    /// `.filter(.equals("?var", .int64(42)))` directly.
     public func filter(_ variable: String, equals value: String) -> Self {
-        filter(.equals(variable, value))
+        filter(.equals(variable, .string(value)))
     }
 
     /// Filter: variable not equals value
+    ///
+    /// The value is treated as a string. For typed comparisons, use
+    /// `.filter(.notEquals("?var", .int64(42)))` directly.
     public func filter(_ variable: String, notEquals value: String) -> Self {
-        filter(.notEquals(variable, value))
+        filter(.notEquals(variable, .string(value)))
     }
 
     /// Filter: variable matches regex

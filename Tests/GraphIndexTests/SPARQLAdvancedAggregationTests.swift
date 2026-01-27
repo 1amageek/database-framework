@@ -143,8 +143,8 @@ struct SPARQLAdvancedAggregationTests {
         let electronicsResult = result.bindings.first { $0["?category"] == "Electronics" }
         let booksResult = result.bindings.first { $0["?category"] == "Books" }
 
-        #expect(electronicsResult?["itemCount"] == "3")
-        #expect(booksResult?["itemCount"] == "2")
+        #expect(electronicsResult?["itemCount"] == 3)
+        #expect(booksResult?["itemCount"] == 2)
     }
 
     @Test("GROUP BY with two variables from joined patterns")
@@ -192,8 +192,8 @@ struct SPARQLAdvancedAggregationTests {
         let engResult = deptResult.bindings.first { $0["?dept"] == "Engineering" }
         let salesResult = deptResult.bindings.first { $0["?dept"] == "Sales" }
 
-        #expect(engResult?["empCount"] == "3")
-        #expect(salesResult?["empCount"] == "1")
+        #expect(engResult?["empCount"] == 3)
+        #expect(salesResult?["empCount"] == 1)
     }
 
     // MARK: - Complex HAVING Tests
@@ -251,9 +251,9 @@ struct SPARQLAdvancedAggregationTests {
         // Only ProlificAuthor should pass (10 books > 5)
         #expect(result.count == 1)
 
-        let prolificResult = result.bindings.first { $0["?author"] == auth1 }
+        let prolificResult = result.bindings.first { $0.string("?author") == auth1 }
         #expect(prolificResult != nil)
-        #expect(prolificResult?["bookCount"] == "10")
+        #expect(prolificResult?["bookCount"] == 10)
     }
 
     @Test("HAVING with equality condition")
@@ -340,8 +340,8 @@ struct SPARQLAdvancedAggregationTests {
         #expect(result.count == 2)
 
         let counts = result.bindings.compactMap { $0["childCount"] }
-        #expect(counts.contains("1"))
-        #expect(counts.contains("3"))
+        #expect(counts.contains(FieldValue.int64(1)))
+        #expect(counts.contains(FieldValue.int64(3)))
     }
 
     // MARK: - Multiple Aggregates Tests
@@ -386,9 +386,9 @@ struct SPARQLAdvancedAggregationTests {
         let engResult = result.bindings.first { $0["?dept"] == "Engineering" }
         let salesResult = result.bindings.first { $0["?dept"] == "Sales" }
 
-        #expect(engResult?["totalEmployees"] == "3")
-        #expect(engResult?["uniqueEmployees"] == "3")
-        #expect(salesResult?["totalEmployees"] == "1")
+        #expect(engResult?["totalEmployees"] == 3)
+        #expect(engResult?["uniqueEmployees"] == 3)
+        #expect(salesResult?["totalEmployees"] == 1)
     }
 
     @Test("Combined COUNT, SUM, AVG, MIN, MAX")
@@ -425,12 +425,12 @@ struct SPARQLAdvancedAggregationTests {
         #expect(result.count == 1)
 
         let teamResult = result.bindings.first!
-        #expect(teamResult["scoreCount"] == "5")
-        #expect(teamResult["totalScore"] == "150")
-        #expect(teamResult["minScore"] == "10")
-        #expect(teamResult["maxScore"] == "50")
+        #expect(teamResult["scoreCount"] == 5)
+        #expect(teamResult["totalScore"] == 150)
+        #expect(teamResult["minScore"] == 10)
+        #expect(teamResult["maxScore"] == 50)
 
-        if let avgStr = teamResult["avgScore"], let avg = Double(avgStr) {
+        if let avg = teamResult.double("avgScore") {
             #expect(abs(avg - 30.0) < 0.001)
         }
     }
@@ -486,12 +486,12 @@ struct SPARQLAdvancedAggregationTests {
         let deptB = deptCounts.bindings.first { $0["?dept"] == "DeptB" }
         let deptC = deptCounts.bindings.first { $0["?dept"] == "DeptC" }
 
-        #expect(deptA?["empCount"] == "2")
-        #expect(deptB?["empCount"] == "4")
-        #expect(deptC?["empCount"] == "6")
+        #expect(deptA?["empCount"] == 2)
+        #expect(deptB?["empCount"] == 4)
+        #expect(deptC?["empCount"] == 6)
 
         // Calculate average manually (simulating nested aggregation)
-        let counts = deptCounts.bindings.compactMap { $0["empCount"] }.compactMap { Int($0) }
+        let counts = deptCounts.bindings.compactMap { $0.int("empCount") }
         let avg = Double(counts.reduce(0, +)) / Double(counts.count)
         #expect(abs(avg - 4.0) < 0.001)
     }
@@ -541,8 +541,8 @@ struct SPARQLAdvancedAggregationTests {
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?group"] == group)
-        #expect(result.bindings.first?["itemCount"] == "3")
+        #expect(result.bindings.first?.string("?group") == group)
+        #expect(result.bindings.first?["itemCount"] == 3)
     }
 
     @Test("GROUP BY with many groups (100 groups)")
@@ -575,7 +575,7 @@ struct SPARQLAdvancedAggregationTests {
 
         // All groups should have count 2
         for binding in result.bindings {
-            #expect(binding["count"] == "2")
+            #expect(binding["count"] == 2)
         }
     }
 
@@ -612,9 +612,9 @@ struct SPARQLAdvancedAggregationTests {
 
         // Verify counts (order may vary)
         let counts = Set(result.bindings.compactMap { $0["memberCount"] })
-        #expect(counts.contains("5"))
-        #expect(counts.contains("3"))
-        #expect(counts.contains("1"))
+        #expect(counts.contains(FieldValue.int64(5)))
+        #expect(counts.contains(FieldValue.int64(3)))
+        #expect(counts.contains(FieldValue.int64(1)))
     }
 
     @Test("GROUP BY with LIMIT and OFFSET")
@@ -737,7 +737,7 @@ struct SPARQLAdvancedAggregationTests {
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?["count"] == "3")  // All 3 edges counted
+        #expect(result.bindings.first?["count"] == 3)  // All 3 edges counted
         // Sum should handle empty string gracefully
     }
 
@@ -764,7 +764,7 @@ struct SPARQLAdvancedAggregationTests {
 
         #expect(result.count == 1)
 
-        if let avgStr = result.bindings.first?["avgScore"], let avg = Double(avgStr) {
+        if let avg = result.bindings.first?.double("avgScore") {
             #expect(abs(avg - 85.0) < 0.001)
         }
     }

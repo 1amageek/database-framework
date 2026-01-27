@@ -234,12 +234,17 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "ScalarIndex",
+                "FullTextIndex",
+                "AggregationIndex",
                 "RelationshipIndex",
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "GraphIndex",
                 "TestSupport",
+                .product(name: "FullText", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
+                .product(name: "Logging", package: "swift-log"),
             ],
             exclude: ["IndexTestDesign.md"],
             linkerSettings: [
@@ -279,6 +284,7 @@ let package = Package(
             name: "GraphIndexTests",
             dependencies: [
                 "GraphIndex",
+                "QueryAST",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),

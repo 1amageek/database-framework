@@ -4,6 +4,7 @@
 // Represents the result set of a SPARQL query execution.
 
 import Foundation
+import Core
 
 /// Result of a SPARQL-like query execution
 ///
@@ -73,21 +74,26 @@ public struct SPARQLResult: Sendable {
 
     // MARK: - Variable Access
 
-    /// Get values for a specific variable across all bindings
+    /// Get typed values for a specific variable across all bindings
     ///
     /// Returns `nil` for bindings where the variable is not bound.
-    public func values(for variable: String) -> [String?] {
+    public func values(for variable: String) -> [FieldValue?] {
         bindings.map { $0[variable] }
     }
 
-    /// Get non-nil values for a specific variable
-    public func nonNilValues(for variable: String) -> [String] {
+    /// Get non-nil typed values for a specific variable
+    public func nonNilValues(for variable: String) -> [FieldValue] {
         bindings.compactMap { $0[variable] }
     }
 
-    /// Get distinct values for a variable
-    public func distinctValues(for variable: String) -> Set<String> {
+    /// Get distinct typed values for a variable
+    public func distinctValues(for variable: String) -> Set<FieldValue> {
         Set(bindings.compactMap { $0[variable] })
+    }
+
+    /// Get string values for a specific variable across all bindings
+    public func stringValues(for variable: String) -> [String?] {
+        bindings.map { $0.string(variable) }
     }
 
     /// Check if a variable has any bound values

@@ -361,7 +361,8 @@ internal final class FDBDataStore: DataStore, Sendable {
             switch comparison.op {
             case .equal, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
                 // Convert to Tuple here for Sendable compatibility
-                let tuple = valueToTuple(comparison.value)
+                // If conversion fails, skip this condition (fall back to full scan)
+                guard let tuple = try? valueToTuple(comparison.value) else { return [] }
                 return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, valueTuple: tuple)]
             default:
                 return []
@@ -469,7 +470,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Convert a value to a Tuple for index key construction
     ///
     /// Uses TupleEncoder for consistent type conversion across all index modules.
-    private func valueToTuple(_ value: Any) -> Tuple {
+    private func valueToTuple(_ value: Any) throws -> Tuple {
         // Handle FieldValue first (most common case after refactoring)
         if let fieldValue = value as? FieldValue {
             return Tuple([fieldValue.toTupleElement()])
@@ -481,13 +482,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Use TupleEncoder for consistent type conversion
-        do {
-            let element = try TupleEncoder.encode(value)
-            return Tuple([element])
-        } catch {
-            // Fallback for unsupported types
-            return Tuple([String(describing: value)])
-        }
+        let element = try TupleEncoder.encode(value)
+        return Tuple([element])
     }
 
     /// Extract ID from an index key given a value subspace
@@ -645,14 +641,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         if !query.sortDescriptors.isEmpty {
             results.sort { lhs, rhs in
                 for sortDescriptor in query.sortDescriptors {
-                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
-                    if comparison != .orderedSame {
-                        switch sortDescriptor.order {
-                        case .ascending:
-                            return comparison == .orderedAscending
-                        case .descending:
-                            return comparison == .orderedDescending
-                        }
+                    let result = sortDescriptor.orderedComparison(lhs, rhs)
+                    if result != .orderedSame {
+                        return result == .orderedAscending
                     }
                 }
                 return false
@@ -740,14 +731,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         if !query.sortDescriptors.isEmpty {
             results.sort { lhs, rhs in
                 for sortDescriptor in query.sortDescriptors {
-                    let comparison = compareModels(lhs, rhs, by: sortDescriptor.fieldName)
-                    if comparison != .orderedSame {
-                        switch sortDescriptor.order {
-                        case .ascending:
-                            return comparison == .orderedAscending
-                        case .descending:
-                            return comparison == .orderedDescending
-                        }
+                    let result = sortDescriptor.orderedComparison(lhs, rhs)
+                    if result != .orderedSame {
+                        return result == .orderedAscending
                     }
                 }
                 return false
@@ -1546,7 +1532,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func evaluatePredicate<T: Persistable>(_ predicate: Predicate<T>, on model: T) -> Bool {
         switch predicate {
         case .comparison(let comparison):
-            return evaluateFieldComparison(model: model, comparison: comparison)
+            return comparison.evaluate(on: model)
 
         case .and(let predicates):
             return predicates.allSatisfy { evaluatePredicate($0, on: model) }
@@ -1565,92 +1551,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    /// Evaluate a field comparison with type-safe comparisons
-    ///
-    /// Uses FieldValue-based comparison for consistency with PlanExecutor
-    private func evaluateFieldComparison<T: Persistable>(
-        model: T,
-        comparison: FieldComparison<T>
-    ) -> Bool {
-        let fieldName = comparison.fieldName
-        let expectedValue = comparison.value
-
-        // Handle nil checks separately
-        switch comparison.op {
-        case .isNil:
-            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
-            return fieldValues == nil || fieldValues?.isEmpty == true
-        case .isNotNil:
-            let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName)
-            return fieldValues != nil && fieldValues?.isEmpty == false
-        default:
-            break
-        }
-
-        guard let fieldValues = try? DataAccess.extractField(from: model, keyPath: fieldName),
-              let rawFieldValue = fieldValues.first else {
-            return false
-        }
-
-        // Convert model field value to FieldValue for type-safe comparison
-        let modelFieldValue = FieldValue(rawFieldValue) ?? .null
-
-        switch comparison.op {
-        case .equal:
-            return modelFieldValue.isEqual(to: expectedValue)
-        case .notEqual:
-            return !modelFieldValue.isEqual(to: expectedValue)
-        case .lessThan:
-            return modelFieldValue.isLessThan(expectedValue)
-        case .lessThanOrEqual:
-            return modelFieldValue.isLessThan(expectedValue) || modelFieldValue.isEqual(to: expectedValue)
-        case .greaterThan:
-            return expectedValue.isLessThan(modelFieldValue)
-        case .greaterThanOrEqual:
-            return expectedValue.isLessThan(modelFieldValue) || modelFieldValue.isEqual(to: expectedValue)
-        case .contains:
-            if let fieldStr = rawFieldValue as? String, let substr = expectedValue.stringValue {
-                return fieldStr.contains(substr)
-            }
-            return false
-        case .hasPrefix:
-            if let fieldStr = rawFieldValue as? String, let prefix = expectedValue.stringValue {
-                return fieldStr.hasPrefix(prefix)
-            }
-            return false
-        case .hasSuffix:
-            if let fieldStr = rawFieldValue as? String, let suffix = expectedValue.stringValue {
-                return fieldStr.hasSuffix(suffix)
-            }
-            return false
-        case .in:
-            // Check if model value is in the expected array
-            if let arrayValues = expectedValue.arrayValue {
-                return arrayValues.contains { modelFieldValue.isEqual(to: $0) }
-            }
-            return false
-        case .isNil, .isNotNil:
-            // Already handled above
-            return false
-        }
-    }
-
-    /// Compare two models by a field with type-safe comparison
-    private func compareModels<T: Persistable>(_ lhs: T, _ rhs: T, by fieldName: String) -> ComparisonResult {
-        let lhsValues = try? DataAccess.extractField(from: lhs, keyPath: fieldName)
-        let rhsValues = try? DataAccess.extractField(from: rhs, keyPath: fieldName)
-
-        guard let lhsRaw = lhsValues?.first,
-              let rhsRaw = rhsValues?.first else {
-            return .orderedSame
-        }
-
-        // Use FieldValue for consistent comparison
-        let lhsField = FieldValue(lhsRaw) ?? .null
-        let rhsField = FieldValue(rhsRaw) ?? .null
-
-        return lhsField.compare(to: rhsField) ?? .orderedSame
-    }
+    // evaluateFieldComparison and compareModels removed — unified into
+    // FieldComparison.evaluate(on:) and SortDescriptor.orderedComparison()
 
     // MARK: - Clear Operations
 

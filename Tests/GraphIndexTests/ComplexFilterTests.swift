@@ -115,11 +115,11 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", predA, "?a")
-            .filter(.greaterThan("?a", "10"))
+            .filter(.greaterThan("?a", 10))
             .execute()
 
         #expect(!result.isEmpty)
-        let values = result.bindings.compactMap { $0["?a"] }
+        let values = result.bindings.compactMap { $0.string("?a") }
         #expect(values.contains("15"))
     }
 
@@ -147,7 +147,7 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", predValue, "?val")
-            .filter(.greaterThan("?val", "10"))
+            .filter(.greaterThan("?val", 10))
             .execute()
 
         // Items with value > 10: item1 (15), item3 (25)
@@ -176,13 +176,13 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?entity", pred, "?score")
-            .filter(.greaterThan("?score", "5"))
-            .filter(.lessThan("?score", "10"))
+            .filter(.greaterThan("?score", 5))
+            .filter(.lessThan("?score", 10))
             .execute()
 
         // Only E1 (7) should pass
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?score"] == "7")
+        #expect(result.bindings.first?["?score"] == .string("7"))
     }
 
     // MARK: - Multiple Sequential FILTER Tests
@@ -212,13 +212,13 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", predValue, "?val")
-            .filter(.greaterThan("?val", "0"))
-            .filter(.lessThan("?val", "100"))
+            .filter(.greaterThan("?val", 0))
+            .filter(.lessThan("?val", 100))
             .execute()
 
         // Item1 (50) and Item4 (75) should pass
         #expect(result.count == 2)
-        let values = result.bindings.compactMap { $0["?val"] }
+        let values = result.bindings.compactMap { $0.string("?val") }
         #expect(values.contains("50"))
         #expect(values.contains("75"))
     }
@@ -245,14 +245,14 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?n", pred, "?val")
-            .filter(.greaterThan("?val", "20"))
-            .filter(.lessThan("?val", "60"))
-            .filter(.notEquals("?val", "35"))
+            .filter(.greaterThan("?val", 20))
+            .filter(.lessThan("?val", 60))
+            .filter(.notEquals("?val", 35))
             .execute()
 
         // Should pass: 25, 45, 55 (not 35)
         #expect(result.count == 3)
-        let values = result.bindings.compactMap { $0["?val"] }
+        let values = result.bindings.compactMap { $0.string("?val") }
         #expect(values.contains("25"))
         #expect(values.contains("45"))
         #expect(values.contains("55"))
@@ -287,8 +287,8 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?product", predPrice, "?price")
-            .filter(.greaterThanOrEqual("?price", "100"))
-            .filter(.lessThanOrEqual("?price", "500"))
+            .filter(.greaterThanOrEqual("?price", 100))
+            .filter(.lessThanOrEqual("?price", 500))
             .execute()
 
         // Products in range: Product1 (150), Product2 (250)
@@ -322,7 +322,7 @@ struct ComplexFilterTests {
 
         // P1 and P3 contain "Premium"
         #expect(result.count == 2)
-        let names = result.bindings.compactMap { $0["?name"] }
+        let names = result.bindings.compactMap { $0.string("?name") }
         #expect(names.allSatisfy { $0.contains("Premium") })
     }
 
@@ -352,14 +352,14 @@ struct ComplexFilterTests {
             .defaultIndex()
             .where("?task", pred, "?status")
             .filter(.custom { binding in
-                let status = binding["?status"]
-                return ["active", "pending", "review"].contains(status ?? "")
+                guard let status = binding.string("?status") else { return false }
+                return ["active", "pending", "review"].contains(status)
             })
             .execute()
 
         // Task1, Task3, Task5 should pass
         #expect(result.count == 3)
-        let statuses = result.bindings.compactMap { $0["?status"] }
+        let statuses = result.bindings.compactMap { $0.string("?status") }
         #expect(statuses.contains("active"))
         #expect(statuses.contains("pending"))
         #expect(statuses.contains("review"))
@@ -387,7 +387,7 @@ struct ComplexFilterTests {
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?type"] == "TypeA")
+        #expect(result.bindings.first?.string("?type") == "TypeA")
     }
 
     // MARK: - NOT IN Tests
@@ -416,14 +416,14 @@ struct ComplexFilterTests {
             .defaultIndex()
             .where("?item", pred, "?category")
             .filter(.custom { binding in
-                let category = binding["?category"]
-                return !["deleted", "archived"].contains(category ?? "")
+                guard let category = binding.string("?category") else { return false }
+                return !["deleted", "archived"].contains(category)
             })
             .execute()
 
         // Item1, Item3, Item5 should pass
         #expect(result.count == 3)
-        let categories = result.bindings.compactMap { $0["?category"] }
+        let categories = result.bindings.compactMap { $0.string("?category") }
         #expect(!categories.contains("deleted"))
         #expect(!categories.contains("archived"))
     }
@@ -507,7 +507,7 @@ struct ComplexFilterTests {
             .execute()
 
         #expect(result.count == 2)
-        let names = result.bindings.compactMap { $0["?name"] }
+        let names = result.bindings.compactMap { $0.string("?name") }
         #expect(names.allSatisfy { $0.hasPrefix("Alice") })
     }
 
@@ -562,7 +562,7 @@ struct ComplexFilterTests {
             .execute()
 
         #expect(result.count == 2)
-        let codes = result.bindings.compactMap { $0["?code"] }
+        let codes = result.bindings.compactMap { $0.string("?code") }
         #expect(codes.allSatisfy { $0.hasPrefix("ABC") })
     }
 
@@ -648,7 +648,7 @@ struct ComplexFilterTests {
             .execute()
 
         #expect(result.count == 1)
-        #expect(result.bindings.first?["?note"] == "Some text")
+        #expect(result.bindings.first?.string("?note") == "Some text")
     }
 
     @Test("FILTER with numeric string comparison edge cases")
@@ -673,7 +673,7 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", pred, "?val")
-            .filter(.greaterThan("?val", "5"))
+            .filter(.greaterThan("?val", 5))
             .execute()
 
         // 9, 10, 100 should pass (2 doesn't)
@@ -699,7 +699,7 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", pred, "?score")
-            .filter(.greaterThan("?score", "100"))
+            .filter(.greaterThan("?score", 100))
             .execute()
 
         #expect(result.isEmpty)
@@ -725,7 +725,7 @@ struct ComplexFilterTests {
         let result = try await context.sparql(FilterTestEdge.self)
             .defaultIndex()
             .where("?item", pred, "?val")
-            .filter(.greaterThan("?val", "0"))
+            .filter(.greaterThan("?val", 0))
             .execute()
 
         #expect(result.count == 3)

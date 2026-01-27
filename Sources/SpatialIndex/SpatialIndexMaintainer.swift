@@ -131,38 +131,6 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         return SpatialScanResult(keys: keys, limitReason: limitReason)
     }
 
-    /// Search for items within a radius (legacy API for backwards compatibility)
-    ///
-    /// - Parameters:
-    ///   - latitude: Center latitude
-    ///   - longitude: Center longitude
-    ///   - radiusMeters: Search radius in meters
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys within the radius
-    @available(*, deprecated, message: "Use searchRadius with SpatialScanResult instead")
-    public func searchRadiusLegacy(
-        latitude: Double,
-        longitude: Double,
-        radiusMeters: Double,
-        transaction: any TransactionProtocol
-    ) async throws -> [[any TupleElement]] {
-        let result = try await searchRadius(
-            latitude: latitude,
-            longitude: longitude,
-            radiusMeters: radiusMeters,
-            limit: nil,
-            transaction: transaction
-        )
-
-        return result.keys.map { tuple in
-            var elements: [any TupleElement] = []
-            for i in 0..<tuple.count {
-                if let el = tuple[i] { elements.append(el) }
-            }
-            return elements
-        }
-    }
-
     /// Search for items within a bounding box
     ///
     /// - Parameters:
@@ -204,41 +172,6 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         )
 
         return SpatialScanResult(keys: keys, limitReason: limitReason)
-    }
-
-    /// Search for items within a bounding box (legacy API for backwards compatibility)
-    ///
-    /// - Parameters:
-    ///   - minLat: Minimum latitude
-    ///   - minLon: Minimum longitude
-    ///   - maxLat: Maximum latitude
-    ///   - maxLon: Maximum longitude
-    ///   - transaction: FDB transaction
-    /// - Returns: Array of primary keys within the bounding box
-    @available(*, deprecated, message: "Use searchBoundingBox with SpatialScanResult instead")
-    public func searchBoundingBoxLegacy(
-        minLat: Double,
-        minLon: Double,
-        maxLat: Double,
-        maxLon: Double,
-        transaction: any TransactionProtocol
-    ) async throws -> [[any TupleElement]] {
-        let result = try await searchBoundingBox(
-            minLat: minLat,
-            minLon: minLon,
-            maxLat: maxLat,
-            maxLon: maxLon,
-            limit: nil,
-            transaction: transaction
-        )
-
-        return result.keys.map { tuple in
-            var elements: [any TupleElement] = []
-            for i in 0..<tuple.count {
-                if let el = tuple[i] { elements.append(el) }
-            }
-            return elements
-        }
     }
 
     // MARK: - Private Methods

@@ -249,7 +249,7 @@ extension GraphPattern {
         case .values(_, let bindings):
             return bindings.count
 
-        case .subquery(let query):
+        case .subquery(_):
             // Simplified: just count source complexity
             return 10
 

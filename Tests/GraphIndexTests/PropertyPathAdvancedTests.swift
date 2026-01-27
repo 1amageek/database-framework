@@ -126,7 +126,7 @@ struct PropertyPathAdvancedTests {
 
         // Should only find targets via likes and worksWith
         #expect(result.count == 2)
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         #expect(targets.contains(dave))  // via likes
         #expect(targets.contains(bob))   // via worksWith
     }
@@ -191,7 +191,7 @@ struct PropertyPathAdvancedTests {
 
         // Filter out Alice (won't appear with + anyway, but test the path)
         #expect(result.count == 2)
-        let ancestors = result.bindings.compactMap { $0["?ancestor"] }
+        let ancestors = result.bindings.compactMap { $0.string("?ancestor") }
         #expect(!ancestors.contains(alice))
         #expect(ancestors.contains(bob))
         #expect(ancestors.contains(carol))
@@ -234,7 +234,7 @@ struct PropertyPathAdvancedTests {
             .execute()
 
         // Zero-or-more includes N1 itself
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         #expect(targets.contains(n1))  // Zero repetitions
         // After one iteration of (a/b+), we reach N3 or N4 depending on how b+ is interpreted
     }
@@ -270,7 +270,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(n0, path: .oneOrMore(.iri(linkPred)), "?target")
             .execute()
 
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         // Should find all reachable nodes
         #expect(targets.contains(n1))
         #expect(targets.contains(n2))
@@ -313,7 +313,7 @@ struct PropertyPathAdvancedTests {
         // With cycle detection, should visit each node at most once
         // N2 at depth 1, N3 at depth 2, N1 at depth 3 (cycle back to start)
         // Each unique node should appear
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         #expect(targets.contains(n2))
         #expect(targets.contains(n3))
         #expect(targets.contains(n1))  // Can reach N1 via cycle
@@ -379,7 +379,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(root, path: .inverse(.oneOrMore(.iri(parentPred))), "?descendant")
             .execute()
 
-        let descendants = result.bindings.compactMap { $0["?descendant"] }
+        let descendants = result.bindings.compactMap { $0.string("?descendant") }
         #expect(descendants.contains(child1))
         #expect(descendants.contains(child2))
         #expect(descendants.contains(grandchild))
@@ -410,7 +410,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(alice, path: .inverse(.zeroOrMore(.iri(knowsPred))), "?person")
             .execute()
 
-        let persons = result.bindings.compactMap { $0["?person"] }
+        let persons = result.bindings.compactMap { $0.string("?person") }
         // Zero hops: Alice itself
         // One hop inverse: Bob (Bob knows Alice)
         // Two hops inverse: Carol (Carol knows Bob knows Alice)
@@ -459,7 +459,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(start, path: path, "?end")
             .execute()
 
-        let ends = result.bindings.compactMap { $0["?end"] }
+        let ends = result.bindings.compactMap { $0.string("?end") }
         #expect(ends.contains(end1))  // via a/c
         #expect(ends.contains(end2))  // via b/d
     }
@@ -502,7 +502,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(start, path: path, "?end")
             .execute()
 
-        let ends = result.bindings.compactMap { $0["?end"] }
+        let ends = result.bindings.compactMap { $0.string("?end") }
         #expect(ends.contains(end1))  // via a/b
         #expect(ends.contains(end2))  // via c/d
     }
@@ -531,7 +531,7 @@ struct PropertyPathAdvancedTests {
             .execute()
 
         // Should include node itself (zero hops)
-        let targets = result.bindings.compactMap { $0["?target"] }
+        let targets = result.bindings.compactMap { $0.string("?target") }
         #expect(targets.contains(node))
     }
 
@@ -556,7 +556,7 @@ struct PropertyPathAdvancedTests {
             .wherePath(node, path: .zeroOrMore(.iri(linkPred)), "?x")
             .execute()
 
-        let targets = result.bindings.compactMap { $0["?x"] }
+        let targets = result.bindings.compactMap { $0.string("?x") }
         #expect(targets.contains(node))    // Zero hops
         #expect(targets.contains(target))  // One hop
     }
@@ -595,8 +595,10 @@ struct PropertyPathAdvancedTests {
 
         let elapsed = CFAbsoluteTimeGetCurrent() - startTime
 
-        // Should find 99 descendants (all except root)
-        #expect(result.count == 99)
+        // Should find 100 descendants (all except root)
+        // Binary tree: parents 0-49 have children 2i+1, 2i+2. Max child = 2*49+2 = 100.
+        // Total distinct nodes: 0-100 = 101 nodes. oneOrMore excludes root → 100 results.
+        #expect(result.count == 100)
 
         // Performance sanity check (should complete in reasonable time)
         #expect(elapsed < 30.0)  // 30 seconds max
@@ -714,6 +716,49 @@ struct PropertyPathAdvancedTests {
         // Non-inverse paths stay the same
         let sequence = PropertyPath.sequence(.iri("a"), .iri("b"))
         #expect(sequence.normalized() == sequence)
+
+        // Alternative flattening: left-associative → right-associative
+        // (a|b)|c should normalize to a|(b|c)
+        let leftAssoc = PropertyPath.alternative(
+            .alternative(.iri("a"), .iri("b")),
+            .iri("c")
+        )
+        let rightAssoc = PropertyPath.alternative(
+            .iri("a"),
+            .alternative(.iri("b"), .iri("c"))
+        )
+        #expect(leftAssoc.normalized() == rightAssoc)
+
+        // Nested alternatives: ((a|b)|(c|d)) → a|(b|(c|d))
+        let nested = PropertyPath.alternative(
+            .alternative(.iri("a"), .iri("b")),
+            .alternative(.iri("c"), .iri("d"))
+        )
+        let nestedExpected = PropertyPath.alternative(
+            .iri("a"),
+            .alternative(
+                .iri("b"),
+                .alternative(.iri("c"), .iri("d"))
+            )
+        )
+        #expect(nested.normalized() == nestedExpected)
+
+        // Already right-associative stays the same
+        let alreadyRight = PropertyPath.alternative(
+            .iri("x"),
+            .alternative(.iri("y"), .iri("z"))
+        )
+        #expect(alreadyRight.normalized() == alreadyRight)
+
+        // Inverse over sequence: ^(a/b) = (^b)/(^a)
+        let inverseSeq = PropertyPath.inverse(.sequence(.iri("a"), .iri("b")))
+        let expectedInverseSeq = PropertyPath.sequence(.inverse(.iri("b")), .inverse(.iri("a")))
+        #expect(inverseSeq.normalized() == expectedInverseSeq)
+
+        // Inverse over alternative: ^(a|b) = (^a)|(^b)
+        let inverseAlt = PropertyPath.inverse(.alternative(.iri("a"), .iri("b")))
+        let expectedInverseAlt = PropertyPath.alternative(.inverse(.iri("a")), .inverse(.iri("b")))
+        #expect(inverseAlt.normalized() == expectedInverseAlt)
     }
 
     @Test("PropertyPath allIRIs extraction")

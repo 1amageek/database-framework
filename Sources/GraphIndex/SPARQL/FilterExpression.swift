@@ -4,16 +4,21 @@
 // Represents filter conditions that can be applied to bindings.
 
 import Foundation
+import Core
 
 /// Filter expression for FILTER clauses
 ///
 /// **Design**: Recursive expression tree supporting common SPARQL filter operations.
 /// Expressions are evaluated against a VariableBinding to produce a boolean result.
+/// Comparison operators use `FieldValue` for type-safe numeric and string comparisons.
 ///
 /// **Usage**:
 /// ```swift
-/// // Simple equality
-/// let filter = FilterExpression.equals("?age", "18")
+/// // Numeric comparison (uses FieldValue's Comparable)
+/// let filter = FilterExpression.greaterThan("?age", 18)
+///
+/// // String equality
+/// let filter = FilterExpression.equals("?name", "Alice")
 ///
 /// // Compound expression
 /// let filter = FilterExpression.and(
@@ -33,23 +38,23 @@ public indirect enum FilterExpression: Sendable {
 
     // MARK: - Comparison
 
-    /// Variable equals value: ?var == "value"
-    case equals(String, String)
+    /// Variable equals value: ?var == value
+    case equals(String, FieldValue)
 
-    /// Variable not equals value: ?var != "value"
-    case notEquals(String, String)
+    /// Variable not equals value: ?var != value
+    case notEquals(String, FieldValue)
 
-    /// Variable less than value: ?var < "value" (string comparison)
-    case lessThan(String, String)
+    /// Variable less than value: ?var < value (uses FieldValue.Comparable)
+    case lessThan(String, FieldValue)
 
-    /// Variable less than or equal: ?var <= "value"
-    case lessThanOrEqual(String, String)
+    /// Variable less than or equal: ?var <= value (uses FieldValue.Comparable)
+    case lessThanOrEqual(String, FieldValue)
 
-    /// Variable greater than: ?var > "value"
-    case greaterThan(String, String)
+    /// Variable greater than: ?var > value (uses FieldValue.Comparable)
+    case greaterThan(String, FieldValue)
 
-    /// Variable greater than or equal: ?var >= "value"
-    case greaterThanOrEqual(String, String)
+    /// Variable greater than or equal: ?var >= value (uses FieldValue.Comparable)
+    case greaterThanOrEqual(String, FieldValue)
 
     // MARK: - Variable Comparison
 
@@ -116,40 +121,54 @@ public indirect enum FilterExpression: Sendable {
     /// - Returns: `true` if the filter matches, `false` otherwise
     public func evaluate(_ binding: VariableBinding) -> Bool {
         switch self {
-        // Comparison with literal
+        // Comparison with literal value
         // SPARQL semantics: unbound variables evaluate to false in comparisons
+        // Numeric promotion: string values are coerced to numeric when compared
+        // against numeric values (SPARQL 1.1, Section 17.3 Operator Mapping)
         case .equals(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v == value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            return lhs == rhs
 
         case .notEquals(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v != value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            return lhs != rhs
 
         case .lessThan(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v < value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            guard let cmp = lhs.compare(to: rhs) else { return false }
+            return cmp == .orderedAscending
 
         case .lessThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v <= value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            guard let cmp = lhs.compare(to: rhs) else { return false }
+            return cmp != .orderedDescending
 
         case .greaterThan(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v > value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            guard let cmp = lhs.compare(to: rhs) else { return false }
+            return cmp == .orderedDescending
 
         case .greaterThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
-            return v >= value
+            let (lhs, rhs) = Self.numericPromote(v, value)
+            guard let cmp = lhs.compare(to: rhs) else { return false }
+            return cmp != .orderedAscending
 
-        // Variable comparison
+        // Variable comparison — also applies numeric promotion
         case .variableEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
-            return v1 == v2
+            let (lhs, rhs) = Self.numericPromote(v1, v2)
+            return lhs == rhs
 
         case .variableNotEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
-            return v1 != v2
+            let (lhs, rhs) = Self.numericPromote(v1, v2)
+            return lhs != rhs
 
         // Bound check
         case .bound(let variable):
@@ -158,25 +177,25 @@ public indirect enum FilterExpression: Sendable {
         case .notBound(let variable):
             return !binding.isBound(variable)
 
-        // String operations
+        // String operations — extract string representation from FieldValue
         case .regex(let variable, let pattern):
-            guard let value = binding[variable] else { return false }
+            guard let value = binding.string(variable) else { return false }
             return matchesRegex(value, pattern: pattern, flags: "")
 
         case .regexWithFlags(let variable, let pattern, let flags):
-            guard let value = binding[variable] else { return false }
+            guard let value = binding.string(variable) else { return false }
             return matchesRegex(value, pattern: pattern, flags: flags)
 
         case .contains(let variable, let substring):
-            guard let value = binding[variable] else { return false }
+            guard let value = binding.string(variable) else { return false }
             return value.contains(substring)
 
         case .startsWith(let variable, let prefix):
-            guard let value = binding[variable] else { return false }
+            guard let value = binding.string(variable) else { return false }
             return value.hasPrefix(prefix)
 
         case .endsWith(let variable, let suffix):
-            guard let value = binding[variable] else { return false }
+            guard let value = binding.string(variable) else { return false }
             return value.hasSuffix(suffix)
 
         // Logical operations
@@ -199,6 +218,38 @@ public indirect enum FilterExpression: Sendable {
         case .alwaysFalse:
             return false
         }
+    }
+
+    // MARK: - Numeric Promotion
+
+    /// Promote string values to numeric when comparing against numeric values
+    ///
+    /// SPARQL semantics: When comparing values of different types,
+    /// string values that represent numbers can be promoted to numeric types.
+    /// This happens at the operation boundary, not at storage time,
+    /// preserving the original type in the binding.
+    ///
+    /// Reference: SPARQL 1.1, Section 17.3 (Operator Mapping)
+    private static func numericPromote(_ lhs: FieldValue, _ rhs: FieldValue) -> (FieldValue, FieldValue) {
+        switch (lhs, rhs) {
+        case (.string(let s), _) where rhs.isNumeric:
+            if let promoted = parseNumeric(s) { return (promoted, rhs) }
+        case (_, .string(let s)) where lhs.isNumeric:
+            if let promoted = parseNumeric(s) { return (lhs, promoted) }
+        default:
+            break
+        }
+        return (lhs, rhs)
+    }
+
+    /// Parse a string as a numeric FieldValue
+    ///
+    /// Tries Int64 first (for exact integer representation),
+    /// then Double (for floating-point). Rejects non-finite values.
+    private static func parseNumeric(_ s: String) -> FieldValue? {
+        if let i = Int64(s) { return .int64(i) }
+        if let d = Double(s), d.isFinite { return .double(d) }
+        return nil
     }
 
     // MARK: - Helpers
@@ -274,17 +325,15 @@ extension FilterExpression {
     ///   - value: Numeric value to compare against
     /// - Returns: Filter expression for numeric comparison
     public static func numeric(_ variable: String, _ op: String, _ value: Int) -> FilterExpression {
-        .custom { binding in
-            guard let v = binding.int(variable) else { return false }
-            switch op {
-            case "<": return v < value
-            case "<=": return v <= value
-            case ">": return v > value
-            case ">=": return v >= value
-            case "==", "=": return v == value
-            case "!=", "<>": return v != value
-            default: return false
-            }
+        let fieldValue = FieldValue.int64(Int64(value))
+        switch op {
+        case "<": return .lessThan(variable, fieldValue)
+        case "<=": return .lessThanOrEqual(variable, fieldValue)
+        case ">": return .greaterThan(variable, fieldValue)
+        case ">=": return .greaterThanOrEqual(variable, fieldValue)
+        case "==", "=": return .equals(variable, fieldValue)
+        case "!=", "<>": return .notEquals(variable, fieldValue)
+        default: return .alwaysFalse
         }
     }
 }
@@ -295,17 +344,17 @@ extension FilterExpression: CustomStringConvertible {
     public var description: String {
         switch self {
         case .equals(let v, let val):
-            return "\(v) = \"\(val)\""
+            return "\(v) = \(val)"
         case .notEquals(let v, let val):
-            return "\(v) != \"\(val)\""
+            return "\(v) != \(val)"
         case .lessThan(let v, let val):
-            return "\(v) < \"\(val)\""
+            return "\(v) < \(val)"
         case .lessThanOrEqual(let v, let val):
-            return "\(v) <= \"\(val)\""
+            return "\(v) <= \(val)"
         case .greaterThan(let v, let val):
-            return "\(v) > \"\(val)\""
+            return "\(v) > \(val)"
         case .greaterThanOrEqual(let v, let val):
-            return "\(v) >= \"\(val)\""
+            return "\(v) >= \(val)"
         case .variableEquals(let v1, let v2):
             return "\(v1) = \(v2)"
         case .variableNotEquals(let v1, let v2):

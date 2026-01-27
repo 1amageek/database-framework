@@ -263,10 +263,9 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 transaction: transaction
             )
         case .phrase:
-            // For phrase search, join terms and search as AND first, then verify positions
-            matchingIds = try await searchTermsAND(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
+            // Position-verified phrase search via FullTextIndexMaintainer.searchPhrase()
+            matchingIds = try await searchPhraseIds(
+                indexSubspace: indexSubspace,
                 transaction: transaction
             )
         }
@@ -438,6 +437,48 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         return results
     }
 
+    // MARK: - Phrase Search
+
+    /// Search for exact phrase matches using position-verified matching
+    ///
+    /// Creates a `FullTextIndexMaintainer` and delegates to `searchPhrase()`,
+    /// which verifies term positions form a consecutive sequence.
+    /// Requires `storePositions=true` on the index — throws
+    /// `FullTextIndexError.invalidQuery` otherwise.
+    private func searchPhraseIds(
+        indexSubspace: Subspace,
+        transaction: any TransactionProtocol
+    ) async throws -> [[any TupleElement]] {
+        guard let descriptor = findIndexDescriptor(),
+              let kind = descriptor.kind as? FullTextIndexKind<T> else {
+            throw FusionQueryError.indexNotFound(
+                type: T.persistableType,
+                field: fieldName,
+                kind: "fulltext"
+            )
+        }
+
+        let index = Index(
+            name: descriptor.name,
+            kind: kind,
+            rootExpression: FieldKeyExpression(fieldName: self.fieldName),
+            keyPaths: descriptor.keyPaths
+        )
+
+        let maintainer = FullTextIndexMaintainer<T>(
+            index: index,
+            tokenizer: kind.tokenizer,
+            storePositions: kind.storePositions,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        let phraseString = searchTerms.joined(separator: " ")
+        return try await maintainer.searchPhrase(phraseString, transaction: transaction)
+    }
+
     // MARK: - BM25 Scoring
 
     private struct BM25Stats {
@@ -510,8 +551,9 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         for (term, tf) in termFrequencies {
             let df = documentFrequencies[term] ?? 0
 
-            // IDF = ln((N - df + 0.5) / (df + 0.5) + 1)
-            let idf = log((Double(stats.totalDocuments) - Double(df) + 0.5) / (Double(df) + 0.5) + 1.0)
+            // Standard BM25 IDF: log((N - df + 0.5) / (df + 0.5))
+            // Reference: Robertson & Zaragoza (2009), "The Probabilistic Relevance Framework: BM25 and Beyond"
+            let idf = log((Double(stats.totalDocuments) - Double(df) + 0.5) / (Double(df) + 0.5))
 
             // TF component with length normalization
             let tfDouble = Double(tf)

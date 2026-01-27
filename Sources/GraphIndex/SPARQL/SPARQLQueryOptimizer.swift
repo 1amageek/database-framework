@@ -499,9 +499,9 @@ public struct SPARQLQueryOptimizer: Sendable {
             (pattern.object.variableName.map { boundVars.contains($0) } ?? false)
 
         return TriplePattern(
-            subject: subjectBound ? .value("_bound_") : pattern.subject,
-            predicate: predicateBound ? .value("_bound_") : pattern.predicate,
-            object: objectBound ? .value("_bound_") : pattern.object
+            subject: subjectBound ? .value(.string("_bound_")) : pattern.subject,
+            predicate: predicateBound ? .value(.string("_bound_")) : pattern.predicate,
+            object: objectBound ? .value(.string("_bound_")) : pattern.object
         )
     }
 
@@ -596,11 +596,11 @@ public struct QueryStatistics: Sendable {
 
         // Get predicate-specific stats if predicate is bound
         let predStats: (count: Int, subjects: Int, objects: Int)?
-        if case .value(let pred) = pattern.predicate {
+        if case .value(let pred) = pattern.predicate, case .string(let predStr) = pred {
             predStats = (
-                predicateCounts[pred] ?? totalTriples / max(1, distinctPredicates),
-                predicateSubjectCounts[pred] ?? distinctSubjects / 10,
-                predicateObjectCounts[pred] ?? distinctObjects / 10
+                predicateCounts[predStr] ?? totalTriples / max(1, distinctPredicates),
+                predicateSubjectCounts[predStr] ?? distinctSubjects / 10,
+                predicateObjectCounts[predStr] ?? distinctObjects / 10
             )
         } else {
             predStats = nil

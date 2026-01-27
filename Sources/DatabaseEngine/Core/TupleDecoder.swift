@@ -167,7 +167,6 @@ public struct TupleDecoder: Sendable {
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeData(_ element: any TupleElement) throws -> Data {
         if let v = element as? [UInt8] { return Data(v) }
-        if let v = element as? Data { return v }
         throw TupleDecodingError.typeMismatch(expected: "Data", actual: String(describing: type(of: element)))
     }
 
@@ -178,7 +177,6 @@ public struct TupleDecoder: Sendable {
     /// - Throws: TupleDecodingError on type mismatch
     public static func decodeBytes(_ element: any TupleElement) throws -> [UInt8] {
         if let v = element as? [UInt8] { return v }
-        if let v = element as? Data { return Array(v) }
         throw TupleDecodingError.typeMismatch(expected: "[UInt8]", actual: String(describing: type(of: element)))
     }
 

@@ -118,8 +118,10 @@ public indirect enum PropertyPath: Sendable, Hashable {
             return p1.isRecursive || p2.isRecursive
         case .alternative(let p1, let p2):
             return p1.isRecursive || p2.isRecursive
-        case .zeroOrMore, .oneOrMore, .zeroOrOne:
+        case .zeroOrMore, .oneOrMore:
             return true
+        case .zeroOrOne:
+            return false
         }
     }
 
@@ -159,9 +161,9 @@ public indirect enum PropertyPath: Sendable, Hashable {
         case .negatedPropertySet:
             return 10  // Requires scanning all edges
         case .inverse(let path):
-            return path.complexityEstimate  // Same as forward with different index
+            return path.complexityEstimate + 1  // Requires reverse index lookup
         case .sequence(let p1, let p2):
-            return p1.complexityEstimate * p2.complexityEstimate
+            return p1.complexityEstimate + p2.complexityEstimate
         case .alternative(let p1, let p2):
             return p1.complexityEstimate + p2.complexityEstimate
         case .zeroOrMore(let path), .oneOrMore(let path):
@@ -185,11 +187,20 @@ public indirect enum PropertyPath: Sendable, Hashable {
             return self
 
         case .inverse(let inner):
-            // ^^p = p
-            if case .inverse(let innerInner) = inner {
-                return innerInner.normalized()
+            let norm = inner.normalized()
+            switch norm {
+            case .inverse(let p):
+                // ^^p = p — double inverse cancels
+                return p
+            case .sequence(let p1, let p2):
+                // ^(p1/p2) = (^p2)/(^p1) — SPARQL 1.1 Section 18.4
+                return .sequence(.inverse(p2).normalized(), .inverse(p1).normalized())
+            case .alternative(let p1, let p2):
+                // ^(p1|p2) = (^p1)|(^p2) — distribute inverse over alternative
+                return .alternative(.inverse(p1).normalized(), .inverse(p2).normalized())
+            default:
+                return .inverse(norm)
             }
-            return .inverse(inner.normalized())
 
         case .sequence(let p1, let p2):
             return PropertyPath.sequence(p1.normalized(), p2.normalized())
@@ -214,8 +225,8 @@ public indirect enum PropertyPath: Sendable, Hashable {
             }
 
             // Rebuild as right-associative chain
-            return alternatives.dropFirst().reduce(alternatives.first!) { acc, next in
-                PropertyPath.alternative(acc, next)
+            return alternatives.dropLast().reversed().reduce(alternatives.last!) { acc, next in
+                PropertyPath.alternative(next, acc)
             }
 
         case .zeroOrMore(let path):
@@ -328,7 +339,7 @@ extension PropertyPath {
 public struct PropertyPathConfiguration: Sendable {
     /// Maximum depth for recursive paths (zeroOrMore, oneOrMore)
     ///
-    /// Default is 10 to prevent infinite loops and memory exhaustion.
+    /// Default is 100 to prevent infinite loops and memory exhaustion.
     public var maxDepth: Int
 
     /// Whether to detect and avoid cycles
@@ -344,13 +355,13 @@ public struct PropertyPathConfiguration: Sendable {
 
     /// Default configuration
     public static let `default` = PropertyPathConfiguration(
-        maxDepth: 10,
+        maxDepth: 100,
         detectCycles: true,
         maxResults: 10000
     )
 
     public init(
-        maxDepth: Int = 10,
+        maxDepth: Int = 100,
         detectCycles: Bool = true,
         maxResults: Int = 10000
     ) {

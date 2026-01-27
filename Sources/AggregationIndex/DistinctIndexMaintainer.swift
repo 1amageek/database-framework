@@ -60,10 +60,6 @@ extension DistinctIndexKind: AggregationIndexKindProtocol {
 /// - Add-only: Deleting an item does NOT decrease the cardinality
 /// - Approximate: Results are estimates with ~0.81% error
 /// - Memory: ~16KB per group (fixed precision=14)
-///
-/// **Note**: The precision parameter in DistinctIndexKind is accepted for API
-/// compatibility but Core.HyperLogLog uses fixed precision=14. The actual
-/// error rate is always ~0.81%.
 public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer, GroupingKeySupport {
     // MARK: - Constants
 
@@ -78,23 +74,17 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public let subspace: Subspace
     public let idExpression: KeyExpression
 
-    /// User-specified precision (stored for API compatibility, but not used)
-    /// Core.HyperLogLog uses fixed precision=14
-    @available(*, deprecated, message: "Core.HyperLogLog uses fixed precision=14")
-    private let precision: Int
-
     // MARK: - Initialization
 
     public init(
         index: Index,
         subspace: Subspace,
         idExpression: KeyExpression,
-        precision: Int
+        precision _: Int
     ) {
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
-        self.precision = precision
     }
 
     // MARK: - IndexMaintainer
