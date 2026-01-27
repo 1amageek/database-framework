@@ -777,7 +777,8 @@ public struct MigrationContext: Sendable {
             rootExpression: keyExpression,
             keyPaths: descriptor.keyPaths,  // Preserve for direct KeyPath extraction
             subspaceKey: descriptor.name,
-            itemTypes: itemTypes  // Scoped to specific entity
+            itemTypes: itemTypes,  // Scoped to specific entity
+            storedFieldNames: descriptor.storedFieldNames
         )
     }
 }

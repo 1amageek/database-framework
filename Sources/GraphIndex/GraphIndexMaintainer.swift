@@ -117,8 +117,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Add new index entries
         if let newItem = newItem {
             let keys = try buildIndexKeys(for: newItem)
+            let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
             for key in keys {
-                transaction.setValue([], for: key)
+                transaction.setValue(value, for: key)
             }
         }
     }
@@ -135,8 +136,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         let keys = try buildIndexKeys(for: item)
+        let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
         for key in keys {
-            transaction.setValue([], for: key)
+            transaction.setValue(value, for: key)
         }
     }
 

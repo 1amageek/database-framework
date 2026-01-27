@@ -63,6 +63,12 @@ public struct Index: @unchecked Sendable {
     /// **Reference**: FDB Record Layer unique index constraint
     public let isUnique: Bool
 
+    /// Field names stored in the index entry's main value bytes
+    ///
+    /// When non-empty, the index maintainer writes these field values
+    /// directly into the index entry value, enabling index-only scans.
+    public let storedFieldNames: [String]
+
     // MARK: - Initialization
 
     /// Initialize an index with KeyExpression only (legacy compatibility)
@@ -80,7 +86,8 @@ public struct Index: @unchecked Sendable {
         rootExpression: KeyExpression,
         subspaceKey: String? = nil,
         itemTypes: Set<String>? = nil,
-        isUnique: Bool = false
+        isUnique: Bool = false,
+        storedFieldNames: [String] = []
     ) {
         self.name = name
         self.kind = kind
@@ -89,6 +96,7 @@ public struct Index: @unchecked Sendable {
         self.subspaceKey = subspaceKey ?? name
         self.itemTypes = itemTypes
         self.isUnique = isUnique
+        self.storedFieldNames = storedFieldNames
     }
 
     /// Initialize an index with both KeyExpression and KeyPaths (optimized)
@@ -104,6 +112,7 @@ public struct Index: @unchecked Sendable {
     ///   - subspaceKey: Optional subspace key (defaults to name)
     ///   - itemTypes: Optional set of item type names this index applies to (nil = universal)
     ///   - isUnique: Whether this index enforces uniqueness (default: false)
+    ///   - storedFieldNames: Field names for covering index suffix subkey (default: empty)
     public init(
         name: String,
         kind: any IndexKind,
@@ -111,7 +120,8 @@ public struct Index: @unchecked Sendable {
         keyPaths: [AnyKeyPath],
         subspaceKey: String? = nil,
         itemTypes: Set<String>? = nil,
-        isUnique: Bool = false
+        isUnique: Bool = false,
+        storedFieldNames: [String] = []
     ) {
         self.name = name
         self.kind = kind
@@ -120,5 +130,6 @@ public struct Index: @unchecked Sendable {
         self.subspaceKey = subspaceKey ?? name
         self.itemTypes = itemTypes
         self.isUnique = isUnique
+        self.storedFieldNames = storedFieldNames
     }
 }

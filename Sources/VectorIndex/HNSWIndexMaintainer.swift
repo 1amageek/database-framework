@@ -159,7 +159,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             do {
                 let primaryKey = try DataAccess.extractId(from: newItem, using: idExpression)
                 let vector = try extractVector(from: newItem)
-                try await insertVector(primaryKey: primaryKey, vector: vector, transaction: transaction)
+                try await insertVector(primaryKey: primaryKey, vector: vector, item: newItem, transaction: transaction)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil vector is not indexed
             }
@@ -174,7 +174,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Sparse index: if vector field is nil, skip indexing
         do {
             let vector = try extractVector(from: item)
-            try await insertVector(primaryKey: id, vector: vector, transaction: transaction)
+            try await insertVector(primaryKey: id, vector: vector, item: item, transaction: transaction)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil vector is not indexed
         }
@@ -197,6 +197,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func insertVector(
         primaryKey: Tuple,
         vector: [Float],
+        item: Item,
         transaction: any TransactionProtocol
     ) async throws {
         // Get or create label for this primary key

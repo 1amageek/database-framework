@@ -96,7 +96,8 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         // Add new score entry
         if let newItem = newItem {
             if let newKey = try buildScoreKey(for: newItem) {
-                transaction.setValue([], for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+                transaction.setValue(value, for: newKey)
                 // Increment count atomically
                 let incrementBytes = ByteConversion.int64ToBytes(1)
                 transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
@@ -111,7 +112,8 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         transaction: any TransactionProtocol
     ) async throws {
         if let scoreKey = try buildScoreKey(for: item, id: id) {
-            transaction.setValue([], for: scoreKey)
+            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+            transaction.setValue(value, for: scoreKey)
             // Increment count atomically
             let incrementBytes = ByteConversion.int64ToBytes(1)
             transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)

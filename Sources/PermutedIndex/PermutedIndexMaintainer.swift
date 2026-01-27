@@ -81,7 +81,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         // Add new permuted entry
         if let newItem = newItem {
             if let newKey = try buildPermutedKey(for: newItem) {
-                transaction.setValue([], for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+                transaction.setValue(value, for: newKey)
             }
         }
     }
@@ -93,7 +94,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         transaction: any TransactionProtocol
     ) async throws {
         if let key = try buildPermutedKey(for: item, id: id) {
-            transaction.setValue([], for: key)
+            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+            transaction.setValue(value, for: key)
         }
     }
 

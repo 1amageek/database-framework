@@ -112,7 +112,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
             do {
                 let newId = try DataAccess.extractId(from: newItem, using: idExpression)
                 let vector = try extractVector(from: newItem)
-                try await addEntry(id: newId, vector: vector, transaction: transaction)
+                try await addEntry(id: newId, vector: vector, item: newItem, transaction: transaction)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil vector is not indexed
             }
@@ -126,7 +126,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws {
         do {
             let vector = try extractVector(from: item)
-            try await addEntry(id: id, vector: vector, transaction: transaction)
+            try await addEntry(id: id, vector: vector, item: item, transaction: transaction)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index
         }
@@ -285,6 +285,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func addEntry(
         id: Tuple,
         vector: [Float],
+        item: Item,
         transaction: any TransactionProtocol
     ) async throws {
         // Store original vector (for retraining)

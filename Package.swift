@@ -166,6 +166,9 @@ let package = Package(
         .target(
             name: "Database",
             dependencies: [
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
                 "DatabaseEngine",
                 "ScalarIndex",
                 "VectorIndex",

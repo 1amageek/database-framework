@@ -272,7 +272,8 @@ internal final class IndexMaintenanceService: Sendable {
             keyPaths: descriptor.keyPaths,
             subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
-            isUnique: descriptor.isUnique
+            isUnique: descriptor.isUnique,
+            storedFieldNames: descriptor.storedFieldNames
         )
     }
 

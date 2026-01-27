@@ -131,12 +131,13 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         switch (oldPK, newPK) {
         case (nil, let pk?):
             // Insert
-            if let score = newScore {
+            if let score = newScore, let item = newItem {
                 try await insertEntry(
                     pk: pk,
                     score: score,
                     grouping: newGroup ?? [],
                     windowId: currentWindowId,
+                    item: item,
                     transaction: transaction
                 )
             }
@@ -152,24 +153,26 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
             if oldPKBytes == newPKBytes {
                 // Same record
-                if let newScore = newScore {
+                if let newScore = newScore, let item = newItem {
                     try await updateEntry(
                         pk: oldPK,
                         newScore: newScore,
                         newGrouping: newGroup ?? [],
                         currentWindowId: currentWindowId,
+                        item: item,
                         transaction: transaction
                     )
                 }
             } else {
                 // Primary key changed (unusual)
                 try await deleteEntry(pk: oldPK, transaction: transaction)
-                if let score = newScore {
+                if let score = newScore, let item = newItem {
                     try await insertEntry(
                         pk: newPK,
                         score: score,
                         grouping: newGroup ?? [],
                         windowId: currentWindowId,
+                        item: item,
                         transaction: transaction
                     )
                 }
@@ -210,6 +213,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             score: score,
             grouping: grouping,
             windowId: currentWindowId,
+            item: item,
             transaction: transaction
         )
     }
@@ -330,6 +334,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         score: Int64,
         grouping: [any TupleElement],
         windowId: Int64,
+        item: Item,
         transaction: any TransactionProtocol
     ) async throws {
         // Create window entry
@@ -339,7 +344,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             score: score,
             pk: pk
         )
-        transaction.setValue([], for: entryKey)
+        let entryValue = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+        transaction.setValue(entryValue, for: entryKey)
 
         // Save position for updates
         let posKey = posSubspace.pack(pk)
@@ -394,6 +400,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         newScore: Int64,
         newGrouping: [any TupleElement],
         currentWindowId: Int64,
+        item: Item,
         transaction: any TransactionProtocol
     ) async throws {
         // Get current position
@@ -426,6 +433,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             score: newScore,
             grouping: newGrouping,
             windowId: currentWindowId,
+            item: item,
             transaction: transaction
         )
     }

@@ -4,6 +4,12 @@
 // This module re-exports all Database modules for convenience.
 // For better build performance, consider importing individual modules instead.
 
+// database-kit (client-safe model definitions)
+@_exported import Core
+@_exported import Graph
+@_exported import Relationship
+
+// database-framework (server-side execution layer)
 @_exported import DatabaseEngine
 @_exported import ScalarIndex
 @_exported import VectorIndex

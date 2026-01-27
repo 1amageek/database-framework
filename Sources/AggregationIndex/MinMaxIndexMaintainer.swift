@@ -63,7 +63,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         if let newItem = newItem {
             do {
                 let newKey = try buildIndexKey(for: newItem)
-                transaction.setValue([], for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+                transaction.setValue(value, for: newKey)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil value is not indexed
             }
@@ -78,7 +79,8 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         // Sparse index: if value field is nil, skip indexing
         do {
             let indexKey = try buildIndexKey(for: item, id: id)
-            transaction.setValue([], for: indexKey)
+            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+            transaction.setValue(value, for: indexKey)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil value is not indexed
         }
@@ -205,7 +207,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         if let newItem = newItem {
             do {
                 let newKey = try buildIndexKey(for: newItem)
-                transaction.setValue([], for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+                transaction.setValue(value, for: newKey)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil value is not indexed
             }
@@ -220,7 +223,8 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         // Sparse index: if value field is nil, skip indexing
         do {
             let indexKey = try buildIndexKey(for: item, id: id)
-            transaction.setValue([], for: indexKey)
+            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+            transaction.setValue(value, for: indexKey)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil value is not indexed
         }

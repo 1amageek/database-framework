@@ -348,7 +348,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             keyPaths: descriptor.keyPaths,
             subspaceKey: descriptor.name,
             itemTypes: Set([persistableType]),
-            isUnique: descriptor.isUnique
+            isUnique: descriptor.isUnique,
+            storedFieldNames: descriptor.storedFieldNames
         )
     }
 

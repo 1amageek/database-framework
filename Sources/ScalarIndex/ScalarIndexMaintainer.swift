@@ -113,7 +113,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Add new index entries
         if let newItem = newItem {
             let newKeys = try buildIndexKeys(for: newItem)
-            let value = try buildCoveringValue(for: newItem)
+            let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
             for key in newKeys {
                 transaction.setValue(value, for: key)
             }
@@ -132,7 +132,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction: any TransactionProtocol
     ) async throws {
         let keys = try buildIndexKeys(for: item, id: id)
-        let value = try buildCoveringValue(for: item)
+        let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
         for key in keys {
             transaction.setValue(value, for: key)
         }
@@ -256,52 +256,4 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
     }
 
-    /// Build covering index value for an item
-    ///
-    /// If the index has `storedFieldNames` (covering index), extracts those
-    /// field values and packs them into a Tuple. For non-covering indexes,
-    /// returns an empty value.
-    ///
-    /// **Covering Index Value Format**:
-    /// - Non-covering: `[]` (empty)
-    /// - Covering: `Tuple(field1Value, field2Value, ...)` packed as bytes
-    ///
-    /// **Example**:
-    /// ```swift
-    /// // Index on [\.category] with storedFields: [\.name, \.price]
-    /// // Item: Product(category: "electronics", name: "Laptop", price: 999)
-    /// // Value: Tuple("Laptop", 999) packed as bytes
-    /// ```
-    private func buildCoveringValue(for item: Item) throws -> [UInt8] {
-        // Check if this is a covering index
-        guard let coveringKind = index.kind as? any CoveringIndexKind else {
-            return []
-        }
-
-        let storedFieldNames = coveringKind.storedFieldNames
-        if storedFieldNames.isEmpty {
-            return []
-        }
-
-        // Extract stored field values using dynamicMember subscript
-        var storedElements: [any TupleElement] = []
-        for fieldName in storedFieldNames {
-            if let rawValue = item[dynamicMember: fieldName] {
-                if let tupleElement = rawValue as? any TupleElement {
-                    storedElements.append(tupleElement)
-                } else if let converted = TupleEncoder.encodeOrNil(rawValue) {
-                    // Use TupleEncoder for proper type conversion
-                    storedElements.append(converted)
-                } else {
-                    throw TupleEncodingError.unsupportedType(actualType: String(describing: type(of: rawValue)))
-                }
-            } else {
-                // Use empty string for nil values
-                storedElements.append("")
-            }
-        }
-
-        // Pack as Tuple
-        return Tuple(storedElements).pack()
-    }
 }

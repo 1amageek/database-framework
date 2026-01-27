@@ -523,29 +523,6 @@ public struct CoveringIndexSuggestion: Sendable {
     public let reason: String
 }
 
-// MARK: - IndexDescriptor Extension
-
-extension IndexDescriptor {
-    /// Fields stored in the index value (for covering index support)
-    ///
-    /// Currently, index values only contain the record ID. To support
-    /// true covering indexes with additional stored fields, the index
-    /// kind would need to be extended to include field values in the
-    /// index entry's value portion.
-    ///
-    /// For now, this returns an empty array. Future enhancement:
-    /// - Add `storedKeyPaths` property to `IndexKind` protocol
-    /// - Store field values in index entries
-    /// - Enable covering indexes with partial key + stored fields
-    ///
-    /// Default: empty (no stored fields beyond key fields)
-    public var storedKeyPaths: [AnyKeyPath] {
-        // Currently not implemented - indexes only store IDs in values
-        // To enable: extend IndexKind to specify stored fields
-        return []
-    }
-}
-
 // MARK: - Cost Model Extension
 
 extension CostModel {

@@ -65,7 +65,8 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         if let newItem = newItem {
             if let newKey = try buildIndexKey(for: newItem) {
-                transaction.setValue([], for: newKey)
+                let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
+                transaction.setValue(value, for: newKey)
             }
         }
     }
@@ -76,7 +77,8 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         transaction: any TransactionProtocol
     ) async throws {
         if let indexKey = try buildIndexKey(for: item, id: id) {
-            transaction.setValue([], for: indexKey)
+            let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
+            transaction.setValue(value, for: indexKey)
         }
     }
 
