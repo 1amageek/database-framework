@@ -310,7 +310,8 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
         case .sum(let field):
             var sum: Double = 0
             for item in items {
-                if let value = extractNumericValue(from: item, field: field) {
+                if let rawValue = item[dynamicMember: field],
+                   let value = TypeConversion.asDouble(rawValue) {
                     sum += value
                 }
             }
@@ -320,7 +321,8 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             var sum: Double = 0
             var count = 0
             for item in items {
-                if let value = extractNumericValue(from: item, field: field) {
+                if let rawValue = item[dynamicMember: field],
+                   let value = TypeConversion.asDouble(rawValue) {
                     sum += value
                     count += 1
                 }
@@ -391,7 +393,8 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             var values: [Double] = []
 
             for item in items {
-                if let numericValue = extractNumericValue(from: item, field: field) {
+                if let rawValue = item[dynamicMember: field],
+                   let numericValue = TypeConversion.asDouble(rawValue) {
                     values.append(numericValue)
                 }
             }
@@ -418,19 +421,6 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             let result = values[lowerIndex] * (1 - fraction) + values[upperIndex] * fraction
             return .double(result)
         }
-    }
-
-    /// Extract numeric value from item field using FieldValue
-    ///
-    /// **Supported Types** (via FieldValue):
-    /// - Int, Int8, Int16, Int32, Int64
-    /// - UInt, UInt8, UInt16, UInt32, UInt64
-    /// - Float, Double
-    private func extractNumericValue(from item: T, field: String) -> Double? {
-        guard let value = item[dynamicMember: field] else { return nil }
-        // FieldValue handles all numeric type conversions
-        guard let fieldValue = FieldValue(value) else { return nil }
-        return fieldValue.asDouble
     }
 
     // MARK: - Index Selection (Execution Strategy Selector)
@@ -784,25 +774,10 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     /// (Int64 for integers, Double for floats, Bool, String, Data).
     /// FieldValue is AggregationIndex-specific and cannot use TupleDecoder directly.
     private func tupleElementToFieldValue(_ element: any TupleElement) -> FieldValue {
-        if let str = element as? String {
-            return .string(str)
+        if let fieldValue = FieldValue(tupleElement: element) {
+            return fieldValue
         }
-        if let int = element as? Int64 {
-            return .int64(int)
-        }
-        if let int = element as? Int {
-            return .int64(Int64(int))
-        }
-        if let double = element as? Double {
-            return .double(double)
-        }
-        if let bool = element as? Bool {
-            return .bool(bool)
-        }
-        if let bytes = element as? [UInt8] {
-            return .data(Data(bytes))
-        }
-        // Default to string representation
+        assertionFailure("Unsupported TupleElement type: \(type(of: element))")
         return .string(String(describing: element))
     }
 

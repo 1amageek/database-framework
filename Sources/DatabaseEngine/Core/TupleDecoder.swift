@@ -46,6 +46,28 @@ public struct TupleDecoder: Sendable {
     public static func decodeInt64(_ element: any TupleElement) throws -> Int64 {
         if let v = element as? Int64 { return v }
         if let v = element as? Int { return Int64(v) }
+        // Numeric coercion from floating point (exact integers only)
+        // Symmetric with decodeDouble accepting Int64→Double
+        if let v = element as? Double {
+            guard !v.isNaN, !v.isInfinite,
+                  let exact = Int64(exactly: v) else {
+                throw TupleDecodingError.integerOverflow(
+                    value: 0,
+                    targetType: "Int64 (exact from Double \(v))"
+                )
+            }
+            return exact
+        }
+        if let v = element as? Float {
+            guard !v.isNaN, !v.isInfinite,
+                  let exact = Int64(exactly: v) else {
+                throw TupleDecodingError.integerOverflow(
+                    value: 0,
+                    targetType: "Int64 (exact from Float \(v))"
+                )
+            }
+            return exact
+        }
         throw TupleDecodingError.typeMismatch(expected: "Int64", actual: String(describing: type(of: element)))
     }
 

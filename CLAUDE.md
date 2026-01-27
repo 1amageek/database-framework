@@ -504,6 +504,57 @@ case let v as Int: return Int64(v)  // 禁止！
 \** Bool: true=1, false=0
 \*** Date: timeIntervalSince1970
 
+### ラッパーメソッド禁止（直接呼出の原則）
+
+`TypeConversion` / `TupleEncoder` / `TupleDecoder` を呼ぶだけの private メソッドを作成しない。直接呼び出すこと。
+
+```swift
+// ❌ 禁止: パススルーラッパー
+private func convertToTupleElement(_ value: any Sendable) throws -> any TupleElement {
+    try TupleEncoder.encode(value)
+}
+
+// ❌ 禁止: エラー再ラップだけのラッパー
+private func extractScore(from element: any TupleElement) throws -> Score {
+    do {
+        return try TupleDecoder.decode(element, as: Score.self)
+    } catch {
+        throw MyError.invalidScore("...")
+    }
+}
+
+// ❌ 禁止: 手動型スイッチ（TypeConversion/TupleDecoder が内部で処理済み）
+private func extractNumericValue(from element: any TupleElement) -> Double? {
+    if let d = element as? Double { return d }
+    if let i = element as? Int64 { return Double(i) }
+    return nil
+}
+
+// ✅ 正しい: 呼出元で直接使用
+let element = try TupleEncoder.encode(value)
+let score = try TupleDecoder.decode(element, as: Score.self)
+let double = try TypeConversion.double(from: element)
+let value = TypeConversion.asDouble(rawValue)
+```
+
+**許容されるケース**: 複数の API を組み合わせて構造化された結果を返す場合のみ、ユーティリティ関数を作成してよい。
+
+```swift
+// ✅ 許容: 複合的なロジックを持つユーティリティ
+public static func extractNumeric<Value>(
+    from element: any TupleElement, as valueType: Value.Type
+) throws -> (int64: Int64?, double: Double?, isFloatingPoint: Bool) {
+    switch valueType {
+    case is Int64.Type, is Int.Type, is Int32.Type:
+        return (int64: try TypeConversion.int64(from: element), double: nil, isFloatingPoint: false)
+    case is Double.Type, is Float.Type:
+        return (int64: nil, double: try TypeConversion.double(from: element), isFloatingPoint: true)
+    default:
+        throw IndexError.invalidConfiguration("Unsupported: \(valueType)")
+    }
+}
+```
+
 ### 関連ファイル
 
 - `Sources/DatabaseEngine/Core/TypeConversion.swift` - 統一型変換ユーティリティ

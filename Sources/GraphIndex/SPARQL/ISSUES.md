@@ -2,15 +2,37 @@
 
 レビューで発見された問題の一覧。重大度順に整理。
 
+プロジェクト全体の Issue は `/ISSUES.md` を参照。
+
 ---
 
 ## Open Issues
 
-(なし — 全件解決済み)
+### H1: `String(describing:)` フォールバック（GraphIndex 内）
+
+**ファイル**:
+- `SPARQLQueryExecutor.swift:575`
+- `GraphEdgeScanner.swift:416, 423, 430`
+- `GraphQuery.swift:401`
+
+**問題**: `FieldValue(tupleElement:)` が nil を返した場合に
+`String(describing:)` にフォールバック。インデックスキーの順序が壊れる可能性。
+
+**修正方針**: throw に変更するか、正常パスでは到達しないことを assert で保証。
 
 ---
 
 ## Resolved Issues
+
+### ~~C1: BFS オリジン未伝搬（object が variable のケース）~~ [RESOLVED]
+
+**修正**: `evaluateTransitivePath` の object-is-variable 分岐で `resultBinding` を構築し、
+`subject.variableName` が binding に存在しない場合（depth 2+）に `bindingOrigin` から復元。
+bound-object ケース（既に修正済み）と同一のオリジン追跡パターンを適用。
+テスト: `PropertyPathAdvancedTests` に2テスト追加
+(unbound subject + unbound object linear chain, branching)。
+
+---
 
 ### ~~H1: `inferFieldValue` が曖昧な型推論をする~~ [RESOLVED]
 

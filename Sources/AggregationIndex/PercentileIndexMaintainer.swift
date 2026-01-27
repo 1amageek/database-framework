@@ -290,7 +290,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
         let valueElement = allValues.last!
 
         // Extract numeric value
-        guard let numericValue = extractNumericValue(from: valueElement) else {
+        guard let numericValue = try? TypeConversion.double(from: valueElement) else {
             return  // Skip if value is not numeric
         }
 
@@ -316,15 +316,6 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
         transaction.setValue([UInt8](encodedData), for: key)
     }
 
-    /// Extract numeric value from a tuple element
-    private func extractNumericValue(from element: any TupleElement) -> Double? {
-        if let double = element as? Double {
-            return double
-        } else if let int64 = element as? Int64 {
-            return Double(int64)
-        }
-        return nil
-    }
 }
 
 // MARK: - PercentileIndexError

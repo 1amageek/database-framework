@@ -571,8 +571,10 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                 continue
             }
 
-            let fieldValue = FieldValue(tupleElement: element)
-                ?? .string(String(describing: element))
+            guard let fieldValue = FieldValue(tupleElement: element) else {
+                assertionFailure("Unsupported TupleElement type: \(type(of: element))")
+                continue
+            }
 
             switch componentIdx {
             case 0: fromValue = fieldValue
@@ -1319,8 +1321,17 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                         // If not the target, don't add to results (but still explored via frontier)
                     } else {
                         // Object is a variable → all reached nodes are results
-                        if seen.insert(binding).inserted {
-                            allResults.append(binding)
+                        // At depth 2+, currentSubject is .value(intermediate), so the binding
+                        // from evaluatePropertyPath lacks the original subject variable.
+                        // Restore it from the tracked origin.
+                        var resultBinding = binding
+                        if let subjVar = subject.variableName,
+                           resultBinding[subjVar] == nil,
+                           let origin = bindingOrigin {
+                            resultBinding = resultBinding.binding(subjVar, to: origin)
+                        }
+                        if seen.insert(resultBinding).inserted {
+                            allResults.append(resultBinding)
                         }
                     }
                 }

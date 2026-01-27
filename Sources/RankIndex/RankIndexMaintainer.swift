@@ -188,7 +188,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
             }
 
             // First element is score - extract as Score type
-            guard let score = try? extractScore(from: elements[0]) else {
+            guard let score = try? TupleDecoder.decode(elements[0], as: Score.self) else {
                 continue
             }
 
@@ -235,9 +235,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         let rangeEnd = scoresSubspace.range().end
 
-        guard let scoreElement = convertScoreToTupleElement(score) else {
-            throw RankIndexError.invalidScore("Score type \(Score.self) cannot be converted to TupleElement")
-        }
+        let scoreElement = try TupleEncoder.encode(score)
 
         // Build prefix for this score, then append 0xFF to get past all entries with this score
         let scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement)) + [0xFF]
@@ -351,7 +349,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         }
 
         // Extract score as Score type (type-safe)
-        let score = try extractScore(from: scoreValues[0])
+        let score = try TupleDecoder.decode(scoreValues[0], as: Score.self)
 
         // Extract primary key
         let primaryKeyTuple: Tuple
@@ -363,9 +361,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
         // Build key: [score][primaryKey...]
         // Score conforms to Numeric, which includes TupleElement-compatible types
-        guard let scoreElement = convertScoreToTupleElement(score) else {
-            throw RankIndexError.invalidScore("Score value \(score) cannot be converted to TupleElement")
-        }
+        let scoreElement = try TupleEncoder.encode(score)
         var allElements: [any TupleElement] = [scoreElement]
         for i in 0..<primaryKeyTuple.count {
             if let element = primaryKeyTuple[i] {
@@ -374,40 +370,6 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         }
 
         return try packAndValidate(Tuple(allElements), in: scoresSubspace)
-    }
-
-    /// Extract score from tuple element (type-safe)
-    ///
-    /// Uses TupleDecoder for consistent type conversion across all index modules.
-    /// Converts FDB Tuple elements (Int64, Double) to the generic Score type.
-    private func extractScore(from element: any TupleElement) throws -> Score {
-        // Try direct cast first (for Score types that match TupleElement directly)
-        if let directValue = element as? Score {
-            return directValue
-        }
-
-        // Use TupleDecoder for numeric type conversions
-        do {
-            return try TupleDecoder.decode(element, as: Score.self)
-        } catch let error as TupleDecodingError {
-            // Convert TupleDecodingError to RankIndexError for consistent error handling
-            switch error {
-            case .typeMismatch(let expected, let actual):
-                throw RankIndexError.invalidScore("Expected \(expected), got \(actual)")
-            case .integerOverflow(let value, let targetType):
-                throw RankIndexError.invalidScore("Integer overflow: \(value) cannot fit in \(targetType)")
-            case .unsupportedType(let type):
-                throw RankIndexError.invalidScore("Unsupported type: \(type)")
-            }
-        }
-    }
-
-    /// Convert Score to TupleElement safely
-    ///
-    /// Uses TupleEncoder for consistent type conversion across all index modules.
-    /// FDB Tuple supports: Int64, Double, String, Bytes, Bool, UUID, Versionstamp
-    private func convertScoreToTupleElement(_ score: Score) -> (any TupleElement)? {
-        return try? TupleEncoder.encode(score)
     }
 }
 

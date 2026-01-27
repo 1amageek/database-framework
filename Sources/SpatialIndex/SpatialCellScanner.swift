@@ -101,9 +101,7 @@ public final class SpatialCellScanner: Sendable {
                 guard cellSubspace.contains(key) else { break }
 
                 // Efficient Tuple extraction: single unpack, no redundant pack/unpack
-                guard let keyTuple = try? cellSubspace.unpack(key) else {
-                    continue
-                }
+                let keyTuple = try cellSubspace.unpack(key)
 
                 // Deduplicate using packed bytes as stable key
                 // (same item may appear in multiple covering cells)
@@ -168,9 +166,7 @@ public final class SpatialCellScanner: Sendable {
             for try await (key, _) in sequence {
                 guard cellSubspace.contains(key) else { break }
 
-                guard let keyTuple = try? cellSubspace.unpack(key) else {
-                    continue
-                }
+                let keyTuple = try cellSubspace.unpack(key)
 
                 let idData = Data(keyTuple.pack())
                 guard !seenIds.contains(idData) else { continue }
@@ -222,9 +218,8 @@ public final class SpatialCellScanner: Sendable {
         for try await (key, _) in sequence {
             guard cellSubspace.contains(key) else { break }
 
-            if let keyTuple = try? cellSubspace.unpack(key) {
-                results.append(keyTuple)
-            }
+            let keyTuple = try cellSubspace.unpack(key)
+            results.append(keyTuple)
         }
 
         return results

@@ -134,7 +134,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             throw IndexError.invalidStructure("Invalid MIN index key structure")
         }
 
-        return try ComparableValueExtractor.extract(from: dataElements[0], as: Value.self)
+        return try TupleDecoder.decode(dataElements[0], as: Value.self)
     }
 
     // MARK: - Private Methods
@@ -276,7 +276,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             throw IndexError.invalidStructure("Invalid MAX index key structure")
         }
 
-        return try ComparableValueExtractor.extract(from: dataElements[0], as: Value.self)
+        return try TupleDecoder.decode(dataElements[0], as: Value.self)
     }
 
     // MARK: - Private Methods

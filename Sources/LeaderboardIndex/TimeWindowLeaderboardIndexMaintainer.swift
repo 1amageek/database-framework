@@ -269,21 +269,6 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         return Int64(bitPattern: inverted)
     }
 
-    /// Extract Int64 from a TupleElement that may be decoded as Int or Int64
-    ///
-    /// FoundationDB's Tuple layer may decode small integers (including 0) as Int
-    /// instead of Int64. This helper handles both cases.
-    private func extractInt64(from element: (any TupleElement)?) -> Int64? {
-        guard let element = element else { return nil }
-        if let value = element as? Int64 {
-            return value
-        }
-        if let value = element as? Int {
-            return Int64(value)
-        }
-        return nil
-    }
-
     /// Extract score from item (type-safe)
     private func extractScore(from item: Item) throws -> Int64 {
         // The last field in keyPaths is the score field
@@ -301,52 +286,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             throw IndexError.invalidConfiguration("Score field value is nil")
         }
 
-        // Type-safe extraction based on Score type
-        return try extractScoreValue(from: first)
-    }
-
-    /// Extract score value from tuple element (type-safe)
-    private func extractScoreValue(from element: any TupleElement) throws -> Int64 {
-        switch Score.self {
-        case is Int64.Type:
-            guard let value = element as? Int64 else {
-                throw IndexError.invalidConfiguration("Expected Int64, got \(type(of: element))")
-            }
-            return value
-
-        case is Int.Type:
-            guard let value = element as? Int64 else {
-                throw IndexError.invalidConfiguration("Expected Int (as Int64), got \(type(of: element))")
-            }
-            return value
-
-        case is Int32.Type:
-            guard let value = element as? Int64 else {
-                throw IndexError.invalidConfiguration("Expected Int32 (as Int64), got \(type(of: element))")
-            }
-            return value
-
-        case is Double.Type:
-            guard let value = element as? Double else {
-                throw IndexError.invalidConfiguration("Expected Double, got \(type(of: element))")
-            }
-            return Int64(value)
-
-        case is Float.Type:
-            guard let value = element as? Double else {
-                throw IndexError.invalidConfiguration("Expected Float (as Double), got \(type(of: element))")
-            }
-            return Int64(value)
-
-        default:
-            // Fallback: try converting from known numeric types
-            if let value = element as? Int64 { return value }
-            if let value = element as? Int { return Int64(value) }
-            if let value = element as? Double { return Int64(value) }
-            throw IndexError.invalidConfiguration(
-                "Cannot convert \(type(of: element)) to Int64 for leaderboard score"
-            )
-        }
+        return try TypeConversion.int64(from: first)
     }
 
     /// Extract grouping fields from item (all fields except the last which is score)
@@ -423,8 +363,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let posTuple = try Tuple.unpack(from: posBytes)
-        guard let windowId = extractInt64(from: posTuple[0]),
-              let score = extractInt64(from: posTuple[1]) else {
+        guard posTuple.count >= 2,
+              let windowId = try? TypeConversion.int64(from: posTuple[0]),
+              let score = try? TypeConversion.int64(from: posTuple[1]) else {
             return
         }
 
@@ -459,8 +400,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let posKey = posSubspace.pack(pk)
         if let posBytes = try await transaction.getValue(for: posKey) {
             let posTuple = try Tuple.unpack(from: posBytes)
-            if let oldWindowId = extractInt64(from: posTuple[0]),
-               let oldScore = extractInt64(from: posTuple[1]) {
+            if posTuple.count >= 2,
+               let oldWindowId = try? TypeConversion.int64(from: posTuple[0]),
+               let oldScore = try? TypeConversion.int64(from: posTuple[1]) {
                 // Extract old grouping
                 var oldGrouping: [any TupleElement] = []
                 for i in 2..<posTuple.count {
@@ -641,8 +583,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let posTuple = try Tuple.unpack(from: posBytes)
-        guard let recordWindowId = extractInt64(from: posTuple[0]),
-              let score = extractInt64(from: posTuple[1]),
+        guard posTuple.count >= 2,
+              let recordWindowId = try? TypeConversion.int64(from: posTuple[0]),
+              let score = try? TypeConversion.int64(from: posTuple[1]),
               recordWindowId == currentWindowId else {
             return nil
         }
@@ -693,7 +636,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
         for try await (key, _) in sequence {
             let keyTuple = try metaSubspace.subspace("start").unpack(key)
-            if let wid = extractInt64(from: keyTuple[0]) {
+            if let e = keyTuple[0], let wid = try? TypeConversion.int64(from: e) {
                 windowIds.append(wid)
             }
         }
@@ -958,8 +901,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let posTuple = try Tuple.unpack(from: posBytes)
-        guard let recordWindowId = extractInt64(from: posTuple[0]),
-              let targetScore = extractInt64(from: posTuple[1]),
+        guard posTuple.count >= 2,
+              let recordWindowId = try? TypeConversion.int64(from: posTuple[0]),
+              let targetScore = try? TypeConversion.int64(from: posTuple[1]),
               recordWindowId == currentWindowId else {
             return nil
         }

@@ -282,12 +282,10 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 )
             }
 
-            if let fieldValue = FieldValue(value) {
-                values.append(fieldValue.toTupleElement())
-            } else if let tupleElement = value as? any TupleElement {
+            do {
+                let tupleElement = try TypeConversion.toTupleElement(value)
                 values.append(tupleElement)
-            } else {
-                // Field cannot be converted to TupleElement
+            } catch {
                 throw RelationshipIndexError.fieldNotConvertibleToTupleElement(
                     fieldName: fieldName,
                     relatedType: relatedTypeName,

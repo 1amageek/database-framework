@@ -360,6 +360,7 @@ public enum GraphIndexError: Error, CustomStringConvertible {
     case fieldNotFound(fieldName: String, itemType: String)
     case invalidFieldType(fieldName: String, expectedType: String, actualType: String)
     case unsupportedQueryPattern(pattern: String, strategy: GraphIndexStrategy)
+    case unexpectedElementType(expected: String, actual: String)
 
     public var description: String {
         switch self {
@@ -369,6 +370,8 @@ public enum GraphIndexError: Error, CustomStringConvertible {
             return "Field '\(fieldName)' has invalid type: expected \(expectedType), got \(actualType)"
         case .unsupportedQueryPattern(let pattern, let strategy):
             return "Query pattern '\(pattern)' is not optimally supported by \(strategy) strategy"
+        case .unexpectedElementType(let expected, let actual):
+            return "Unexpected TupleElement type: expected \(expected), got \(actual)"
         }
     }
 }

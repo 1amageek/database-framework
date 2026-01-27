@@ -357,7 +357,8 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         case .sum(let field):
             var sum: Double = 0
             for item in items {
-                if let value = extractNumericValue(from: item, field: field) {
+                if let rawValue = extractFieldValue(from: item, field: field),
+                   let value = TypeConversion.asDouble(rawValue) {
                     sum += value
                 }
             }
@@ -367,7 +368,8 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
             var sum: Double = 0
             var count = 0
             for item in items {
-                if let value = extractNumericValue(from: item, field: field) {
+                if let rawValue = extractFieldValue(from: item, field: field),
+                   let value = TypeConversion.asDouble(rawValue) {
                     sum += value
                     count += 1
                 }
@@ -401,7 +403,8 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         case .percentile(let field, let percentile):
             var values: [Double] = []
             for item in items {
-                if let value = extractNumericValue(from: item, field: field) {
+                if let rawValue = extractFieldValue(from: item, field: field),
+                   let value = TypeConversion.asDouble(rawValue) {
                     values.append(value)
                 }
             }
@@ -439,7 +442,7 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
             guard let value = extractFieldValue(from: item, field: field) else { continue }
 
             // Try to extract as numeric first (handles Int, Int64, Double, Float)
-            if let numValue = extractNumericValue(from: item, field: field) {
+            if let numValue = TypeConversion.asDouble(value) {
                 numericValues.append(numValue)
                 hasNumeric = true
             } else if let strValue = value as? String {
@@ -480,18 +483,6 @@ public final class AggregationExecutor<T: Persistable & Codable>: @unchecked Sen
         }
 
         return NullValue.instance
-    }
-
-    /// Extract numeric value from an item field
-    private func extractNumericValue(from item: T, field: String) -> Double? {
-        guard let value = extractFieldValue(from: item, field: field) else { return nil }
-
-        if let intValue = value as? Int { return Double(intValue) }
-        if let doubleValue = value as? Double { return doubleValue }
-        if let floatValue = value as? Float { return Double(floatValue) }
-        if let int64Value = value as? Int64 { return Double(int64Value) }
-
-        return nil
     }
 
     /// Extract any field value from an item

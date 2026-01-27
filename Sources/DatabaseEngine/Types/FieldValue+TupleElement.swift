@@ -61,8 +61,14 @@ extension FieldValue {
             self = .int64(Int64(v))
         case let v as Double:
             self = .double(v)
+        case let v as Float:
+            self = .double(Double(v))
         case let v as String:
             self = .string(v)
+        case let v as UUID:
+            self = .string(v.uuidString)
+        case let v as Date:
+            self = .double(v.timeIntervalSince1970)
         case let v as [UInt8]:
             // Check for null sentinel
             if v == Self.nullSentinel {

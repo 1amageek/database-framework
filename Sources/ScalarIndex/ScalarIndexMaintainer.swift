@@ -293,8 +293,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
                     // Use TupleEncoder for proper type conversion
                     storedElements.append(converted)
                 } else {
-                    // Convert to string as last resort fallback
-                    storedElements.append(String(describing: rawValue))
+                    throw TupleEncodingError.unsupportedType(actualType: String(describing: type(of: rawValue)))
                 }
             } else {
                 // Use empty string for nil values

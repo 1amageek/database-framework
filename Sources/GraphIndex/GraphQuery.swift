@@ -394,11 +394,11 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
                 continue
             }
 
-            let stringValue: String
-            if let str = element as? String {
-                stringValue = str
-            } else {
-                stringValue = String(describing: element)
+            guard let stringValue = element as? String else {
+                throw GraphIndexError.unexpectedElementType(
+                    expected: "String",
+                    actual: String(describing: type(of: element))
+                )
             }
 
             switch componentIdx {

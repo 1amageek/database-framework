@@ -253,14 +253,15 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         let items = try await queryContext.fetchItems(ids: tuples, type: T.self)
 
         // Match items with permuted fields by ID
+        // Use DataAccess.extractId() to ensure consistency with the storage path
+        // (PermutedIndexMaintainer.buildPermutedKey uses the same method).
+        let idExpression = FieldKeyExpression(fieldName: "id")
         var finalResults: [(permutedFields: [any TupleElement], item: T)] = []
         for item in items {
-            let itemId: Any = item[dynamicMember: "id"] as Any
-            if let idElement = TupleEncoder.encodeOrNil(itemId) {
-                let pkData = Data(Tuple(idElement).pack())
-                if let fields = fieldsByPackedKey[pkData] {
-                    finalResults.append((permutedFields: fields, item: item))
-                }
+            let pkTuple = try DataAccess.extractId(from: item, using: idExpression)
+            let pkData = Data(pkTuple.pack())
+            if let fields = fieldsByPackedKey[pkData] {
+                finalResults.append((permutedFields: fields, item: item))
             }
         }
 

@@ -889,6 +889,102 @@ struct PropertyPathAdvancedTests {
         #expect(targets.count == 2)
     }
 
+    @Test("BFS transitive: unbound subject + unbound object preserves origin at depth 2+ (C1 fix)")
+    func testBFSUnboundSubjectUnboundObject() async throws {
+        // Graph: A→B→C (via "link")
+        // Query: ?s (link)+ ?o → should return:
+        //   {?s=A, ?o=B} (depth 1)
+        //   {?s=B, ?o=C} (depth 1)
+        //   {?s=A, ?o=C} (depth 2 — C1 bug: before fix, ?s was missing or wrong)
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: b, relationship: link, to: c),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath("?s", path: .oneOrMore(.iri(link)), "?o")
+            .execute()
+
+        // Collect all (subject, object) pairs
+        let pairs = result.bindings.compactMap { binding -> (String, String)? in
+            guard let s = binding.string("?s"), let o = binding.string("?o") else { return nil }
+            return (s, o)
+        }
+
+        // Verify all expected pairs exist
+        let pairSet = Set(pairs.map { "\($0.0)|\($0.1)" })
+        #expect(pairSet.contains("\(a)|\(b)"), "A→B should be found (depth 1)")
+        #expect(pairSet.contains("\(b)|\(c)"), "B→C should be found (depth 1)")
+        #expect(pairSet.contains("\(a)|\(c)"), "A→C should be found (depth 2, origin=A not B)")
+        #expect(pairs.count == 3, "Exactly 3 pairs expected")
+
+        // Verify no result has ?s missing
+        for binding in result.bindings {
+            #expect(binding.string("?s") != nil, "Every result must have ?s bound")
+            #expect(binding.string("?o") != nil, "Every result must have ?o bound")
+        }
+    }
+
+    @Test("BFS transitive: unbound subject + unbound object branching (C1 fix)")
+    func testBFSUnboundSubjectUnboundObjectBranching() async throws {
+        // Graph: A→B→D, A→C→D (via "link")
+        // Query: ?s (link)+ ?o → should include {?s=A, ?o=D} (reachable via both paths)
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let d = uniqueID("D")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: a, relationship: link, to: c),
+            makeEdge(from: b, relationship: link, to: d),
+            makeEdge(from: c, relationship: link, to: d),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath("?s", path: .oneOrMore(.iri(link)), "?o")
+            .execute()
+
+        let pairs = result.bindings.compactMap { binding -> (String, String)? in
+            guard let s = binding.string("?s"), let o = binding.string("?o") else { return nil }
+            return (s, o)
+        }
+        let pairSet = Set(pairs.map { "\($0.0)|\($0.1)" })
+
+        // Depth 1 results
+        #expect(pairSet.contains("\(a)|\(b)"), "A→B depth 1")
+        #expect(pairSet.contains("\(a)|\(c)"), "A→C depth 1")
+        #expect(pairSet.contains("\(b)|\(d)"), "B→D depth 1")
+        #expect(pairSet.contains("\(c)|\(d)"), "C→D depth 1")
+        // Depth 2 result — the C1 bug: ?s must be A (origin), not B or C
+        #expect(pairSet.contains("\(a)|\(d)"), "A→D depth 2 (origin must be A)")
+
+        // Verify no result has ?s missing
+        for binding in result.bindings {
+            #expect(binding.string("?s") != nil, "Every result must have ?s bound")
+        }
+    }
+
     @Test("BFS transitive: bound subject + bound object (regression)")
     func testBFSBoundSubjectBoundObject() async throws {
         // Graph: A→B→C (via "link")

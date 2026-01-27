@@ -168,7 +168,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
             switch self.predicate {
             case .equals(let value):
-                let fieldValues = [self.convertToTupleElement(value)]
+                let fieldValues = [try TupleEncoder.encode(value)]
                 return try await self.readBitmapPrimaryKeys(
                     fieldValues: fieldValues,
                     indexSubspace: indexSubspace,
@@ -181,7 +181,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
                 var seen: Set<Data> = []
 
                 for value in values {
-                    let fieldValues = [self.convertToTupleElement(value)]
+                    let fieldValues = [try TupleEncoder.encode(value)]
                     let pks = try await self.readBitmapPrimaryKeys(
                         fieldValues: fieldValues,
                         indexSubspace: indexSubspace,
@@ -248,16 +248,4 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
         return primaryKeys
     }
 
-    /// Convert value to TupleElement for bitmap lookup
-    ///
-    /// Uses TupleEncoder for consistent type conversion.
-    /// Falls back to string representation for unsupported types.
-    private func convertToTupleElement(_ value: any Sendable & Hashable) -> any TupleElement {
-        do {
-            return try TupleEncoder.encode(value)
-        } catch {
-            // Fallback for unsupported types
-            return String(describing: value)
-        }
-    }
 }

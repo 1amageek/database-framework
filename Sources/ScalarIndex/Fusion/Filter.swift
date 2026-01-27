@@ -45,7 +45,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     private let fieldName: String
     private var predicate: FilterPredicate
 
-    private enum FilterPredicate: @unchecked Sendable {
+    private enum FilterPredicate: Sendable {
         case equals(any Sendable & Hashable)
         case `in`([any Sendable & Hashable])
         case range(min: (any Sendable)?, max: (any Sendable)?, minInclusive: Bool, maxInclusive: Bool)
@@ -403,9 +403,11 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         guard let descriptor = findIndexDescriptor() else {
             // Fallback to full scan with filter
             let allItems = try await queryContext.fetchAllItems(type: T.self)
+            let targetFieldValue = TypeConversion.toFieldValue(value)
             return allItems.filter { item in
                 guard let fieldValue = item[dynamicMember: fieldName] else { return false }
-                return "\(fieldValue)" == "\(value)"
+                let itemFieldValue = TypeConversion.toFieldValue(fieldValue)
+                return itemFieldValue == targetFieldValue
             }
         }
 
@@ -472,7 +474,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         indexSubspace: Subspace,
         transaction: any TransactionProtocol
     ) async throws -> [Tuple] {
-        let tupleValue = try convertToTupleElement(value)
+        let tupleValue = try TupleEncoder.encode(value)
         let valueSubspace = indexSubspace.subspace(tupleValue)
         let (begin, end) = valueSubspace.range()
 
@@ -511,7 +513,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         let endKey: [UInt8]
 
         if let minValue = min {
-            let minTuple = try convertToTupleElement(minValue)
+            let minTuple = try TupleEncoder.encode(minValue)
             let packed = indexSubspace.pack(Tuple(minTuple))
             if minInclusive {
                 beginKey = packed
@@ -523,7 +525,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         }
 
         if let maxValue = max {
-            let maxTuple = try convertToTupleElement(maxValue)
+            let maxTuple = try TupleEncoder.encode(maxValue)
             let packed = indexSubspace.pack(Tuple(maxTuple))
             if maxInclusive {
                 endKey = incrementKey(packed)
@@ -568,18 +570,6 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     }
 
     // MARK: - Helpers
-
-    /// Convert value to TupleElement for index lookup
-    ///
-    /// Uses TupleEncoder for consistent type conversion across all index modules.
-    /// This ensures proper handling of:
-    /// - UInt64 overflow checking
-    /// - UUID as UUID (not String)
-    /// - Date as Date (fdb-swift-bindings handles encoding)
-    /// - Unsupported types throw errors instead of silent String conversion
-    private func convertToTupleElement(_ value: any Sendable) throws -> any TupleElement {
-        return try TupleEncoder.encode(value)
-    }
 
     /// Check if a value matches the range predicate using type-aware comparison
     ///

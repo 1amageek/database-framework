@@ -23,50 +23,6 @@ import FoundationDB
 /// - Float, Double → stored as Double
 public enum NumericValueExtractor {
 
-    /// Extract Int64 value from tuple element
-    ///
-    /// Uses `TypeConversion` for unified type extraction.
-    ///
-    /// - Parameters:
-    ///   - element: The tuple element to extract from
-    ///   - expectedType: The Swift type being extracted (for error messages)
-    /// - Returns: The Int64 value
-    /// - Throws: IndexError if extraction fails
-    public static func extractInt64(
-        from element: any TupleElement,
-        expectedType: Any.Type
-    ) throws -> Int64 {
-        do {
-            return try TypeConversion.int64(from: element)
-        } catch {
-            throw IndexError.invalidConfiguration(
-                "Expected \(expectedType) (as Int64), got \(type(of: element))"
-            )
-        }
-    }
-
-    /// Extract Double value from tuple element
-    ///
-    /// Uses `TypeConversion` for unified type extraction.
-    ///
-    /// - Parameters:
-    ///   - element: The tuple element to extract from
-    ///   - expectedType: The Swift type being extracted (for error messages)
-    /// - Returns: The Double value
-    /// - Throws: IndexError if extraction fails
-    public static func extractDouble(
-        from element: any TupleElement,
-        expectedType: Any.Type
-    ) throws -> Double {
-        do {
-            return try TypeConversion.double(from: element)
-        } catch {
-            throw IndexError.invalidConfiguration(
-                "Expected \(expectedType) (as Double), got \(type(of: element))"
-            )
-        }
-    }
-
     /// Extract numeric value with type-safe conversion
     ///
     /// Handles FDB's type coercion (Int→Int64, Float→Double).
@@ -75,18 +31,18 @@ public enum NumericValueExtractor {
     ///   - element: The tuple element to extract from
     ///   - valueType: The expected value type
     /// - Returns: Tuple of (int64Value, doubleValue, isFloatingPoint)
-    /// - Throws: IndexError if type is not supported
+    /// - Throws: If extraction fails
     public static func extractNumeric<Value: Numeric & Codable & Sendable>(
         from element: any TupleElement,
         as valueType: Value.Type
     ) throws -> (int64: Int64?, double: Double?, isFloatingPoint: Bool) {
         switch valueType {
         case is Int64.Type, is Int.Type, is Int32.Type:
-            let value = try extractInt64(from: element, expectedType: valueType)
+            let value = try TypeConversion.int64(from: element)
             return (int64: value, double: nil, isFloatingPoint: false)
 
         case is Double.Type, is Float.Type:
-            let value = try extractDouble(from: element, expectedType: valueType)
+            let value = try TypeConversion.double(from: element)
             return (int64: nil, double: value, isFloatingPoint: true)
 
         default:
@@ -368,76 +324,3 @@ extension CountAggregationMaintainer {
     }
 }
 
-// MARK: - Value Extraction for Min/Max
-
-/// Utility for extracting comparable values from tuple elements
-///
-/// Used by MinIndexMaintainer and MaxIndexMaintainer to extract typed values.
-public enum ComparableValueExtractor {
-
-    /// Extract a comparable value from tuple element
-    ///
-    /// Handles FDB's type coercion (Int→Int64, Float→Double).
-    ///
-    /// - Parameters:
-    ///   - element: The tuple element to extract from
-    ///   - valueType: The expected value type
-    /// - Returns: The extracted value
-    /// - Throws: IndexError if extraction fails
-    public static func extract<Value: Comparable & Codable & Sendable>(
-        from element: any TupleElement,
-        as valueType: Value.Type
-    ) throws -> Value {
-        switch valueType {
-        case is Int64.Type:
-            guard let value = element as? Int64,
-                  let result = value as? Value else {
-                throw IndexError.invalidConfiguration("Expected Int64, got \(type(of: element))")
-            }
-            return result
-
-        case is Int.Type:
-            guard let value = element as? Int64,
-                  let result = Int(value) as? Value else {
-                throw IndexError.invalidConfiguration("Expected Int (as Int64), got \(type(of: element))")
-            }
-            return result
-
-        case is Int32.Type:
-            guard let value = element as? Int64,
-                  let result = Int32(value) as? Value else {
-                throw IndexError.invalidConfiguration("Expected Int32 (as Int64), got \(type(of: element))")
-            }
-            return result
-
-        case is Double.Type:
-            guard let value = element as? Double,
-                  let result = value as? Value else {
-                throw IndexError.invalidConfiguration("Expected Double, got \(type(of: element))")
-            }
-            return result
-
-        case is Float.Type:
-            guard let value = element as? Double,
-                  let result = Float(value) as? Value else {
-                throw IndexError.invalidConfiguration("Expected Float (as Double), got \(type(of: element))")
-            }
-            return result
-
-        case is String.Type:
-            guard let value = element as? String,
-                  let result = value as? Value else {
-                throw IndexError.invalidConfiguration("Expected String, got \(type(of: element))")
-            }
-            return result
-
-        default:
-            guard let value = element as? Value else {
-                throw IndexError.invalidConfiguration(
-                    "Cannot convert \(type(of: element)) to \(valueType)"
-                )
-            }
-            return value
-        }
-    }
-}

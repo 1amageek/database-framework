@@ -185,33 +185,7 @@ public struct Rank<T: Persistable>: FusionQuery, Sendable {
         // Extract numeric values
         let itemsWithValue: [(item: T, value: Double)] = items.compactMap { item in
             guard let rawValue = item[dynamicMember: fieldName] else { return nil }
-
-            let doubleValue: Double
-            switch rawValue {
-            case let v as Double:
-                doubleValue = v
-            case let v as Float:
-                doubleValue = Double(v)
-            case let v as Int:
-                doubleValue = Double(v)
-            case let v as Int64:
-                doubleValue = Double(v)
-            case let v as Int32:
-                doubleValue = Double(v)
-            case let v as Int16:
-                doubleValue = Double(v)
-            case let v as Int8:
-                doubleValue = Double(v)
-            case let v as UInt:
-                doubleValue = Double(v)
-            case let v as UInt64:
-                doubleValue = Double(v)
-            case let v as UInt32:
-                doubleValue = Double(v)
-            default:
-                return nil
-            }
-
+            guard let doubleValue = TypeConversion.asDouble(rawValue) else { return nil }
             return (item: item, value: doubleValue)
         }
 

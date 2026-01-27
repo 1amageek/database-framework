@@ -274,7 +274,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         }
 
         var results: [Tuple] = []
-        var seenIds: Set<String> = []
+        var seenIds: Set<Data> = []
 
         for cellId in coveringCells {
             let cellTuple = Tuple(cellId)
@@ -290,28 +290,16 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             for try await (key, _) in sequence {
                 guard cellSubspace.contains(key) else { break }
 
-                // Extract primary key from the key
-                guard let keyTuple = try? cellSubspace.unpack(key),
-                      let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
-                    continue
-                }
+                let keyTuple = try cellSubspace.unpack(key)
 
-                // Deduplicate (same item may appear in multiple cells)
-                let idKey = elementsToStableKey(elements)
-                if !seenIds.contains(idKey) {
-                    seenIds.insert(idKey)
-                    results.append(Tuple(elements))
-                }
+                // Deduplicate using packed bytes (same item may appear in multiple cells)
+                let idData = Data(keyTuple.pack())
+                guard !seenIds.contains(idData) else { continue }
+                seenIds.insert(idData)
+                results.append(keyTuple)
             }
         }
 
         return results
-    }
-
-    // MARK: - Helpers
-
-    private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
-        let packed = Tuple(elements).pack()
-        return Data(packed).base64EncodedString()
     }
 }

@@ -409,25 +409,25 @@ public struct GraphEdgeScanner: Sendable {
               let edgeElement = elements[1],
               let toElement = elements[2] else { return nil }
 
-        let source: String
-        if let str = fromElement as? String {
-            source = str
-        } else {
-            source = String(describing: fromElement)
+        guard let source = fromElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: fromElement))
+            )
         }
 
-        let edgeLabel: String
-        if let str = edgeElement as? String {
-            edgeLabel = str
-        } else {
-            edgeLabel = String(describing: edgeElement)
+        guard let edgeLabel = edgeElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: edgeElement))
+            )
         }
 
-        let target: String
-        if let str = toElement as? String {
-            target = str
-        } else {
-            target = String(describing: toElement)
+        guard let target = toElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: toElement))
+            )
         }
 
         // Apply label filter if specified

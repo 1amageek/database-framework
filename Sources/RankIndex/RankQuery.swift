@@ -344,12 +344,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // First element is score
         guard let firstElement = tuple[0] else { return nil }
 
-        let score: Double
-        if let int64Value = firstElement as? Int64 {
-            score = Double(int64Value)
-        } else if let doubleValue = firstElement as? Double {
-            score = doubleValue
-        } else {
+        guard let score = try? TypeConversion.double(from: firstElement) else {
             return nil
         }
 
@@ -382,10 +377,9 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
         // Extract values and sort
         let itemsWithValues: [(item: T, value: Double)] = items.compactMap { item in
-            if let numValue = extractNumericValue(from: item) {
-                return (item: item, value: numValue)
-            }
-            return nil
+            guard let rawValue = item[dynamicMember: fieldName],
+                  let numValue = TypeConversion.asDouble(rawValue) else { return nil }
+            return (item: item, value: numValue)
         }
 
         switch queryMode {
@@ -425,17 +419,6 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         return results.first?.item
     }
 
-    /// Extract numeric value from item using the ranking field
-    private func extractNumericValue(from item: T) -> Double? {
-        guard let value = item[dynamicMember: fieldName] else { return nil }
-
-        if let intValue = value as? Int { return Double(intValue) }
-        if let doubleValue = value as? Double { return doubleValue }
-        if let floatValue = value as? Float { return Double(floatValue) }
-        if let int64Value = value as? Int64 { return Double(int64Value) }
-
-        return nil
-    }
 }
 
 // MARK: - Rank Entry Point
