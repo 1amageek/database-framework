@@ -525,8 +525,8 @@ struct SPARQLParserTests {
         let query = try parser.parseSelect(sparql)
         print("[TEST] testParseSelectWithFilter END - SUCCESS")
 
-        // Verify parsing completed
-        #expect(query.source != nil || query.source == nil)  // Just ensure it parsed
+        // Verify parsing completed (try above ensures it parsed successfully)
+        _ = query
     }
 
     @Test("Parse SELECT with LIMIT")
