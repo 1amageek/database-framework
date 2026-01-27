@@ -2,8 +2,8 @@
 // DatabaseEngine - Shared utility for covering index value construction
 //
 // Builds covering index values that are stored directly in the main index
-// entry's value bytes. Empty-value indexes use this to embed additional
-// field data for index-only scans without a separate suffix subkey.
+// entry's value bytes. Indexes use this to embed additional field data
+// for index-only scans.
 
 import Foundation
 import Core

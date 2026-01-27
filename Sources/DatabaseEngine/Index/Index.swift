@@ -112,7 +112,7 @@ public struct Index: @unchecked Sendable {
     ///   - subspaceKey: Optional subspace key (defaults to name)
     ///   - itemTypes: Optional set of item type names this index applies to (nil = universal)
     ///   - isUnique: Whether this index enforces uniqueness (default: false)
-    ///   - storedFieldNames: Field names for covering index suffix subkey (default: empty)
+    ///   - storedFieldNames: Field names for covering index value (default: empty)
     public init(
         name: String,
         kind: any IndexKind,
