@@ -74,11 +74,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         // Sparse index: if any field value is nil, skip indexing
         let allValues: [any TupleElement]
         do {
-            allValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
-                expression: index.rootExpression
-            )
+            allValues = try evaluateIndexFields(from: item)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil values are not included in average
             return
@@ -118,11 +114,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         // Sparse index: if any field value is nil, no index entry
         let allValues: [any TupleElement]
         do {
-            allValues = try DataAccess.evaluateIndexFields(
-                from: item,
-                keyPaths: index.keyPaths,
-                expression: index.rootExpression
-            )
+            allValues = try evaluateIndexFields(from: item)
         } catch DataAccessError.nilValueCannotBeIndexed {
             return []
         }

@@ -132,41 +132,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching items
     public func execute() async throws -> [T] {
-        guard let op = operation else {
-            throw BitmapQueryError.noOperation
-        }
-
-        let indexName = buildIndexName()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        let primaryKeys: [Tuple] = try await queryContext.withTransaction { transaction in
-            let maintainer = BitmapIndexMaintainer<T>(
-                index: Index(
-                    name: indexName,
-                    kind: BitmapIndexKind<T>(fieldNames: [self.fieldName]),
-                    rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                    keyPaths: []
-                ),
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-
-            let bitmap: RoaringBitmap
-            switch op {
-            case .equals(let value):
-                bitmap = try await maintainer.getBitmap(for: [value], transaction: transaction)
-
-            case .in(let values):
-                let valueSets = values.map { [$0] as [any TupleElement] }
-                bitmap = try await maintainer.orQuery(values: valueSets, transaction: transaction)
-
-            case .and(let valueSets):
-                let converted = valueSets.map { $0 as [any TupleElement] }
-                bitmap = try await maintainer.andQuery(values: converted, transaction: transaction)
-            }
-
-            // Apply limit if needed
+        let primaryKeys: [Tuple] = try await withResolvedBitmap { bitmap, maintainer, transaction in
             var resultBitmap = bitmap
             if let limit = self.limitCount {
                 let array = bitmap.toArray()
@@ -177,10 +143,8 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                     }
                 }
             }
-
             return try await maintainer.getPrimaryKeys(from: resultBitmap, transaction: transaction)
         }
-
         return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
     }
 
@@ -190,6 +154,29 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Number of matching items
     public func count() async throws -> Int {
+        try await withResolvedBitmap { bitmap, _, _ in
+            bitmap.cardinality
+        }
+    }
+
+    /// Get the bitmap directly (for advanced operations)
+    ///
+    /// - Returns: RoaringBitmap of matching record IDs
+    public func getBitmap() async throws -> RoaringBitmap {
+        try await withResolvedBitmap { bitmap, _, _ in
+            bitmap
+        }
+    }
+
+    // MARK: - Private Methods
+
+    /// Resolve bitmap using the configured operation, then pass to body.
+    ///
+    /// Centralizes maintainer creation and operation dispatch shared by
+    /// `execute()`, `count()`, and `getBitmap()`.
+    private func withResolvedBitmap<R: Sendable>(
+        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any TransactionProtocol) async throws -> R
+    ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation
         }
@@ -224,50 +211,9 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
                 bitmap = try await maintainer.andQuery(values: converted, transaction: transaction)
             }
 
-            return bitmap.cardinality
+            return try await body(bitmap, maintainer, transaction)
         }
     }
-
-    /// Get the bitmap directly (for advanced operations)
-    ///
-    /// - Returns: RoaringBitmap of matching record IDs
-    public func getBitmap() async throws -> RoaringBitmap {
-        guard let op = operation else {
-            throw BitmapQueryError.noOperation
-        }
-
-        let indexName = buildIndexName()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        return try await queryContext.withTransaction { transaction in
-            let maintainer = BitmapIndexMaintainer<T>(
-                index: Index(
-                    name: indexName,
-                    kind: BitmapIndexKind<T>(fieldNames: [self.fieldName]),
-                    rootExpression: FieldKeyExpression(fieldName: self.fieldName),
-                    keyPaths: []
-                ),
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-
-            switch op {
-            case .equals(let value):
-                return try await maintainer.getBitmap(for: [value], transaction: transaction)
-
-            case .in(let values):
-                let valueSets = values.map { [$0] as [any TupleElement] }
-                return try await maintainer.orQuery(values: valueSets, transaction: transaction)
-
-            case .and(let valueSets):
-                let converted = valueSets.map { $0 as [any TupleElement] }
-                return try await maintainer.andQuery(values: converted, transaction: transaction)
-            }
-        }
-    }
-
-    // MARK: - Private Methods
 
     private func buildIndexName() -> String {
         "\(T.persistableType)_bitmap_\(fieldName)"

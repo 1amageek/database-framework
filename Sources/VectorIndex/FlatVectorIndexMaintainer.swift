@@ -400,71 +400,11 @@ internal struct BinaryHeap<Element> {
     }
 }
 
-// MARK: - Specialized Heaps for k-NN
-
-/// Min-heap for candidate exploration (pop smallest distance first)
-internal struct CandidateHeap<PK> {
-    private var heap: BinaryHeap<(primaryKey: PK, distance: Double)>
-
-    init() {
-        heap = BinaryHeap { $0.distance < $1.distance }
-    }
-
-    var isEmpty: Bool { heap.isEmpty }
-    var count: Int { heap.count }
-
-    /// Returns candidate with smallest distance
-    var top: (primaryKey: PK, distance: Double)? { heap.top }
-
-    mutating func insert(_ candidate: (primaryKey: PK, distance: Double)) {
-        heap.insertBounded(candidate) { _, _ in true }  // Unbounded
-    }
-
-    /// Remove and return candidate with smallest distance
-    mutating func pop() -> (primaryKey: PK, distance: Double)? {
-        heap.pop()
-    }
-}
-
-/// Max-heap for tracking k-best results (keeps k smallest distances)
-internal struct ResultHeap<PK> {
-    private var heap: BinaryHeap<(primaryKey: PK, distance: Double)>
-    private let maxSize: Int
-
-    init(k: Int) {
-        self.maxSize = k
-        heap = BinaryHeap(maxSize: k) { $0.distance > $1.distance }
-    }
-
-    var isEmpty: Bool { heap.isEmpty }
-    var count: Int { heap.count }
-    var isFull: Bool { heap.count >= maxSize }
-
-    /// Returns result with largest distance (worst in top-k)
-    var worst: (primaryKey: PK, distance: Double)? { heap.top }
-
-    mutating func insert(_ result: (primaryKey: PK, distance: Double)) {
-        heap.insertBounded(result) { new, root in
-            // Replace root if new distance is smaller (better)
-            new.distance < root.distance
-        }
-    }
-
-    /// Returns results sorted by distance ascending (best first)
-    func toSortedArray() -> [(primaryKey: PK, distance: Double)] {
-        heap.toReverseSortedArray()
-    }
-}
-
-// MARK: - Legacy MinHeap (deprecated, use CandidateHeap/ResultHeap instead)
+// MARK: - MinHeap
 
 /// Min-heap for k-NN search
 ///
-/// **DEPRECATED**: This type has confusing semantics. Use these instead:
-/// - `CandidateHeap<PK>`: For exploring candidates (pop smallest distance)
-/// - `ResultHeap<PK>`: For tracking k-best results (keeps k smallest distances)
-///
-/// **Legacy behavior**:
+/// **Behavior**:
 /// - With `heapType: .max` and `comparator: >`, this acts as a max-heap
 /// - `min`/`top` returns root (largest element for max-heap)
 /// - `removeMin()`/`pop()` removes and returns root

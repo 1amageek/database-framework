@@ -3,143 +3,41 @@
 全モジュール横断レビューで発見された問題の一覧。重大度順に整理。
 
 発見日: 2026-01-27
+最終更新: 2026-01-27
+
+---
+
+## ステータスサマリ
+
+| 重大度 | 合計 | 解決 | Close | 保留 | Open |
+|--------|------|------|-------|------|------|
+| Critical | 4 | 2 | 2 (検証済正常) | 0 | 0 |
+| High | 7 | 7 | 0 | 0 | 0 |
+| Medium | 13 | 8 | 3 (false positive) + 1 (意図的設計) | 1 | 0 |
+| Low | 3 | 0 | 0 | 3 | 0 |
+| SPARQL | 21 | 21 | 0 | 0 | 0 |
+| **合計** | **48** | **38** | **6** | **4** | **0** |
 
 ---
 
 ## Open Issues
 
-### Critical (要修正)
-
-なし — 全件解決済み
+なし — 全件対応済み（解決・Close・保留）
 
 ---
 
-### High (重要)
+## Deferred Issues
 
-なし — 全件解決済み
-
----
-
-### Medium (改善推奨)
-
-#### M1: VectorIndex — 未使用の Heap 実装（Dead Code）
-
-**ファイル**: `Sources/VectorIndex/FlatVectorIndexMaintainer.swift:276-530`
-
-**問題**: `BinaryHeap`, `CandidateHeap`, `ResultHeap` が未使用。
-`MinHeap` のみ使用されているが `heapType: .max` で使用され名前が矛盾。
-
----
-
-#### M2: AggregationIndex — `evaluateIndexFields()` の不統一
-
-**ファイル**: `Sources/AggregationIndex/AverageIndexMaintainer.swift:77-80, 121-124`
-
-**問題**: 同一ファイル内で `DataAccess.evaluateIndexFields()` と
-inherited `evaluateIndexFields()` を混用。
-
----
-
-#### M3: AggregationIndex — Average の null ハンドリング不統一
-
-**問題**: `getAverage()` は空グループで throw、
-`getAllAverages()` はサイレントにスキップ。挙動を統一すべき。
-
----
-
-#### M4: RankIndex — `TopKHeap` コード重複
-
-**ファイル**: `Sources/RankIndex/RankIndexMaintainer.swift:430` と `Sources/RankIndex/RankQuery.swift`
-
-**問題**: 別々の `TopKHeap` 実装が存在。共有ヘルパーに抽出すべき。
-
----
-
-#### M5: BitmapIndex — クエリビルダーのコード重複
-
-**ファイル**: `Sources/BitmapIndex/BitmapQuery.swift:143, 201, 243`
-
-**問題**: `execute()`, `count()`, `getBitmap()` が maintainer 生成 + switch 分岐を
-ほぼ同一のコードで3回繰り返している。
-
----
-
-#### M6: BitmapIndex — Bitmap 減算の非効率実装
-
-**ファイル**: `Sources/BitmapIndex/RoaringBitmap.swift:487-503`
-
-**問題**: 常に配列に変換してから `filter` で差分を計算。
-bitmap コンテナには bitwise NOT + AND を使用すべき。O(n*m) → O(n)。
-
----
-
-#### M7: SpatialIndex — 距離単位の不統一
-
-**問題**: `SpatialQuery` はメートル、`Fusion/Nearby` はキロメートル。
-モジュール内で統一すべき。
-
----
-
-#### M8: LeaderboardIndex — README と実装の矛盾
-
-**ファイル**: `Sources/LeaderboardIndex/README.md:336-338`
-
-**問題**: Bottom-K, Percentile, Dense ranking が「❌ Not implemented」とされているが、
-`TimeWindowLeaderboardIndexMaintainer.swift` に完全実装済み。
-ただし public query API (`LeaderboardQueryBuilder`) には未公開。
-
----
-
-#### M9: LeaderboardIndex — Score ジェネリック型パラメータが実質未使用
+### M9: LeaderboardIndex — Score ジェネリック型パラメータが実質未使用
 
 **問題**: `TimeWindowLeaderboardIndexMaintainer<Item, Score>` の `Score` 型パラメータは
 受け取るが内部では全て `Int64` に変換。型パラメータが誤解を招く。
 
----
-
-#### M10: Package.swift — 不要な依存関係
-
-**ファイル**: `Package.swift`
-
-**問題**:
-- Line 46: DatabaseEngine に `Relationship` 依存（未使用）
-- Line 154: RelationshipIndex に `ScalarIndex` 依存（未使用）
+**保留理由**: LeaderboardIndex 全体のリファクタが必要。影響範囲が大きいため後日対応。
 
 ---
 
-#### M11: QueryAST — `GraphPattern.variables` の projection 分析が不完全
-
-**ファイル**: `Sources/QueryAST/GraphPattern.swift:132-139`
-
-**問題**: `.subquery` ケースで `.all`, `.allFrom()`, `.distinctItems()` の
-projection パターンを無視。変数が欠落する可能性。
-
----
-
-#### M12: QueryAST — `DataType.sqlName` の参照（要検証）
-
-**ファイル**: `Sources/QueryAST/MatchPattern.swift:551`
-
-**問題**: `targetType.sqlName` を呼び出しているが、別ファイルで extension が定義されているか要検証。
-
----
-
-#### M13: VectorIndex — `TupleElement → Float` 変換の重複実装（4箇所）
-
-**ファイル**:
-- `Sources/VectorIndex/VectorConversion.swift` (`tupleToVector()`, `extractFloatArray()`)
-- `Sources/VectorIndex/Fusion/Similar.swift`
-- `Sources/DatabaseEngine/QueryPlanner/IndexSearcher.swift`
-- `Sources/DatabaseEngine/QueryPlanner/StatisticsProvider.swift`
-
-**問題**: `if let Float ... else if let Double ... else if let Int64 ...` の同一型スイッチが
-4ファイルに散在。`VectorConversion` に統一ヘルパーを作り、他から呼ぶべき。
-
----
-
-### Low (軽微)
-
-#### L1: DatabaseEngine — `@unchecked Sendable` の使用
+### L1: DatabaseEngine — `@unchecked Sendable` の使用
 
 **ファイル**: `Sources/DatabaseEngine/QueryPlanner/PlanExecutor.swift:44`,
 `Sources/DatabaseEngine/QueryPlanner/AggregationPlanExecutor.swift:56`
@@ -147,23 +45,29 @@ projection パターンを無視。変数が欠落する可能性。
 **問題**: `@unchecked Sendable` が使用されている。実害はないが、
 CLAUDE.md ガイドラインでは Mutex パターンを推奨。
 
+**保留理由**: Mutex 移行は大規模。現状実害なし。
+
 ---
 
-#### L2: VectorIndex — `computeIndexKeys()` 内の `transaction: nil`
+### L2: VectorIndex — `computeIndexKeys()` 内の `transaction: nil`
 
 **ファイル**: `Sources/VectorIndex/HNSWIndexMaintainer.swift:188`
 
 **問題**: `getLabelForPrimaryKey(primaryKey: id, transaction: nil)` で
 transaction を nil で呼び出し。設計上の疑問。
 
+**保留理由**: 設計上の疑問だが動作に問題なし。
+
 ---
 
-#### L3: RelationshipIndex — JSON round-trip による FK nullification
+### L3: RelationshipIndex — JSON round-trip による FK nullification
 
 **ファイル**: `Sources/RelationshipIndex/RelationshipMaintainer.swift:347-372`
 
 **問題**: FK nullification で JSON エンコード → dict 変更 → JSON デコードの
 round-trip を使用。動作するが非効率。
+
+**保留理由**: 動作するが非効率。優先度低。
 
 ---
 
@@ -175,8 +79,8 @@ round-trip を使用。動作するが非効率。
 | 手動型変換（TypeConversion 未使用） | RankIndex, LeaderboardIndex, RelationshipIndex | ✅ H2 で解決 |
 | 不要ラッパーメソッド | LeaderboardIndex, AggregationIndex, RankIndex, ScalarIndex, BitmapIndex, DatabaseEngine | ✅ H7 で解決 |
 | `try?` エラー握りつぶし | SpatialIndex | ✅ H5/H6 で解決 |
-| コード重複 | BitmapIndex, RankIndex | M4/M5 で対応予定 |
-| Vector 型変換の重複実装 | VectorIndex, DatabaseEngine | M13 で対応予定 |
+| コード重複 | BitmapIndex | ✅ M5 で解決 |
+| Vector 型変換の重複実装 | VectorIndex, DatabaseEngine | ✅ M13 で解決 |
 
 ---
 
@@ -188,6 +92,104 @@ round-trip を使用。動作するが非効率。
 |-----------|---------|
 | **DatabaseEngine** | Container/Context パターン完全準拠、3層評価アーキテクチャ正確、TypeConversion の統一実装 |
 | **FullTextIndex** | BM25 実装正確、TupleEncoder 使用、エラー伝搬、命名規約全準拠、テストカバレッジ充実 |
+
+---
+
+## Resolved Issues (Medium)
+
+### ~~M1: VectorIndex — 未使用の Heap 実装（Dead Code）~~ [RESOLVED]
+
+**修正**: `CandidateHeap`, `ResultHeap` を削除。`BinaryHeap` は `MinHeap` が依存するため残存。
+
+---
+
+### ~~M2: AggregationIndex — `evaluateIndexFields()` の不統一~~ [RESOLVED]
+
+**修正**: `AverageIndexMaintainer.swift` の `scanItem()` と `computeIndexKeys()` で
+直接 `DataAccess.evaluateIndexFields(from:keyPaths:expression:)` を呼んでいた箇所を
+`SubspaceIndexMaintainer` プロトコル拡張の `evaluateIndexFields(from:)` に統一。
+
+---
+
+### ~~M3: AggregationIndex — Average の null ハンドリング不統一~~ [CLOSED: intentional]
+
+**理由**: `getAverage()` は単一 API → 空で throw。`getAllAverages()` は一覧 API → 空スキップ。
+PostgreSQL の `AVG()` (NULL) vs `GROUP BY AVG()` (行なし) と同等の意図的設計。
+
+---
+
+### ~~M4: RankIndex — `TopKHeap` コード重複~~ [CLOSED: false positive]
+
+**理由**: `TopKHeap` は `RankIndexMaintainer.swift` に1箇所のみ。
+`RankQuery.swift` には存在しない。
+
+---
+
+### ~~M5: BitmapIndex — クエリビルダーのコード重複~~ [RESOLVED]
+
+**修正**: `execute()`, `count()`, `getBitmap()` の共通処理を
+`withResolvedBitmap<R: Sendable>` に抽出。
+guard + indexName 生成 + typeSubspace/indexSubspace + transaction + maintainer + operation switch を
+一本化し、各メソッドは bitmap 取得後の処理のみ記述。
+
+---
+
+### ~~M6: BitmapIndex — Bitmap 集合演算の非効率実装~~ [RESOLVED]
+
+**修正**: 2つの問題を修正。
+1. `Container.intersection` の array-array ケースが O(n\*m) → `Set` 使用で O(n+m)
+2. `-` 演算子が Container 抽象を無視して全コンテナを `toArray()` → `filter` で処理していた。
+   `Container.difference(_:_:)` static メソッドを新設し、array-array, array-bitmap,
+   bitmap-array, bitmap-bitmap の4ケースで最適化。
+
+---
+
+### ~~M7: SpatialIndex — 距離単位の不統一~~ [CLOSED: false positive]
+
+**理由**: `SpatialQuery` もメートル、`Fusion/Nearby` もメートル。単位は統一済み。
+
+---
+
+### ~~M8: LeaderboardIndex — README と実装の矛盾~~ [RESOLVED]
+
+**修正**: README.md の Implementation Status を更新。
+Bottom-K, Percentile, Dense ranking を「✅ Implemented (internal)」に変更。
+public query API 未公開である旨を注記。
+
+---
+
+### ~~M10: Package.swift — 不要な依存関係~~ [RESOLVED]
+
+**修正**: DatabaseEngine から `"Relationship"` 依存を削除、
+RelationshipIndex から `"ScalarIndex"` 依存を削除。
+
+---
+
+### ~~M11: QueryAST — `GraphPattern.variables` の projection 分析が不完全~~ [RESOLVED]
+
+**修正**: `.subquery` ケースで `.items` のみ処理していた箇所を全 `Projection` ケースに対応。
+- `.distinctItems`: `.items` と同一処理
+- `.all`: SPARQL 1.1 §18.2.4.1 に従い、`query.source` の `GraphPattern` から
+  `collectVariables(into:)` で再帰的に全変数を抽出
+- `.allFrom`: SPARQL 未使用のため `break`
+
+---
+
+### ~~M12: QueryAST — `DataType.sqlName` の参照~~ [CLOSED: false positive]
+
+**理由**: `DataType.sqlName` は `MatchPattern.swift` 内に extension として定義済み。
+
+---
+
+### ~~M13: VectorIndex — `TupleElement → Float` 変換の重複実装~~ [RESOLVED]
+
+**修正**: `TypeConversion.asFloat(_ value: Any) -> Float?` を追加し、
+既存の `asInt64()`, `asDouble()`, `asString()` パターンに統一。
+4ファイルの個別型スイッチを `TypeConversion.asFloat()` に置換:
+- `VectorConversion.tupleToVector()`
+- `Similar.searchVectors()`
+- `IndexSearcher` vector decode
+- `StatisticsProvider.parseVectorForStats()`
 
 ---
 

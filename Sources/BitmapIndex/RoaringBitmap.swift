@@ -193,7 +193,8 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
         static func intersection(_ a: Container, _ b: Container) -> Container? {
             switch (a, b) {
             case (.array(let arrA), .array(let arrB)):
-                let result = arrA.filter { arrB.contains($0) }
+                let setB = Set(arrB)
+                let result = arrA.filter { setB.contains($0) }
                 return result.isEmpty ? nil : .array(result)
 
             case (.array(let arr), .bitmap(let bits)),
@@ -222,8 +223,8 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
             default:
                 // Convert runs to arrays and intersect
                 let arrA = a.toArray()
-                let arrB = b.toArray()
-                let result = arrA.filter { arrB.contains($0) }
+                let setB = Set(b.toArray())
+                let result = arrA.filter { setB.contains($0) }
                 return result.isEmpty ? nil : .array(result)
             }
         }
@@ -333,6 +334,69 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
                     return arrayToBitmap(result)
                 }
                 return .array(result)
+            }
+        }
+
+        /// Difference (AND NOT)
+        ///
+        /// Returns elements in `a` that are NOT in `b`.
+        ///
+        /// **Time Complexity**:
+        /// - array-array: O(n + m) using Set lookup
+        /// - array-bitmap: O(n) with O(1) bitmap lookup per element
+        /// - bitmap-array: O(m) for clearing bits + O(1024) for counting
+        /// - bitmap-bitmap: O(1024) bitwise AND NOT
+        ///
+        /// Reference: Lemire et al., "Roaring Bitmaps", Section 5.3
+        static func difference(_ a: Container, _ b: Container) -> Container? {
+            switch (a, b) {
+            case (.array(let arrA), .array(let arrB)):
+                let setB = Set(arrB)
+                let result = arrA.filter { !setB.contains($0) }
+                return result.isEmpty ? nil : .array(result)
+
+            case (.array(let arr), .bitmap(let bits)):
+                let result = arr.filter { value in
+                    let wordIndex = Int(value) / 64
+                    let bitIndex = Int(value) % 64
+                    return (bits[wordIndex] & (1 << bitIndex)) == 0
+                }
+                return result.isEmpty ? nil : .array(result)
+
+            case (.bitmap(let bits), .array(let arr)):
+                var resultBits = bits
+                for value in arr {
+                    let wordIndex = Int(value) / 64
+                    let bitIndex = Int(value) % 64
+                    resultBits[wordIndex] &= ~(1 << bitIndex)
+                }
+                let count = resultBits.reduce(0) { $0 + $1.nonzeroBitCount }
+                if count == 0 { return nil }
+                if count <= RoaringBitmap.arrayMaxSize {
+                    return bitmapToArray(resultBits)
+                }
+                return .bitmap(resultBits)
+
+            case (.bitmap(let bitsA), .bitmap(let bitsB)):
+                var result = [UInt64](repeating: 0, count: 1024)
+                var hasAny = false
+                for i in 0..<1024 {
+                    result[i] = bitsA[i] & ~bitsB[i]
+                    if result[i] != 0 { hasAny = true }
+                }
+                if !hasAny { return nil }
+                let count = result.reduce(0) { $0 + $1.nonzeroBitCount }
+                if count <= RoaringBitmap.arrayMaxSize {
+                    return bitmapToArray(result)
+                }
+                return .bitmap(result)
+
+            default:
+                // Convert runs to arrays and compute difference
+                let arrA = a.toArray()
+                let setB = Set(b.toArray())
+                let result = arrA.filter { !setB.contains($0) }
+                return result.isEmpty ? nil : .array(result)
             }
         }
 
@@ -485,17 +549,19 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
     }
 
     /// Difference (AND NOT)
+    ///
+    /// Returns elements in `lhs` that are NOT in `rhs`.
+    /// Uses per-container-type optimized operations.
+    ///
+    /// **Time Complexity**: O(n) for bitmap containers, O(n + m) for array containers
     public static func - (lhs: RoaringBitmap, rhs: RoaringBitmap) -> RoaringBitmap {
         var result = lhs
         for (high, containerB) in rhs.containers {
             if let containerA = result.containers[high] {
-                let arrA = containerA.toArray()
-                let arrB = containerB.toArray()
-                let diff = arrA.filter { !arrB.contains($0) }
-                if diff.isEmpty {
-                    result.containers.removeValue(forKey: high)
+                if let diffContainer = Container.difference(containerA, containerB) {
+                    result.containers[high] = diffContainer
                 } else {
-                    result.containers[high] = .array(diff)
+                    result.containers.removeValue(forKey: high)
                 }
             }
         }

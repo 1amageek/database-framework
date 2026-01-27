@@ -130,12 +130,21 @@ extension GraphPattern {
 
         case .subquery(let query):
             // Only projected variables from subquery
-            if case .items(let items) = query.projection {
+            switch query.projection {
+            case .items(let items), .distinctItems(let items):
                 for item in items {
                     if case .variable(let v) = item.expression {
                         vars.insert(v.name)
                     }
                 }
+            case .all:
+                // SELECT * projects all variables bound in the source pattern
+                // Reference: SPARQL 1.1 §18.2.4.1 — SELECT * selects all in-scope variables
+                if case .graphPattern(let pattern) = query.source {
+                    pattern.collectVariables(into: &vars)
+                }
+            case .allFrom:
+                break
             }
 
         case .groupBy(let pattern, _, _):

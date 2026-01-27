@@ -295,21 +295,12 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 }
 
                 let element = vectorTuple[i]
-                let floatValue: Float
-                if let f = element as? Float {
-                    floatValue = f
-                } else if let d = element as? Double {
-                    floatValue = Float(d)
-                } else if let i64 = element as? Int64 {
-                    floatValue = Float(i64)
-                } else if let i = element as? Int {
-                    floatValue = Float(i)
+                if let floatValue = TypeConversion.asFloat(element) {
+                    vector.append(floatValue)
                 } else {
                     isValid = false
                     break
                 }
-
-                vector.append(floatValue)
             }
 
             guard isValid else { continue }

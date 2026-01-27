@@ -948,12 +948,8 @@ public struct SearchStatisticsCollector: Sendable {
 
         for i in 0..<min(dimensions, elements.count) {
             let element = elements[i]
-            if let f = element as? Float {
+            if let f = TypeConversion.asFloat(element) {
                 vector.append(f)
-            } else if let d = element as? Double {
-                vector.append(Float(d))
-            } else if let i64 = element as? Int64 {
-                vector.append(Float(i64))
             }
         }
         return vector

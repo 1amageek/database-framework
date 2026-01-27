@@ -43,7 +43,6 @@ let package = Package(
             name: "DatabaseEngine",
             dependencies: [
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "Relationship", package: "database-kit"),  // For joining() support
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
@@ -151,7 +150,6 @@ let package = Package(
             name: "RelationshipIndex",
             dependencies: [
                 "DatabaseEngine",
-                "ScalarIndex",  // For FK index lookups
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),

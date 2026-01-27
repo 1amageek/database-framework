@@ -84,6 +84,28 @@ public struct TypeConversion: Sendable {
         }
     }
 
+    /// Float として値を抽出（ベクトル変換用）
+    ///
+    /// - 用途: ベクトルインデックス、TupleElement→Float 変換
+    /// - 戻り値: nil = 変換不可
+    public static func asFloat(_ value: Any) -> Float? {
+        switch value {
+        case let v as Float: return v
+        case let v as Double: return Float(v)
+        case let v as Int64: return Float(v)
+        case let v as Int: return Float(v)
+        case let v as Int32: return Float(v)
+        case let v as Int16: return Float(v)
+        case let v as Int8: return Float(v)
+        case let v as UInt64: return Float(v)
+        case let v as UInt: return Float(v)
+        case let v as UInt32: return Float(v)
+        case let v as UInt16: return Float(v)
+        case let v as UInt8: return Float(v)
+        default: return nil
+        }
+    }
+
     /// String として値を抽出（比較用）
     ///
     /// - 用途: 文字列比較、辞書順ソート

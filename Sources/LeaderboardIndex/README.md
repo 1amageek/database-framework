@@ -333,9 +333,9 @@ Each entry's position is tracked for efficient updates:
 | Negative scores | ✅ Complete | Full Int64 range |
 | Sparse index (nil scores) | ✅ Complete | Nil values excluded |
 | Fusion integration | ✅ Complete | Leaderboard query |
-| Bottom-K queries | ❌ Not implemented | Planned |
-| Percentile queries | ❌ Not implemented | Would need count tracking |
-| Dense ranking | ❌ Not implemented | Currently uses competition ranking |
+| Bottom-K queries | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
+| Percentile queries | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
+| Dense ranking | ✅ Implemented (internal) | Available in maintainer, not yet exposed via public query API |
 
 ## Performance Characteristics
 

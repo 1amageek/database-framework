@@ -1018,14 +1018,8 @@ public struct VectorIndexSearcher: IndexSearcher {
             }
 
             let element = elements[i]
-            if let f = element as? Float {
+            if let f = TypeConversion.asFloat(element) {
                 vector.append(f)
-            } else if let d = element as? Double {
-                vector.append(Float(d))
-            } else if let i = element as? Int {
-                vector.append(Float(i))
-            } else if let i64 = element as? Int64 {
-                vector.append(Float(i64))
             } else {
                 throw VectorSearchError.invalidVector("Cannot convert element to Float")
             }

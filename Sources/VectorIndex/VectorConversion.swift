@@ -39,14 +39,8 @@ public struct VectorConversion: Sendable {
         var vector: [Float] = []
         vector.reserveCapacity(elements.count)
         for element in elements {
-            if let f = element as? Float {
+            if let f = TypeConversion.asFloat(element) {
                 vector.append(f)
-            } else if let d = element as? Double {
-                vector.append(Float(d))
-            } else if let i64 = element as? Int64 {
-                vector.append(Float(i64))
-            } else if let i = element as? Int {
-                vector.append(Float(i))
             }
             // Skip unsupported types silently
         }

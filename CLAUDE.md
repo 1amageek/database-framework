@@ -471,6 +471,7 @@ import DatabaseEngine
 // ✅ 正しい: TypeConversion を使用
 let int64 = TypeConversion.asInt64(value)           // 値抽出 (比較用)
 let double = TypeConversion.asDouble(value)         // 値抽出 (集計用)
+let float = TypeConversion.asFloat(value)           // 値抽出 (ベクトル変換用)
 let string = TypeConversion.asString(value)         // 値抽出 (文字列比較用)
 let fieldValue = TypeConversion.toFieldValue(value) // FieldValue 変換
 let element = try TypeConversion.toTupleElement(value)  // TupleElement 変換
@@ -490,15 +491,16 @@ case let v as Int: return Int64(v)  // 禁止！
 
 ### 型マッピング仕様
 
-| Swift Type       | Int64 | Double | String | FieldValue      |
-|------------------|-------|--------|--------|-----------------|
-| Int, Int8-64     | ✓     | ✓      | -      | .int64          |
-| UInt, UInt8-64   | ✓*    | ✓      | -      | .int64          |
-| Double, Float    | -     | ✓      | -      | .double         |
-| String           | -     | -      | ✓      | .string         |
-| Bool             | ✓**   | -      | -      | .bool           |
-| Date             | -     | ✓***   | -      | .double         |
-| UUID             | -     | -      | ✓      | .string         |
+| Swift Type       | Int64 | Double | Float | String | FieldValue      |
+|------------------|-------|--------|-------|--------|-----------------|
+| Int, Int8-64     | ✓     | ✓      | ✓     | -      | .int64          |
+| UInt, UInt8-64   | ✓*    | ✓      | ✓     | -      | .int64          |
+| Double           | -     | ✓      | ✓     | -      | .double         |
+| Float            | -     | ✓      | ✓     | -      | .double         |
+| String           | -     | -      | -     | ✓      | .string         |
+| Bool             | ✓**   | -      | -     | -      | .bool           |
+| Date             | -     | ✓***   | -     | -      | .double         |
+| UUID             | -     | -      | -     | ✓      | .string         |
 
 \* UInt64 > Int64.max はオーバーフロー（nil）
 \** Bool: true=1, false=0
