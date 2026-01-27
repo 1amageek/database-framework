@@ -4,6 +4,12 @@
 
 ---
 
+## Open Issues
+
+(なし — 全件解決済み)
+
+---
+
 ## Resolved Issues
 
 ### ~~H1: `inferFieldValue` が曖昧な型推論をする~~ [RESOLVED]
@@ -27,10 +33,8 @@ String 経由の型消失が排除された。`inferFieldValue` は削除済み�
 bound object の場合、一時的な unbound variable (`?_bfs_explore_`) を使用して全中間ノードを探索し、
 到達後に bound object と照合してフィルタリング。
 
-**既知の制限**: subject が unbound variable で object が bound のとき、
-depth > 1 の結果で subject 変数が中間ノードにバインドされる場合がある（起点ノードではなく）。
-完全な修正には frontier にオリジン情報を伝搬する設計変更が必要。
-Phase 3 以前はそもそも多ホップ探索が不可能だったため、退行ではない。
+Phase 6 で frontier にオリジン追跡を追加し、subject が unbound variable のケースも完全修正
+（下記 BFS Known Limitation の解決を参照）。
 
 ---
 
@@ -48,6 +52,34 @@ Phase 3 以前はそもそも多ホップ探索が不可能だったため、退
 
 **修正**: Phase 5 で `evaluateOptional` に `anyMerged` フラグを追加。
 右パターンが非空だが左バインディングと全て非互換の場合、左バインディングを保持する。
+
+---
+
+### ~~L1: `.null` 値の SPARQL セマンティクス違反~~ [RESOLVED]
+
+**修正**: `FilterExpression.evaluate()` に `hasNull` ガードを追加。
+SPARQL 三値論理 (Section 17.2) に従い、NULL を含む比較は全て `false` を返す。
+8箇所の比較 case (equals, notEquals, lessThan, lessThanOrEqual, greaterThan,
+greaterThanOrEqual, variableEquals, variableNotEquals) に `if Self.hasNull(lhs, rhs) { return false }` を挿入。
+FieldValue の Equatable はシステム全体で使用されるため変更せず、SPARQL レイヤーのみで対応。
+テスト: `NullSemanticsTests` (24テスト)。
+
+---
+
+### ~~BFS Transitive Path: Unbound Subject + Bound Object~~ [RESOLVED]
+
+**修正**: `evaluateTransitivePath` の frontier を `[SPARQLTerm]` から
+`[(node: SPARQLTerm, origin: FieldValue?)]` に変更。
+各 frontier エントリがオリジンノード（depth 1 で発見した起点）を保持し、
+depth 2+ でも起点情報が失われないようにした。
+
+- subject が unbound variable の場合: per-origin サイクル検出
+  (`visitedPerOrigin: [FieldValue: Set<FieldValue>]`) を使用。
+  同一ノードに異なるオリジンから到達可能。
+- subject が bound の場合: グローバル `visitedNodes` を維持（パフォーマンス優先）。
+
+テスト: `PropertyPathAdvancedTests` に4テスト追加
+(linear chain, branching graph, bound subject regression x2)。
 
 ---
 
@@ -73,10 +105,52 @@ BFS frontier も `FieldValue` ベースに変更。String 経由の変換を排�
 
 ---
 
+### ~~M4: SUM が Int64.max 付近で crash する可能性~~ [RESOLVED]
+
+**修正**: `Int64(sum)` → `Int64(exactly: sum)` に変更。
+`Int64(exactly:)` は範囲外・非整数で `nil` を返すため、trap が発生しない。
+事前の `sum.rounded()` チェックと範囲リテラル比較も不要になり削除。
+
+---
+
 ### ~~M5: filter convenience メソッドが `inferFieldValue` に依存~~ [RESOLVED]
 
 **修正**: Phase 2 で convenience メソッドが `inferFieldValue` ではなく
 `.string(value)` を直接使用するように変更。`inferFieldValue` は削除済み。
+
+---
+
+### ~~M6: `normalized()` の alternative フラットニングが実質 no-op~~ [RESOLVED]
+
+**修正**: `dropFirst().reduce(first!)` (左結合) → `dropLast().reversed().reduce(last!)` (右結合) に変更。
+`(a|b)|c` → `a|(b|c)` に正しく正規化される。
+テストカバレッジも追加済み (PropertyPathAdvancedTests の `testPropertyPathNormalization`)。
+
+---
+
+### ~~L2: `GroupValue.stringValue` と `VariableBinding.string()` のロジック重複~~ [RESOLVED]
+
+**修正**: `FieldValue.displayString` プロパティを抽出し、
+`VariableBinding.string()` と `GroupValue.stringValue` の両方から共有利用するよう変更。
+
+---
+
+### ~~L3: `zeroOrOne` が `isRecursive = true`~~ [RESOLVED]
+
+**修正**: `.zeroOrOne` が `isRecursive` で `false` を返すよう修正済み。
+`.zeroOrMore`, `.oneOrMore` のみが `true` を返す。
+
+---
+
+### ~~L4: `maxDepth` のドキュメントと実装の不一致~~ [RESOLVED]
+
+**修正**: doc comment を `Default is 100` に修正済み。実装値と一致。
+
+---
+
+### ~~L5: `firstNumericAggregate` に String パース fallback (dead code)~~ [RESOLVED]
+
+**修正**: String パース fallback を削除。`value.int64Value` による直接変換のみ使用。
 
 ---
 
@@ -87,133 +161,33 @@ BFS frontier も `FieldValue` ベースに変更。String 経由の変換を排�
 
 ---
 
-## Open Issues
+### ~~T1: `testRangeQuantifier` が range quantifier をテストしていない~~ [RESOLVED]
 
-### Medium Severity
-
-### ~~M4: SUM が Int64.max 付近で crash する可能性~~ [RESOLVED]
-
-**修正**: `Int64(sum)` → `Int64(exactly: sum)` に変更。
-`Int64(exactly:)` は範囲外・非整数で `nil` を返すため、trap が発生しない。
-事前の `sum.rounded()` チェックと範囲リテラル比較も不要になり削除。
+**修正**: テスト名を `testTransitiveClosureLinearChain` に変更し、
+oneOrMore のリニアチェーン探索を正確にテストするよう修正。
+到達ノード数の exact assertion (`count == 5`) を追加。
 
 ---
 
-### M6: `normalized()` の alternative フラットニングが実質 no-op
+### ~~T2: `testComplexQuantifierSequenceOneOrMore` の assertion が不十分~~ [RESOLVED]
 
-**ファイル**: `PropertyPath.swift:216-219`
-
-```swift
-// コメント: "Rebuild as right-associative chain"
-return alternatives.dropFirst().reduce(alternatives.first!) { acc, next in
-    PropertyPath.alternative(acc, next)
-}
-```
-
-**問題**: `reduce` は左結合で構築する。左結合入力 `(a|b)|c` をフラットニングして `[a, b, c]` にした後、同じ左結合 `(a|b)|c` を再構築する。正規化が何も変更しない。
-
-テストカバレッジもゼロ (PropertyPathAdvancedTests.swift:706-719)。
+**修正**: sequence + oneOrMore の結果 (N3, N4) に対する assertion を追加。
+zero-hop (N1) だけでなく、core functionality の検証を追加。
 
 ---
 
-### Low Severity
+### ~~T3: `testPropertyPathComplexity` の assertion が弱い~~ [RESOLVED]
 
-### L1: `.null` 値の SPARQL セマンティクス違反
-
-**ファイル**: `VariableBinding.swift:193-206, 215-224`
-
-**問題**: FieldValue の Equatable で `.null == .null` → `true`。SPARQL 三値論理では NULL 比較は error (false でも true でもない)。
-
-現在 `.null` が binding に入ることはないが、API 上は `binding("?x", to: .null)` が可能。
-
-関連: `GroupValue(from: .null)` が `.bound(.null)` になり `.unbound` と区別される (L305-311)。
+**修正**: 全 PropertyPath ケース (iri, negatedPropertySet, inverse, sequence,
+alternative, oneOrMore, zeroOrMore, zeroOrOne) に対する exact assertion に変更。
+複合パスも `== 10200` の exact 値で検証。
 
 ---
 
-### L2: `GroupValue.stringValue` と `VariableBinding.string()` のロジック重複
+### ~~T4: alternative フラットニングのテストカバレッジがゼロ~~ [RESOLVED]
 
-**ファイル**: `VariableBinding.swift:326-338` vs `VariableBinding.swift:84-94`
-
-**問題**: 同じ FieldValue → String 変換ロジックが2箇所に存在。一方を変更しても他方に反映されない。
-
----
-
-### L3: `zeroOrOne` が `isRecursive = true`
-
-**ファイル**: `PropertyPath.swift:121-123`
-
-**問題**: `zeroOrOne` (path?) は 0 回または 1 回の有界評価。反復/再帰は不要だが、`isRecursive` が `true` を返す。クエリプランナーが不要な再帰評価パスを選択する可能性。
-
----
-
-### L4: `maxDepth` のドキュメントと実装の不一致
-
-**ファイル**: `PropertyPath.swift:332`
-
-**問題**: doc comment が `Default is 10` と記載しているが実際のデフォルト値は `100` (L347)。
-
----
-
-### L5: `firstNumericAggregate` に String パース fallback (dead code)
-
-**ファイル**: `SPARQLGroupedQueryBuilder.swift:367-372`
-
-```swift
-if let s = value.stringValue { return Int(s) }  // ← dead code
-```
-
-**問題**: FieldValue 移行が完了しているため、aggregate 結果は常に型付き (`.int64`, `.double`)。String パース fallback は到達しない。バグのマスク源。
-
----
-
-## Test Issues
-
-### T1: `testRangeQuantifier` が range quantifier をテストしていない
-
-**ファイル**: `PropertyPathAdvancedTests.swift:242-280`
-
-テスト名は `{2,4}` を主張するが、実際は `oneOrMore` (`+`) をテスト。
-
----
-
-### T2: `testComplexQuantifierSequenceOneOrMore` の assertion が不十分
-
-**ファイル**: `PropertyPathAdvancedTests.swift:203-240`
-
-`(a/b+)*` テストが zero-hop (自身の返却) のみ assert。core functionality (sequence + oneOrMore の組合せ) は検証されていない。
-
----
-
-### T3: `testPropertyPathComplexity` の assertion が弱い
-
-**ファイル**: `PropertyPathAdvancedTests.swift:683-704`
-
-`>= 2`, `> 10` 等の弱い不等式で、実装が壊れても通過する。
-
----
-
-### T4: alternative フラットニングのテストカバレッジがゼロ
-
-**ファイル**: `PropertyPathAdvancedTests.swift:706-719`
-
-`normalized()` の最も複雑なロジック (alternative flattening) がテストされていない。
-
----
-
-## Known Limitations
-
-### BFS Transitive Path: Unbound Subject + Bound Object
-
-**条件**: subject が unbound variable、object が bound value、depth > 1
-
-**例**: エッジ `A→B→C` で `?person (knows)+ C` を評価する場合:
-1. ホップ1: frontier = `[A, B, C, ...]` (全ノード)。`A→B` を発見 → `?person=A`
-2. ホップ2: frontier = `[B]`。`B→C` を発見 → `?person=B` (中間ノード)
-3. 結果: `?person=B` が返される（`?person=A` が正しい）
-
-**原因**: BFS が各ホップで subject 変数を再バインドするため、
-最後のホップの subject が結果に反映される。正確にはオリジンノードからの
-フルパスを追跡する必要がある。
-
-**影響**: Phase 3 以前はそもそも multi-hop + bound object が機能しなかったため退行ではない。
-完全修正には frontier にオリジンバインディングを伝搬する大規模な再設計が必要。
+**修正**: `testPropertyPathNormalization` に以下のテストケースを追加:
+- 左結合 → 右結合の正規化 (`(a|b)|c` → `a|(b|c)`)
+- ネストされた alternative のフラットニング (`((a|b)|(c|d))` → `a|(b|(c|d))`)
+- 既に右結合のパスが不変であることの検証
+- inverse over sequence / alternative の正規化

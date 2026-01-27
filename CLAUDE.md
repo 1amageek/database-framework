@@ -269,6 +269,86 @@ execute()                      ← IndexQueryContext 経由で実行
 | Query Builder 型 | `{Index}QueryBuilder<T>` | `VectorQueryBuilder`, `SpatialQueryBuilder` |
 | Maintainer 型 | `{Algorithm}IndexMaintainer<T>` | `HNSWIndexMaintainer`, `FlatVectorIndexMaintainer` |
 
+## Value Access Architecture（値アクセス3層アーキテクチャ）
+
+フィルタリング・ソートはすべてのインデックスモジュールから統一的に利用される共通基盤。各インデックスが独自に評価ロジックを実装してはならない。
+
+### 3層構造
+
+```
+Layer 1: ゼロコピーパス（構築時クロージャ）
+    FieldComparison._evaluate / SortDescriptor._compare
+    → 型付き KeyPath<T, V> でネイティブ比較、存在型を経由しない
+
+Layer 2: FieldReader パス（型消去後のフォールバック）
+    FieldReader.read() → FieldValue 変換 → FieldValue 比較
+    → QueryRewriter/DNFConverter で型情報が失われた場合のみ使用
+
+Layer 3: DataAccess（ストレージ層）
+    DataAccess.deserialize() → throws（エラーを伝播、握りつぶさない）
+```
+
+### ゼロコピー評価の仕組み
+
+演算子（`==`, `<` 等）で `Predicate` を構築すると、型付きクロージャが `FieldComparison._evaluate` にキャプチャされる。
+
+```swift
+// 構築時: 型情報がクロージャに閉じ込められる
+let predicate: Predicate<User> = \.age == 30
+// 内部:
+//   nonisolated(unsafe) let kp = keyPath  // KeyPath<User, Int>
+//   _evaluate = { model in model[keyPath: kp] == v }
+
+// 評価時: Any / FieldValue を経由しない
+comparison.evaluate(on: user)  // → _evaluate?(user) → user[keyPath: kp] == 30
+```
+
+`SortDescriptor` も同様に `_compare` クロージャでゼロコピー比較を行う。
+
+### 評価フロー
+
+```
+evaluate(on: model)
+  ├─ _evaluate != nil → ゼロコピーパス（通常のユーザークエリ）
+  └─ _evaluate == nil → evaluateViaFieldReader()（型消去後のフォールバック）
+
+orderedComparison(lhs, rhs)
+  ├─ _compare != nil → ゼロコピーパス
+  └─ _compare == nil → compareViaFieldReader()
+```
+
+### 禁止事項
+
+- ❌ `FDBDataStore`、`PlanExecutor`、各インデックスモジュールが独自の `evaluateComparison` を実装しない
+- ❌ `try?` でエラーを握りつぶさない（`extractIndexValues`、`DataAccess.deserialize`、`valueToTuple` は全て `throws`）
+- ❌ `String(describing:)` で型変換のフォールバックをしない（インデックスキーの順序が壊れる）
+- ❌ `PartialKeyPath` の戻り値に対して `raw == nil` で null 判定しない（Optional-in-Any ボクシング問題）
+- ✅ null 判定には `FieldValue` 変換後の `.isNull` を使用
+- ✅ 全ての呼び出し元は `comparison.evaluate(on:)` と `descriptor.orderedComparison()` を使用
+
+### KeyPath と Sendable
+
+`KeyPath` は `Sendable` に準拠していないため、`@Sendable` クロージャでキャプチャする際は `nonisolated(unsafe) let` を使用する。
+
+```swift
+// ✅ 正しい
+nonisolated(unsafe) let kp = keyPath
+let closure: @Sendable (T) -> Bool = { model in model[keyPath: kp] == value }
+
+// ❌ コンパイルエラー
+let closure: @Sendable (T) -> Bool = { model in model[keyPath: keyPath] == value }
+```
+
+### 関連ファイル
+
+| ファイル | 責務 |
+|---------|------|
+| `Sources/DatabaseEngine/Fetch/FDBFetchDescriptor.swift` | `FieldComparison.evaluate(on:)`, `SortDescriptor.orderedComparison()`, 演算子オーバーロード |
+| `Sources/DatabaseEngine/Core/FieldReader.swift` | Layer 2: 非 throwing フィールド読み取り（dynamicMember / ネストフィールド） |
+| `Sources/DatabaseEngine/Internal/FDBDataStore.swift` | `evaluatePredicate()` が `evaluate(on:)` を呼ぶ |
+| `Sources/DatabaseEngine/QueryPlanner/PlanExecutor.swift` | フィルタ・ソートが `evaluate(on:)` / `orderedComparison()` を呼ぶ |
+| `Sources/DatabaseEngine/QueryPlanner/AggregationPlanExecutor.swift` | 集約クエリのフィルタが `evaluate(on:)` を呼ぶ |
+
 ## Tuple Encoding Convention
 
 ### TupleEncoder / TupleDecoder

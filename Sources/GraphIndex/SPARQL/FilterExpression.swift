@@ -128,34 +128,40 @@ public indirect enum FilterExpression: Sendable {
         case .equals(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             return lhs == rhs
 
         case .notEquals(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             return lhs != rhs
 
         case .lessThan(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             guard let cmp = lhs.compare(to: rhs) else { return false }
             return cmp == .orderedAscending
 
         case .lessThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             guard let cmp = lhs.compare(to: rhs) else { return false }
             return cmp != .orderedDescending
 
         case .greaterThan(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             guard let cmp = lhs.compare(to: rhs) else { return false }
             return cmp == .orderedDescending
 
         case .greaterThanOrEqual(let variable, let value):
             guard let v = binding[variable] else { return false }
             let (lhs, rhs) = Self.numericPromote(v, value)
+            if Self.hasNull(lhs, rhs) { return false }
             guard let cmp = lhs.compare(to: rhs) else { return false }
             return cmp != .orderedAscending
 
@@ -163,11 +169,13 @@ public indirect enum FilterExpression: Sendable {
         case .variableEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
             let (lhs, rhs) = Self.numericPromote(v1, v2)
+            if Self.hasNull(lhs, rhs) { return false }
             return lhs == rhs
 
         case .variableNotEquals(let var1, let var2):
             guard let v1 = binding[var1], let v2 = binding[var2] else { return false }
             let (lhs, rhs) = Self.numericPromote(v1, v2)
+            if Self.hasNull(lhs, rhs) { return false }
             return lhs != rhs
 
         // Bound check
@@ -218,6 +226,19 @@ public indirect enum FilterExpression: Sendable {
         case .alwaysFalse:
             return false
         }
+    }
+
+    // MARK: - SPARQL Three-Valued Logic
+
+    /// SPARQL three-valued logic: comparisons involving NULL produce error → false
+    ///
+    /// FieldValue's Equatable treats `.null == .null` as `true` (correct for system-wide use),
+    /// but SPARQL Section 17.2 requires that any comparison involving NULL yields "error",
+    /// which FILTER evaluates as `false`.
+    ///
+    /// Reference: W3C SPARQL 1.1, Section 17.2 (Filter Evaluation)
+    private static func hasNull(_ lhs: FieldValue, _ rhs: FieldValue) -> Bool {
+        lhs.isNull || rhs.isNull
     }
 
     // MARK: - Numeric Promotion

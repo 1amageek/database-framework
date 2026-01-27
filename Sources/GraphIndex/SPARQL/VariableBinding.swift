@@ -82,15 +82,7 @@ public struct VariableBinding: Sendable, Hashable {
     ///
     /// Used for hexastore lookups and display. Converts all FieldValue types to string.
     public func string(_ variable: String) -> String? {
-        guard let value = bindings[variable] else { return nil }
-        switch value {
-        case .string(let s): return s
-        case .int64(let i): return String(i)
-        case .double(let d): return String(d)
-        case .bool(let b): return String(b)
-        case .null: return nil
-        case .data, .array: return nil
-        }
+        bindings[variable]?.displayString
     }
 
     /// Get value as Int
@@ -280,6 +272,25 @@ extension VariableBinding: ExpressibleByDictionaryLiteral {
     }
 }
 
+// MARK: - FieldValue String Conversion
+
+extension FieldValue {
+    /// Convert to a display string representation
+    ///
+    /// Returns `nil` for `.null`, `.data`, and `.array` values.
+    /// Shared by `VariableBinding.string()` and `GroupValue.stringValue`.
+    var displayString: String? {
+        switch self {
+        case .string(let s): return s
+        case .int64(let i): return String(i)
+        case .double(let d): return String(d)
+        case .bool(let b): return String(b)
+        case .null: return nil
+        case .data, .array: return nil
+        }
+    }
+}
+
 // MARK: - GroupValue
 
 /// GROUP BY key value wrapper that distinguishes null/unbound from bound values
@@ -324,18 +335,7 @@ public enum GroupValue: Sendable, Hashable, Comparable {
 
     /// Get the string representation if bound, nil if unbound
     public var stringValue: String? {
-        switch self {
-        case .bound(let value):
-            switch value {
-            case .string(let s): return s
-            case .int64(let i): return String(i)
-            case .double(let d): return String(d)
-            case .bool(let b): return String(b)
-            default: return nil
-            }
-        case .unbound:
-            return nil
-        }
+        fieldValue?.displayString
     }
 
     /// Whether this value is bound

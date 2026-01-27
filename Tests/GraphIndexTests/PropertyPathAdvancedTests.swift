@@ -233,14 +233,16 @@ struct PropertyPathAdvancedTests {
             .wherePath(n1, path: complexPath, "?target")
             .execute()
 
-        // Zero-or-more includes N1 itself
+        // Zero-or-more includes N1 itself (zero repetitions)
         let targets = result.bindings.compactMap { $0.string("?target") }
-        #expect(targets.contains(n1))  // Zero repetitions
-        // After one iteration of (a/b+), we reach N3 or N4 depending on how b+ is interpreted
+        #expect(targets.contains(n1))  // Zero repetitions: start node
+        // After one iteration of (a/b+): N1 -a-> N2 -b-> N3 and N2 -b-> N3 -b-> N4
+        #expect(targets.contains(n3))  // One iteration: a then b (one hop)
+        #expect(targets.contains(n4))  // One iteration: a then b+ (two hops)
     }
 
-    @Test("Range quantifier {2,4}")
-    func testRangeQuantifier() async throws {
+    @Test("Transitive closure on linear chain (link+)")
+    func testTransitiveClosureLinearChain() async throws {
         let container = try await setupContainer()
         try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
@@ -271,7 +273,8 @@ struct PropertyPathAdvancedTests {
             .execute()
 
         let targets = result.bindings.compactMap { $0.string("?target") }
-        // Should find all reachable nodes
+        // Should find exactly all 5 reachable nodes (N1-N5), not N0 itself (oneOrMore excludes start)
+        #expect(targets.count == 5)
         #expect(targets.contains(n1))
         #expect(targets.contains(n2))
         #expect(targets.contains(n3))
@@ -682,25 +685,36 @@ struct PropertyPathAdvancedTests {
 
     @Test("PropertyPath complexity estimate")
     func testPropertyPathComplexity() throws {
-        // Simple paths have low complexity
+        // Simple IRI: cost = 1
         #expect(PropertyPath.iri("test").complexityEstimate == 1)
 
-        // Inverse adds slight complexity
+        // Negated property set: cost = 10 (requires scanning all edges)
+        #expect(PropertyPath.negatedPropertySet(["a", "b"]).complexityEstimate == 10)
+
+        // Inverse: inner + 1
         #expect(PropertyPath.inverse(.iri("test")).complexityEstimate == 2)
 
-        // Sequence is additive
+        // Sequence: sum of parts (1 + 1 = 2)
         let sequence = PropertyPath.sequence(.iri("a"), .iri("b"))
-        #expect(sequence.complexityEstimate >= 2)
+        #expect(sequence.complexityEstimate == 2)
 
-        // Recursive paths have higher complexity
-        #expect(PropertyPath.oneOrMore(.iri("test")).complexityEstimate > PropertyPath.iri("test").complexityEstimate)
-        #expect(PropertyPath.zeroOrMore(.iri("test")).complexityEstimate > PropertyPath.iri("test").complexityEstimate)
+        // Alternative: sum of parts (1 + 1 = 2)
+        let alternative = PropertyPath.alternative(.iri("a"), .iri("b"))
+        #expect(alternative.complexityEstimate == 2)
 
-        // Complex nested paths have highest complexity
+        // Recursive paths: inner * 100
+        #expect(PropertyPath.oneOrMore(.iri("test")).complexityEstimate == 100)
+        #expect(PropertyPath.zeroOrMore(.iri("test")).complexityEstimate == 100)
+
+        // ZeroOrOne: inner + 1
+        #expect(PropertyPath.zeroOrOne(.iri("test")).complexityEstimate == 2)
+
+        // Complex nested: zeroOrMore(sequence(a, alternative(b, oneOrMore(c))))
+        // = (1 + (1 + 1*100)) * 100 = 10200
         let complex = PropertyPath.zeroOrMore(
             .sequence(.iri("a"), .alternative(.iri("b"), .oneOrMore(.iri("c"))))
         )
-        #expect(complex.complexityEstimate > 10)
+        #expect(complex.complexityEstimate == 10200)
     }
 
     @Test("PropertyPath normalization")
@@ -773,5 +787,134 @@ struct PropertyPathAdvancedTests {
         #expect(iris.contains("b"))
         #expect(iris.contains("c"))
         #expect(iris.count == 3)
+    }
+
+    // MARK: - BFS Origin Tracking Tests
+
+    @Test("BFS transitive: unbound subject + bound object returns origin node (linear chain)")
+    func testBFSOriginTrackingLinearChain() async throws {
+        // Graph: A→B→C (via "link")
+        // Query: ?person (link)+ C → should return ?person=A and ?person=B
+        // (A reaches C via 2 hops, B reaches C via 1 hop)
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: b, relationship: link, to: c),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath("?person", path: .oneOrMore(.iri(link)), c)
+            .execute()
+
+        let persons = Set(result.bindings.compactMap { $0.string("?person") })
+        // Both A and B can reach C
+        #expect(persons.contains(a), "A should reach C via 2 hops")
+        #expect(persons.contains(b), "B should reach C via 1 hop")
+        #expect(persons.count == 2)
+    }
+
+    @Test("BFS transitive: unbound subject + bound object with branching graph")
+    func testBFSOriginTrackingBranching() async throws {
+        // Graph: A→B→D, C→D (via "link")
+        // Query: ?x (link)+ D → should return ?x=A, ?x=B, ?x=C
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let d = uniqueID("D")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: b, relationship: link, to: d),
+            makeEdge(from: c, relationship: link, to: d),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath("?x", path: .oneOrMore(.iri(link)), d)
+            .execute()
+
+        let xs = Set(result.bindings.compactMap { $0.string("?x") })
+        #expect(xs.contains(a), "A reaches D via A→B→D")
+        #expect(xs.contains(b), "B reaches D via B→D")
+        #expect(xs.contains(c), "C reaches D via C→D")
+        #expect(xs.count == 3)
+    }
+
+    @Test("BFS transitive: bound subject + unbound object still works (regression)")
+    func testBFSBoundSubjectUnboundObject() async throws {
+        // Graph: A→B→C (via "link")
+        // Query: A (link)+ ?target → should return ?target=B and ?target=C
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: b, relationship: link, to: c),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath(a, path: .oneOrMore(.iri(link)), "?target")
+            .execute()
+
+        let targets = Set(result.bindings.compactMap { $0.string("?target") })
+        #expect(targets.contains(b), "B is reachable from A")
+        #expect(targets.contains(c), "C is reachable from A via B")
+        #expect(targets.count == 2)
+    }
+
+    @Test("BFS transitive: bound subject + bound object (regression)")
+    func testBFSBoundSubjectBoundObject() async throws {
+        // Graph: A→B→C (via "link")
+        // Query: A (link)+ C → should match (A can reach C)
+
+        let container = try await setupContainer()
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let a = uniqueID("A")
+        let b = uniqueID("B")
+        let c = uniqueID("C")
+        let link = uniqueID("link")
+
+        let edges = [
+            makeEdge(from: a, relationship: link, to: b),
+            makeEdge(from: b, relationship: link, to: c),
+        ]
+        try await insertEdges(edges, context: context)
+
+        let result = try await context.sparql(AdvancedPathEdge.self)
+            .defaultIndex()
+            .wherePath(a, path: .oneOrMore(.iri(link)), c)
+            .execute()
+
+        // A can reach C → at least one result (empty binding since both are bound)
+        #expect(!result.isEmpty, "A should reach C via A→B→C")
     }
 }

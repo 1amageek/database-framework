@@ -1216,20 +1216,40 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         }
 
         // BFS/iterative deepening for transitive closure
-        var frontier: [SPARQLTerm] = [subject]
+        // Each frontier entry tracks the current node AND the origin node from depth 1.
+        // This ensures that when subject is an unbound variable and object is bound,
+        // the result correctly binds the subject to the origin (start) node, not an
+        // intermediate node along the path.
+        var frontier: [(node: SPARQLTerm, origin: FieldValue?)] = [(node: subject, origin: nil)]
         var depth = 0
 
+        // Per-origin cycle detection: when subject is unbound, the same node can be
+        // reached from different origins. Global visitedNodes would incorrectly block
+        // the second expansion. Use per-origin tracking only when needed.
+        let subjectIsVariable = subject.isVariable
+        var visitedPerOrigin: [FieldValue: Set<FieldValue>] = [:]
+
         while !frontier.isEmpty && depth < config.maxDepth && allResults.count < config.maxResults {
-            var nextFrontier: [SPARQLTerm] = []
+            var nextFrontier: [(node: SPARQLTerm, origin: FieldValue?)] = []
             depth += 1
 
-            for currentSubject in frontier {
-                // Skip if we've visited this node (cycle detection)
+            for (currentSubject, currentOrigin) in frontier {
+                // Cycle detection
                 if config.detectCycles, case .value(let nodeValue) = currentSubject {
-                    if visitedNodes.contains(nodeValue) {
-                        continue
+                    if subjectIsVariable {
+                        // Per-origin: same node reachable from different origins is OK
+                        let originKey = currentOrigin ?? .null
+                        if visitedPerOrigin[originKey, default: []].contains(nodeValue) {
+                            continue
+                        }
+                        visitedPerOrigin[originKey, default: []].insert(nodeValue)
+                    } else {
+                        // Global: subject is bound, single traversal
+                        if visitedNodes.contains(nodeValue) {
+                            continue
+                        }
+                        visitedNodes.insert(nodeValue)
                     }
-                    visitedNodes.insert(nodeValue)
                 }
 
                 // Execute one hop with exploration variable (always unbound)
@@ -1245,10 +1265,38 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                     depth: depth
                 )
 
+                // Determine the origin to propagate to next frontier entries.
+                // At depth 1 (origin == nil), the origin is the current subject's value.
+                // At depth 2+, propagate the existing origin unchanged.
+                let originForPropagation: FieldValue?
+                if let existing = currentOrigin {
+                    originForPropagation = existing
+                } else if case .value(let currentVal) = currentSubject {
+                    originForPropagation = currentVal
+                } else if subject.isVariable {
+                    // Subject is a variable; at depth 1, evaluatePropertyPath binds it
+                    // This case handles when frontier starts with a variable term
+                    originForPropagation = nil  // Will be resolved per-binding below
+                } else {
+                    originForPropagation = nil
+                }
+
                 for binding in result.bindings {
                     // Extract the reached node for frontier expansion
                     guard let reachedValue = binding[explorationVarName] else { continue }
-                    nextFrontier.append(.value(reachedValue))
+
+                    // Resolve per-binding origin: at depth 1 with variable subject,
+                    // the binding contains the subject variable's value
+                    let bindingOrigin: FieldValue?
+                    if let prop = originForPropagation {
+                        bindingOrigin = prop
+                    } else if let subjVar = subject.variableName, let subjVal = binding[subjVar] {
+                        bindingOrigin = subjVal
+                    } else {
+                        bindingOrigin = nil
+                    }
+
+                    nextFrontier.append((node: .value(reachedValue), origin: bindingOrigin))
 
                     // Build result binding based on original object type
                     if case .value(let targetValue) = object {
@@ -1257,11 +1305,11 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
                             // Construct binding with only the original variables (not exploration var)
                             var resultBinding = VariableBinding()
                             if case .variable(let subjVar) = subject {
-                                if let subjVal = binding[subjVar] {
+                                // Use origin to get the correct start node, not intermediate
+                                if let origin = bindingOrigin {
+                                    resultBinding = resultBinding.binding(subjVar, to: origin)
+                                } else if let subjVal = binding[subjVar] {
                                     resultBinding = resultBinding.binding(subjVar, to: subjVal)
-                                } else if case .value(let currentVal) = currentSubject {
-                                    // Subject was bound at start, propagate through BFS
-                                    resultBinding = resultBinding.binding(subjVar, to: currentVal)
                                 }
                             }
                             if seen.insert(resultBinding).inserted {
