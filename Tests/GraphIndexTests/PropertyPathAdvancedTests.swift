@@ -14,7 +14,7 @@ import TestSupport
 @testable import QueryAST
 
 // Disambiguate PropertyPath - use GraphIndex version
-typealias PropertyPath = GraphIndex.PropertyPath
+typealias PropertyPath = GraphIndex.ExecutionPropertyPath
 
 // MARK: - Test Model
 

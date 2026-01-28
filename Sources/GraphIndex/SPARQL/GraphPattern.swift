@@ -1,4 +1,4 @@
-// GraphPattern.swift
+// ExecutionPattern.swift
 // GraphIndex - SPARQL-like graph pattern algebra
 //
 // Represents composed graph patterns following SPARQL algebra.
@@ -12,37 +12,37 @@ import Foundation
 /// to create complex queries with joins, optionals, unions, and filters.
 ///
 /// **Reference**: W3C SPARQL 1.1 Query Language, Section 18.2 (SPARQL Algebra)
-public indirect enum GraphPattern: Sendable {
+public indirect enum ExecutionPattern: Sendable {
 
     /// Basic Graph Pattern (BGP): a set of triple patterns
     ///
     /// Multiple patterns in a BGP are implicitly joined.
     /// This is the fundamental building block.
-    case basic([TriplePattern])
+    case basic([ExecutionTriple])
 
     /// Join of two graph patterns (AND semantics)
     ///
     /// Both patterns must match. Variables shared between patterns
     /// are joined (must have equal values).
-    case join(GraphPattern, GraphPattern)
+    case join(ExecutionPattern, ExecutionPattern)
 
     /// Left outer join (OPTIONAL semantics)
     ///
     /// Left pattern must match; right pattern is optional.
     /// If right pattern doesn't match, variables from right
     /// will be unbound in the result.
-    case optional(GraphPattern, GraphPattern)
+    case optional(ExecutionPattern, ExecutionPattern)
 
     /// Union of two graph patterns (OR semantics)
     ///
     /// Either pattern can match. Results from both branches
     /// are combined.
-    case union(GraphPattern, GraphPattern)
+    case union(ExecutionPattern, ExecutionPattern)
 
     /// Filter applied to a graph pattern
     ///
     /// Pattern must match AND filter expression must evaluate to true.
-    case filter(GraphPattern, FilterExpression)
+    case filter(ExecutionPattern, FilterExpression)
 
     /// Group by pattern with aggregation
     ///
@@ -54,7 +54,7 @@ public indirect enum GraphPattern: Sendable {
     ///   - groupVariables: Variables to group by
     ///   - aggregates: Aggregate expressions to compute
     ///   - having: Optional filter on aggregate results
-    case groupBy(GraphPattern, groupVariables: [String], aggregates: [AggregateExpression], having: FilterExpression?)
+    case groupBy(ExecutionPattern, groupVariables: [String], aggregates: [AggregateExpression], having: FilterExpression?)
 
     /// Property path pattern
     ///
@@ -65,7 +65,16 @@ public indirect enum GraphPattern: Sendable {
     ///   - subject: The subject term (variable or value)
     ///   - path: The property path expression
     ///   - object: The object term (variable or value)
-    case propertyPath(subject: SPARQLTerm, path: PropertyPath, object: SPARQLTerm)
+    /// Difference of two graph patterns (MINUS semantics)
+    ///
+    /// Keep left bindings that have no compatible solution in right.
+    /// Compatible = agree on all shared variables AND share at least one variable.
+    /// If no shared variables, left binding is always kept.
+    ///
+    /// **Reference**: W3C SPARQL 1.1, Section 18.5
+    case minus(ExecutionPattern, ExecutionPattern)
+
+    case propertyPath(subject: ExecutionTerm, path: ExecutionPropertyPath, object: ExecutionTerm)
 
     // MARK: - Variables
 
@@ -91,6 +100,8 @@ public indirect enum GraphPattern: Sendable {
                 result.insert(agg.alias)
             }
             return result
+        case .minus(let left, _):
+            return left.variables  // MINUS does not project right variables
         case .propertyPath(let subject, _, let object):
             var result = Set<String>()
             if case .variable(let name) = subject { result.insert(name) }
@@ -124,6 +135,8 @@ public indirect enum GraphPattern: Sendable {
                 result.insert(agg.alias)
             }
             return result
+        case .minus(let left, _):
+            return left.requiredVariables
         case .propertyPath(let subject, _, let object):
             var result = Set<String>()
             if case .variable(let name) = subject { result.insert(name) }
@@ -154,26 +167,30 @@ public indirect enum GraphPattern: Sendable {
             return pattern.isEmpty
         case .groupBy(let pattern, _, _, _):
             return pattern.isEmpty
+        case .minus(let left, _):
+            return left.isEmpty
         case .propertyPath:
             return false  // Property paths are never empty
         }
     }
 
     /// Extract all triple patterns (flattening the structure)
-    public var allTriplePatterns: [TriplePattern] {
+    public var allExecutionTriples: [ExecutionTriple] {
         switch self {
         case .basic(let patterns):
             return patterns
         case .join(let left, let right):
-            return left.allTriplePatterns + right.allTriplePatterns
+            return left.allExecutionTriples + right.allExecutionTriples
         case .optional(let left, let right):
-            return left.allTriplePatterns + right.allTriplePatterns
+            return left.allExecutionTriples + right.allExecutionTriples
         case .union(let left, let right):
-            return left.allTriplePatterns + right.allTriplePatterns
+            return left.allExecutionTriples + right.allExecutionTriples
         case .filter(let pattern, _):
-            return pattern.allTriplePatterns
+            return pattern.allExecutionTriples
         case .groupBy(let pattern, _, _, _):
-            return pattern.allTriplePatterns
+            return pattern.allExecutionTriples
+        case .minus(let left, let right):
+            return left.allExecutionTriples + right.allExecutionTriples
         case .propertyPath:
             return []  // Property paths don't have direct triple patterns
         }
@@ -181,30 +198,30 @@ public indirect enum GraphPattern: Sendable {
 
     /// Number of triple patterns
     public var patternCount: Int {
-        allTriplePatterns.count
+        allExecutionTriples.count
     }
 
     // MARK: - Convenience Constructors
 
     /// Create a basic pattern from a single triple pattern
-    public static func single(_ pattern: TriplePattern) -> GraphPattern {
+    public static func single(_ pattern: ExecutionTriple) -> ExecutionPattern {
         .basic([pattern])
     }
 
     /// Create a basic pattern from string literals
-    public static func triple(_ subject: String, _ predicate: String, _ object: String) -> GraphPattern {
-        .basic([TriplePattern(subject, predicate, object)])
+    public static func triple(_ subject: String, _ predicate: String, _ object: String) -> ExecutionPattern {
+        .basic([ExecutionTriple(subject, predicate, object)])
     }
 
     /// Create an empty pattern
-    public static var empty: GraphPattern {
+    public static var empty: ExecutionPattern {
         .basic([])
     }
 }
 
 // MARK: - CustomStringConvertible
 
-extension GraphPattern: CustomStringConvertible {
+extension ExecutionPattern: CustomStringConvertible {
     public var description: String {
         switch self {
         case .basic(let patterns):
@@ -227,6 +244,8 @@ extension GraphPattern: CustomStringConvertible {
                 result += " HAVING(\(having))"
             }
             return result
+        case .minus(let left, let right):
+            return "\(left) MINUS \(right)"
         case .propertyPath(let subject, let path, let object):
             return "{ \(subject) \(path) \(object) }"
         }
@@ -235,8 +254,8 @@ extension GraphPattern: CustomStringConvertible {
 
 // MARK: - Equatable
 
-extension GraphPattern: Equatable {
-    public static func == (lhs: GraphPattern, rhs: GraphPattern) -> Bool {
+extension ExecutionPattern: Equatable {
+    public static func == (lhs: ExecutionPattern, rhs: ExecutionPattern) -> Bool {
         switch (lhs, rhs) {
         case (.basic(let l), .basic(let r)):
             return l == r
@@ -250,6 +269,8 @@ extension GraphPattern: Equatable {
             return lp == rp && le == re
         case (.groupBy(let lp, let lgv, let lagg, let lh), .groupBy(let rp, let rgv, let ragg, let rh)):
             return lp == rp && lgv == rgv && lagg == ragg && lh == rh
+        case (.minus(let ll, let lr), .minus(let rl, let rr)):
+            return ll == rl && lr == rr
         case (.propertyPath(let ls, let lp, let lo), .propertyPath(let rs, let rp, let ro)):
             return ls == rs && lp == rp && lo == ro
         default:

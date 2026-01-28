@@ -130,6 +130,108 @@ extension FDBContext {
     public func sparql<T: Persistable>(_ type: T.Type) -> SPARQLEntryPoint<T> {
         SPARQLEntryPoint(queryContext: indexQueryContext)
     }
+
+    /// Execute a pre-built ExecutionPattern directly
+    ///
+    /// Used by higher-level modules (e.g., Database) that convert parsed
+    /// SPARQL or SQL queries into ExecutionPattern before execution.
+    ///
+    /// Follows W3C SPARQL 1.1 Section 15 execution order:
+    /// 1. Pattern evaluation (WHERE + GROUP BY / HAVING)
+    /// 2. ORDER BY
+    /// 3. Projection (SELECT)
+    /// 4. DISTINCT / REDUCED
+    /// 5. OFFSET / LIMIT (Slice)
+    ///
+    /// - Parameters:
+    ///   - pattern: The pre-built execution pattern to evaluate
+    ///   - type: The Persistable type to query against
+    ///   - projection: Variables to include in results (nil = all)
+    ///   - distinct: Whether to deduplicate results
+    ///   - limit: Maximum number of results
+    ///   - offset: Number of results to skip
+    ///   - orderBy: Sort keys for ORDER BY (empty = no sorting)
+    /// - Returns: Query results
+    public func executeSPARQLPattern<T: Persistable>(
+        _ pattern: ExecutionPattern,
+        on type: T.Type,
+        projection: [String]? = nil,
+        distinct: Bool = false,
+        limit: Int? = nil,
+        offset: Int = 0,
+        orderBy: [BindingSortKey] = []
+    ) async throws -> SPARQLResult {
+        guard let descriptor = T.indexDescriptors.first(where: {
+            $0.kindIdentifier == GraphIndexKind<T>.identifier
+        }), let kind = descriptor.kind as? GraphIndexKind<T> else {
+            throw SPARQLQueryError.indexNotConfigured
+        }
+
+        if pattern.isEmpty {
+            throw SPARQLQueryError.noPatterns
+        }
+
+        let executor = SPARQLQueryExecutor<T>(
+            queryContext: indexQueryContext,
+            fromFieldName: kind.fromField,
+            edgeFieldName: kind.edgeField,
+            toFieldName: kind.toField
+        )
+
+        let allVariables = pattern.variables
+        let projectedVars = projection ?? Array(allVariables).sorted()
+        let startTime = DispatchTime.now()
+
+        let hasOrderBy = !orderBy.isEmpty
+        let needsAllResults = hasOrderBy || distinct
+
+        // Step 1: Pattern evaluation (WHERE + GROUP BY / HAVING)
+        var (bindings, stats) = try await executor.execute(
+            pattern: pattern,
+            limit: needsAllResults ? nil : limit,
+            offset: needsAllResults ? 0 : offset
+        )
+
+        // Step 2: ORDER BY (before projection, per W3C Section 15)
+        if hasOrderBy {
+            bindings = BindingSorter.sort(bindings, by: orderBy)
+        }
+
+        // Step 3: Projection (SELECT)
+        let projectionSet = Set(projectedVars)
+        var projected = bindings.map { $0.project(projectionSet) }
+
+        // Step 4: DISTINCT
+        if distinct {
+            var seen = Set<VariableBinding>()
+            projected = projected.filter { seen.insert($0).inserted }
+        }
+
+        // Step 5: OFFSET / LIMIT (Slice)
+        if needsAllResults {
+            if offset > 0 {
+                projected = Array(projected.dropFirst(offset))
+            }
+            if let lim = limit {
+                projected = Array(projected.prefix(lim))
+            }
+        }
+
+        let endTime = DispatchTime.now()
+        stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
+
+        let resultCount = projected.count
+        let isComplete = limit == nil || resultCount < limit!
+        let limitReason: SPARQLLimitReason? = (limit != nil && resultCount >= limit!) ? .explicitLimit : nil
+
+        return SPARQLResult(
+            bindings: projected,
+            projectedVariables: projectedVars,
+            isComplete: isComplete,
+            limitReason: limitReason,
+            statistics: stats
+        )
+    }
 }
 
 // MARK: - SPARQL Query Error

@@ -7,6 +7,7 @@ import Foundation
 import Core
 import DatabaseEngine
 import Graph
+import QueryIR
 
 /// Builder for SPARQL GROUP BY queries with aggregation
 ///
@@ -40,7 +41,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Query State
 
-    private let sourcePattern: GraphPattern
+    private let sourcePattern: ExecutionPattern
     private var groupVariables: [String]
     private var aggregates: [AggregateExpression]
     private var havingExpression: FilterExpression?
@@ -48,6 +49,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     private var limitCount: Int?
     private var offsetCount: Int
     private var isDistinct: Bool
+    private var sortKeys: [BindingSortKey]
 
     // MARK: - Initialization
 
@@ -56,7 +58,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String,
-        sourcePattern: GraphPattern,
+        sourcePattern: ExecutionPattern,
         groupVariables: [String]
     ) {
         self.queryContext = queryContext
@@ -71,6 +73,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         self.limitCount = nil
         self.offsetCount = 0
         self.isDistinct = false
+        self.sortKeys = []
     }
 
     // MARK: - Aggregate Functions
@@ -192,6 +195,21 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         })
     }
 
+    /// HAVING with a QueryIR.Expression
+    ///
+    /// Evaluates the expression against each grouped binding using ExpressionEvaluator.
+    /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// .having(.greaterThan(.var("friendCount"), .int(5)))
+    /// ```
+    public func having(_ expression: QueryIR.Expression) -> Self {
+        having(.custom { binding in
+            ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
+        })
+    }
+
     // MARK: - Projection and Modifiers
 
     /// Select specific variables to return
@@ -231,9 +249,37 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    // MARK: - ORDER BY
+
+    /// Add an ORDER BY sort key (ascending)
+    ///
+    /// Can sort by group variables or aggregate aliases.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// .orderBy("friendCount", ascending: false) // Most friends first
+    /// ```
+    public func orderBy(_ variable: String, ascending: Bool = true) -> Self {
+        var copy = self
+        copy.sortKeys.append(.variable(variable, ascending: ascending))
+        return copy
+    }
+
+    /// Add an ORDER BY sort key (descending)
+    public func orderByDesc(_ variable: String) -> Self {
+        orderBy(variable, ascending: false)
+    }
+
     // MARK: - Execution
 
     /// Execute the grouped query and return results
+    ///
+    /// Follows W3C SPARQL 1.1 Section 15 execution order:
+    /// 1. Pattern evaluation + GROUP BY + HAVING
+    /// 2. ORDER BY
+    /// 3. Projection (SELECT)
+    /// 4. DISTINCT
+    /// 5. OFFSET / LIMIT (Slice)
     public func execute() async throws -> SPARQLGroupedResult {
         guard !fromFieldName.isEmpty else {
             throw SPARQLQueryError.indexNotConfigured
@@ -245,7 +291,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Build the group by pattern
-        let groupByPattern = GraphPattern.groupBy(
+        let groupByPattern = ExecutionPattern.groupBy(
             sourcePattern,
             groupVariables: groupVariables,
             aggregates: aggregates,
@@ -261,31 +307,34 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
 
         let startTime = DispatchTime.now()
 
-        // Execute with GROUP BY handling
-        let (bindings, stats) = try await executor.executeGrouped(
+        // Step 1: Pattern evaluation + GROUP BY + HAVING
+        var (bindings, stats) = try await executor.executeGrouped(
             pattern: groupByPattern,
             groupVariables: groupVariables,
             aggregates: aggregates,
             having: havingExpression
         )
 
-        // Determine projection
+        // Step 2: ORDER BY (before projection, per W3C Section 15)
+        if !sortKeys.isEmpty {
+            bindings = BindingSorter.sort(bindings, by: sortKeys)
+        }
+
+        // Step 3: Projection (SELECT)
         var outputVariables = groupVariables + aggregates.map { $0.alias }
         if let projected = projectedVariables {
             outputVariables = projected
         }
         let projectionSet = Set(outputVariables)
-
-        // Apply projection
         var projected = bindings.map { $0.project(projectionSet) }
 
-        // Apply distinct
+        // Step 4: DISTINCT
         if isDistinct {
             var seen = Set<VariableBinding>()
             projected = projected.filter { seen.insert($0).inserted }
         }
 
-        // Apply offset and limit
+        // Step 5: OFFSET / LIMIT (Slice)
         if offsetCount > 0 {
             projected = Array(projected.dropFirst(offsetCount))
         }

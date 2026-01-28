@@ -1,4 +1,4 @@
-// PropertyPath.swift
+// ExecutionPropertyPath.swift
 // GraphIndex - SPARQL Property Paths
 //
 // Represents property path expressions for SPARQL 1.1.
@@ -14,26 +14,26 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// // Simple IRI path
-/// let knows = PropertyPath.iri("knows")
+/// let knows = ExecutionPropertyPath.iri("knows")
 ///
 /// // Inverse path: ^knows
-/// let knownBy = PropertyPath.inverse(.iri("knows"))
+/// let knownBy = ExecutionPropertyPath.inverse(.iri("knows"))
 ///
 /// // Sequence path: knows/worksAt
-/// let colleagues = PropertyPath.sequence(.iri("knows"), .iri("worksAt"))
+/// let colleagues = ExecutionPropertyPath.sequence(.iri("knows"), .iri("worksAt"))
 ///
 /// // Transitive closure: knows+
-/// let knowsChain = PropertyPath.oneOrMore(.iri("knows"))
+/// let knowsChain = ExecutionPropertyPath.oneOrMore(.iri("knows"))
 ///
 /// // Optional path: knows?
-/// let maybeKnows = PropertyPath.zeroOrOne(.iri("knows"))
+/// let maybeKnows = ExecutionPropertyPath.zeroOrOne(.iri("knows"))
 ///
 /// // Alternative: knows|friendOf
-/// let related = PropertyPath.alternative(.iri("knows"), .iri("friendOf"))
+/// let related = ExecutionPropertyPath.alternative(.iri("knows"), .iri("friendOf"))
 /// ```
 ///
 /// **Reference**: W3C SPARQL 1.1, Section 9 (Property Paths)
-public indirect enum PropertyPath: Sendable, Hashable {
+public indirect enum ExecutionPropertyPath: Sendable, Hashable {
 
     // MARK: - Atomic Paths
 
@@ -61,7 +61,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ^ex:knows ?o  -- equivalent to ?o ex:knows ?s
     /// ```
-    case inverse(PropertyPath)
+    case inverse(ExecutionPropertyPath)
 
     /// Sequence path: path1/path2
     ///
@@ -69,7 +69,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows/ex:worksAt ?o
     /// ```
-    case sequence(PropertyPath, PropertyPath)
+    case sequence(ExecutionPropertyPath, ExecutionPropertyPath)
 
     /// Alternative path: path1|path2
     ///
@@ -77,7 +77,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows|ex:friendOf ?o
     /// ```
-    case alternative(PropertyPath, PropertyPath)
+    case alternative(ExecutionPropertyPath, ExecutionPropertyPath)
 
     // MARK: - Quantified Paths
 
@@ -87,7 +87,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows* ?o  -- transitive closure including self
     /// ```
-    case zeroOrMore(PropertyPath)
+    case zeroOrMore(ExecutionPropertyPath)
 
     /// One or more: path+
     ///
@@ -95,7 +95,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows+ ?o  -- transitive closure (at least one hop)
     /// ```
-    case oneOrMore(PropertyPath)
+    case oneOrMore(ExecutionPropertyPath)
 
     /// Zero or one: path?
     ///
@@ -103,7 +103,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// ```sparql
     /// ?s ex:knows? ?o  -- direct neighbor or self
     /// ```
-    case zeroOrOne(PropertyPath)
+    case zeroOrOne(ExecutionPropertyPath)
 
     // MARK: - Properties
 
@@ -181,7 +181,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
     /// - ^^p = p (double inverse)
     /// - p* = p+|ε
     /// - Flattens nested alternatives
-    public func normalized() -> PropertyPath {
+    public func normalized() -> ExecutionPropertyPath {
         switch self {
         case .iri, .negatedPropertySet:
             return self
@@ -203,14 +203,14 @@ public indirect enum PropertyPath: Sendable, Hashable {
             }
 
         case .sequence(let p1, let p2):
-            return PropertyPath.sequence(p1.normalized(), p2.normalized())
+            return ExecutionPropertyPath.sequence(p1.normalized(), p2.normalized())
 
         case .alternative(let p1, let p2):
             // Flatten nested alternatives
             let norm1 = p1.normalized()
             let norm2 = p2.normalized()
 
-            var alternatives: [PropertyPath] = []
+            var alternatives: [ExecutionPropertyPath] = []
             if case .alternative(let a, let b) = norm1 {
                 alternatives.append(a)
                 alternatives.append(b)
@@ -226,7 +226,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
 
             // Rebuild as right-associative chain
             return alternatives.dropLast().reversed().reduce(alternatives.last!) { acc, next in
-                PropertyPath.alternative(next, acc)
+                ExecutionPropertyPath.alternative(next, acc)
             }
 
         case .zeroOrMore(let path):
@@ -243,7 +243,7 @@ public indirect enum PropertyPath: Sendable, Hashable {
 
 // MARK: - CustomStringConvertible
 
-extension PropertyPath: CustomStringConvertible {
+extension ExecutionPropertyPath: CustomStringConvertible {
     public var description: String {
         switch self {
         case .iri(let value):
@@ -277,58 +277,58 @@ extension PropertyPath: CustomStringConvertible {
 
 // MARK: - Builder Pattern
 
-extension PropertyPath {
+extension ExecutionPropertyPath {
     /// Create an inverse path
-    public func inverted() -> PropertyPath {
+    public func inverted() -> ExecutionPropertyPath {
         .inverse(self)
     }
 
     /// Create a sequence with another path
-    public func then(_ other: PropertyPath) -> PropertyPath {
-        PropertyPath.sequence(self, other)
+    public func then(_ other: ExecutionPropertyPath) -> ExecutionPropertyPath {
+        ExecutionPropertyPath.sequence(self, other)
     }
 
     /// Create an alternative with another path
-    public func or(_ other: PropertyPath) -> PropertyPath {
-        PropertyPath.alternative(self, other)
+    public func or(_ other: ExecutionPropertyPath) -> ExecutionPropertyPath {
+        ExecutionPropertyPath.alternative(self, other)
     }
 
     /// Create zero-or-more repetition
-    public func star() -> PropertyPath {
+    public func star() -> ExecutionPropertyPath {
         .zeroOrMore(self)
     }
 
     /// Create one-or-more repetition
-    public func plus() -> PropertyPath {
+    public func plus() -> ExecutionPropertyPath {
         .oneOrMore(self)
     }
 
     /// Create zero-or-one repetition
-    public func optional() -> PropertyPath {
+    public func optional() -> ExecutionPropertyPath {
         .zeroOrOne(self)
     }
 }
 
 // MARK: - Convenience Initializers
 
-extension PropertyPath {
+extension ExecutionPropertyPath {
     /// Create a sequence from multiple paths
-    public static func sequencePaths(_ paths: PropertyPath...) -> PropertyPath {
+    public static func sequencePaths(_ paths: ExecutionPropertyPath...) -> ExecutionPropertyPath {
         guard !paths.isEmpty else {
-            fatalError("PropertyPath.sequencePaths requires at least one path")
+            fatalError("ExecutionPropertyPath.sequencePaths requires at least one path")
         }
         return paths.dropFirst().reduce(paths.first!) { acc, next in
-            PropertyPath.sequence(acc, next)
+            ExecutionPropertyPath.sequence(acc, next)
         }
     }
 
     /// Create an alternative from multiple paths
-    public static func alternativePaths(_ paths: PropertyPath...) -> PropertyPath {
+    public static func alternativePaths(_ paths: ExecutionPropertyPath...) -> ExecutionPropertyPath {
         guard !paths.isEmpty else {
-            fatalError("PropertyPath.alternativePaths requires at least one path")
+            fatalError("ExecutionPropertyPath.alternativePaths requires at least one path")
         }
         return paths.dropFirst().reduce(paths.first!) { acc, next in
-            PropertyPath.alternative(acc, next)
+            ExecutionPropertyPath.alternative(acc, next)
         }
     }
 }
@@ -336,7 +336,7 @@ extension PropertyPath {
 // MARK: - Property Path Configuration
 
 /// Configuration for property path evaluation
-public struct PropertyPathConfiguration: Sendable {
+public struct ExecutionPropertyPathConfiguration: Sendable {
     /// Maximum depth for recursive paths (zeroOrMore, oneOrMore)
     ///
     /// Default is 100 to prevent infinite loops and memory exhaustion.
@@ -354,7 +354,7 @@ public struct PropertyPathConfiguration: Sendable {
     public var maxResults: Int
 
     /// Default configuration
-    public static let `default` = PropertyPathConfiguration(
+    public static let `default` = ExecutionPropertyPathConfiguration(
         maxDepth: 100,
         detectCycles: true,
         maxResults: 10000

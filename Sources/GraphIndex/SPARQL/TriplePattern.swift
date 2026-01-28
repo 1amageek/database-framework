@@ -1,4 +1,4 @@
-// TriplePattern.swift
+// ExecutionTriple.swift
 // GraphIndex - SPARQL-like triple pattern
 //
 // Represents a single triple pattern (subject, predicate, object) in a query.
@@ -13,14 +13,14 @@ import Foundation
 /// **Usage**:
 /// ```swift
 /// // Pattern: ?person knows "Alice"
-/// let pattern = TriplePattern(
+/// let pattern = ExecutionTriple(
 ///     subject: "?person",
 ///     predicate: "knows",
 ///     object: "Alice"
 /// )
 ///
 /// // Using graph terminology (from, edge, to)
-/// let pattern2 = TriplePattern(
+/// let pattern2 = ExecutionTriple(
 ///     from: "?person",
 ///     edge: "knows",
 ///     to: "Alice"
@@ -28,24 +28,24 @@ import Foundation
 /// ```
 ///
 /// **Reference**: W3C SPARQL 1.1, Section 5.1 Basic Graph Patterns
-public struct TriplePattern: Sendable, Hashable {
+public struct ExecutionTriple: Sendable, Hashable {
 
     /// Subject position (or "from" in graph terminology)
-    public let subject: SPARQLTerm
+    public let subject: ExecutionTerm
 
     /// Predicate position (or "edge" in graph terminology)
-    public let predicate: SPARQLTerm
+    public let predicate: ExecutionTerm
 
     /// Object position (or "to" in graph terminology)
-    public let object: SPARQLTerm
+    public let object: ExecutionTerm
 
     // MARK: - Initialization
 
     /// Create a triple pattern with explicit terms
     public init(
-        subject: SPARQLTerm,
-        predicate: SPARQLTerm,
-        object: SPARQLTerm
+        subject: ExecutionTerm,
+        predicate: ExecutionTerm,
+        object: ExecutionTerm
     ) {
         self.subject = subject
         self.predicate = predicate
@@ -54,9 +54,9 @@ public struct TriplePattern: Sendable, Hashable {
 
     /// Create a triple pattern using graph terminology
     public init(
-        from: SPARQLTerm,
-        edge: SPARQLTerm,
-        to: SPARQLTerm
+        from: ExecutionTerm,
+        edge: ExecutionTerm,
+        to: ExecutionTerm
     ) {
         self.subject = from
         self.predicate = edge
@@ -71,9 +71,9 @@ public struct TriplePattern: Sendable, Hashable {
         _ predicate: String,
         _ object: String
     ) {
-        self.subject = SPARQLTerm(stringLiteral: subject)
-        self.predicate = SPARQLTerm(stringLiteral: predicate)
-        self.object = SPARQLTerm(stringLiteral: object)
+        self.subject = ExecutionTerm(stringLiteral: subject)
+        self.predicate = ExecutionTerm(stringLiteral: predicate)
+        self.object = ExecutionTerm(stringLiteral: object)
     }
 
     // MARK: - Variables
@@ -154,8 +154,8 @@ public struct TriplePattern: Sendable, Hashable {
     ///
     /// - Parameter binding: The variable binding containing values
     /// - Returns: New pattern with matching variables replaced by values
-    public func substitute(_ binding: VariableBinding) -> TriplePattern {
-        TriplePattern(
+    public func substitute(_ binding: VariableBinding) -> ExecutionTriple {
+        ExecutionTriple(
             subject: subject.substitute(binding),
             predicate: predicate.substitute(binding),
             object: object.substitute(binding)
@@ -165,7 +165,7 @@ public struct TriplePattern: Sendable, Hashable {
 
 // MARK: - CustomStringConvertible
 
-extension TriplePattern: CustomStringConvertible {
+extension ExecutionTriple: CustomStringConvertible {
     public var description: String {
         "(\(subject), \(predicate), \(object))"
     }
@@ -173,8 +173,8 @@ extension TriplePattern: CustomStringConvertible {
 
 // MARK: - Comparable (for sorting by selectivity)
 
-extension TriplePattern: Comparable {
-    public static func < (lhs: TriplePattern, rhs: TriplePattern) -> Bool {
+extension ExecutionTriple: Comparable {
+    public static func < (lhs: ExecutionTriple, rhs: ExecutionTriple) -> Bool {
         // Higher selectivity score should come first (descending order)
         lhs.selectivityScore > rhs.selectivityScore
     }

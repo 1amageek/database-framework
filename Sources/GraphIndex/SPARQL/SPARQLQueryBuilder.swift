@@ -7,6 +7,7 @@ import Foundation
 import Core
 import DatabaseEngine
 import Graph
+import QueryIR
 
 /// Builder for SPARQL-like graph queries
 ///
@@ -43,11 +44,12 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Query State
 
-    private var graphPattern: GraphPattern
+    private var graphPattern: ExecutionPattern
     private var projectedVariables: [String]?
     private var limitCount: Int?
     private var offsetCount: Int
     private var isDistinct: Bool
+    private var sortKeys: [BindingSortKey]
 
     // MARK: - Initialization
 
@@ -66,6 +68,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         self.limitCount = nil
         self.offsetCount = 0
         self.isDistinct = false
+        self.sortKeys = []
     }
 
     // MARK: - Pattern Building
@@ -86,20 +89,20 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         _ object: String
     ) -> Self {
         `where`(
-            SPARQLTerm(stringLiteral: subject),
-            SPARQLTerm(stringLiteral: predicate),
-            SPARQLTerm(stringLiteral: object)
+            ExecutionTerm(stringLiteral: subject),
+            ExecutionTerm(stringLiteral: predicate),
+            ExecutionTerm(stringLiteral: object)
         )
     }
 
-    /// Add a triple pattern using SPARQLTerm values
+    /// Add a triple pattern using ExecutionTerm values
     public func `where`(
-        _ subject: SPARQLTerm,
-        _ predicate: SPARQLTerm,
-        _ object: SPARQLTerm
+        _ subject: ExecutionTerm,
+        _ predicate: ExecutionTerm,
+        _ object: ExecutionTerm
     ) -> Self {
         var copy = self
-        let pattern = TriplePattern(subject: subject, predicate: predicate, object: object)
+        let pattern = ExecutionTriple(subject: subject, predicate: predicate, object: object)
 
         // Add to existing basic pattern or create new one
         switch copy.graphPattern {
@@ -139,26 +142,26 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     /// ```
     public func wherePath(
         _ subject: String,
-        path: PropertyPath,
+        path: ExecutionPropertyPath,
         _ object: String
     ) -> Self {
         wherePath(
-            SPARQLTerm(stringLiteral: subject),
+            ExecutionTerm(stringLiteral: subject),
             path: path,
-            SPARQLTerm(stringLiteral: object)
+            ExecutionTerm(stringLiteral: object)
         )
     }
 
-    /// Add a property path pattern using SPARQLTerm values
+    /// Add a property path pattern using ExecutionTerm values
     public func wherePath(
-        _ subject: SPARQLTerm,
-        path: PropertyPath,
-        _ object: SPARQLTerm
+        _ subject: ExecutionTerm,
+        path: ExecutionPropertyPath,
+        _ object: ExecutionTerm
     ) -> Self {
         var copy = self
 
         // Convert property path to graph pattern
-        let pathPattern = GraphPattern.propertyPath(subject: subject, path: path, object: object)
+        let pathPattern = ExecutionPattern.propertyPath(subject: subject, path: path, object: object)
 
         switch copy.graphPattern {
         case .basic(let patterns) where patterns.isEmpty:
@@ -384,15 +387,43 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    // MARK: - ORDER BY
+
+    /// Add an ORDER BY sort key (ascending)
+    ///
+    /// **Example**:
+    /// ```swift
+    /// .orderBy("?name")
+    /// .orderBy("?age", ascending: false)
+    /// ```
+    public func orderBy(_ variable: String, ascending: Bool = true) -> Self {
+        var copy = self
+        copy.sortKeys.append(.variable(variable, ascending: ascending))
+        return copy
+    }
+
+    /// Add an ORDER BY sort key (descending)
+    ///
+    /// Convenience for `.orderBy(variable, ascending: false)`.
+    public func orderByDesc(_ variable: String) -> Self {
+        orderBy(variable, ascending: false)
+    }
+
     // MARK: - Execution
 
     /// Execute the query and return results
+    ///
+    /// Follows W3C SPARQL 1.1 Section 15 execution order:
+    /// 1. Pattern evaluation (WHERE)
+    /// 2. ORDER BY
+    /// 3. Projection (SELECT)
+    /// 4. DISTINCT
+    /// 5. OFFSET / LIMIT (Slice)
     public func execute() async throws -> SPARQLResult {
         guard !fromFieldName.isEmpty else {
             throw SPARQLQueryError.indexNotConfigured
         }
 
-        // Validate pattern is not empty
         if graphPattern.isEmpty {
             throw SPARQLQueryError.noPatterns
         }
@@ -409,24 +440,33 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
 
         let startTime = DispatchTime.now()
 
+        let hasOrderBy = !sortKeys.isEmpty
+        let needsAllResults = hasOrderBy || isDistinct
+
+        // Step 1: Pattern evaluation (WHERE)
         var (bindings, stats) = try await executor.execute(
             pattern: graphPattern,
-            limit: isDistinct ? nil : limitCount,  // Distinct needs all results first
-            offset: isDistinct ? 0 : offsetCount
+            limit: needsAllResults ? nil : limitCount,
+            offset: needsAllResults ? 0 : offsetCount
         )
 
-        // Apply projection FIRST (before distinct)
-        // SPARQL semantics: DISTINCT operates on projected variables only
+        // Step 2: ORDER BY (before projection, per W3C Section 15)
+        if hasOrderBy {
+            bindings = BindingSorter.sort(bindings, by: sortKeys)
+        }
+
+        // Step 3: Projection (SELECT)
         let projectionSet = Set(projection)
         var projected = bindings.map { $0.project(projectionSet) }
 
-        // Apply distinct AFTER projection
-        // This ensures duplicates are based on selected variables, not all variables
+        // Step 4: DISTINCT
         if isDistinct {
             var seen = Set<VariableBinding>()
             projected = projected.filter { seen.insert($0).inserted }
+        }
 
-            // Apply offset and limit after distinct
+        // Step 5: OFFSET / LIMIT (Slice)
+        if needsAllResults {
             if offsetCount > 0 {
                 projected = Array(projected.dropFirst(offsetCount))
             }
@@ -438,7 +478,6 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         let endTime = DispatchTime.now()
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
-        // Determine completeness based on final result count
         let resultCount = projected.count
         let isComplete = limitCount == nil || resultCount < limitCount!
         let limitReason: SPARQLLimitReason? = (limitCount != nil && resultCount >= limitCount!) ? .explicitLimit : nil
@@ -478,7 +517,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     }
 
     /// Get the graph pattern (for debugging/inspection)
-    public var pattern: GraphPattern {
+    public var pattern: ExecutionPattern {
         graphPattern
     }
 }
@@ -510,5 +549,69 @@ extension SPARQLQueryBuilder: CustomStringConvertible {
         }
 
         return parts.joined(separator: " ")
+    }
+}
+
+// MARK: - QueryIR Integration
+
+extension SPARQLQueryBuilder {
+
+    /// Add a triple pattern using QueryIR.SPARQLTerm values
+    ///
+    /// Converts QueryIR terms to ExecutionTerm for pattern matching.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// .where(.var("person"), .iri("knows"), .iri("Bob"))
+    /// ```
+    public func `where`(
+        _ subject: QueryIR.SPARQLTerm,
+        _ predicate: QueryIR.SPARQLTerm,
+        _ object: QueryIR.SPARQLTerm
+    ) -> Self {
+        `where`(
+            ExecutionTerm(subject),
+            ExecutionTerm(predicate),
+            ExecutionTerm(object)
+        )
+    }
+
+    /// Add a FILTER using a QueryIR.Expression
+    ///
+    /// Evaluates the expression against each binding using ExpressionEvaluator.
+    /// Follows SPARQL §17.2 semantics: evaluation errors yield `false`.
+    ///
+    /// **Example**:
+    /// ```swift
+    /// .filter(.greaterThanOrEqual(.var("age"), .int(18)))
+    /// ```
+    public func filter(_ expression: QueryIR.Expression) -> Self {
+        filter(.custom { binding in
+            ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
+        })
+    }
+}
+
+// MARK: - ExecutionTerm ← QueryIR.SPARQLTerm
+
+extension ExecutionTerm {
+
+    /// Convert a QueryIR.SPARQLTerm to an ExecutionTerm
+    public init(_ sparqlTerm: QueryIR.SPARQLTerm) {
+        switch sparqlTerm {
+        case .variable(let name):
+            self = .variable(name.hasPrefix("?") ? name : "?\(name)")
+        case .iri(let value):
+            self = .value(.string(value))
+        case .prefixedName(let prefix, let local):
+            self = .value(.string("\(prefix):\(local)"))
+        case .literal(let lit):
+            self = .value(lit.toFieldValue() ?? .null)
+        case .blankNode(let id):
+            self = .value(.string("_:\(id)"))
+        case .quotedTriple(let s, let p, let o):
+            // RDF-star quoted triples are stored as string representation
+            self = .value(.string("<<\(s) \(p) \(o)>>"))
+        }
     }
 }

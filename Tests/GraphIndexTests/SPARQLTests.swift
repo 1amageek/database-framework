@@ -10,14 +10,14 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-// MARK: - SPARQLTerm Tests
+// MARK: - ExecutionTerm Tests
 
-@Suite("SPARQLTerm Tests")
-struct SPARQLTermTests {
+@Suite("ExecutionTerm Tests")
+struct ExecutionTermTests {
 
     @Test("String literal to value term")
     func testValueTerm() {
-        let term: SPARQLTerm = "Alice"
+        let term: ExecutionTerm = "Alice"
         #expect(term == .value("Alice"))
         #expect(!term.isVariable)
         #expect(!term.isWildcard)
@@ -25,7 +25,7 @@ struct SPARQLTermTests {
 
     @Test("String starting with ? becomes variable")
     func testVariableTerm() {
-        let term: SPARQLTerm = "?person"
+        let term: ExecutionTerm = "?person"
         #expect(term == .variable("?person"))
         #expect(term.isVariable)
         #expect(!term.isWildcard)
@@ -33,16 +33,16 @@ struct SPARQLTermTests {
 
     @Test("Wildcard term")
     func testWildcardTerm() {
-        let term: SPARQLTerm = .wildcard
+        let term: ExecutionTerm = .wildcard
         #expect(term.isWildcard)
         #expect(!term.isVariable)
     }
 
     @Test("Variable name extraction")
     func testVariableName() {
-        let variable: SPARQLTerm = "?name"
-        let value: SPARQLTerm = "Alice"
-        let wildcard: SPARQLTerm = .wildcard
+        let variable: ExecutionTerm = "?name"
+        let value: ExecutionTerm = "Alice"
+        let wildcard: ExecutionTerm = .wildcard
 
         #expect(variable.variableName == "?name")
         #expect(value.variableName == nil)
@@ -51,8 +51,8 @@ struct SPARQLTermTests {
 
     @Test("Substitute variable with value")
     func testSubstitute() {
-        let variable: SPARQLTerm = "?person"
-        let value: SPARQLTerm = "Alice"
+        let variable: ExecutionTerm = "?person"
+        let value: ExecutionTerm = "Alice"
 
         var binding = VariableBinding()
         binding = binding.binding("?person", to: "Bob")
@@ -65,14 +65,14 @@ struct SPARQLTermTests {
     }
 }
 
-// MARK: - TriplePattern Tests
+// MARK: - ExecutionTriple Tests
 
-@Suite("TriplePattern Tests")
-struct TriplePatternTests {
+@Suite("ExecutionTriple Tests")
+struct ExecutionTripleTests {
 
     @Test("Create triple pattern from strings")
     func testCreateFromStrings() {
-        let pattern = TriplePattern("?person", "knows", "Alice")
+        let pattern = ExecutionTriple("?person", "knows", "Alice")
 
         #expect(pattern.subject == .variable("?person"))
         #expect(pattern.predicate == .value("knows"))
@@ -81,7 +81,7 @@ struct TriplePatternTests {
 
     @Test("Variables extraction")
     func testVariablesExtraction() {
-        let pattern = TriplePattern("?person", "?relation", "Alice")
+        let pattern = ExecutionTriple("?person", "?relation", "Alice")
 
         let variables = pattern.variables
         #expect(variables.count == 2)
@@ -91,10 +91,10 @@ struct TriplePatternTests {
 
     @Test("Selectivity score calculation")
     func testSelectivityScore() {
-        let allBound = TriplePattern("Alice", "knows", "Bob")
-        let twoBound = TriplePattern("Alice", "knows", "?friend")
-        let oneBound = TriplePattern("?person", "knows", "?friend")
-        let noneBound = TriplePattern("?s", "?p", "?o")
+        let allBound = ExecutionTriple("Alice", "knows", "Bob")
+        let twoBound = ExecutionTriple("Alice", "knows", "?friend")
+        let oneBound = ExecutionTriple("?person", "knows", "?friend")
+        let noneBound = ExecutionTriple("?s", "?p", "?o")
 
         #expect(allBound.selectivityScore > twoBound.selectivityScore)
         #expect(twoBound.selectivityScore > oneBound.selectivityScore)
@@ -103,7 +103,7 @@ struct TriplePatternTests {
 
     @Test("Substitute variables in pattern")
     func testSubstitute() {
-        let pattern = TriplePattern("?person", "knows", "?friend")
+        let pattern = ExecutionTriple("?person", "knows", "?friend")
 
         var binding = VariableBinding()
         binding = binding.binding("?person", to: "Alice")
@@ -250,16 +250,16 @@ struct VariableBindingTests {
     }
 }
 
-// MARK: - GraphPattern Tests
+// MARK: - ExecutionPattern Tests
 
-@Suite("GraphPattern Tests")
-struct GraphPatternTests {
+@Suite("ExecutionPattern Tests")
+struct ExecutionPatternTests {
 
     @Test("Basic pattern variables")
     func testBasicPatternVariables() {
-        let pattern: GraphPattern = .basic([
-            TriplePattern("?person", "knows", "Alice"),
-            TriplePattern("?person", "name", "?name")
+        let pattern: ExecutionPattern = .basic([
+            ExecutionTriple("?person", "knows", "Alice"),
+            ExecutionTriple("?person", "name", "?name")
         ])
 
         let variables = pattern.variables
@@ -270,9 +270,9 @@ struct GraphPatternTests {
 
     @Test("Join pattern variables")
     func testJoinPatternVariables() {
-        let left: GraphPattern = .basic([TriplePattern("?x", "knows", "Alice")])
-        let right: GraphPattern = .basic([TriplePattern("?x", "age", "?age")])
-        let join: GraphPattern = .join(left, right)
+        let left: ExecutionPattern = .basic([ExecutionTriple("?x", "knows", "Alice")])
+        let right: ExecutionPattern = .basic([ExecutionTriple("?x", "age", "?age")])
+        let join: ExecutionPattern = .join(left, right)
 
         let variables = join.variables
         #expect(variables.count == 2)
@@ -282,9 +282,9 @@ struct GraphPatternTests {
 
     @Test("Optional pattern required variables")
     func testOptionalRequiredVariables() {
-        let left: GraphPattern = .basic([TriplePattern("?person", "type", "User")])
-        let right: GraphPattern = .basic([TriplePattern("?person", "email", "?email")])
-        let optional: GraphPattern = .optional(left, right)
+        let left: ExecutionPattern = .basic([ExecutionTriple("?person", "type", "User")])
+        let right: ExecutionPattern = .basic([ExecutionTriple("?person", "email", "?email")])
+        let optional: ExecutionPattern = .optional(left, right)
 
         let required = optional.requiredVariables
         let all = optional.variables
@@ -298,9 +298,9 @@ struct GraphPatternTests {
 
     @Test("Union pattern required variables")
     func testUnionRequiredVariables() {
-        let left: GraphPattern = .basic([TriplePattern("?x", "type", "A"), TriplePattern("?x", "name", "?name")])
-        let right: GraphPattern = .basic([TriplePattern("?x", "type", "B"), TriplePattern("?x", "age", "?age")])
-        let union: GraphPattern = .union(left, right)
+        let left: ExecutionPattern = .basic([ExecutionTriple("?x", "type", "A"), ExecutionTriple("?x", "name", "?name")])
+        let right: ExecutionPattern = .basic([ExecutionTriple("?x", "type", "B"), ExecutionTriple("?x", "age", "?age")])
+        let union: ExecutionPattern = .union(left, right)
 
         let required = union.requiredVariables
 
@@ -312,8 +312,8 @@ struct GraphPatternTests {
 
     @Test("Empty pattern check")
     func testEmptyPattern() {
-        let empty: GraphPattern = .basic([])
-        let nonEmpty: GraphPattern = .basic([TriplePattern("?x", "y", "z")])
+        let empty: ExecutionPattern = .basic([])
+        let nonEmpty: ExecutionPattern = .basic([ExecutionTriple("?x", "y", "z")])
 
         #expect(empty.isEmpty)
         #expect(!nonEmpty.isEmpty)
@@ -321,10 +321,10 @@ struct GraphPatternTests {
 
     @Test("Pattern count")
     func testPatternCount() {
-        let single: GraphPattern = .basic([TriplePattern("a", "b", "c")])
-        let double: GraphPattern = .basic([
-            TriplePattern("a", "b", "c"),
-            TriplePattern("d", "e", "f")
+        let single: ExecutionPattern = .basic([ExecutionTriple("a", "b", "c")])
+        let double: ExecutionPattern = .basic([
+            ExecutionTriple("a", "b", "c"),
+            ExecutionTriple("d", "e", "f")
         ])
 
         #expect(single.patternCount == 1)
@@ -832,8 +832,8 @@ struct SPARQLQueryBuilderUnitTests {
     @Test("Query description")
     func testQueryDescription() {
         // This test verifies the description property without FDB
-        let pattern: GraphPattern = .basic([
-            TriplePattern("Alice", "knows", "?friend")
+        let pattern: ExecutionPattern = .basic([
+            ExecutionTriple("Alice", "knows", "?friend")
         ])
 
         #expect(!pattern.isEmpty)
@@ -841,11 +841,11 @@ struct SPARQLQueryBuilderUnitTests {
     }
 
     @Test("Graph pattern construction")
-    func testGraphPatternConstruction() {
-        let p1 = TriplePattern("Alice", "knows", "?friend")
-        let p2 = TriplePattern("?friend", "name", "?name")
+    func testExecutionPatternConstruction() {
+        let p1 = ExecutionTriple("Alice", "knows", "?friend")
+        let p2 = ExecutionTriple("?friend", "name", "?name")
 
-        let basic: GraphPattern = .basic([p1, p2])
+        let basic: ExecutionPattern = .basic([p1, p2])
         #expect(basic.patternCount == 2)
 
         let variables = basic.variables
@@ -855,8 +855,8 @@ struct SPARQLQueryBuilderUnitTests {
 
     @Test("Filter pattern construction")
     func testFilterPatternConstruction() {
-        let basic: GraphPattern = .basic([TriplePattern("?x", "age", "?age")])
-        let filtered: GraphPattern = .filter(basic, .numeric("?age", ">=", 18))
+        let basic: ExecutionPattern = .basic([ExecutionTriple("?x", "age", "?age")])
+        let filtered: ExecutionPattern = .filter(basic, .numeric("?age", ">=", 18))
 
         #expect(!filtered.isEmpty)
         #expect(filtered.variables.contains("?x"))

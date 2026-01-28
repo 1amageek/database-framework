@@ -1,4 +1,4 @@
-// SPARQLTerm.swift
+// ExecutionTerm.swift
 // GraphIndex - SPARQL-like term representation
 //
 // Represents terms in triple patterns following SPARQL semantics.
@@ -16,15 +16,15 @@ import Core
 /// **Usage**:
 /// ```swift
 /// // Using string literals (auto-detection)
-/// let term1: SPARQLTerm = "?person"  // → .variable("?person")
-/// let term2: SPARQLTerm = "Alice"    // → .value("Alice")
+/// let term1: ExecutionTerm = "?person"  // → .variable("?person")
+/// let term2: ExecutionTerm = "Alice"    // → .value("Alice")
 ///
 /// // Explicit construction
-/// let term3 = SPARQLTerm.wildcard
+/// let term3 = ExecutionTerm.wildcard
 /// ```
 ///
 /// **Reference**: W3C SPARQL 1.1 Query Language, Section 4.1
-public enum SPARQLTerm: Sendable, Hashable {
+public enum ExecutionTerm: Sendable, Hashable {
     /// Named variable (e.g., "?person", "?predicate")
     /// Variables are bound during pattern matching and can be projected in results
     case variable(String)
@@ -96,7 +96,7 @@ public enum SPARQLTerm: Sendable, Hashable {
     ///
     /// - Parameter binding: The variable binding to substitute from
     /// - Returns: Substituted term or self if not substitutable
-    public func substitute(_ binding: VariableBinding) -> SPARQLTerm {
+    public func substitute(_ binding: VariableBinding) -> ExecutionTerm {
         switch self {
         case .variable(let name):
             if let value = binding[name] {
@@ -111,7 +111,7 @@ public enum SPARQLTerm: Sendable, Hashable {
 
 // MARK: - ExpressibleByStringLiteral
 
-extension SPARQLTerm: ExpressibleByStringLiteral {
+extension ExecutionTerm: ExpressibleByStringLiteral {
     /// Create a term from a string literal
     ///
     /// Strings starting with "?" are interpreted as variables.
@@ -119,8 +119,8 @@ extension SPARQLTerm: ExpressibleByStringLiteral {
     ///
     /// **Example**:
     /// ```swift
-    /// let person: SPARQLTerm = "?person"  // → .variable("?person")
-    /// let alice: SPARQLTerm = "Alice"     // → .value("Alice")
+    /// let person: ExecutionTerm = "?person"  // → .variable("?person")
+    /// let alice: ExecutionTerm = "Alice"     // → .value("Alice")
     /// ```
     public init(stringLiteral value: String) {
         if value.hasPrefix("?") {
@@ -133,7 +133,7 @@ extension SPARQLTerm: ExpressibleByStringLiteral {
 
 // MARK: - CustomStringConvertible
 
-extension SPARQLTerm: CustomStringConvertible {
+extension ExecutionTerm: CustomStringConvertible {
     public var description: String {
         switch self {
         case .variable(let name):
@@ -154,9 +154,9 @@ extension SPARQLTerm: CustomStringConvertible {
 
 // MARK: - Convenience Initializers
 
-extension SPARQLTerm {
+extension ExecutionTerm {
     /// Create a variable term
-    public static func `var`(_ name: String) -> SPARQLTerm {
+    public static func `var`(_ name: String) -> ExecutionTerm {
         // Ensure variable names start with "?"
         if name.hasPrefix("?") {
             return .variable(name)
@@ -166,35 +166,35 @@ extension SPARQLTerm {
     }
 
     /// Create a literal value term (string)
-    public static func literal(_ value: String) -> SPARQLTerm {
+    public static func literal(_ value: String) -> ExecutionTerm {
         .value(.string(value))
     }
 
     /// Create a literal value term (integer)
-    public static func literal(_ value: Int) -> SPARQLTerm {
+    public static func literal(_ value: Int) -> ExecutionTerm {
         .value(.int64(Int64(value)))
     }
 
     /// Create a literal value term (Int64)
-    public static func literal(_ value: Int64) -> SPARQLTerm {
+    public static func literal(_ value: Int64) -> ExecutionTerm {
         .value(.int64(value))
     }
 
     /// Create a literal value term (double)
-    public static func literal(_ value: Double) -> SPARQLTerm {
+    public static func literal(_ value: Double) -> ExecutionTerm {
         .value(.double(value))
     }
 
     /// Create a literal value term (bool)
-    public static func literal(_ value: Bool) -> SPARQLTerm {
+    public static func literal(_ value: Bool) -> ExecutionTerm {
         .value(.bool(value))
     }
 
     /// Create a literal value term (FieldValue)
-    public static func literal(_ value: FieldValue) -> SPARQLTerm {
+    public static func literal(_ value: FieldValue) -> ExecutionTerm {
         .value(value)
     }
 
     /// The wildcard term (matches anything, doesn't bind)
-    public static let any = SPARQLTerm.wildcard
+    public static let any = ExecutionTerm.wildcard
 }

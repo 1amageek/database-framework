@@ -84,7 +84,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     ///
     /// - Parameter pattern: The pattern to optimize
     /// - Returns: Optimized pattern with reordered joins and pushed-down filters
-    public func optimize(_ pattern: GraphPattern) -> GraphPattern {
+    public func optimize(_ pattern: ExecutionPattern) -> ExecutionPattern {
         var optimized = pattern
 
         // Step 1: Filter pushdown
@@ -107,7 +107,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     /// **Example**:
     /// Before: FILTER(?x > 5) applied after all joins
     /// After: FILTER(?x > 5) applied immediately after ?x is bound
-    private func pushDownFilters(_ pattern: GraphPattern) -> GraphPattern {
+    private func pushDownFilters(_ pattern: ExecutionPattern) -> ExecutionPattern {
         switch pattern {
         case .basic:
             return pattern
@@ -143,6 +143,9 @@ public struct SPARQLQueryOptimizer: Sendable {
                 having: having
             )
 
+        case .minus(let left, let right):
+            return .minus(pushDownFilters(left), pushDownFilters(right))
+
         case .propertyPath:
             // Property paths are atomic, cannot push filters into them
             return pattern
@@ -150,7 +153,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Push a filter expression into a pattern
-    private func pushFilterInto(_ pattern: GraphPattern, filter: FilterExpression) -> GraphPattern {
+    private func pushFilterInto(_ pattern: ExecutionPattern, filter: FilterExpression) -> ExecutionPattern {
         let filterVariables = extractVariables(from: filter)
 
         switch pattern {
@@ -235,6 +238,17 @@ public struct SPARQLQueryOptimizer: Sendable {
                 filter
             )
 
+        case .minus(let left, let right):
+            // For MINUS, can only safely push filter into the left side
+            let leftVars = extractPatternVariables(left)
+            if filterVariables.isSubset(of: leftVars) {
+                return .minus(
+                    pushFilterInto(left, filter: filter),
+                    pushDownFilters(right)
+                )
+            }
+            return .filter(.minus(pushDownFilters(left), pushDownFilters(right)), filter)
+
         case .propertyPath:
             // Property paths are atomic, wrap with filter
             return .filter(pattern, filter)
@@ -244,11 +258,14 @@ public struct SPARQLQueryOptimizer: Sendable {
     // MARK: - Join Optimization
 
     /// Optimize join ordering in a pattern
-    private func optimizeJoins(_ pattern: GraphPattern) -> GraphPattern {
+    private func optimizeJoins(_ pattern: ExecutionPattern) -> ExecutionPattern {
         switch pattern {
         case .basic(let patterns) where patterns.count > 1:
             let optimized = optimizePatternOrder(patterns)
             return .basic(optimized)
+
+        case .basic:
+            return pattern
 
         case .join(let left, let right):
             // Flatten nested joins and reorder
@@ -275,13 +292,16 @@ public struct SPARQLQueryOptimizer: Sendable {
                 having: having
             )
 
-        default:
+        case .minus(let left, let right):
+            return .minus(optimizeJoins(left), optimizeJoins(right))
+
+        case .propertyPath:
             return pattern
         }
     }
 
     /// Flatten nested join patterns
-    private func flattenJoins(_ pattern: GraphPattern) -> [GraphPattern] {
+    private func flattenJoins(_ pattern: ExecutionPattern) -> [ExecutionPattern] {
         switch pattern {
         case .join(let left, let right):
             return flattenJoins(left) + flattenJoins(right)
@@ -291,7 +311,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Build optimal join tree from flattened patterns
-    private func buildOptimalJoinTree(_ patterns: [GraphPattern]) -> GraphPattern {
+    private func buildOptimalJoinTree(_ patterns: [ExecutionPattern]) -> ExecutionPattern {
         guard !patterns.isEmpty else {
             return .basic([])
         }
@@ -327,7 +347,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Optimize ordering of basic triple patterns
-    private func optimizePatternOrder(_ patterns: [TriplePattern]) -> [TriplePattern] {
+    private func optimizePatternOrder(_ patterns: [ExecutionTriple]) -> [ExecutionTriple] {
         guard patterns.count > 1 else { return patterns }
 
         if configuration.useCardinalityEstimation {
@@ -340,9 +360,9 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Order patterns by estimated cardinality (lowest first)
-    private func orderByCardinality(_ patterns: [TriplePattern]) -> [TriplePattern] {
+    private func orderByCardinality(_ patterns: [ExecutionTriple]) -> [ExecutionTriple] {
         var remaining = patterns
-        var ordered: [TriplePattern] = []
+        var ordered: [ExecutionTriple] = []
         var boundVariables = Set<String>()
 
         while !remaining.isEmpty {
@@ -369,9 +389,9 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Order patterns by selectivity score (highest first)
-    private func orderBySelectivity(_ patterns: [TriplePattern]) -> [TriplePattern] {
+    private func orderBySelectivity(_ patterns: [ExecutionTriple]) -> [ExecutionTriple] {
         var remaining = patterns
-        var ordered: [TriplePattern] = []
+        var ordered: [ExecutionTriple] = []
         var boundVariables = Set<String>()
 
         while !remaining.isEmpty {
@@ -396,7 +416,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     // MARK: - Cardinality Estimation
 
     /// Estimate cardinality for a graph pattern
-    public func estimateCardinality(_ pattern: GraphPattern) -> Double {
+    public func estimateCardinality(_ pattern: ExecutionPattern) -> Double {
         switch pattern {
         case .basic(let patterns):
             guard !patterns.isEmpty else { return 0 }
@@ -437,6 +457,12 @@ public struct SPARQLQueryOptimizer: Sendable {
             let groupFactor = pow(0.5, Double(groupVars.count))
             return max(1, sourceCard * groupFactor)
 
+        case .minus(let left, let right):
+            // MINUS removes compatible solutions; estimate reduction
+            let leftCard = estimateCardinality(left)
+            let rightCard = estimateCardinality(right)
+            return max(1, leftCard - rightCard * 0.5)
+
         case .propertyPath(let subject, let path, let object):
             // Property paths vary widely based on the path type
             let baseCardinality: Double = 10000
@@ -458,7 +484,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Estimate cardinality for a single triple pattern
-    private func estimatePatternCardinality(_ pattern: TriplePattern) -> Double {
+    private func estimatePatternCardinality(_ pattern: ExecutionTriple) -> Double {
         // If statistics available, use them
         if let stats = statistics {
             return stats.estimateCardinality(pattern)
@@ -488,7 +514,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Create effective pattern with bound variables substituted
-    private func substituteWithBound(_ pattern: TriplePattern, boundVars: Set<String>) -> TriplePattern {
+    private func substituteWithBound(_ pattern: ExecutionTriple, boundVars: Set<String>) -> ExecutionTriple {
         // This is a simplification - in reality we'd substitute actual values
         // Here we just check if the variable is bound
         let subjectBound = pattern.subject.isBound ||
@@ -498,7 +524,7 @@ public struct SPARQLQueryOptimizer: Sendable {
         let objectBound = pattern.object.isBound ||
             (pattern.object.variableName.map { boundVars.contains($0) } ?? false)
 
-        return TriplePattern(
+        return ExecutionTriple(
             subject: subjectBound ? .value(.string("_bound_")) : pattern.subject,
             predicate: predicateBound ? .value(.string("_bound_")) : pattern.predicate,
             object: objectBound ? .value(.string("_bound_")) : pattern.object
@@ -515,7 +541,7 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Extract all variables from a graph pattern
-    private func extractPatternVariables(_ pattern: GraphPattern) -> Set<String> {
+    private func extractPatternVariables(_ pattern: ExecutionPattern) -> Set<String> {
         switch pattern {
         case .basic(let patterns):
             return patterns.reduce(into: Set<String>()) { vars, p in
@@ -523,6 +549,8 @@ public struct SPARQLQueryOptimizer: Sendable {
             }
         case .join(let left, let right), .union(let left, let right), .optional(let left, let right):
             return extractPatternVariables(left).union(extractPatternVariables(right))
+        case .minus(let left, _):
+            return extractPatternVariables(left)  // MINUS does not project right variables
         case .filter(let innerPattern, _):
             return extractPatternVariables(innerPattern)
         case .groupBy(_, let groupVars, let aggs, _):
@@ -589,7 +617,7 @@ public struct QueryStatistics: Sendable {
     }
 
     /// Estimate cardinality for a triple pattern
-    public func estimateCardinality(_ pattern: TriplePattern) -> Double {
+    public func estimateCardinality(_ pattern: ExecutionTriple) -> Double {
         let s = pattern.subject.isBound
         let p = pattern.predicate.isBound
         let o = pattern.object.isBound
@@ -668,7 +696,7 @@ public enum IndexStrategy: Sendable {
     case ops
 
     /// Select optimal index for a triple pattern
-    public static func selectIndex(for pattern: TriplePattern) -> IndexStrategy {
+    public static func selectIndex(for pattern: ExecutionTriple) -> IndexStrategy {
         let s = pattern.subject.isBound
         let p = pattern.predicate.isBound
         let o = pattern.object.isBound

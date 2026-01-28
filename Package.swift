@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
+        .library(name: "QueryIR", targets: ["QueryIR"]),
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .executable(name: "database", targets: ["DatabaseCLI"]),
@@ -40,6 +41,7 @@ let package = Package(
         .target(
             name: "DatabaseEngine",
             dependencies: [
+                "QueryIR",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
@@ -106,6 +108,7 @@ let package = Package(
         .target(
             name: "GraphIndex",
             dependencies: [
+                "QueryIR",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
@@ -154,8 +157,13 @@ let package = Package(
             ]
         ),
         .target(
+            name: "QueryIR",
+            dependencies: []
+        ),
+        .target(
             name: "QueryAST",
             dependencies: [
+                "QueryIR",
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
@@ -180,6 +188,7 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
+                "QueryIR",
                 "QueryAST",
             ]
         ),

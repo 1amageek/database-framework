@@ -379,7 +379,7 @@ struct PropertyPathTests {
         try await insertEdges(edges, context: context)
 
         // Path: (knows|likes) / worksWith
-        let path = PropertyPath.sequence(
+        let path = ExecutionPropertyPath.sequence(
             .alternative(.iri(knowsPred), .iri(likesPred)),
             .iri(worksWithPred)
         )
@@ -400,50 +400,50 @@ struct PropertyPathTests {
     @Test("PropertyPath type operations")
     func testPropertyPathOperations() async throws {
         // Test isRecursive
-        #expect(PropertyPath.iri("test").isRecursive == false)
-        #expect(PropertyPath.oneOrMore(.iri("test")).isRecursive == true)
-        #expect(PropertyPath.zeroOrMore(.iri("test")).isRecursive == true)
-        #expect(PropertyPath.zeroOrOne(.iri("test")).isRecursive == false)
+        #expect(ExecutionPropertyPath.iri("test").isRecursive == false)
+        #expect(ExecutionPropertyPath.oneOrMore(.iri("test")).isRecursive == true)
+        #expect(ExecutionPropertyPath.zeroOrMore(.iri("test")).isRecursive == true)
+        #expect(ExecutionPropertyPath.zeroOrOne(.iri("test")).isRecursive == false)
 
         // Test isSimpleIRI
-        #expect(PropertyPath.iri("test").isSimpleIRI == true)
-        #expect(PropertyPath.inverse(.iri("test")).isSimpleIRI == false)
+        #expect(ExecutionPropertyPath.iri("test").isSimpleIRI == true)
+        #expect(ExecutionPropertyPath.inverse(.iri("test")).isSimpleIRI == false)
 
         // Test simpleIRI
-        #expect(PropertyPath.iri("test").simpleIRI == "test")
-        #expect(PropertyPath.inverse(.iri("test")).simpleIRI == nil)
+        #expect(ExecutionPropertyPath.iri("test").simpleIRI == "test")
+        #expect(ExecutionPropertyPath.inverse(.iri("test")).simpleIRI == nil)
 
         // Test allIRIs
-        let path = PropertyPath.sequence(.iri("a"), .alternative(.iri("b"), .iri("c")))
+        let path = ExecutionPropertyPath.sequence(.iri("a"), .alternative(.iri("b"), .iri("c")))
         #expect(path.allIRIs == Set(["a", "b", "c"]))
 
         // Test complexityEstimate
-        #expect(PropertyPath.iri("test").complexityEstimate == 1)
-        #expect(PropertyPath.oneOrMore(.iri("test")).complexityEstimate > 1)
+        #expect(ExecutionPropertyPath.iri("test").complexityEstimate == 1)
+        #expect(ExecutionPropertyPath.oneOrMore(.iri("test")).complexityEstimate > 1)
 
         // Test normalization (double inverse)
-        let doubleInverse = PropertyPath.inverse(.inverse(.iri("test")))
+        let doubleInverse = ExecutionPropertyPath.inverse(.inverse(.iri("test")))
         #expect(doubleInverse.normalized() == .iri("test"))
 
         // Test description
-        #expect(PropertyPath.iri("knows").description == "knows")
-        #expect(PropertyPath.inverse(.iri("knows")).description == "^knows")
-        #expect(PropertyPath.oneOrMore(.iri("knows")).description == "knows+")
+        #expect(ExecutionPropertyPath.iri("knows").description == "knows")
+        #expect(ExecutionPropertyPath.inverse(.iri("knows")).description == "^knows")
+        #expect(ExecutionPropertyPath.oneOrMore(.iri("knows")).description == "knows+")
     }
 
     @Test("PropertyPath builder methods")
     func testPropertyPathBuilders() async throws {
-        let knows = PropertyPath.iri("knows")
+        let knows = ExecutionPropertyPath.iri("knows")
 
         // Test inverted()
         #expect(knows.inverted() == .inverse(.iri("knows")))
 
         // Test then()
-        let worksAt = PropertyPath.iri("worksAt")
+        let worksAt = ExecutionPropertyPath.iri("worksAt")
         #expect(knows.then(worksAt) == .sequence(.iri("knows"), .iri("worksAt")))
 
         // Test or()
-        let likes = PropertyPath.iri("likes")
+        let likes = ExecutionPropertyPath.iri("likes")
         #expect(knows.or(likes) == .alternative(.iri("knows"), .iri("likes")))
 
         // Test star(), plus(), optional()
