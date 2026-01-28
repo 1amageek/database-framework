@@ -45,6 +45,42 @@ public final class SPARQLParser {
         self.prefixes = SPARQLTerm.commonPrefixes
     }
 
+    /// SPARQL 1.1 built-in function keywords [121] BuiltInCall + [127] Aggregate
+    /// Used by parsePrimaryExpression() to route to parseBuiltInCall()
+    private static let builtInFunctionKeywords: Set<String> = [
+        // Aggregates [127]
+        "COUNT", "SUM", "AVG", "MIN", "MAX", "SAMPLE", "GROUP_CONCAT",
+        // Existing [121]
+        "BOUND", "EXISTS", "NOT", "REGEX",
+        // Conditional
+        "IF", "COALESCE",
+        // 0-arg
+        "NOW", "RAND", "UUID", "STRUUID",
+        // 0-1 arg
+        "BNODE",
+        // 1-arg: String
+        "STR", "STRLEN", "UCASE", "LCASE", "ENCODE_FOR_URI",
+        // 1-arg: Lang/Datatype
+        "LANG", "DATATYPE",
+        // 1-arg: IRI
+        "IRI", "URI",
+        // 1-arg: Date/Time
+        "YEAR", "MONTH", "DAY", "HOURS", "MINUTES", "SECONDS", "TIMEZONE", "TZ",
+        // 1-arg: Hash
+        "MD5", "SHA1", "SHA256", "SHA384", "SHA512",
+        // 1-arg: Type checks
+        "ISIRI", "ISURI", "ISBLANK", "ISLITERAL", "ISNUMERIC",
+        // 2-arg
+        "LANGMATCHES", "CONTAINS", "STRSTARTS", "STRENDS",
+        "STRBEFORE", "STRAFTER", "SAMETERM", "STRDT", "STRLANG",
+        // 2-3 arg [123]
+        "SUBSTR",
+        // 3-4 arg [124]
+        "REPLACE",
+        // variadic
+        "CONCAT",
+    ]
+
     /// Enable debug logging
     nonisolated(unsafe) private static var debugEnabled = false
     public static func enableDebug(_ enabled: Bool) {
@@ -258,7 +294,8 @@ extension SPARQLParser {
                        "TIMEZONE", "TZ", "NOW", "UUID", "STRUUID", "MD5", "SHA1", "SHA256",
                        "SHA384", "SHA512", "ISIRI", "ISURI", "ISBLANK", "ISLITERAL",
                        "ISNUMERIC", "SAMETERM", "TRUE", "FALSE", "COUNT", "SUM", "MIN",
-                       "MAX", "AVG", "SAMPLE", "GROUP_CONCAT", "SEPARATOR", "A", "UNDEF"]
+                       "MAX", "AVG", "SAMPLE", "GROUP_CONCAT", "SEPARATOR", "A", "UNDEF",
+                       "SUBSTR", "REPLACE", "STRDT", "STRLANG"]
         return keywords.contains(word)
     }
 
@@ -851,18 +888,40 @@ extension SPARQLParser {
         }
     }
 
+    /// [69] Constraint ::= BrackettedExpression | BuiltInCall | FunctionCall
     private func parseConstraint() throws -> Expression {
+        // BrackettedExpression
         if case .symbol("(") = currentToken {
             advance()
             let expr = try parseExpression()
             try expectSymbol(")")
             return expr
         }
-        return try parseBuiltInCall()
+        // BuiltInCall [121]
+        if case .keyword(let kw) = currentToken, Self.builtInFunctionKeywords.contains(kw) {
+            return try parseBuiltInCall()
+        }
+        // FunctionCall [70]: iri ArgList
+        if case .iri(let iri) = currentToken {
+            advance()
+            return try parseIRIFunctionCall(iri: iri)
+        }
+        if case .prefixedName(let prefix, let local) = currentToken {
+            advance()
+            let resolved = resolvePrefixedName(prefix: prefix, local: local)
+            return try parseIRIFunctionCall(iri: resolved)
+        }
+        // No valid Constraint production matched
+        throw ParseError.invalidSyntax(
+            message: "Expected constraint (bracketed expression, built-in call, or function call)",
+            position: input.distance(from: input.startIndex, to: position)
+        )
     }
 
+    /// [121] BuiltInCall — All SPARQL 1.1 built-in functions
     private func parseBuiltInCall() throws -> Expression {
         switch currentToken {
+        // BOUND [121]: 'BOUND' '(' Var ')'
         case .keyword("BOUND"):
             advance()
             try expectSymbol("(")
@@ -873,12 +932,12 @@ extension SPARQLParser {
             try expectSymbol(")")
             return .bound(Variable(varName))
 
+        // NotExistsFunc [126]: 'NOT' 'EXISTS' GroupGraphPattern
         case .keyword("NOT"):
             advance()
             if case .keyword("EXISTS") = currentToken {
                 advance()
                 let pattern = try parseGroupGraphPattern()
-                // Convert to NOT EXISTS expression
                 return .not(.exists(SelectQuery(
                     projection: .all,
                     source: .graphPattern(pattern)
@@ -886,6 +945,7 @@ extension SPARQLParser {
             }
             return .not(try parseConstraint())
 
+        // ExistsFunc [125]: 'EXISTS' GroupGraphPattern
         case .keyword("EXISTS"):
             advance()
             let pattern = try parseGroupGraphPattern()
@@ -894,29 +954,271 @@ extension SPARQLParser {
                 source: .graphPattern(pattern)
             ))
 
+        // RegexExpression [122]: 'REGEX' '(' Expression ',' Expression (',' Expression)? ')'
         case .keyword("REGEX"):
             advance()
             try expectSymbol("(")
             let text = try parseExpression()
             try expectSymbol(",")
-            guard case .string(let pattern, _, _) = currentToken else {
-                throw ParseError.invalidSyntax(message: "Expected pattern string", position: input.distance(from: input.startIndex, to: position))
-            }
-            advance()
-            var flags: String?
-            if case .symbol(",") = currentToken {
+            let patternExpr = try parseExpression()
+            var flagsExpr: Expression?
+            if isSymbol(",") {
                 advance()
-                if case .string(let f, _, _) = currentToken {
-                    flags = f
-                    advance()
-                }
+                flagsExpr = try parseExpression()
             }
             try expectSymbol(")")
-            return .regex(text, pattern: pattern, flags: flags)
+            // If pattern is a string literal and flags (if present) is also a string literal,
+            // use the dedicated .regex AST node. Otherwise fall through to generic function call.
+            if case .literal(.string(let pattern)) = patternExpr {
+                if let fExpr = flagsExpr {
+                    if case .literal(.string(let f)) = fExpr {
+                        return .regex(text, pattern: pattern, flags: f)
+                    }
+                    // flags is not a string literal — fall through to .function()
+                } else {
+                    return .regex(text, pattern: pattern, flags: nil)
+                }
+            }
+            // Generic function call for non-literal pattern or non-literal flags
+            var args: [Expression] = [text, patternExpr]
+            if let f = flagsExpr { args.append(f) }
+            return .function(FunctionCall(name: "REGEX", arguments: args))
+
+        // Aggregate [127]: COUNT, SUM, AVG, MIN, MAX, SAMPLE
+        case .keyword("COUNT"), .keyword("SUM"), .keyword("AVG"),
+             .keyword("MIN"), .keyword("MAX"), .keyword("SAMPLE"):
+            return try parseSPARQLAggregate()
+
+        // Aggregate [127]: GROUP_CONCAT
+        case .keyword("GROUP_CONCAT"):
+            return try parseGroupConcat()
+
+        // IF [121]: 'IF' '(' Expression ',' Expression ',' Expression ')'
+        case .keyword("IF"):
+            advance()
+            try expectSymbol("(")
+            let condition = try parseExpression()
+            try expectSymbol(",")
+            let thenExpr = try parseExpression()
+            try expectSymbol(",")
+            let elseExpr = try parseExpression()
+            try expectSymbol(")")
+            return .function(FunctionCall(name: "IF", arguments: [condition, thenExpr, elseExpr]))
+
+        // COALESCE [121]: 'COALESCE' ExpressionList
+        case .keyword("COALESCE"):
+            advance()
+            let args = try parseExpressionList()
+            return .coalesce(args)
+
+        // CONCAT [121]: 'CONCAT' ExpressionList
+        case .keyword("CONCAT"):
+            advance()
+            let args = try parseExpressionList()
+            return .function(FunctionCall(name: "CONCAT", arguments: args))
+
+        // 0-arg functions [121]: NOW/RAND/UUID/STRUUID NIL
+        case .keyword("NOW"), .keyword("RAND"), .keyword("UUID"), .keyword("STRUUID"):
+            guard case .keyword(let name) = currentToken else {
+                throw ParseError.invalidSyntax(message: "Expected function name", position: input.distance(from: input.startIndex, to: position))
+            }
+            advance()
+            try expectSymbol("(")
+            try expectSymbol(")")
+            return .function(FunctionCall(name: name, arguments: []))
+
+        // BNODE [121]: 'BNODE' ( '(' Expression ')' | NIL )
+        case .keyword("BNODE"):
+            advance()
+            try expectSymbol("(")
+            if isSymbol(")") {
+                advance()
+                return .function(FunctionCall(name: "BNODE", arguments: []))
+            }
+            let arg = try parseExpression()
+            try expectSymbol(")")
+            return .function(FunctionCall(name: "BNODE", arguments: [arg]))
+
+        // Generic 1-arg functions [121]
+        case .keyword("STR"), .keyword("LANG"), .keyword("DATATYPE"),
+             .keyword("IRI"), .keyword("URI"),
+             .keyword("ABS"), .keyword("CEIL"), .keyword("FLOOR"), .keyword("ROUND"),
+             .keyword("STRLEN"), .keyword("UCASE"), .keyword("LCASE"),
+             .keyword("ENCODE_FOR_URI"),
+             .keyword("YEAR"), .keyword("MONTH"), .keyword("DAY"),
+             .keyword("HOURS"), .keyword("MINUTES"), .keyword("SECONDS"),
+             .keyword("TIMEZONE"), .keyword("TZ"),
+             .keyword("MD5"), .keyword("SHA1"), .keyword("SHA256"),
+             .keyword("SHA384"), .keyword("SHA512"),
+             .keyword("ISIRI"), .keyword("ISURI"), .keyword("ISBLANK"),
+             .keyword("ISLITERAL"), .keyword("ISNUMERIC"):
+            return try parseGenericFunctionCall()
+
+        // Generic 2-arg functions [121]
+        case .keyword("LANGMATCHES"), .keyword("CONTAINS"),
+             .keyword("STRSTARTS"), .keyword("STRENDS"),
+             .keyword("STRBEFORE"), .keyword("STRAFTER"),
+             .keyword("SAMETERM"), .keyword("STRDT"), .keyword("STRLANG"):
+            return try parseGenericFunctionCall()
+
+        // SubstringExpression [123]: 'SUBSTR' '(' Expression ',' Expression (',' Expression)? ')'
+        case .keyword("SUBSTR"):
+            return try parseGenericFunctionCall()
+
+        // StrReplaceExpression [124]: 'REPLACE' '(' Expression ',' Expression ',' Expression (',' Expression)? ')'
+        case .keyword("REPLACE"):
+            return try parseGenericFunctionCall()
 
         default:
-            return try parseExpression()
+            throw ParseError.invalidSyntax(
+                message: "Unknown built-in function",
+                position: input.distance(from: input.startIndex, to: position)
+            )
         }
+    }
+
+    /// Generic function call parser for built-in functions with comma-separated arguments.
+    /// Handles 1-arg, 2-arg, and variadic functions uniformly.
+    /// keyword '(' Expression ( ',' Expression )* ')'
+    private func parseGenericFunctionCall() throws -> Expression {
+        guard case .keyword(let name) = currentToken else {
+            throw ParseError.invalidSyntax(
+                message: "Expected function name",
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+        advance()
+        try expectSymbol("(")
+        var args: [Expression] = []
+        if !isSymbol(")") {
+            args.append(try parseExpression())
+            while isSymbol(",") {
+                advance()
+                args.append(try parseExpression())
+            }
+        }
+        try expectSymbol(")")
+        return .function(FunctionCall(name: name, arguments: args))
+    }
+
+    /// [127] Aggregate ::= 'COUNT' '(' 'DISTINCT'? ( '*' | Expression ) ')'
+    ///                    | 'SUM'/'AVG'/'MIN'/'MAX'/'SAMPLE' '(' 'DISTINCT'? Expression ')'
+    private func parseSPARQLAggregate() throws -> Expression {
+        guard case .keyword(let funcName) = currentToken else {
+            throw ParseError.invalidSyntax(
+                message: "Expected aggregate function",
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+        advance()
+        try expectSymbol("(")
+
+        var distinct = false
+        if case .keyword("DISTINCT") = currentToken {
+            distinct = true
+            advance()
+        }
+
+        var arg: Expression?
+        if isSymbol("*") {
+            advance()
+            arg = nil
+        } else {
+            arg = try parseExpression()
+        }
+
+        try expectSymbol(")")
+
+        switch funcName {
+        case "COUNT":
+            return .aggregate(.count(arg, distinct: distinct))
+        case "SUM":
+            return .aggregate(.sum(arg ?? .literal(.null), distinct: distinct))
+        case "AVG":
+            return .aggregate(.avg(arg ?? .literal(.null), distinct: distinct))
+        case "MIN":
+            return .aggregate(.min(arg ?? .literal(.null)))
+        case "MAX":
+            return .aggregate(.max(arg ?? .literal(.null)))
+        case "SAMPLE":
+            return .aggregate(.sample(arg ?? .literal(.null)))
+        default:
+            throw ParseError.invalidSyntax(
+                message: "Unknown aggregate function: \(funcName)",
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+    }
+
+    /// [127] GROUP_CONCAT '(' 'DISTINCT'? Expression ( ';' 'SEPARATOR' '=' String )? ')'
+    private func parseGroupConcat() throws -> Expression {
+        advance() // consume GROUP_CONCAT
+        try expectSymbol("(")
+
+        var distinct = false
+        if case .keyword("DISTINCT") = currentToken {
+            distinct = true
+            advance()
+        }
+
+        let expr = try parseExpression()
+
+        var separator: String?
+        if isSymbol(";") {
+            advance()
+            try expect("SEPARATOR")
+            try expectSymbol("=")
+            guard case .string(let sep, _, _) = currentToken else {
+                throw ParseError.invalidSyntax(
+                    message: "Expected separator string",
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+            separator = sep
+            advance()
+        }
+
+        try expectSymbol(")")
+        return .aggregate(.groupConcat(expr, separator: separator, distinct: distinct))
+    }
+
+    /// [120] ExpressionList ::= NIL | '(' Expression ( ',' Expression )* ')'
+    private func parseExpressionList() throws -> [Expression] {
+        try expectSymbol("(")
+        if isSymbol(")") {
+            advance()
+            return []
+        }
+        var args: [Expression] = []
+        args.append(try parseExpression())
+        while isSymbol(",") {
+            advance()
+            args.append(try parseExpression())
+        }
+        try expectSymbol(")")
+        return args
+    }
+
+    /// [70] FunctionCall ::= iri ArgList
+    /// [71] ArgList ::= NIL | '(' 'DISTINCT'? Expression ( ',' Expression )* ')'
+    /// [128] iriOrFunction ::= iri ArgList?
+    private func parseIRIFunctionCall(iri: String) throws -> Expression {
+        try expectSymbol("(")
+        var distinct = false
+        if case .keyword("DISTINCT") = currentToken {
+            distinct = true
+            advance()
+        }
+        var args: [Expression] = []
+        if !isSymbol(")") {
+            args.append(try parseExpression())
+            while isSymbol(",") {
+                advance()
+                args.append(try parseExpression())
+            }
+        }
+        try expectSymbol(")")
+        return .function(FunctionCall(name: iri, arguments: args, distinct: distinct))
     }
 
     private func parseExpression() throws -> Expression {
@@ -1025,26 +1327,40 @@ extension SPARQLParser {
         }
     }
 
+    /// [119] PrimaryExpression ::= BrackettedExpression | BuiltInCall | iriOrFunction
+    ///                            | RDFLiteral | NumericLiteral | BooleanLiteral | Var
     private func parsePrimaryExpression() throws -> Expression {
         switch currentToken {
+        // BrackettedExpression
         case .symbol("("):
             advance()
             let expr = try parseExpression()
             try expectSymbol(")")
             return expr
 
+        // Var
         case .variable(let name):
             advance()
             return .variable(Variable(name))
 
+        // iriOrFunction [128]: iri ArgList?
         case .iri(let iri):
             advance()
+            if isSymbol("(") {
+                return try parseIRIFunctionCall(iri: iri)
+            }
             return .literal(.iri(iri))
 
+        // iriOrFunction [128]: prefixedName ArgList?
         case .prefixedName(let prefix, let local):
             advance()
-            return .literal(.iri(resolvePrefixedName(prefix: prefix, local: local)))
+            let resolved = resolvePrefixedName(prefix: prefix, local: local)
+            if isSymbol("(") {
+                return try parseIRIFunctionCall(iri: resolved)
+            }
+            return .literal(.iri(resolved))
 
+        // RDFLiteral
         case .string(let value, let language, let datatype):
             advance()
             if let lang = language {
@@ -1055,6 +1371,7 @@ extension SPARQLParser {
                 return .literal(.string(value))
             }
 
+        // NumericLiteral
         case .integer(let n):
             advance()
             return .literal(.int(Int64(n) ?? 0))
@@ -1063,6 +1380,7 @@ extension SPARQLParser {
             advance()
             return .literal(.double(Double(n) ?? 0))
 
+        // BooleanLiteral
         case .keyword("TRUE"):
             advance()
             return .literal(.bool(true))
@@ -1070,6 +1388,10 @@ extension SPARQLParser {
         case .keyword("FALSE"):
             advance()
             return .literal(.bool(false))
+
+        // BuiltInCall [121]
+        case .keyword(let kw) where Self.builtInFunctionKeywords.contains(kw):
+            return try parseBuiltInCall()
 
         default:
             throw ParseError.invalidSyntax(

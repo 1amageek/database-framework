@@ -1,57 +1,157 @@
 import Foundation
 import FoundationDB
 
-/// Main REPL loop for fdb-cli
-public final class CLIMain: Sendable {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
-    private let storage: SchemaStorage
-    private let output: OutputFormatter
+@main
+struct CLIMain {
+    static func main() async {
+        let args = Array(CommandLine.arguments.dropFirst())
 
-    public init(database: any DatabaseProtocol) {
-        self.database = database
-        self.storage = SchemaStorage(database: database)
-        self.output = OutputFormatter()
+        if let command = args.first {
+            switch command {
+            case "init":
+                let port = parsePort(from: args) ?? LocalCluster.defaultPort
+                do {
+                    try InitCommand.run(port: port)
+                } catch {
+                    print("ERROR: \(error)")
+                    Foundation.exit(1)
+                }
+                return
+
+            case "start":
+                do {
+                    try StartCommand.run()
+                } catch {
+                    print("ERROR: \(error)")
+                    Foundation.exit(1)
+                }
+                return
+
+            case "stop":
+                do {
+                    let cwd = FileManager.default.currentDirectoryPath
+                    try LocalCluster.stopServer(at: cwd)
+                    print("Server stopped.")
+                } catch {
+                    print("ERROR: \(error)")
+                    Foundation.exit(1)
+                }
+                return
+
+            case "status":
+                let cwd = FileManager.default.currentDirectoryPath
+                if let clusterFile = LocalCluster.findClusterFile(from: cwd) {
+                    let dbDir = (clusterFile as NSString).deletingLastPathComponent
+                    let port = LocalCluster.parsePort(fromClusterFile: clusterFile)
+
+                    print("Cluster file: \(clusterFile)")
+                    if let port {
+                        print("Port:         \(port)")
+                    }
+
+                    if let pid = LocalCluster.readPID(fromDBDir: dbDir) {
+                        if LocalCluster.isProcessAlive(pid) {
+                            print("Status:       running (PID: \(pid))")
+                        } else {
+                            print("Status:       stopped (stale PID file for \(pid))")
+                            LocalCluster.removePIDFile(fromDBDir: dbDir)
+                        }
+                    } else {
+                        print("Status:       stopped")
+                    }
+                } else {
+                    print("No .database directory found.")
+                    print("Run 'database init' to create one, or use system FoundationDB.")
+                }
+                return
+
+            case "--help", "-h":
+                printUsage()
+                return
+
+            default:
+                break
+            }
+        }
+
+        do {
+            try await FDBClient.initialize()
+
+            let cwd = FileManager.default.currentDirectoryPath
+            let clusterFile = LocalCluster.findClusterFile(from: cwd)
+
+            let database: any DatabaseProtocol
+            if let clusterFile {
+                database = try FDBClient.openDatabase(clusterFilePath: clusterFile)
+            } else {
+                database = try FDBClient.openDatabase()
+            }
+
+            let storage = SchemaStorage(database: database)
+            let output = OutputFormatter()
+
+            output.info("database - FoundationDB Interactive CLI")
+            if let clusterFile {
+                output.info("Connected to: \(clusterFile)")
+            } else {
+                output.info("Connected to: system default")
+            }
+            output.info("Type 'help' for available commands, 'quit' to exit.")
+            output.info("")
+
+            await repl(database: database, storage: storage, output: output)
+
+        } catch {
+            print("ERROR: Failed to connect to FoundationDB: \(error)")
+            print("")
+            print("Make sure FoundationDB is installed and running.")
+            print("  Local:  database init")
+            print("  macOS:  brew services start foundationdb")
+            print("  Linux:  sudo service foundationdb start")
+            Foundation.exit(1)
+        }
     }
 
-    /// Run the REPL
-    public func run() async {
-        output.info("fdb-cli - FoundationDB Interactive CLI")
-        output.info("Type 'help' for available commands, 'quit' to exit.")
-        output.info("")
+    // MARK: - REPL
 
+    private static func repl(
+        database: any DatabaseProtocol,
+        storage: SchemaStorage,
+        output: OutputFormatter
+    ) async {
         while true {
-            // Print prompt
-            print("fdb> ", terminator: "")
+            print("database> ", terminator: "")
             fflush(stdout)
 
-            // Read line
             guard let line = readLine()?.trimmingCharacters(in: .whitespaces) else {
-                // EOF
                 break
             }
 
-            // Skip empty lines
             guard !line.isEmpty else {
                 continue
             }
 
-            // Check for quit
             if line.lowercased() == "quit" || line.lowercased() == "exit" {
                 output.info("Goodbye!")
                 break
             }
 
-            // Execute command
             do {
-                try await executeCommand(line)
+                try await executeCommand(line, database: database, storage: storage, output: output)
             } catch {
                 output.error("\(error)")
             }
         }
     }
 
-    /// Execute a single command
-    public func executeCommand(_ line: String) async throws {
+    // MARK: - Command Execution
+
+    static func executeCommand(
+        _ line: String,
+        database: any DatabaseProtocol,
+        storage: SchemaStorage,
+        output: OutputFormatter
+    ) async throws {
         let tokens = tokenize(line)
         guard let command = tokens.first?.lowercased() else {
             return
@@ -61,19 +161,16 @@ public final class CLIMain: Sendable {
 
         switch command {
         case "help":
-            printHelp(topic: args.first)
+            printHelp(topic: args.first, output: output)
 
-        // Admin commands (schema and index management)
         case "admin":
             let adminCommands = AdminCommands(storage: storage, output: output)
             try await adminCommands.execute(args)
 
-        // Legacy schema commands (redirect to admin schema)
         case "schema":
             let adminCommands = AdminCommands(storage: storage, output: output)
             try await adminCommands.execute(["schema"] + args)
 
-        // Data commands
         case "insert":
             let dataCommands = DataCommands(storage: storage, output: output)
             try await dataCommands.insert(args: args)
@@ -90,32 +187,26 @@ public final class CLIMain: Sendable {
             let dataCommands = DataCommands(storage: storage, output: output)
             try await dataCommands.delete(args: args)
 
-        // Unified search command
         case "find":
             let findCommands = FindCommands(storage: storage, output: output)
             try await findCommands.execute(args)
 
-        // Legacy query command (redirect to find)
         case "query":
             let findCommands = FindCommands(storage: storage, output: output)
-            // Convert old query syntax to find syntax
             if !args.isEmpty {
                 try await findCommands.execute(args)
             } else {
                 throw CLIError.invalidArguments("Usage: find <Schema> [where ...] [options]")
             }
 
-        // Graph commands
         case "graph":
             let graphCommands = GraphCommands(storage: storage, output: output)
             try await graphCommands.execute(args)
 
-        // History/version commands
         case "history":
             let historyCommands = HistoryCommands(storage: storage, output: output)
             try await historyCommands.execute(args)
 
-        // Raw FDB commands
         case "raw":
             let rawCommands = RawCommands(database: database, output: output)
             guard let subCommand = args.first else {
@@ -130,12 +221,10 @@ public final class CLIMain: Sendable {
 
     // MARK: - Help
 
-    private func printHelp(topic: String?) {
+    private static func printHelp(topic: String?, output: OutputFormatter) {
         if let topic = topic?.lowercased() {
             switch topic {
-            case "admin":
-                output.info(AdminCommands.helpText)
-            case "schema":
+            case "admin", "schema":
                 output.info(AdminCommands.helpText)
             case "find":
                 output.info(FindCommands.helpText)
@@ -149,16 +238,16 @@ public final class CLIMain: Sendable {
                 output.info(RawCommands.helpText)
             default:
                 output.info("Unknown help topic: '\(topic)'")
-                printGeneralHelp()
+                printGeneralHelp(output: output)
             }
         } else {
-            printGeneralHelp()
+            printGeneralHelp(output: output)
         }
     }
 
-    private func printGeneralHelp() {
+    private static func printGeneralHelp(output: OutputFormatter) {
         output.info("""
-        fdb-cli - FoundationDB Interactive CLI with Full Index Support
+        database - FoundationDB Interactive CLI with Full Index Support
 
         Schema & Index Management:
           admin schema define <Name> <fields...>  Define a schema with indexes
@@ -212,29 +301,12 @@ public final class CLIMain: Sendable {
           quit                                    Exit CLI
 
         For detailed help: help <admin|find|graph|history|data|raw>
-
-        Index Modifiers:
-          #indexed       Scalar index
-          #unique        Unique constraint
-          #bitmap        Bitmap index
-          #rank          Rank index
-          #vector(...)   Vector index
-          #fulltext(...) Full-text index
-          #leaderboard(...) Time-windowed leaderboard
-          @relationship(Target,rule) Foreign key
-
-        Examples:
-          admin schema define User id:string name:string#indexed email:string#unique age:int#indexed status:string#bitmap
-          insert User {"id": "u1", "name": "Alice", "age": 25, "email": "a@x.com", "status": "active"}
-          find User where age > 20 limit 10
-          find User --bitmap status = active
         """)
     }
 
     // MARK: - Tokenizer
 
-    /// Tokenize a command line respecting quotes and JSON
-    private func tokenize(_ line: String) -> [String] {
+    private static func tokenize(_ line: String) -> [String] {
         var tokens: [String] = []
         var current = ""
         var inQuotes = false
@@ -289,5 +361,33 @@ public final class CLIMain: Sendable {
         }
 
         return tokens
+    }
+
+    // MARK: - Argument Parsing
+
+    private static func parsePort(from args: [String]) -> UInt16? {
+        guard let portIdx = args.firstIndex(of: "--port"),
+              portIdx + 1 < args.count,
+              let port = UInt16(args[portIdx + 1]) else {
+            return nil
+        }
+        return port
+    }
+
+    private static func printUsage() {
+        print("""
+        database - FoundationDB Interactive Database CLI
+
+        Usage:
+          database              Start interactive shell
+          database init         Initialize a local database in .database/
+          database start        Start the local database server
+          database stop         Stop the local database server
+          database status       Show local cluster status
+          database --help       Show this help
+
+        Options (for init):
+          --port <port>         Server port (default: 4690)
+        """)
     }
 }

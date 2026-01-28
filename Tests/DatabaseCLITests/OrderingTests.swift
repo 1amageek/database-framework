@@ -1,10 +1,10 @@
 // OrderingTests.swift
-// FDBCLILib - Tests for ordering functionality
+// DatabaseCLI - Tests for ordering functionality
 
 import Testing
 import Foundation
 import FoundationDB
-@testable import FDBCLILib
+@testable import DatabaseCLI
 import QueryAST
 import TestSupport
 

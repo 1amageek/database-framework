@@ -559,4 +559,356 @@ struct SPARQLParserTests {
             Issue.record("Expected ASK query")
         }
     }
+
+    // MARK: - Built-in Function Tests (W3C SPARQL 1.1 Section 17.4)
+
+    @Test("Parse FILTER with 1-arg function STRLEN")
+    func testFilterSTRLEN() throws {
+        let sparql = "SELECT ?name WHERE { ?s <http://xmlns.com/foaf/0.1/name> ?name . FILTER(STRLEN(?name) > 3) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        // Should parse without error; verify the filter structure
+        if case .graphPattern(let pattern) = query.source {
+            if case .filter(_, let expr) = pattern {
+                if case .greaterThan(let left, let right) = expr {
+                    if case .function(let fc) = left {
+                        #expect(fc.name == "STRLEN")
+                        #expect(fc.arguments.count == 1)
+                    } else {
+                        Issue.record("Expected function call STRLEN, got \(left)")
+                    }
+                    #expect(right == .literal(.int(3)))
+                } else {
+                    Issue.record("Expected greaterThan expression, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected filter pattern")
+            }
+        }
+    }
+
+    @Test("Parse FILTER with 2-arg function CONTAINS")
+    func testFilterCONTAINS() throws {
+        let sparql = #"SELECT ?name WHERE { ?s <http://xmlns.com/foaf/0.1/name> ?name . FILTER(CONTAINS(?name, "Alice")) }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .filter(_, let expr) = pattern {
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "CONTAINS")
+                    #expect(fc.arguments.count == 2)
+                    #expect(fc.arguments[0] == .variable(Variable("name")))
+                    #expect(fc.arguments[1] == .literal(.string("Alice")))
+                } else {
+                    Issue.record("Expected function call CONTAINS, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected filter pattern")
+            }
+        }
+    }
+
+    @Test("Parse FILTER with nested functions CONTAINS(LCASE())")
+    func testFilterNestedFunctions() throws {
+        let sparql = #"SELECT ?name WHERE { ?s <http://xmlns.com/foaf/0.1/name> ?name . FILTER(CONTAINS(LCASE(?name), "alice")) }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .filter(_, let expr) = pattern {
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "CONTAINS")
+                    #expect(fc.arguments.count == 2)
+                    // First arg should be LCASE(?name)
+                    if case .function(let inner) = fc.arguments[0] {
+                        #expect(inner.name == "LCASE")
+                        #expect(inner.arguments.count == 1)
+                        #expect(inner.arguments[0] == .variable(Variable("name")))
+                    } else {
+                        Issue.record("Expected nested LCASE function, got \(fc.arguments[0])")
+                    }
+                    #expect(fc.arguments[1] == .literal(.string("alice")))
+                } else {
+                    Issue.record("Expected function call CONTAINS, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected filter pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with 0-arg function NOW()")
+    func testBindNOW() throws {
+        let sparql = "SELECT ?now WHERE { ?s ?p ?o . BIND(NOW() AS ?now) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "now")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "NOW")
+                    #expect(fc.arguments.isEmpty)
+                } else {
+                    Issue.record("Expected function call NOW, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with IF function")
+    func testBindIF() throws {
+        let sparql = "SELECT ?val WHERE { ?s <http://example.org/x> ?x . BIND(IF(?x > 0, ?x, 0) AS ?val) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "val")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "IF")
+                    #expect(fc.arguments.count == 3)
+                } else {
+                    Issue.record("Expected function call IF, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with COALESCE")
+    func testBindCOALESCE() throws {
+        let sparql = #"SELECT ?val WHERE { ?s ?p ?o . BIND(COALESCE(?a, ?b, "default") AS ?val) }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "val")
+                if case .coalesce(let args) = expr {
+                    #expect(args.count == 3)
+                    #expect(args[0] == .variable(Variable("a")))
+                    #expect(args[1] == .variable(Variable("b")))
+                    #expect(args[2] == .literal(.string("default")))
+                } else {
+                    Issue.record("Expected coalesce, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with CONCAT")
+    func testBindCONCAT() throws {
+        let sparql = #"SELECT ?full WHERE { ?s <http://example.org/first> ?first . BIND(CONCAT(?first, " ", ?last) AS ?full) }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "full")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "CONCAT")
+                    #expect(fc.arguments.count == 3)
+                } else {
+                    Issue.record("Expected function call CONCAT, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with SUBSTR")
+    func testBindSUBSTR() throws {
+        let sparql = "SELECT ?short WHERE { ?s <http://example.org/name> ?name . BIND(SUBSTR(?name, 1, 3) AS ?short) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "short")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "SUBSTR")
+                    #expect(fc.arguments.count == 3)
+                } else {
+                    Issue.record("Expected function call SUBSTR, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse SELECT with COUNT(*)")
+    func testAggregateCountStar() throws {
+        let sparql = "SELECT (COUNT(*) AS ?cnt) WHERE { ?s ?p ?o }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .items(let items) = query.projection {
+            #expect(items.count == 1)
+            #expect(items[0].alias == "cnt")
+            if case .aggregate(.count(let arg, distinct: let d)) = items[0].expression {
+                #expect(arg == nil)
+                #expect(d == false)
+            } else {
+                Issue.record("Expected COUNT(*) aggregate, got \(items[0].expression)")
+            }
+        } else {
+            Issue.record("Expected items projection")
+        }
+    }
+
+    @Test("Parse SELECT with COUNT(DISTINCT ?x)")
+    func testAggregateCountDistinct() throws {
+        let sparql = "SELECT (COUNT(DISTINCT ?s) AS ?cnt) WHERE { ?s ?p ?o }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .items(let items) = query.projection {
+            #expect(items.count == 1)
+            if case .aggregate(.count(let arg, distinct: let d)) = items[0].expression {
+                #expect(arg == .variable(Variable("s")))
+                #expect(d == true)
+            } else {
+                Issue.record("Expected COUNT(DISTINCT ?s) aggregate, got \(items[0].expression)")
+            }
+        } else {
+            Issue.record("Expected items projection")
+        }
+    }
+
+    @Test("Parse SELECT with SUM aggregate")
+    func testAggregateSUM() throws {
+        let sparql = "SELECT (SUM(?val) AS ?total) WHERE { ?s <http://example.org/val> ?val }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .items(let items) = query.projection {
+            #expect(items.count == 1)
+            if case .aggregate(.sum(let arg, distinct: let d)) = items[0].expression {
+                #expect(arg == .variable(Variable("val")))
+                #expect(d == false)
+            } else {
+                Issue.record("Expected SUM aggregate, got \(items[0].expression)")
+            }
+        } else {
+            Issue.record("Expected items projection")
+        }
+    }
+
+    @Test("Parse SELECT with GROUP_CONCAT")
+    func testAggregateGroupConcat() throws {
+        let sparql = #"SELECT (GROUP_CONCAT(?name ; SEPARATOR=", ") AS ?names) WHERE { ?s <http://example.org/name> ?name }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .items(let items) = query.projection {
+            #expect(items.count == 1)
+            if case .aggregate(.groupConcat(let arg, separator: let sep, distinct: let d)) = items[0].expression {
+                #expect(arg == .variable(Variable("name")))
+                #expect(sep == ", ")
+                #expect(d == false)
+            } else {
+                Issue.record("Expected GROUP_CONCAT aggregate, got \(items[0].expression)")
+            }
+        } else {
+            Issue.record("Expected items projection")
+        }
+    }
+
+    @Test("Parse BIND with IRI function call")
+    func testIRIFunctionCall() throws {
+        let sparql = "SELECT ?y WHERE { ?s ?p ?x . BIND(<http://example.org/func>(?x) AS ?y) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "y")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "http://example.org/func")
+                    #expect(fc.arguments.count == 1)
+                    #expect(fc.arguments[0] == .variable(Variable("x")))
+                } else {
+                    Issue.record("Expected IRI function call, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
+
+    @Test("Parse FILTER with REGEX using variable pattern")
+    func testFilterREGEXVariable() throws {
+        let sparql = "SELECT ?name WHERE { ?s <http://xmlns.com/foaf/0.1/name> ?name . FILTER(REGEX(?name, ?pattern)) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .filter(_, let expr) = pattern {
+                // When pattern is a variable (not string literal), should fall back to .function
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "REGEX")
+                    #expect(fc.arguments.count == 2)
+                } else {
+                    Issue.record("Expected REGEX as function call for variable pattern, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected filter pattern")
+            }
+        }
+    }
+
+    @Test("Parse FILTER with REGEX: string pattern + variable flags falls back to function")
+    func testFilterREGEXStringPatternVariableFlags() throws {
+        let sparql = "SELECT ?name WHERE { ?s <http://xmlns.com/foaf/0.1/name> ?name . FILTER(REGEX(?name, \"abc\", ?flags)) }"
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .filter(_, let expr) = pattern {
+                // String pattern + variable flags must NOT use .regex (which would drop ?flags)
+                // Must fall back to .function to preserve all 3 arguments
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "REGEX")
+                    #expect(fc.arguments.count == 3)
+                } else if case .regex = expr {
+                    Issue.record("REGEX with variable flags should not use .regex AST node (flags would be lost)")
+                } else {
+                    Issue.record("Expected REGEX as function call, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected filter pattern")
+            }
+        }
+    }
+
+    @Test("Parse BIND with REPLACE")
+    func testBindREPLACE() throws {
+        let sparql = #"SELECT ?fixed WHERE { ?s <http://example.org/name> ?name . BIND(REPLACE(?name, "old", "new") AS ?fixed) }"#
+        let parser = SPARQLParser()
+        let query = try parser.parseSelect(sparql)
+
+        if case .graphPattern(let pattern) = query.source {
+            if case .bind(_, variable: let varName, expression: let expr) = pattern {
+                #expect(varName == "fixed")
+                if case .function(let fc) = expr {
+                    #expect(fc.name == "REPLACE")
+                    #expect(fc.arguments.count == 3)
+                } else {
+                    Issue.record("Expected REPLACE function, got \(expr)")
+                }
+            } else {
+                Issue.record("Expected bind pattern")
+            }
+        }
+    }
 }

@@ -256,6 +256,8 @@ let optimizedPlan = plan.optimized()
 
 ## Supported SPARQL Features
 
+Reference: [W3C SPARQL 1.1 Query Language](https://www.w3.org/TR/sparql11-query/)
+
 ### Query Forms
 - [x] SELECT
 - [x] CONSTRUCT
@@ -288,7 +290,115 @@ let optimizedPlan = plan.optimized()
 - [x] LIMIT / OFFSET
 - [x] DISTINCT / REDUCED
 - [x] GROUP BY / HAVING
-- [x] Aggregate functions
+- [ ] Aggregate functions (AST types exist, parser not implemented)
+
+### FILTER Built-in Functions (Section 17.4)
+
+`parseBuiltInCall()` in `SPARQLParser` parses FILTER expressions into `Expression` AST nodes.
+Tokenizer recognizes all listed keywords unless marked otherwise.
+
+#### Functional Forms (17.4.1)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `BOUND(?var)` | 1 | `Expression.bound(Variable)` | done | done |
+| `IF(e1, e2, e3)` | 3 | `Expression.function(FunctionCall)` | **TODO** | done |
+| `COALESCE(e1, ...)` | variadic | `Expression.coalesce([Expression])` | **TODO** | done |
+| `EXISTS { }` | pattern | `Expression.exists(SelectQuery)` | done | done |
+| `NOT EXISTS { }` | pattern | `Expression.not(.exists(...))` | done | done |
+| `IN` / `NOT IN` | variadic | `Expression.inList(...)` | done (relational) | done |
+
+#### Functions on RDF Terms (17.4.2)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `STR(term)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `LANG(literal)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `LANGMATCHES(tag, range)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `DATATYPE(literal)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `IRI(expr)` / `URI(expr)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `BNODE()` / `BNODE(label)` | 0-1 | `.function(FunctionCall)` | **TODO** | done |
+| `SAMETERM(t1, t2)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `ISIRI(term)` / `ISURI(term)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `ISBLANK(term)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `ISLITERAL(term)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `ISNUMERIC(term)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `STRDT(lex, dt)` | 2 | `.function(FunctionCall)` | **TODO** | **TODO** |
+| `STRLANG(lex, lang)` | 2 | `.function(FunctionCall)` | **TODO** | **TODO** |
+| `UUID()` | 0 | `.function(FunctionCall)` | **TODO** | done |
+| `STRUUID()` | 0 | `.function(FunctionCall)` | **TODO** | done |
+
+#### Functions on Strings (17.4.3)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `STRLEN(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SUBSTR(str, pos [, len])` | 2-3 | `.function(FunctionCall)` | **TODO** | **TODO** |
+| `UCASE(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `LCASE(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `STRSTARTS(str, prefix)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `STRENDS(str, suffix)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `CONTAINS(str, substr)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `STRBEFORE(str, arg)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `STRAFTER(str, arg)` | 2 | `.function(FunctionCall)` | **TODO** | done |
+| `ENCODE_FOR_URI(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `CONCAT(str1, ...)` | variadic | `.function(FunctionCall)` | **TODO** | done |
+| `REGEX(text, pattern [, flags])` | 2-3 | `Expression.regex(...)` | done | done |
+| `REPLACE(str, pat, rep [, flags])` | 3-4 | `.function(FunctionCall)` | **TODO** | **TODO** |
+
+#### Functions on Numerics (17.4.4)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `ABS(num)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `ROUND(num)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `CEIL(num)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `FLOOR(num)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `RAND()` | 0 | `.function(FunctionCall)` | **TODO** | done |
+
+#### Functions on Dates and Times (17.4.5)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `NOW()` | 0 | `.function(FunctionCall)` | **TODO** | done |
+| `YEAR(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `MONTH(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `DAY(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `HOURS(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `MINUTES(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SECONDS(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `TIMEZONE(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `TZ(dt)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+
+#### Hash Functions (17.4.6)
+
+| Function | Args | AST Node | Parser | Tokenizer |
+|----------|------|----------|--------|-----------|
+| `MD5(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SHA1(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SHA256(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SHA384(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+| `SHA512(str)` | 1 | `.function(FunctionCall)` | **TODO** | done |
+
+### Aggregate Functions (Section 17.5)
+
+AST types (`AggregateFunction` enum) exist. Parser does not yet emit them.
+
+| Function | Syntax | AST Node | Parser |
+|----------|--------|----------|--------|
+| `COUNT([DISTINCT] expr \| *)` | `DISTINCT`, `*` | `.aggregate(.count(...))` | **TODO** |
+| `SUM([DISTINCT] expr)` | `DISTINCT` | `.aggregate(.sum(...))` | **TODO** |
+| `AVG([DISTINCT] expr)` | `DISTINCT` | `.aggregate(.avg(...))` | **TODO** |
+| `MIN(expr)` | — | `.aggregate(.min(...))` | **TODO** |
+| `MAX(expr)` | — | `.aggregate(.max(...))` | **TODO** |
+| `SAMPLE(expr)` | — | `.aggregate(.sample(...))` | **TODO** |
+| `GROUP_CONCAT([DISTINCT] expr [; SEPARATOR="s"])` | `DISTINCT`, `SEPARATOR` | `.aggregate(.groupConcat(...))` | **TODO** |
+
+### Parser Known Issues
+
+1. **`parsePrimaryExpression()` rejects function keywords in nested context** — `CONTAINS(LCASE(?name), "xaml")` fails because `LCASE` appears as a `.keyword` token inside `parsePrimaryExpression()`, which has no case for it and throws `"Expected expression"`.
+2. **`parseBuiltInCall()` only handles 4 functions** — BOUND, REGEX, EXISTS, NOT EXISTS. All other function keywords fall through to `parseExpression()` and eventually fail at `parsePrimaryExpression()`.
+3. **Tokenizer missing 4 keywords** — `SUBSTR`, `REPLACE`, `STRDT`, `STRLANG` are in the W3C spec but not in `isKeywordString()`.
 
 ## Testing
 

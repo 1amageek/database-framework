@@ -10,6 +10,10 @@ public enum CLIError: Error, CustomStringConvertible {
     case invalidJSON(String)
     case validationError(String)
     case connectionFailed(String)
+    case alreadyInitialized(String)
+    case serverNotFound(String)
+    case initializationFailed(String)
+    case portInUse(UInt16)
 
     public var description: String {
         switch self {
@@ -29,6 +33,14 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Validation error: \(message)"
         case .connectionFailed(let message):
             return "Connection failed: \(message)"
+        case .alreadyInitialized(let path):
+            return "Already initialized: \(path) already exists"
+        case .serverNotFound(let message):
+            return "fdbserver not found: \(message)"
+        case .initializationFailed(let message):
+            return "Initialization failed: \(message)"
+        case .portInUse(let port):
+            return "Port \(port) is already in use. Use --port <port> or stop the process using that port."
         }
     }
 }

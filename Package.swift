@@ -22,9 +22,7 @@ let package = Package(
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
-        .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
-        .library(name: "FDBCLILib", targets: ["FDBCLILib"]),
-        .executable(name: "fdb-cli", targets: ["fdb-cli"]),
+        .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
         .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
@@ -185,34 +183,15 @@ let package = Package(
                 "QueryAST",
             ]
         ),
-        // DatabaseCLI - Interactive REPL for database access
-        .target(
+        // DatabaseCLI - Interactive CLI for FoundationDB
+        .executableTarget(
             name: "DatabaseCLI",
-            dependencies: [
-                "DatabaseEngine",
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
-        ),
-        // FDBCLILib - Library containing fdb-cli logic (testable)
-        .target(
-            name: "FDBCLILib",
             dependencies: [
                 "DatabaseEngine",
                 "QueryAST",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],
-            path: "Sources/fdb-cli",
-            exclude: ["FDBCLIApp.swift"]
-        ),
-        // fdb-cli - Interactive CLI for dynamic schema operations
-        .executableTarget(
-            name: "fdb-cli",
-            dependencies: [
-                "FDBCLILib",
-            ],
-            path: "Sources/fdb-cli-main",
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -403,12 +382,11 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
-        // CLI tests (both DatabaseCLI and FDBCLILib)
+        // CLI tests
         .testTarget(
             name: "DatabaseCLITests",
             dependencies: [
                 "DatabaseCLI",
-                "FDBCLILib",
                 "DatabaseEngine",
                 "QueryAST",
                 "TestSupport",
