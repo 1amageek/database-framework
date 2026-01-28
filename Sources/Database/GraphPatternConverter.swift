@@ -181,13 +181,125 @@ public struct GraphPatternConverter: Sendable {
 
     /// Convert a QueryIR.Expression to a GraphIndex.FilterExpression
     ///
-    /// Wraps the expression evaluation in a closure that uses ExpressionEvaluator
-    /// for runtime evaluation against each VariableBinding.
+    /// Extracts referenced variables for filter pushdown optimization,
+    /// then wraps the expression evaluation in a closure that uses
+    /// ExpressionEvaluator for runtime evaluation against each VariableBinding.
     public static func convertFilter(
         _ expression: QueryIR.Expression
     ) -> FilterExpression {
-        .custom { binding in
+        let variables = extractExpressionVariables(expression)
+        return .customWithVariables({ binding in
             ExpressionEvaluator.evaluateAsBoolean(expression, binding: binding)
+        }, variables: variables)
+    }
+
+    /// Extract all variables referenced in an expression
+    ///
+    /// Recursively traverses the expression tree to find all variable references.
+    /// This enables proper filter pushdown optimization.
+    private static func extractExpressionVariables(
+        _ expr: QueryIR.Expression
+    ) -> Set<String> {
+        var vars = Set<String>()
+        collectExpressionVariables(from: expr, into: &vars)
+        return vars
+    }
+
+    /// Recursively collect variables from an expression
+    private static func collectExpressionVariables(
+        from expr: QueryIR.Expression,
+        into vars: inout Set<String>
+    ) {
+        switch expr {
+        case .variable(let v):
+            let name = v.name.hasPrefix("?") ? v.name : "?\(v.name)"
+            vars.insert(name)
+
+        case .bound(let v):
+            let name = v.name.hasPrefix("?") ? v.name : "?\(v.name)"
+            vars.insert(name)
+
+        // Binary operators
+        case .add(let l, let r), .subtract(let l, let r), .multiply(let l, let r),
+             .divide(let l, let r), .modulo(let l, let r), .equal(let l, let r),
+             .notEqual(let l, let r), .lessThan(let l, let r), .lessThanOrEqual(let l, let r),
+             .greaterThan(let l, let r), .greaterThanOrEqual(let l, let r),
+             .and(let l, let r), .or(let l, let r):
+            collectExpressionVariables(from: l, into: &vars)
+            collectExpressionVariables(from: r, into: &vars)
+
+        // Unary operators
+        case .negate(let e), .not(let e), .isNull(let e), .isNotNull(let e):
+            collectExpressionVariables(from: e, into: &vars)
+
+        // RDF-star
+        case .isTriple(let e), .subject(let e), .predicate(let e), .object(let e):
+            collectExpressionVariables(from: e, into: &vars)
+
+        case .triple(let s, let p, let o):
+            collectExpressionVariables(from: s, into: &vars)
+            collectExpressionVariables(from: p, into: &vars)
+            collectExpressionVariables(from: o, into: &vars)
+
+        // Functions
+        case .function(let call):
+            for arg in call.arguments {
+                collectExpressionVariables(from: arg, into: &vars)
+            }
+
+        case .aggregate(let agg):
+            switch agg {
+            case .count(let e, _):
+                if let e = e { collectExpressionVariables(from: e, into: &vars) }
+            case .sum(let e, _), .avg(let e, _), .min(let e), .max(let e), .sample(let e):
+                collectExpressionVariables(from: e, into: &vars)
+            case .groupConcat(let e, _, _), .arrayAgg(let e, _, _):
+                collectExpressionVariables(from: e, into: &vars)
+            }
+
+        // Conditional
+        case .coalesce(let exprs):
+            for e in exprs { collectExpressionVariables(from: e, into: &vars) }
+
+        case .nullIf(let l, let r):
+            collectExpressionVariables(from: l, into: &vars)
+            collectExpressionVariables(from: r, into: &vars)
+
+        // Between, In, Like, Regex
+        case .between(let e, let low, let high):
+            collectExpressionVariables(from: e, into: &vars)
+            collectExpressionVariables(from: low, into: &vars)
+            collectExpressionVariables(from: high, into: &vars)
+
+        case .inList(let e, let list):
+            collectExpressionVariables(from: e, into: &vars)
+            for item in list { collectExpressionVariables(from: item, into: &vars) }
+
+        case .like(let e, _):
+            collectExpressionVariables(from: e, into: &vars)
+
+        case .regex(let e, _, _):
+            collectExpressionVariables(from: e, into: &vars)
+
+        // Cast
+        case .cast(let e, _):
+            collectExpressionVariables(from: e, into: &vars)
+
+        // Case/When
+        case .caseWhen(let cases, let elseResult):
+            for (cond, result) in cases {
+                collectExpressionVariables(from: cond, into: &vars)
+                collectExpressionVariables(from: result, into: &vars)
+            }
+            if let el = elseResult { collectExpressionVariables(from: el, into: &vars) }
+
+        // Subqueries (variables from subquery are internal, not exposed)
+        case .subquery, .exists, .inSubquery:
+            break
+
+        // Literals and constants (no variables)
+        case .literal, .column:
+            break
         }
     }
 

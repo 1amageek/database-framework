@@ -105,7 +105,16 @@ public indirect enum FilterExpression: Sendable {
     /// Custom predicate using closure
     ///
     /// For complex filters that can't be expressed with built-in operations.
+    /// **Warning**: Variables cannot be extracted from this case, breaking filter pushdown.
+    /// Use `customWithVariables` when variable information is available.
     case custom(@Sendable (VariableBinding) -> Bool)
+
+    /// Custom predicate with explicit variable tracking
+    ///
+    /// Stores the referenced variables alongside the closure, enabling proper
+    /// filter pushdown optimization. This is the preferred form when converting
+    /// from QueryIR.Expression.
+    case customWithVariables(@Sendable (VariableBinding) -> Bool, variables: Set<String>)
 
     /// Always true (identity for AND)
     case alwaysTrue
@@ -220,6 +229,9 @@ public indirect enum FilterExpression: Sendable {
         case .custom(let predicate):
             return predicate(binding)
 
+        case .customWithVariables(let predicate, _):
+            return predicate(binding)
+
         case .alwaysTrue:
             return true
 
@@ -317,7 +329,13 @@ public indirect enum FilterExpression: Sendable {
         case .not(let expr):
             return expr.variables
 
-        case .custom, .alwaysTrue, .alwaysFalse:
+        case .custom:
+            return []
+
+        case .customWithVariables(_, let vars):
+            return vars
+
+        case .alwaysTrue, .alwaysFalse:
             return []
         }
     }
@@ -402,6 +420,8 @@ extension FilterExpression: CustomStringConvertible {
             return "!(\(e))"
         case .custom:
             return "CUSTOM(...)"
+        case .customWithVariables(_, let vars):
+            return "CUSTOM(vars: \(vars.sorted().joined(separator: ", ")))"
         case .alwaysTrue:
             return "TRUE"
         case .alwaysFalse:
@@ -458,6 +478,9 @@ extension FilterExpression: Equatable {
         case (.custom, .custom):
             // Custom closures can't be compared
             return false
+        case (.customWithVariables(_, let lv), .customWithVariables(_, let rv)):
+            // Compare by variables only (closures can't be compared)
+            return lv == rv
         default:
             return false
         }
