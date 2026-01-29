@@ -77,6 +77,15 @@ enum TrailAction: Sendable {
     case unblocked(node: NodeID)
     case addedDataValue(node: NodeID, property: String, value: OWLLiteral)
     case choicePoint(id: Int)
+    case addedProcessedFlag(node: NodeID, flagType: ProcessedFlagType, concept: OWLClassExpression)
+}
+
+/// Types of processed flags tracked in the trail
+enum ProcessedFlagType: Sendable {
+    case intersection
+    case union
+    case existential
+    case universal
 }
 
 // MARK: - Choice Point
@@ -314,6 +323,13 @@ public final class CompletionGraph: @unchecked Sendable {
             result.formUnion(successors(of: nodeID, via: subRole))
         }
         return result
+    }
+
+    // MARK: - Processed Flag Operations
+
+    /// Record a processed flag addition in the trail for backtracking support
+    func recordProcessedFlag(_ flagType: ProcessedFlagType, concept: OWLClassExpression, at nodeID: NodeID) {
+        trail.append(.addedProcessedFlag(node: nodeID, flagType: flagType, concept: concept))
     }
 
     // MARK: - Data Values
@@ -611,6 +627,19 @@ public final class CompletionGraph: @unchecked Sendable {
         case .choicePoint:
             // Choice point marker - no undo action
             break
+
+        case .addedProcessedFlag(let nodeID, let flagType, let concept):
+            guard let node = nodes[nodeID] else { break }
+            switch flagType {
+            case .intersection:
+                node.processedIntersections.remove(concept)
+            case .union:
+                node.processedUnions.remove(concept)
+            case .existential:
+                node.processedExistentials.remove(concept)
+            case .universal:
+                node.processedUniversals.remove(concept)
+            }
         }
     }
 

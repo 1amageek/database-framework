@@ -221,6 +221,7 @@ public struct ExpansionRules {
 
             if case .intersection(let conjuncts) = concept {
                 node.processedIntersections.insert(concept)
+                graph.recordProcessedFlag(.intersection, concept: concept, at: nodeID)
 
                 for conjunct in conjuncts {
                     if graph.addConcept(conjunct, to: nodeID) {
@@ -365,6 +366,7 @@ public struct ExpansionRules {
 
                 if !hasDisjunct && !disjuncts.isEmpty {
                     node.processedUnions.insert(concept)
+                    graph.recordProcessedFlag(.union, concept: concept, at: nodeID)
                     // Return alternatives for choice point creation
                     return (true, concept, disjuncts)
                 }
@@ -399,6 +401,7 @@ public struct ExpansionRules {
 
                 if !hasWitness {
                     node.processedExistentials.insert(concept)
+                    graph.recordProcessedFlag(.existential, concept: concept, at: nodeID)
 
                     // Create new node
                     let newNodeID = graph.createNode(parent: nodeID)

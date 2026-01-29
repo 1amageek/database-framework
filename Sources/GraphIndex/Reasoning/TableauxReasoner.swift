@@ -609,13 +609,19 @@ public final class TableauxReasoner: @unchecked Sendable {
     /// - Parameters:
     ///   - superClass: The potential superclass
     ///   - subClass: The potential subclass
-    /// - Returns: true if subsumption holds
+    /// - Returns: true if subsumption definitely holds, false otherwise
+    ///
+    /// **Note**: Returns false if the satisfiability check is inconclusive (.unknown).
+    /// Only returns true when C ⊓ ¬D is definitively unsatisfiable.
     public func subsumes(superClass: OWLClassExpression, subClass: OWLClassExpression) -> Bool {
         let test = OWLClassExpression.intersection([
             subClass,
             .complement(superClass)
         ])
-        return !isSatisfiable(test)
+        let result = checkSatisfiability(test)
+        // Only claim subsumption when definitively unsatisfiable.
+        // If unknown (timeout/resource limit), conservatively return false.
+        return result.isUnsatisfiable
     }
 
     /// Check if two classes are equivalent
@@ -625,21 +631,43 @@ public final class TableauxReasoner: @unchecked Sendable {
     }
 
     /// Check if two classes are disjoint
+    ///
+    /// **Note**: Returns false if the satisfiability check is inconclusive (.unknown).
     public func areDisjoint(_ class1: OWLClassExpression, _ class2: OWLClassExpression) -> Bool {
         let test = OWLClassExpression.intersection([class1, class2])
-        return !isSatisfiable(test)
+        return checkSatisfiability(test).isUnsatisfiable
     }
 
     // MARK: - Instance Checking
 
     /// Check if an individual is an instance of a class
+    ///
+    /// Collects all ABox assertions for the individual and converts them
+    /// to class expressions:
+    /// - `classAssertion(ind, C)` → C
+    /// - `dataPropertyAssertion(ind, P, v)` → dataHasValue(P, v)
+    /// - `objectPropertyAssertion(ind, P, obj)` → hasValue(P, obj)
+    ///
+    /// Then checks if the conjunction of these expressions is subsumed by `classExpr`.
     public func isInstanceOf(individual: String, classExpr: OWLClassExpression) -> Bool {
-        // Collect all class assertions for the individual
         var individualTypes: [OWLClassExpression] = []
 
         for axiom in ontology.axioms {
-            if case .classAssertion(let ind, let type) = axiom, ind == individual {
+            switch axiom {
+            case .classAssertion(let ind, let type) where ind == individual:
                 individualTypes.append(type)
+
+            case .dataPropertyAssertion(let subject, let property, let value) where subject == individual:
+                // Convert data property assertion to dataHasValue class expression
+                // This enables Defined Class classification via equivalentClasses with dataHasValue
+                individualTypes.append(.dataHasValue(property: property, literal: value))
+
+            case .objectPropertyAssertion(let subject, let property, let object) where subject == individual:
+                // Convert object property assertion to hasValue class expression
+                individualTypes.append(.hasValue(property: property, individual: object))
+
+            default:
+                break
             }
         }
 
