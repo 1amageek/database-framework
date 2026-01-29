@@ -199,9 +199,9 @@ public final class FDBContainer: Sendable {
             guard !entity.indexDescriptors.isEmpty else { continue }
 
             // Resolve directory for this entity
+            // Use root subspace (same as FDBDataStore) so state is consistent
             let subspace = try await resolveDirectory(for: entity.persistableType)
-            let indexSubspace = subspace.subspace(SubspaceKey.indexes)
-            let stateManager = IndexStateManager(container: self, subspace: indexSubspace)
+            let stateManager = IndexStateManager(container: self, subspace: subspace)
 
             // Get index names for this entity
             let indexNames = entity.indexDescriptors.map { $0.name }
