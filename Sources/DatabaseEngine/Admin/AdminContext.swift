@@ -487,10 +487,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
-        // Use DirectoryLayer to resolve entity's directory
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: [entity.name])
-        return dirSubspace.subspace
+        // Use container's resolveDirectory to respect #Directory definitions
+        return try await container.resolveDirectory(for: entity.persistableType)
     }
 
     private func convertToPublicPlan<T: Persistable>(_ plan: DatabaseEngine.QueryPlan<T>) -> QueryPlanPublic {

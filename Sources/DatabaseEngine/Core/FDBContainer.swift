@@ -770,15 +770,14 @@ extension FDBContainer {
 
     private func buildStoreRegistry() async throws -> [String: MigrationStoreInfo] {
         var registry: [String: MigrationStoreInfo] = [:]
-        let directoryLayer = DirectoryLayer(database: database)
 
         for entity in schema.entities {
-            // Use entity's directory path from Persistable
-            let dirSubspace = try await directoryLayer.createOrOpen(path: [entity.name])
+            // Use resolveDirectory to respect #Directory definitions
+            let subspace = try await resolveDirectory(for: entity.persistableType)
             let info = MigrationStoreInfo(
-                subspace: dirSubspace.subspace,
-                indexSubspace: dirSubspace.subspace.subspace(SubspaceKey.indexes),
-                blobsSubspace: dirSubspace.subspace.subspace(SubspaceKey.blobs)
+                subspace: subspace,
+                indexSubspace: subspace.subspace(SubspaceKey.indexes),
+                blobsSubspace: subspace.subspace(SubspaceKey.blobs)
             )
             registry[entity.name] = info
         }
