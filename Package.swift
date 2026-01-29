@@ -23,7 +23,8 @@ let package = Package(
         .library(name: "QueryIR", targets: ["QueryIR"]),
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
-        .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
+        .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
+        .executable(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
         .package(path: "../database-kit"),
@@ -192,12 +193,21 @@ let package = Package(
                 "QueryAST",
             ]
         ),
-        // DatabaseCLI - Embeddable interactive CLI with dynamic catalog access
+        // DatabaseCLICore - Embeddable CLI library with REPL, commands, and catalog access
         .target(
-            name: "DatabaseCLI",
+            name: "DatabaseCLICore",
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
+        ),
+        // DatabaseCLI - Standalone executable entry point
+        .executableTarget(
+            name: "DatabaseCLI",
+            dependencies: [
+                "DatabaseCLICore",
+                "DatabaseEngine",
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],
             linkerSettings: [
@@ -394,7 +404,7 @@ let package = Package(
         .testTarget(
             name: "DatabaseCLITests",
             dependencies: [
-                "DatabaseCLI",
+                "DatabaseCLICore",
                 "Database",
                 "TestSupport",
             ],

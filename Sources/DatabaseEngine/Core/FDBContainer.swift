@@ -117,6 +117,11 @@ public final class FDBContainer: Sendable {
     ///   - configuration: Optional FDBConfiguration
     ///   - security: Security configuration (default: enabled)
     /// - Throws: Error if database connection or index initialization fails
+    ///
+    /// - Note: This initializer performs two side effects on FDB:
+    ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
+    ///   2. **Catalog persistence** — writes `TypeCatalog` for each entity to `(_catalog, typeName)` via `SchemaRegistry.persist()`,
+    ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,
         configuration: FDBConfiguration? = nil,
@@ -153,7 +158,7 @@ public final class FDBContainer: Sendable {
         try await registry.persist(schema)
     }
 
-    /// Initialize FDBContainer with raw database
+    /// Initialize FDBContainer with a pre-created database connection.
     ///
     /// - Parameters:
     ///   - database: The raw FDB database connection
@@ -161,6 +166,10 @@ public final class FDBContainer: Sendable {
     ///   - configuration: Optional configuration
     ///   - security: Security configuration (default: enabled)
     ///   - indexConfigurations: Index configurations
+    ///
+    /// - Note: This initializer does **NOT** call `ensureIndexesReady()` or `SchemaRegistry.persist()`.
+    ///   Index states and catalog entries must be managed externally. Intended for testing and
+    ///   advanced use cases where the caller controls initialization.
     public init(
         database: any DatabaseProtocol,
         schema: Schema,
