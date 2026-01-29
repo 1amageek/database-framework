@@ -4,16 +4,15 @@ import Foundation
 public enum CLIError: Error, CustomStringConvertible {
     case unknownCommand(String)
     case invalidArguments(String)
-    case schemaNotFound(String)
-    case schemaExists(String)
-    case recordNotFound(schema: String, id: String)
+    case entityNotFound(String)
+    case recordNotFound(type: String, id: String)
     case invalidJSON(String)
-    case validationError(String)
     case connectionFailed(String)
     case alreadyInitialized(String)
     case serverNotFound(String)
     case initializationFailed(String)
     case portInUse(UInt16)
+    case missingPartition(String)
 
     public var description: String {
         switch self {
@@ -21,16 +20,12 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Unknown command: '\(cmd)'. Type 'help' for available commands."
         case .invalidArguments(let usage):
             return "Invalid arguments. \(usage)"
-        case .schemaNotFound(let name):
-            return "Schema '\(name)' not found"
-        case .schemaExists(let name):
-            return "Schema '\(name)' already exists"
-        case .recordNotFound(let schema, let id):
-            return "Record '\(id)' not found in '\(schema)'"
+        case .entityNotFound(let name):
+            return "Type '\(name)' not found in schema. Use 'schema list' to see registered types."
+        case .recordNotFound(let type, let id):
+            return "Record '\(id)' not found in '\(type)'"
         case .invalidJSON(let message):
             return "Invalid JSON: \(message)"
-        case .validationError(let message):
-            return "Validation error: \(message)"
         case .connectionFailed(let message):
             return "Connection failed: \(message)"
         case .alreadyInitialized(let path):
@@ -41,6 +36,8 @@ public enum CLIError: Error, CustomStringConvertible {
             return "Initialization failed: \(message)"
         case .portInUse(let port):
             return "Port \(port) is already in use. Use --port <port> or stop the process using that port."
+        case .missingPartition(let field):
+            return "Missing --partition value for dynamic directory field: '\(field)'. Use --partition \(field)=<value>"
         }
     }
 }

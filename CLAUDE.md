@@ -72,14 +72,22 @@ database-kit (client-safe)          database-framework (server-only)
 ├── Core/                           ├── DatabaseEngine/
 │   ├── Persistable (protocol)      │   ├── FDBContainer
 │   ├── IndexKind (protocol)        │   ├── FDBContext
-│   └── IndexDescriptor             │   ├── IndexMaintainer (protocol)
-│                                   │   └── IndexKindMaintainable (protocol)
-├── Vector/, FullText/, etc.        ├── VectorIndex/, FullTextIndex/, etc.
-│   └── VectorIndexKind             │   └── VectorIndexKind+Maintainable
+│   ├── IndexDescriptor             │   ├── IndexMaintainer (protocol)
+│   ├── FieldSchema                 │   ├── IndexKindMaintainable (protocol)
+│   ├── PersistableEnum (protocol)  │   └── Registry/
+│   └── EnumMetadata                │       ├── TypeCatalog
+│                                   │       ├── SchemaRegistry
+├── Vector/, FullText/, etc.        │       ├── DynamicProtobufDecoder
+│   └── VectorIndexKind             │       └── DynamicProtobufEncoder
+                                    ├── VectorIndex/, FullTextIndex/, etc.
+                                    │   └── VectorIndexKind+Maintainable
+                                    └── DatabaseCLI/
+                                        ├── DatabaseREPL
+                                        └── CatalogDataAccess
 ```
 
-- **database-kit**: Platform-independent model definitions and index type specifications (works on iOS clients)
-- **database-framework**: FoundationDB-dependent index execution (server-only, requires libfdb_c)
+- **database-kit**: Platform-independent model definitions, index type specifications, and field schema metadata (works on iOS clients)
+- **database-framework**: FoundationDB-dependent index execution, schema registry, and dynamic CLI (server-only, requires libfdb_c)
 
 ### Module Dependency Graph
 
@@ -107,6 +115,91 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
 | `IndexMaintenanceService` | Centralized index maintenance: uniqueness checking, index updates, violation tracking |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
+| `TypeCatalog` | Codable schema metadata for a Persistable type (pg_catalog equivalent) |
+| `SchemaRegistry` | Persists/loads TypeCatalog entries in FDB under `/_catalog/` |
+| `DirectoryComponentCatalog` | Codable enum: `.staticPath(String)` or `.dynamicField(fieldName: String)` |
+
+### Schema Registry (pg_catalog)
+
+PostgreSQL は `pg_catalog` でスキーマ情報をデータと一緒に保存する。本フレームワークも同様のアプローチを採用。
+
+```
+PostgreSQL pg_catalog          → database-framework
+─────────────────────────────────────────────────
+pg_class (テーブル名)          → TypeCatalog.typeName
+pg_attribute (カラム名・型)    → TypeCatalog.fields: [FieldSchema]
+pg_type (データ型定義)         → FieldSchema.type: FieldSchemaType
+pg_index (インデックス定義)    → TypeCatalog.indexes: [IndexCatalog]
+pg_namespace (名前空間)        → TypeCatalog.directoryComponents
+```
+
+| コンポーネント | 責務 | ファイル |
+|--------------|------|---------|
+| `TypeCatalog` | 型のメタデータ（フィールド、インデックス、ディレクトリ構造） | `Sources/DatabaseEngine/Registry/TypeCatalog.swift` |
+| `IndexCatalog` | インデックスのメタデータ（名前、種別、フィールド） | 同上 |
+| `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | 同上 |
+| `SchemaRegistry` | FDB への TypeCatalog 永続化・読み取り | `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` |
+| `DynamicProtobufDecoder` | TypeCatalog を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
+| `DynamicProtobufEncoder` | TypeCatalog を使った Protobuf 動的エンコード | `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` |
+
+**ライフサイクル**: `FDBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にカタログが FDB に書き込まれる。
+
+### DatabaseCLI
+
+`@Persistable` 型なしで FDB データにアクセスする対話型 CLI。TypeCatalog + DynamicProtobuf コーデックで動的アクセスを実現。
+
+```
+Sources/DatabaseCLI/
+├── Core/
+│   ├── DatabaseREPL.swift          # REPL ループ
+│   ├── CommandRouter.swift         # コマンド解析・ディスパッチ
+│   └── CatalogDataAccess.swift     # TypeCatalog ベースのデータアクセス
+├── Commands/
+│   ├── DataCommands.swift          # insert/get/update/delete
+│   ├── FindCommands.swift          # find + filter/sort
+│   ├── SchemaInfoCommands.swift    # schema list/show
+│   ├── GraphCommands.swift         # graph/sparql (embedded mode)
+│   └── HistoryCommands.swift       # history (embedded mode)
+└── Util/
+    ├── CLIError.swift              # エラー定義
+    ├── JSONParser.swift            # JSON パース
+    └── OutputFormatter.swift       # 出力フォーマット
+```
+
+**使用モード**:
+
+```swift
+// スタンドアロンモード（TypeCatalog のみ使用）
+let database = try FDBClient.openDatabase()
+let registry = SchemaRegistry(database: database)
+let catalogs = try await registry.loadAll()
+let repl = DatabaseREPL(database: database, catalogs: catalogs)
+try await repl.run()
+
+// 埋め込みモード（FDBContainer と連携）
+let container = try await FDBContainer(for: schema)
+let repl = try await DatabaseREPL(container: container)
+try await repl.run()
+```
+
+**CLI コマンド**:
+
+| コマンド | PostgreSQL 相当 | 説明 |
+|---------|----------------|------|
+| `schema list` | `\dt` | 全型一覧 |
+| `schema show <Type>` | `\d tablename` | フィールド・型・インデックス・ディレクトリ構造 |
+| `get <Type> <id>` | `SELECT * WHERE id = ?` | ID でレコード取得 |
+| `find <Type> [--where ...]` | `SELECT * FROM t WHERE ...` | フィルタ・ソート・リミット |
+| `insert <Type> <json>` | `INSERT INTO t VALUES (...)` | レコード挿入（インデックス更新なし） |
+| `delete <Type> <id>` | `DELETE FROM t WHERE id = ?` | レコード削除（インデックス更新なし） |
+
+**動的ディレクトリ（パーティション）対応**:
+
+マルチテナント型など動的ディレクトリを持つ型には `--partition` オプションを使用：
+```
+get Order order-001 --partition tenantId=tenant_123
+find Order --limit 10 --partition tenantId=tenant_123
+```
 
 ### Core Architecture Design Principles (Context-Centric)
 
@@ -153,14 +246,17 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 ### Data Layout in FoundationDB
 
 ```
-[fdb]/R/[PersistableType]/[id]           → ItemEnvelope(JSON-encoded item)
+[fdb]/R/[PersistableType]/[id]           → ItemEnvelope(Protobuf-encoded item)
 [fdb]/B/[blob-key]                       → Large value blob chunks
 [fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
 [fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
 [fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
+[fdb]/_catalog/[typeName]                → JSON-encoded TypeCatalog (schema metadata)
 ```
 
 **ItemEnvelope Format**: All items are wrapped in `ItemEnvelope` with magic number `ITEM` (0x49 0x54 0x45 0x4D). Reading raw data without `ItemStorage.read()` will fail.
+
+**Catalog Layout**: `/_catalog/` stores `TypeCatalog` entries as JSON, analogous to PostgreSQL's `pg_catalog`. Written by `SchemaRegistry.persist()` during `FDBContainer.init`.
 
 ## Implemented Features
 

@@ -23,10 +23,10 @@ let package = Package(
         .library(name: "QueryIR", targets: ["QueryIR"]),
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
-        .executable(name: "database", targets: ["DatabaseCLI"]),
+        .library(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
+        .package(path: "../database-kit"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", branch: "main"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",
@@ -192,12 +192,11 @@ let package = Package(
                 "QueryAST",
             ]
         ),
-        // DatabaseCLI - Interactive CLI for FoundationDB
-        .executableTarget(
+        // DatabaseCLI - Embeddable interactive CLI with dynamic catalog access
+        .target(
             name: "DatabaseCLI",
             dependencies: [
                 "DatabaseEngine",
-                "QueryAST",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ],
@@ -396,10 +395,8 @@ let package = Package(
             name: "DatabaseCLITests",
             dependencies: [
                 "DatabaseCLI",
-                "DatabaseEngine",
-                "QueryAST",
+                "Database",
                 "TestSupport",
-                .product(name: "Core", package: "database-kit"),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),

@@ -147,6 +147,10 @@ public final class FDBContainer: Sendable {
 
         // Initialize all indexes to readable state
         try await ensureIndexesReady()
+
+        // Persist schema catalog for CLI and dynamic tools
+        let registry = SchemaRegistry(database: database)
+        try await registry.persist(schema)
     }
 
     /// Initialize FDBContainer with raw database

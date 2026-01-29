@@ -54,11 +54,12 @@ extension Persistable where Self: Codable {
         configurations: [any IndexConfiguration]
     ) async throws {
         let indexSubspace = storeSubspace.subspace(SubspaceKey.indexes)
+        let indexSubspaceForIndex = indexSubspace.subspace(index.subspaceKey)
 
         // Create IndexMaintainer based on IndexKind (passing configurations)
         let indexMaintainer = try createIndexMaintainer(
             for: index,
-            indexSubspace: indexSubspace,
+            indexSubspace: indexSubspaceForIndex,
             configurations: configurations
         )
 
