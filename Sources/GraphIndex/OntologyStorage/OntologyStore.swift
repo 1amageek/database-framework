@@ -237,6 +237,49 @@ public struct OntologyStore: Sendable {
         return properties
     }
 
+    // MARK: - Axiom Operations
+
+    /// Save axioms to FDB
+    ///
+    /// Persists raw OWLAxiom values so they can be reconstructed when
+    /// loading the ontology back. This is essential for reasoning, since
+    /// the Tableaux reasoner needs TBox axioms (subClassOf, equivalentClasses, etc.).
+    public func saveAxioms(
+        _ axioms: [OWLAxiom],
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let encoder = JSONEncoder()
+        for (index, axiom) in axioms.enumerated() {
+            let key = subspace.axiomKey(ontologyIRI, axiomID: String(index))
+            let data = try encoder.encode(axiom)
+            transaction.setValue(Array(data), for: key)
+        }
+    }
+
+    /// List all axioms in an ontology
+    public func listAxioms(
+        ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws -> [OWLAxiom] {
+        let (beginKey, endKey) = subspace.axioms(ontologyIRI).range()
+        var axioms: [OWLAxiom] = []
+        let decoder = JSONDecoder()
+
+        let stream = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(beginKey),
+            endSelector: .firstGreaterOrEqual(endKey),
+            snapshot: true
+        )
+
+        for try await (_, value) in stream {
+            let axiom = try decoder.decode(OWLAxiom.self, from: Data(value))
+            axioms.append(axiom)
+        }
+
+        return axioms
+    }
+
     // MARK: - Class Hierarchy Operations
 
     /// Add class hierarchy entry (materialized)
@@ -613,6 +656,9 @@ public struct OntologyStore: Sendable {
             let propDef = StoredPropertyDefinition.from(owlProp)
             try await saveProperty(propDef, ontologyIRI: ontology.iri, transaction: transaction)
         }
+
+        // Save axioms
+        try await saveAxioms(ontology.axioms, ontologyIRI: ontology.iri, transaction: transaction)
 
         // Materialize class hierarchy
         try await materializeClassHierarchy(from: ontology, transaction: transaction)

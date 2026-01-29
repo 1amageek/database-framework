@@ -149,6 +149,10 @@ public struct OntologyContextAPI: Sendable {
                 ontologyIRI: iri,
                 transaction: transaction
             )
+            let axioms = try await store.listAxioms(
+                ontologyIRI: iri,
+                transaction: transaction
+            )
 
             // Reconstruct OWL classes
             let owlClasses = classes.map { def in
@@ -216,6 +220,7 @@ public struct OntologyContextAPI: Sendable {
             ontology.classes = owlClasses
             ontology.objectProperties = owlObjectProperties
             ontology.dataProperties = owlDataProperties
+            ontology.axioms = axioms
 
             return ontology
         }
