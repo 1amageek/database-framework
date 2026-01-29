@@ -24,7 +24,7 @@ let package = Package(
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
-        .executable(name: "DatabaseCLI", targets: ["DatabaseCLI"]),
+        .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
         .package(path: "../database-kit"),
