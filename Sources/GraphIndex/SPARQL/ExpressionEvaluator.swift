@@ -20,6 +20,14 @@ public struct ExpressionEvaluator: Sendable {
 
     private init() {}
 
+    /// Normalize a QueryIR variable name to VariableBinding key format ("?"-prefixed).
+    ///
+    /// QueryIR.Variable strips the "?" prefix during init, but VariableBinding
+    /// keys use "?"-prefixed names (set by GraphPatternConverter.convertTerm).
+    private static func bindingKey(_ v: QueryIR.Variable) -> String {
+        v.name.hasPrefix("?") ? v.name : "?\(v.name)"
+    }
+
     // MARK: - Boolean Evaluation (FILTER)
 
     /// Evaluate an expression as a boolean for FILTER.
@@ -48,7 +56,7 @@ public struct ExpressionEvaluator: Sendable {
         switch expr {
         // Identifiers
         case .variable(let v):
-            return binding[v.name]
+            return binding[bindingKey(v)]
         case .column(let col):
             // Treat column references as variable lookups in SPARQL context
             return binding[col.column]
@@ -112,7 +120,7 @@ public struct ExpressionEvaluator: Sendable {
             guard let val = evaluate(inner, binding: binding) else { return .bool(false) }
             return .bool(val != .null)
         case .bound(let v):
-            return .bool(binding.isBound(v.name))
+            return .bool(binding.isBound(bindingKey(v)))
 
         // Pattern matching
         case .regex(let inner, let pattern, let flags):
@@ -304,7 +312,7 @@ public struct ExpressionEvaluator: Sendable {
         // BOUND (function form)
         case "BOUND":
             guard args.count == 1, case .variable(let v) = args[0] else { return nil }
-            return .bool(binding.isBound(v.name))
+            return .bool(binding.isBound(bindingKey(v)))
 
         // COALESCE (function form)
         case "COALESCE":
