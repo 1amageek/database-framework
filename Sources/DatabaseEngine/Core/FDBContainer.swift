@@ -48,9 +48,9 @@ import Logging
 ///     var email: String
 /// }
 ///
-/// // 2. Create container
+/// // 2. Create container (async - connects to DB and initializes indexes)
 /// let schema = Schema([User.self])
-/// let container = try FDBContainer(for: schema)
+/// let container = try await FDBContainer(for: schema)
 ///
 /// // 3. Use context
 /// let context = container.newContext()
@@ -97,13 +97,16 @@ public final class FDBContainer: Sendable {
 
     /// Initialize FDBContainer with schema
     ///
+    /// Connects to FoundationDB and initializes all indexes to `readable` state.
+    /// This ensures indexes are ready for both writes and queries immediately.
+    ///
     /// **Example**:
     /// ```swift
     /// let schema = Schema([User.self, Order.self])
-    /// let container = try FDBContainer(for: schema)
+    /// let container = try await FDBContainer(for: schema)
     ///
     /// // With security enabled
-    /// let secureContainer = try FDBContainer(
+    /// let secureContainer = try await FDBContainer(
     ///     for: schema,
     ///     security: .enabled(adminRoles: ["admin"])
     /// )
@@ -113,12 +116,12 @@ public final class FDBContainer: Sendable {
     ///   - schema: The schema defining all entities
     ///   - configuration: Optional FDBConfiguration
     ///   - security: Security configuration (default: enabled)
-    /// - Throws: Error if database connection fails
+    /// - Throws: Error if database connection or index initialization fails
     public init(
         for schema: Schema,
         configuration: FDBConfiguration? = nil,
         security: SecurityConfiguration = .enabled()
-    ) throws {
+    ) async throws {
         guard !schema.entities.isEmpty else {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
@@ -141,6 +144,9 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
+
+        // Initialize all indexes to readable state
+        try await ensureIndexesReady()
     }
 
     /// Initialize FDBContainer with raw database
@@ -175,6 +181,56 @@ public final class FDBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.fdb.runtime.container")
         self.directoryCache = Mutex([:])
+    }
+
+    // MARK: - Index Initialization
+
+    /// Ensure all indexes are in `readable` state
+    ///
+    /// This method transitions all indexes to `readable`:
+    /// - `disabled` → `writeOnly` → `readable`
+    /// - `writeOnly` → `readable`
+    /// - `readable` → no-op
+    ///
+    /// Index state is persisted in FoundationDB. Once indexes are `readable`,
+    /// subsequent calls are no-ops.
+    private func ensureIndexesReady() async throws {
+        for entity in schema.entities {
+            guard !entity.indexDescriptors.isEmpty else { continue }
+
+            // Resolve directory for this entity
+            let subspace = try await resolveDirectory(for: entity.persistableType)
+            let indexSubspace = subspace.subspace(SubspaceKey.indexes)
+            let stateManager = IndexStateManager(container: self, subspace: indexSubspace)
+
+            // Get index names for this entity
+            let indexNames = entity.indexDescriptors.map { $0.name }
+
+            // Get current states
+            let states = try await stateManager.states(of: indexNames)
+
+            // Transition each index to readable
+            for indexName in indexNames {
+                let currentState = states[indexName] ?? .disabled
+
+                switch currentState {
+                case .disabled:
+                    // disabled → writeOnly → readable
+                    try await stateManager.enable(indexName)
+                    try await stateManager.makeReadable(indexName)
+                    logger.info("Initialized index '\(indexName)': disabled → readable")
+
+                case .writeOnly:
+                    // writeOnly → readable
+                    try await stateManager.makeReadable(indexName)
+                    logger.info("Initialized index '\(indexName)': writeOnly → readable")
+
+                case .readable:
+                    // Already readable, nothing to do
+                    break
+                }
+            }
+        }
     }
 
     // MARK: - Context Management
