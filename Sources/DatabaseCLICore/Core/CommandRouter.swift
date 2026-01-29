@@ -45,11 +45,11 @@ enum CommandRouter {
             try await cmd.execute(args)
 
         case "graph":
-            let cmd = GraphCommands(output: output)
+            let cmd = GraphCommands(dataAccess: dataAccess, output: output)
             try await cmd.execute(args)
 
         case "sparql":
-            let cmd = GraphCommands(output: output)
+            let cmd = GraphCommands(dataAccess: dataAccess, output: output)
             try await cmd.executeSPARQL(args)
 
         case "history":
@@ -114,9 +114,9 @@ enum CommandRouter {
         Partition (for dynamic directory types):
           --partition field=value            Specify partition value (repeatable)
 
-        Graph (requires embedded mode):
-          graph <TypeName> from=<node> [edge=<rel>] [to=<node>] [--limit N]
-          sparql <TypeName> <SPARQL query string>
+        Graph:
+          graph <TypeName> [from=<value>] [edge=<value>] [to=<value>] [--limit N]
+          sparql <TypeName> <SPARQL query>
 
         Version History (requires embedded mode):
           history <TypeName> <id> [--limit N]

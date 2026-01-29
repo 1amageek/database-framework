@@ -171,8 +171,13 @@ extension FDBContext {
             throw SPARQLQueryError.noPatterns
         }
 
-        let executor = SPARQLQueryExecutor<T>(
-            queryContext: indexQueryContext,
+        let typeSubspace = try await indexQueryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
+
+        let executor = SPARQLQueryExecutor(
+            database: container.database,
+            indexSubspace: indexSubspace,
+            strategy: kind.strategy,
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
             toFieldName: kind.toField

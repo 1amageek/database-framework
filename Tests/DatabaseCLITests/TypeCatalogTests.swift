@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import DatabaseEngine
 
@@ -126,5 +127,90 @@ struct TypeCatalogTests {
             indexes: []
         )
         #expect(catalog.dynamicFieldNames.isEmpty)
+    }
+}
+
+// MARK: - IndexCatalog Codable
+
+@Suite("IndexCatalog Codable")
+struct IndexCatalogCodableTests {
+
+    @Test func roundTripsWithMetadata() throws {
+        let original = IndexCatalog(
+            name: "RDFTriple_graph_subject_predicate_object",
+            kindIdentifier: "graph",
+            fieldNames: ["subject", "predicate", "object"],
+            unique: false,
+            sparse: false,
+            metadata: ["strategy": "tripleStore", "fromField": "subject", "edgeField": "predicate", "toField": "object"]
+        )
+
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
+
+        #expect(decoded == original)
+        #expect(decoded.metadata["strategy"] == "tripleStore")
+        #expect(decoded.metadata["fromField"] == "subject")
+    }
+
+    @Test func decodesLegacyJSONWithoutMetadata() throws {
+        // Simulate catalog JSON stored before `metadata` field was added
+        let legacyJSON = """
+        {
+            "name": "User_email",
+            "kindIdentifier": "scalar",
+            "fieldNames": ["email"],
+            "unique": true,
+            "sparse": false
+        }
+        """
+        let data = Data(legacyJSON.utf8)
+        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
+
+        #expect(decoded.name == "User_email")
+        #expect(decoded.kindIdentifier == "scalar")
+        #expect(decoded.fieldNames == ["email"])
+        #expect(decoded.unique == true)
+        #expect(decoded.sparse == false)
+        #expect(decoded.metadata.isEmpty)
+    }
+
+    @Test func decodesEmptyMetadata() throws {
+        let json = """
+        {
+            "name": "Test_idx",
+            "kindIdentifier": "scalar",
+            "fieldNames": ["field"],
+            "unique": false,
+            "sparse": false,
+            "metadata": {}
+        }
+        """
+        let data = Data(json.utf8)
+        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
+
+        #expect(decoded.metadata.isEmpty)
+    }
+
+    @Test func typeCatalogRoundTripsWithIndexMetadata() throws {
+        let catalog = TypeCatalog(
+            typeName: "RDFTriple",
+            fields: [],
+            directoryComponents: [.staticPath("app"), .staticPath("triples")],
+            indexes: [
+                IndexCatalog(
+                    name: "RDFTriple_graph_subject_predicate_object",
+                    kindIdentifier: "graph",
+                    fieldNames: ["subject", "predicate", "object"],
+                    metadata: ["strategy": "hexastore", "fromField": "subject", "edgeField": "predicate", "toField": "object"]
+                )
+            ]
+        )
+
+        let data = try JSONEncoder().encode(catalog)
+        let decoded = try JSONDecoder().decode(TypeCatalog.self, from: data)
+
+        #expect(decoded == catalog)
+        #expect(decoded.indexes[0].metadata["strategy"] == "hexastore")
     }
 }

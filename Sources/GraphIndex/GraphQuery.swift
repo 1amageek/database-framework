@@ -89,15 +89,15 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
     }
 }
 
-// MARK: - Graph Query Builder
+// MARK: - Non-generic Graph Query Executor
 
-/// Graph query builder with SPARQL-like pattern matching
+/// Non-generic graph query executor
 ///
-/// Supports triple pattern queries using the graph index with automatic
-/// selection of the optimal index ordering based on the query pattern.
+/// Can be used from both generic (FDBContext) and dynamic (CLI) code paths.
+/// Accepts pre-resolved index metadata instead of using `T.self`.
 ///
 /// **Query Pattern Optimization**:
-/// The builder automatically selects the optimal index based on bound variables:
+/// Automatically selects the optimal index based on bound variables:
 /// - `(from, edge, to)` → any index (point lookup)
 /// - `(from, edge, ?)` → SPO index
 /// - `(from, ?, to)` → SOP index (hexastore) or OSP (tripleStore)
@@ -105,7 +105,8 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
 /// - `(from, ?, ?)` → SPO index
 /// - `(?, edge, ?)` → POS/PSO index
 /// - `(?, ?, to)` → OSP index
-public struct GraphQueryBuilder<T: Persistable>: Sendable {
+public struct GraphQueryExecutor: Sendable {
+
     // MARK: - Types
 
     /// Query pattern for a single element
@@ -131,7 +132,9 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Properties
 
-    private let queryContext: IndexQueryContext
+    nonisolated(unsafe) private let database: any DatabaseProtocol
+    private let indexSubspace: Subspace
+    private let strategy: GraphIndexStrategy
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
@@ -143,13 +146,26 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
 
     // MARK: - Initialization
 
-    internal init(
-        queryContext: IndexQueryContext,
+    /// Initialize with pre-resolved index metadata
+    ///
+    /// - Parameters:
+    ///   - database: Database for transaction execution
+    ///   - indexSubspace: Pre-resolved `[I]/[indexName]` subspace
+    ///   - strategy: Graph index strategy (adjacency/tripleStore/hexastore)
+    ///   - fromFieldName: Name of the from/subject field
+    ///   - edgeFieldName: Name of the edge/predicate field
+    ///   - toFieldName: Name of the to/object field
+    public init(
+        database: any DatabaseProtocol,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String
     ) {
-        self.queryContext = queryContext
+        self.database = database
+        self.indexSubspace = indexSubspace
+        self.strategy = strategy
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
@@ -160,7 +176,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// Set from/subject pattern
     ///
     /// - Parameter value: Exact value to match
-    /// - Returns: New builder with pattern set
+    /// - Returns: New executor with pattern set
     public func from(_ value: String) -> Self {
         var copy = self
         copy.fromPattern = .exact(value)
@@ -170,7 +186,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// Set edge/predicate pattern
     ///
     /// - Parameter value: Exact value to match
-    /// - Returns: New builder with pattern set
+    /// - Returns: New executor with pattern set
     public func edge(_ value: String) -> Self {
         var copy = self
         copy.edgePattern = .exact(value)
@@ -180,7 +196,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// Set to/object pattern
     ///
     /// - Parameter value: Exact value to match
-    /// - Returns: New builder with pattern set
+    /// - Returns: New executor with pattern set
     public func to(_ value: String) -> Self {
         var copy = self
         copy.toPattern = .exact(value)
@@ -190,7 +206,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     /// Set result limit
     ///
     /// - Parameter count: Maximum number of results
-    /// - Returns: New builder with limit set
+    /// - Returns: New executor with limit set
     public func limit(_ count: Int) -> Self {
         var copy = self
         copy.limitCount = count
@@ -206,50 +222,18 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching graph edges
     public func execute() async throws -> [GraphEdge] {
-        guard !fromFieldName.isEmpty else {
-            throw GraphQueryError.indexNotConfigured
-        }
-
-        let indexName = buildIndexName()
-
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw GraphQueryError.indexNotFound(indexName)
-        }
-
-        let strategy = kind.strategy
         let ordering = selectOptimalOrdering(strategy: strategy)
 
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        return try await queryContext.withTransaction { transaction in
+        return try await database.withTransaction { transaction in
             try await self.scanIndex(
                 ordering: ordering,
-                indexSubspace: indexSubspace,
+                indexSubspace: self.indexSubspace,
                 transaction: transaction
             )
         }
     }
 
-    /// Execute query and return matching items
-    ///
-    /// - Throws: `GraphQueryError.executeItemsNotSupported` always.
-    ///
-    /// Graph indexes store edges `(from, edge, to)` without item IDs,
-    /// making it impossible to look up the original items from edges.
-    ///
-    /// **Alternative**: Use `execute()` to get edges, then query items
-    /// by their field values using `context.filter()` or `context.query()`.
-    public func executeItems() async throws -> [T] {
-        throw GraphQueryError.executeItemsNotSupported
-    }
-
     // MARK: - Private Methods
-
-    private func buildIndexName() -> String {
-        "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-    }
 
     /// Select optimal index ordering based on query pattern
     private func selectOptimalOrdering(strategy: GraphIndexStrategy) -> GraphIndexOrdering {
@@ -351,21 +335,12 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         if prefixElements.isEmpty {
             return subspace.range()
         } else {
-            // Build prefix subspace using proper Subspace API
             let prefixSubspace = Self.buildPrefixSubspace(from: subspace, elements: prefixElements)
             return prefixSubspace.range()
         }
     }
 
     /// Build a nested subspace from an array of tuple elements
-    ///
-    /// Uses the proper Subspace API pattern instead of manual byte concatenation.
-    /// This is equivalent to chaining `subspace.subspace(elem1).subspace(elem2)...`
-    ///
-    /// - Parameters:
-    ///   - base: The base subspace to extend
-    ///   - elements: The tuple elements to nest
-    /// - Returns: A new subspace with all elements nested
     private static func buildPrefixSubspace(
         from base: Subspace,
         elements: [any TupleElement]
@@ -429,6 +404,152 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         case .exact(let expected):
             return value == expected
         }
+    }
+}
+
+// MARK: - Graph Query Builder (Generic Wrapper)
+
+/// Graph query builder with SPARQL-like pattern matching
+///
+/// Generic wrapper around `GraphQueryExecutor`. Resolves `T.self` to index
+/// metadata, then delegates execution to the non-generic executor.
+///
+/// **Query Pattern Optimization**:
+/// The builder automatically selects the optimal index based on bound variables:
+/// - `(from, edge, to)` → any index (point lookup)
+/// - `(from, edge, ?)` → SPO index
+/// - `(from, ?, to)` → SOP index (hexastore) or OSP (tripleStore)
+/// - `(?, edge, to)` → POS index
+/// - `(from, ?, ?)` → SPO index
+/// - `(?, edge, ?)` → POS/PSO index
+/// - `(?, ?, to)` → OSP index
+public struct GraphQueryBuilder<T: Persistable>: Sendable {
+    // MARK: - Type Aliases
+
+    /// Query pattern for a single element
+    public typealias Pattern = GraphQueryExecutor.Pattern
+
+    /// Query result containing matched edge components
+    public typealias GraphEdge = GraphQueryExecutor.GraphEdge
+
+    // MARK: - Properties
+
+    private let queryContext: IndexQueryContext
+    private let fromFieldName: String
+    private let edgeFieldName: String
+    private let toFieldName: String
+
+    private var fromPattern: Pattern = .any
+    private var edgePattern: Pattern = .any
+    private var toPattern: Pattern = .any
+    private var limitCount: Int?
+
+    // MARK: - Initialization
+
+    internal init(
+        queryContext: IndexQueryContext,
+        fromFieldName: String,
+        edgeFieldName: String,
+        toFieldName: String
+    ) {
+        self.queryContext = queryContext
+        self.fromFieldName = fromFieldName
+        self.edgeFieldName = edgeFieldName
+        self.toFieldName = toFieldName
+    }
+
+    // MARK: - Pattern Setters
+
+    /// Set from/subject pattern
+    ///
+    /// - Parameter value: Exact value to match
+    /// - Returns: New builder with pattern set
+    public func from(_ value: String) -> Self {
+        var copy = self
+        copy.fromPattern = .exact(value)
+        return copy
+    }
+
+    /// Set edge/predicate pattern
+    ///
+    /// - Parameter value: Exact value to match
+    /// - Returns: New builder with pattern set
+    public func edge(_ value: String) -> Self {
+        var copy = self
+        copy.edgePattern = .exact(value)
+        return copy
+    }
+
+    /// Set to/object pattern
+    ///
+    /// - Parameter value: Exact value to match
+    /// - Returns: New builder with pattern set
+    public func to(_ value: String) -> Self {
+        var copy = self
+        copy.toPattern = .exact(value)
+        return copy
+    }
+
+    /// Set result limit
+    ///
+    /// - Parameter count: Maximum number of results
+    /// - Returns: New builder with limit set
+    public func limit(_ count: Int) -> Self {
+        var copy = self
+        copy.limitCount = count
+        return copy
+    }
+
+    // MARK: - Execution
+
+    /// Execute query and return matching edges
+    ///
+    /// Resolves index metadata from `T.self`, then delegates to `GraphQueryExecutor`.
+    ///
+    /// - Returns: Array of matching graph edges
+    public func execute() async throws -> [GraphEdge] {
+        guard !fromFieldName.isEmpty else {
+            throw GraphQueryError.indexNotConfigured
+        }
+
+        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
+            throw GraphQueryError.indexNotFound(indexName)
+        }
+
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        var executor = GraphQueryExecutor(
+            database: queryContext.context.container.database,
+            indexSubspace: indexSubspace,
+            strategy: kind.strategy,
+            fromFieldName: fromFieldName,
+            edgeFieldName: edgeFieldName,
+            toFieldName: toFieldName
+        )
+
+        if case .exact(let v) = fromPattern { executor = executor.from(v) }
+        if case .exact(let v) = edgePattern { executor = executor.edge(v) }
+        if case .exact(let v) = toPattern { executor = executor.to(v) }
+        if let lim = limitCount { executor = executor.limit(lim) }
+
+        return try await executor.execute()
+    }
+
+    /// Execute query and return matching items
+    ///
+    /// - Throws: `GraphQueryError.executeItemsNotSupported` always.
+    ///
+    /// Graph indexes store edges `(from, edge, to)` without item IDs,
+    /// making it impossible to look up the original items from edges.
+    ///
+    /// **Alternative**: Use `execute()` to get edges, then query items
+    /// by their field values using `context.filter()` or `context.query()`.
+    public func executeItems() async throws -> [T] {
+        throw GraphQueryError.executeItemsNotSupported
     }
 }
 

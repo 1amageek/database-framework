@@ -99,7 +99,7 @@ extension TypeCatalog {
 // MARK: - IndexCatalog
 
 /// Codable catalog entry for a single index
-public struct IndexCatalog: Sendable, Codable, Equatable {
+public struct IndexCatalog: Sendable, Equatable {
     /// Index name (e.g., "User_email")
     public let name: String
 
@@ -115,18 +115,90 @@ public struct IndexCatalog: Sendable, Codable, Equatable {
     /// Whether the index is sparse (skips null values)
     public let sparse: Bool
 
+    /// Kind-specific metadata (e.g., graph strategy, field roles)
+    ///
+    /// For graph indexes, contains: "strategy", "fromField", "edgeField", "toField".
+    /// Populated by JSON-encoding the IndexKind and converting to a string dictionary.
+    public let metadata: [String: String]
+
     public init(
         name: String,
         kindIdentifier: String,
         fieldNames: [String],
         unique: Bool = false,
-        sparse: Bool = false
+        sparse: Bool = false,
+        metadata: [String: String] = [:]
     ) {
         self.name = name
         self.kindIdentifier = kindIdentifier
         self.fieldNames = fieldNames
         self.unique = unique
         self.sparse = sparse
+        self.metadata = metadata
+    }
+
+    /// Extract kind-specific metadata from an IndexKind by JSON-encoding it
+    ///
+    /// The IndexKind protocol requires Codable conformance, so we can encode
+    /// any concrete kind (e.g., GraphIndexKind) and extract its fields as strings.
+    /// This preserves kind-specific data (strategy, field roles) in the catalog.
+    ///
+    /// - Parameter kind: The index kind to extract metadata from
+    /// - Returns: Dictionary of metadata key-value pairs
+    /// - Throws: `EncodingError` if the IndexKind fails to encode (indicates broken Codable conformance)
+    static func extractMetadata(from kind: any IndexKind) throws -> [String: String] {
+        let wrapper = _IndexKindEncodingWrapper(kind: kind)
+        let data = try JSONEncoder().encode(wrapper)
+        let jsonObject = try JSONSerialization.jsonObject(with: data)
+        guard let dict = jsonObject as? [String: Any] else {
+            // IndexKind encoded to a non-dictionary JSON value (e.g., a scalar).
+            // No structured metadata to extract.
+            return [:]
+        }
+        return dict.compactMapValues { "\($0)" }
+    }
+}
+
+// MARK: - IndexCatalog + Codable
+
+extension IndexCatalog: Codable {
+
+    private enum CodingKeys: String, CodingKey {
+        case name, kindIdentifier, fieldNames, unique, sparse, metadata
+    }
+
+    /// Decode with backward compatibility for catalogs stored before `metadata` was added.
+    ///
+    /// Catalogs persisted before the `metadata` field existed will not contain the key.
+    /// This decoder treats the missing key as an empty dictionary rather than failing,
+    /// ensuring older `_catalog` entries remain loadable after schema evolution.
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.name = try container.decode(String.self, forKey: .name)
+        self.kindIdentifier = try container.decode(String.self, forKey: .kindIdentifier)
+        self.fieldNames = try container.decode([String].self, forKey: .fieldNames)
+        self.unique = try container.decode(Bool.self, forKey: .unique)
+        self.sparse = try container.decode(Bool.self, forKey: .sparse)
+        self.metadata = try container.decodeIfPresent([String: String].self, forKey: .metadata) ?? [:]
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(name, forKey: .name)
+        try container.encode(kindIdentifier, forKey: .kindIdentifier)
+        try container.encode(fieldNames, forKey: .fieldNames)
+        try container.encode(unique, forKey: .unique)
+        try container.encode(sparse, forKey: .sparse)
+        try container.encode(metadata, forKey: .metadata)
+    }
+}
+
+/// Type-erased wrapper for encoding `any IndexKind` via JSONEncoder
+private struct _IndexKindEncodingWrapper: Encodable {
+    let kind: any IndexKind
+
+    func encode(to encoder: Encoder) throws {
+        try kind.encode(to: encoder)
     }
 }
 
@@ -137,7 +209,10 @@ extension TypeCatalog {
     ///
     /// Extracts all Codable metadata from the entity and its underlying Persistable type.
     /// Both static `Path` and dynamic `Field` components are preserved in `directoryComponents`.
-    public init(from entity: Schema.Entity) {
+    ///
+    /// - Parameter entity: The schema entity to convert
+    /// - Throws: `EncodingError` if an IndexKind fails to encode its metadata
+    public init(from entity: Schema.Entity) throws {
         self.typeName = entity.name
 
         // Get field schemas from the Persistable type
@@ -161,13 +236,15 @@ extension TypeCatalog {
         }
 
         // Convert IndexDescriptors to IndexCatalogs
-        self.indexes = entity.indexDescriptors.map { descriptor in
-            IndexCatalog(
+        self.indexes = try entity.indexDescriptors.map { descriptor in
+            let metadata = try IndexCatalog.extractMetadata(from: descriptor.kind)
+            return IndexCatalog(
                 name: descriptor.name,
                 kindIdentifier: Swift.type(of: descriptor.kind).identifier,
                 fieldNames: descriptor.kind.fieldNames,
                 unique: descriptor.commonOptions.unique,
-                sparse: descriptor.commonOptions.sparse
+                sparse: descriptor.commonOptions.sparse,
+                metadata: metadata
             )
         }
 

@@ -428,8 +428,20 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             throw SPARQLQueryError.noPatterns
         }
 
-        let executor = SPARQLQueryExecutor<T>(
-            queryContext: queryContext,
+        // Resolve index metadata from T.self
+        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
+            throw SPARQLQueryError.indexNotFound(indexName)
+        }
+
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        let executor = SPARQLQueryExecutor(
+            database: queryContext.context.container.database,
+            indexSubspace: indexSubspace,
+            strategy: kind.strategy,
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
             toFieldName: toFieldName

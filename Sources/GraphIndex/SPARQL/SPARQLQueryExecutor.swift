@@ -16,25 +16,43 @@ import FoundationDB
 /// - Variable substitution for efficient index lookups
 /// - OPTIONAL (left outer join), UNION, and FILTER support
 ///
+/// Non-generic: accepts pre-resolved metadata instead of using `T.self`.
+/// Can be used from both generic (FDBContext) and dynamic (CLI) code paths.
+///
 /// **Reference**: W3C SPARQL 1.1 Query Language, Section 18.5 (SPARQL Algebra Evaluation)
-internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
+public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    private let queryContext: IndexQueryContext
+    nonisolated(unsafe) private let database: any DatabaseProtocol
+    private let indexSubspace: Subspace
+    private let strategy: GraphIndexStrategy
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
 
     // MARK: - Initialization
 
-    init(
-        queryContext: IndexQueryContext,
+    /// Initialize with pre-resolved index metadata
+    ///
+    /// - Parameters:
+    ///   - database: Database for transaction execution
+    ///   - indexSubspace: Pre-resolved `[I]/[indexName]` subspace
+    ///   - strategy: Graph index strategy (adjacency/tripleStore/hexastore)
+    ///   - fromFieldName: Name of the from/subject field
+    ///   - edgeFieldName: Name of the edge/predicate field
+    ///   - toFieldName: Name of the to/object field
+    public init(
+        database: any DatabaseProtocol,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String
     ) {
-        self.queryContext = queryContext
+        self.database = database
+        self.indexSubspace = indexSubspace
+        self.strategy = strategy
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
@@ -74,26 +92,16 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
     ///   - limit: Maximum number of results (nil for unlimited)
     ///   - offset: Number of results to skip
     /// - Returns: Tuple of bindings and execution statistics
-    func execute(
+    public func execute(
         pattern: ExecutionPattern,
         limit: Int?,
         offset: Int
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        let indexName = buildIndexName()
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw SPARQLQueryError.indexNotFound(indexName)
-        }
-
-        let strategy = kind.strategy
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        let evalResult = try await queryContext.withTransaction { transaction in
+        let evalResult = try await database.withTransaction { transaction in
             try await self.evaluate(
                 pattern: pattern,
-                indexSubspace: indexSubspace,
-                strategy: strategy,
+                indexSubspace: self.indexSubspace,
+                strategy: self.strategy,
                 transaction: transaction
             )
         }
@@ -741,12 +749,6 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
         }
     }
 
-    // MARK: - Helpers
-
-    private func buildIndexName() -> String {
-        "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
-    }
-
     // MARK: - GROUP BY Execution
 
     /// Execute a grouped query with aggregation
@@ -757,7 +759,7 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
     ///   - aggregates: Aggregate expressions to compute
     ///   - having: Optional HAVING filter
     /// - Returns: Grouped bindings and statistics
-    func executeGrouped(
+    public func executeGrouped(
         pattern: ExecutionPattern,
         groupVariables: [String],
         aggregates: [AggregateExpression],
@@ -772,22 +774,12 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
             sourcePattern = pattern
         }
 
-        let indexName = buildIndexName()
-        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
-              let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
-            throw SPARQLQueryError.indexNotFound(indexName)
-        }
-
-        let strategy = kind.strategy
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
         // Execute source pattern
-        let evalResult = try await queryContext.withTransaction { transaction in
+        let evalResult = try await database.withTransaction { transaction in
             try await self.evaluate(
                 pattern: sourcePattern,
-                indexSubspace: indexSubspace,
-                strategy: strategy,
+                indexSubspace: self.indexSubspace,
+                strategy: self.strategy,
                 transaction: transaction
             )
         }
@@ -1462,7 +1454,7 @@ internal struct SPARQLQueryExecutor<T: Persistable>: Sendable {
 // MARK: - ExecutionStatistics Extension
 
 extension ExecutionStatistics {
-    fileprivate func merged(with other: ExecutionStatistics) -> ExecutionStatistics {
+    func merged(with other: ExecutionStatistics) -> ExecutionStatistics {
         var result = self
         result.indexScans += other.indexScans
         result.joinOperations += other.joinOperations

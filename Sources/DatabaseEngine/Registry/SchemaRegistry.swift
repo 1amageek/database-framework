@@ -26,7 +26,7 @@ public struct SchemaRegistry: Sendable {
     /// Called during `FDBContainer.init` after `ensureIndexesReady()`.
     /// Overwrites existing catalog entries.
     public func persist(_ schema: Schema) async throws {
-        let catalogs = schema.entities.map { TypeCatalog(from: $0) }
+        let catalogs = try schema.entities.map { try TypeCatalog(from: $0) }
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
