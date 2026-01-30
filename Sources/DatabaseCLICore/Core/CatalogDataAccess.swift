@@ -190,6 +190,18 @@ struct CatalogDataAccess: Sendable {
         return (graphIndex.name, strategy, fromField, edgeField, toField)
     }
 
+    // MARK: - Clear All
+
+    /// Clear all data for a type (items, indexes, metadata, blobs)
+    func clearAll(typeName: String, partitionValues: [String: String] = [:]) async throws {
+        let catalog = try catalog(for: typeName)
+        let subspace = try await resolveSubspace(for: catalog, partitionValues: partitionValues)
+        let (begin, end) = subspace.range()
+        try await database.withTransaction { transaction in
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
     // MARK: - Envelope Helpers
 
     /// Unwrap ItemEnvelope bytes -> decompressed Protobuf bytes

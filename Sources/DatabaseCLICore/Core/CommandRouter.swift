@@ -56,6 +56,10 @@ enum CommandRouter {
             let cmd = HistoryCommands(output: output)
             try await cmd.execute(args)
 
+        case "clear":
+            let cmd = ClearCommand(dataAccess: dataAccess, output: output)
+            try await cmd.execute(args)
+
         case "raw":
             let rawCmd = RawCommands(database: dataAccess.database, output: output)
             guard let sub = args.first else {
@@ -83,6 +87,8 @@ enum CommandRouter {
                 output.info(HistoryCommands.helpText)
             case "data", "insert", "get", "update", "delete":
                 output.info(DataCommands.helpText)
+            case "clear":
+                output.info(ClearCommand.helpText)
             case "raw":
                 output.info(RawCommands.helpText)
             default:
@@ -120,6 +126,10 @@ enum CommandRouter {
 
         Version History (requires embedded mode):
           history <TypeName> <id> [--limit N]
+
+        Destructive:
+          clear <TypeName> [--force]         Clear all data for a type
+          clear --all [--force]              Clear all data for all types
 
         Raw FDB Access:
           raw get <key>                      Get raw key
