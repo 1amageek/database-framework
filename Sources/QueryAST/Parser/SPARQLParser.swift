@@ -297,7 +297,8 @@ extension SPARQLParser {
                        "SHA384", "SHA512", "ISIRI", "ISURI", "ISBLANK", "ISLITERAL",
                        "ISNUMERIC", "SAMETERM", "TRUE", "FALSE", "COUNT", "SUM", "MIN",
                        "MAX", "AVG", "SAMPLE", "GROUP_CONCAT", "SEPARATOR", "A", "UNDEF",
-                       "SUBSTR", "REPLACE", "STRDT", "STRLANG"]
+                       "SUBSTR", "REPLACE", "STRDT", "STRLANG",
+                       "ISTRIPLE", "TRIPLE", "SUBJECT", "PREDICATE", "OBJECT"]
         return keywords.contains(word)
     }
 

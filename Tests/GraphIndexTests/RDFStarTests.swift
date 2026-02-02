@@ -5,6 +5,7 @@ import Testing
 import Foundation
 import Core
 import QueryIR
+@testable import QueryAST
 @testable import GraphIndex
 
 // MARK: - QuotedTripleEncoding Tests
@@ -519,6 +520,207 @@ struct ExpressionEvaluatorRDFStarTests {
     }
 }
 
-// NOTE: GraphPatternConverter tests are not included here because
-// GraphPatternConverter is in the Database module, not GraphIndex.
-// The conversion is tested indirectly through integration tests.
+// MARK: - SPARQL String → Parse → Evaluate Integration Tests
+
+/// Tests that RDF-star functions in SPARQL strings are parsed into the correct
+/// Expression types AND produce correct values when evaluated.
+/// This validates the full path: SPARQL text → SPARQLParser → Expression → ExpressionEvaluator → result.
+@Suite("RDF-star SPARQL Integration")
+struct RDFStarSPARQLIntegrationTests {
+
+    private let parser = SPARQLParser()
+
+    /// Parse a SPARQL query and extract the BIND expression from the graph pattern.
+    private func extractBindExpression(from sparql: String) throws -> QueryIR.Expression {
+        let statement = try parser.parse(sparql)
+        guard case .select(let selectQuery) = statement else {
+            throw TestError("Expected SELECT query")
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            throw TestError("Expected graphPattern source")
+        }
+        guard let expr = findBindExpression(pattern) else {
+            throw TestError("Expected BIND in pattern tree")
+        }
+        return expr
+    }
+
+    /// Parse a SPARQL query and extract the FILTER expression from the graph pattern.
+    private func extractFilterExpression(from sparql: String) throws -> QueryIR.Expression {
+        let statement = try parser.parse(sparql)
+        guard case .select(let selectQuery) = statement else {
+            throw TestError("Expected SELECT query")
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            throw TestError("Expected graphPattern source")
+        }
+        guard let expr = findFilterExpression(pattern) else {
+            throw TestError("Expected FILTER in pattern tree")
+        }
+        return expr
+    }
+
+    @Test("SUBJECT() from SPARQL string returns correct value")
+    func testSubjectFromSPARQL() throws {
+        let expr = try extractBindExpression(from: """
+        SELECT ?t ?s WHERE {
+            ?t <http://example.org/type> <http://example.org/Statement> .
+            BIND(SUBJECT(?t) AS ?s)
+        }
+        """)
+        let encoded = QuotedTripleEncoding.encode(
+            subject: .string("ex:Toyota"),
+            predicate: .string("rdf:type"),
+            object: .string("ex:Company")
+        )
+        let binding = VariableBinding(["?t": .string(encoded)])
+        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        #expect(result == .string("ex:Toyota"))
+    }
+
+    @Test("PREDICATE() from SPARQL string returns correct value")
+    func testPredicateFromSPARQL() throws {
+        let expr = try extractBindExpression(from: """
+        SELECT ?t ?p WHERE {
+            ?t <http://example.org/type> <http://example.org/Statement> .
+            BIND(PREDICATE(?t) AS ?p)
+        }
+        """)
+        let encoded = QuotedTripleEncoding.encode(
+            subject: .string("ex:Toyota"),
+            predicate: .string("rdf:type"),
+            object: .string("ex:Company")
+        )
+        let binding = VariableBinding(["?t": .string(encoded)])
+        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        #expect(result == .string("rdf:type"))
+    }
+
+    @Test("OBJECT() from SPARQL string returns correct value")
+    func testObjectFromSPARQL() throws {
+        let expr = try extractBindExpression(from: """
+        SELECT ?t ?o WHERE {
+            ?t <http://example.org/type> <http://example.org/Statement> .
+            BIND(OBJECT(?t) AS ?o)
+        }
+        """)
+        let encoded = QuotedTripleEncoding.encode(
+            subject: .string("ex:Toyota"),
+            predicate: .string("rdf:type"),
+            object: .string("ex:Company")
+        )
+        let binding = VariableBinding(["?t": .string(encoded)])
+        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        #expect(result == .string("ex:Company"))
+    }
+
+    @Test("TRIPLE() from SPARQL string constructs valid quoted triple")
+    func testTripleFromSPARQL() throws {
+        let expr = try extractBindExpression(from: """
+        SELECT ?result WHERE {
+            BIND(TRIPLE(<http://example.org/s>, <http://example.org/p>, <http://example.org/o>) AS ?result)
+        }
+        """)
+        let binding = VariableBinding()
+        let result = ExpressionEvaluator.evaluate(expr, binding: binding)
+        #expect(result != nil)
+        if case .string(let s) = result {
+            #expect(QuotedTripleEncoding.isQuotedTriple(s))
+            let decoded = QuotedTripleEncoding.decode(s)
+            #expect(decoded?.subject == .string("http://example.org/s"))
+            #expect(decoded?.predicate == .string("http://example.org/p"))
+            #expect(decoded?.object == .string("http://example.org/o"))
+        } else {
+            Issue.record("Expected string result from TRIPLE(), got: \(String(describing: result))")
+        }
+    }
+
+    @Test("ISTRIPLE() from SPARQL string evaluates correctly")
+    func testIsTripleFromSPARQL() throws {
+        let expr = try extractFilterExpression(from: """
+        SELECT ?x WHERE {
+            ?x <http://example.org/value> ?v .
+            FILTER(ISTRIPLE(?v))
+        }
+        """)
+        // With a quoted triple → true
+        let encoded = QuotedTripleEncoding.encode(
+            subject: .string("ex:s"),
+            predicate: .string("ex:p"),
+            object: .string("ex:o")
+        )
+        let binding1 = VariableBinding(["?v": .string(encoded)])
+        #expect(ExpressionEvaluator.evaluate(expr, binding: binding1) == .bool(true))
+
+        // With a plain string → false
+        let binding2 = VariableBinding(["?v": .string("not a triple")])
+        #expect(ExpressionEvaluator.evaluate(expr, binding: binding2) == .bool(false))
+    }
+
+    @Test("TRIPLE() then SUBJECT() roundtrip from SPARQL strings")
+    func testTripleThenSubjectRoundtrip() throws {
+        // Step 1: Construct a triple via SPARQL TRIPLE()
+        let tripleExpr = try extractBindExpression(from: """
+        SELECT ?result WHERE {
+            BIND(TRIPLE(<http://example.org/Alice>, <http://example.org/knows>, <http://example.org/Bob>) AS ?result)
+        }
+        """)
+        let binding = VariableBinding()
+        guard let tripleValue = ExpressionEvaluator.evaluate(tripleExpr, binding: binding) else {
+            Issue.record("TRIPLE() should not return nil")
+            return
+        }
+
+        // Step 2: Extract SUBJECT() via SPARQL
+        let subjectExpr = try extractBindExpression(from: """
+        SELECT ?t ?s WHERE {
+            ?t <http://example.org/p> <http://example.org/o> .
+            BIND(SUBJECT(?t) AS ?s)
+        }
+        """)
+        let binding2 = VariableBinding(["?t": tripleValue])
+        let result = ExpressionEvaluator.evaluate(subjectExpr, binding: binding2)
+        #expect(result == .string("http://example.org/Alice"))
+    }
+
+    // MARK: - Helpers
+
+    private struct TestError: Error, CustomStringConvertible {
+        let description: String
+        init(_ message: String) { self.description = message }
+    }
+
+    private func findBindExpression(_ pattern: GraphPattern) -> QueryIR.Expression? {
+        switch pattern {
+        case .bind(_, _, let expr):
+            return expr
+        case .join(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .optional(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .union(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .filter(let inner, _):
+            return findBindExpression(inner)
+        default:
+            return nil
+        }
+    }
+
+    private func findFilterExpression(_ pattern: GraphPattern) -> QueryIR.Expression? {
+        switch pattern {
+        case .filter(_, let expr):
+            return expr
+        case .join(let left, let right):
+            return findFilterExpression(left) ?? findFilterExpression(right)
+        case .optional(let left, let right):
+            return findFilterExpression(left) ?? findFilterExpression(right)
+        case .union(let left, let right):
+            return findFilterExpression(left) ?? findFilterExpression(right)
+        case .bind(let inner, _, _):
+            return findFilterExpression(inner)
+        default:
+            return nil
+        }
+    }
+}

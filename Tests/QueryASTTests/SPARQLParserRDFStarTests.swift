@@ -148,7 +148,6 @@ struct SPARQLParserRDFStarTests {
             FILTER(ISTRIPLE(?v))
         }
         """
-        // If parsing succeeds without error, ISTRIPLE() was recognized as a built-in function
         let statement = try parser.parse(sparql)
         guard case .select(let selectQuery) = statement else {
             Issue.record("Expected SELECT query")
@@ -158,9 +157,15 @@ struct SPARQLParserRDFStarTests {
             Issue.record("Expected graphPattern source")
             return
         }
-        // Verify the pattern contains a filter (may be nested in join, filter, etc.)
-        let found = containsFilter(pattern)
-        #expect(found, "Expected FILTER in the pattern tree")
+        guard let filterExpr = findFilterExpression(pattern) else {
+            Issue.record("Expected FILTER in the pattern tree")
+            return
+        }
+        if case .isTriple = filterExpr {
+            // correct
+        } else {
+            Issue.record("Expected .isTriple expression, got: \(filterExpr)")
+        }
     }
 
     @Test("Parse SUBJECT() in BIND")
@@ -171,11 +176,23 @@ struct SPARQLParserRDFStarTests {
             BIND(SUBJECT(?t) AS ?s)
         }
         """
-        // If parsing succeeds without error, the SUBJECT() function was recognized
         let statement = try parser.parse(sparql)
-        guard case .select = statement else {
+        guard case .select(let selectQuery) = statement else {
             Issue.record("Expected SELECT query")
             return
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            Issue.record("Expected graphPattern source")
+            return
+        }
+        guard let bindExpr = findBindExpression(pattern) else {
+            Issue.record("Expected BIND in the pattern tree")
+            return
+        }
+        if case .subject = bindExpr {
+            // correct
+        } else {
+            Issue.record("Expected .subject expression, got: \(bindExpr)")
         }
     }
 
@@ -188,9 +205,22 @@ struct SPARQLParserRDFStarTests {
         }
         """
         let statement = try parser.parse(sparql)
-        guard case .select = statement else {
+        guard case .select(let selectQuery) = statement else {
             Issue.record("Expected SELECT query")
             return
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            Issue.record("Expected graphPattern source")
+            return
+        }
+        guard let bindExpr = findBindExpression(pattern) else {
+            Issue.record("Expected BIND in the pattern tree")
+            return
+        }
+        if case .predicate = bindExpr {
+            // correct
+        } else {
+            Issue.record("Expected .predicate expression, got: \(bindExpr)")
         }
     }
 
@@ -203,9 +233,22 @@ struct SPARQLParserRDFStarTests {
         }
         """
         let statement = try parser.parse(sparql)
-        guard case .select = statement else {
+        guard case .select(let selectQuery) = statement else {
             Issue.record("Expected SELECT query")
             return
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            Issue.record("Expected graphPattern source")
+            return
+        }
+        guard let bindExpr = findBindExpression(pattern) else {
+            Issue.record("Expected BIND in the pattern tree")
+            return
+        }
+        if case .object = bindExpr {
+            // correct
+        } else {
+            Issue.record("Expected .object expression, got: \(bindExpr)")
         }
     }
 
@@ -217,9 +260,22 @@ struct SPARQLParserRDFStarTests {
         }
         """
         let statement = try parser.parse(sparql)
-        guard case .select = statement else {
+        guard case .select(let selectQuery) = statement else {
             Issue.record("Expected SELECT query")
             return
+        }
+        guard case .graphPattern(let pattern) = selectQuery.source else {
+            Issue.record("Expected graphPattern source")
+            return
+        }
+        guard let bindExpr = findBindExpression(pattern) else {
+            Issue.record("Expected BIND in the pattern tree")
+            return
+        }
+        if case .triple = bindExpr {
+            // correct
+        } else {
+            Issue.record("Expected .triple expression, got: \(bindExpr)")
         }
     }
 
@@ -291,19 +347,39 @@ struct SPARQLParserRDFStarTests {
 
     // MARK: - Helpers
 
-    /// Recursively search for a filter pattern in a GraphPattern tree
-    private func containsFilter(_ pattern: GraphPattern) -> Bool {
+    /// Recursively search for a FILTER expression in a GraphPattern tree
+    private func findFilterExpression(_ pattern: GraphPattern) -> Expression? {
         switch pattern {
-        case .filter:
-            return true
+        case .filter(_, let expr):
+            return expr
         case .join(let left, let right):
-            return containsFilter(left) || containsFilter(right)
+            return findFilterExpression(left) ?? findFilterExpression(right)
         case .optional(let left, let right):
-            return containsFilter(left) || containsFilter(right)
+            return findFilterExpression(left) ?? findFilterExpression(right)
         case .union(let left, let right):
-            return containsFilter(left) || containsFilter(right)
+            return findFilterExpression(left) ?? findFilterExpression(right)
+        case .bind(let inner, _, _):
+            return findFilterExpression(inner)
         default:
-            return false
+            return nil
+        }
+    }
+
+    /// Recursively search for a BIND expression in a GraphPattern tree
+    private func findBindExpression(_ pattern: GraphPattern) -> Expression? {
+        switch pattern {
+        case .bind(_, _, let expr):
+            return expr
+        case .join(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .optional(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .union(let left, let right):
+            return findBindExpression(left) ?? findBindExpression(right)
+        case .filter(let inner, _):
+            return findBindExpression(inner)
+        default:
+            return nil
         }
     }
 }

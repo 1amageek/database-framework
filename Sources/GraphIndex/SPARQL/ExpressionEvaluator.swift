@@ -61,7 +61,7 @@ public struct ExpressionEvaluator: Sendable {
             // Treat column references as variable lookups in SPARQL context
             return binding[col.column]
         case .literal(let lit):
-            return lit.toFieldValue()
+            return lit.toSPARQLFieldValue()
 
         // Arithmetic
         case .add(let lhs, let rhs):

@@ -131,7 +131,7 @@ public struct GraphPatternConverter: Sendable {
             }
             return .value(.string("\(prefix):\(local)"))
         case .literal(let lit):
-            return .value(lit.toFieldValue() ?? .null)
+            return .value(lit.toSPARQLFieldValue())
         case .blankNode(let id):
             return .value(.string("_:\(id)"))
         case .quotedTriple(let s, let p, let o):

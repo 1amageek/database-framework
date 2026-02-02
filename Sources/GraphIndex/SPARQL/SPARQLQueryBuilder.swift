@@ -618,7 +618,7 @@ extension ExecutionTerm {
         case .prefixedName(let prefix, let local):
             self = .value(.string("\(prefix):\(local)"))
         case .literal(let lit):
-            self = .value(lit.toFieldValue() ?? .null)
+            self = .value(lit.toSPARQLFieldValue())
         case .blankNode(let id):
             self = .value(.string("_:\(id)"))
         case .quotedTriple(let s, let p, let o):
