@@ -42,8 +42,11 @@ extension QueryIR.Literal {
             return .string(formatter.string(from: date))
         case .timestamp(let date):
             return .string(ISO8601DateFormatter().string(from: date))
+        case .array(let literals):
+            return .array(literals.map { $0.toSPARQLFieldValue() })
         default:
-            // Unreachable: toFieldValue() covers null, bool, int, double, string, binary, array
+            // Unreachable: toFieldValue() covers null, bool, int, double, string, binary
+            // and all other cases are handled explicitly above.
             return .null
         }
     }
