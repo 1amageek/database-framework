@@ -56,6 +56,9 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// To/Object/Target field name
     private let toField: String
 
+    /// Graph/Named Graph field name (nil = no graph field)
+    private let graphField: String?
+
     /// Storage strategy
     private let strategy: GraphIndexStrategy
 
@@ -73,6 +76,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - fromField: From node field name
     ///   - edgeField: Edge label field name (empty for no edge field)
     ///   - toField: To node field name
+    ///   - graphField: Graph field name (nil for no graph field)
     ///   - strategy: Storage strategy
     public init(
         index: Index,
@@ -81,6 +85,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         fromField: String,
         edgeField: String,
         toField: String,
+        graphField: String? = nil,
         strategy: GraphIndexStrategy
     ) {
         self.index = index
@@ -89,6 +94,7 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.fromField = fromField
         self.edgeField = edgeField
         self.toField = toField
+        self.graphField = graphField
         self.strategy = strategy
         self.strategySubspaces = StrategySubspaces(base: subspace, strategy: strategy)
     }
@@ -163,11 +169,13 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let from: any TupleElement
         let edge: any TupleElement
         let to: any TupleElement
+        let graph: (any TupleElement)?
 
         do {
             from = try extractField(from: item, fieldName: fromField)
             edge = try extractEdgeField(from: item)
             to = try extractField(from: item, fieldName: toField)
+            graph = try extractGraphField(from: item)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil field values are not indexed
             return []
@@ -175,33 +183,38 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         switch strategy {
         case .adjacency:
-            return try buildAdjacencyKeys(from: from, edge: edge, to: to)
+            return try buildAdjacencyKeys(from: from, edge: edge, to: to, graph: graph)
         case .tripleStore:
-            return try buildTripleStoreKeys(from: from, edge: edge, to: to)
+            return try buildTripleStoreKeys(from: from, edge: edge, to: to, graph: graph)
         case .hexastore:
-            return try buildHexastoreKeys(from: from, edge: edge, to: to)
+            return try buildHexastoreKeys(from: from, edge: edge, to: to, graph: graph)
         }
     }
 
     /// Build adjacency strategy keys (2 indexes)
     ///
-    /// - out: [edge]/[from]/[to] - for outgoing edge queries
-    /// - in: [edge]/[to]/[from] - for incoming edge queries
+    /// - out: [edge]/[from]/[to]{/[graph]} - for outgoing edge queries
+    /// - in: [edge]/[to]/[from]{/[graph]} - for incoming edge queries
     private func buildAdjacencyKeys(
         from: any TupleElement,
         edge: any TupleElement,
-        to: any TupleElement
+        to: any TupleElement,
+        graph: (any TupleElement)?
     ) throws -> [FDB.Bytes] {
         var keys: [FDB.Bytes] = []
         keys.reserveCapacity(2)
 
-        // [out]/[edge]/[from]/[to]
-        let outKey = strategySubspaces.out.pack(Tuple([edge, from, to]))
+        // [out]/[edge]/[from]/[to]{/[graph]}
+        var outElements: [any TupleElement] = [edge, from, to]
+        if let graph { outElements.append(graph) }
+        let outKey = strategySubspaces.out.pack(Tuple(outElements))
         try validateKeySize(outKey)
         keys.append(outKey)
 
-        // [in]/[edge]/[to]/[from]
-        let inKey = strategySubspaces.in.pack(Tuple([edge, to, from]))
+        // [in]/[edge]/[to]/[from]{/[graph]}
+        var inElements: [any TupleElement] = [edge, to, from]
+        if let graph { inElements.append(graph) }
+        let inKey = strategySubspaces.in.pack(Tuple(inElements))
         try validateKeySize(inKey)
         keys.append(inKey)
 
@@ -212,29 +225,36 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///
     /// Standard RDF triple store pattern covering most SPARQL query patterns.
     ///
-    /// - spo: [from]/[edge]/[to] - S??, SP?, SPO queries
-    /// - pos: [edge]/[to]/[from] - ?P?, ?PO queries
-    /// - osp: [to]/[from]/[edge] - ??O queries
+    /// - spo: [from]/[edge]/[to]{/[graph]} - S??, SP?, SPO queries
+    /// - pos: [edge]/[to]/[from]{/[graph]} - ?P?, ?PO queries
+    /// - osp: [to]/[from]/[edge]{/[graph]} - ??O queries
     private func buildTripleStoreKeys(
         from: any TupleElement,
         edge: any TupleElement,
-        to: any TupleElement
+        to: any TupleElement,
+        graph: (any TupleElement)?
     ) throws -> [FDB.Bytes] {
         var keys: [FDB.Bytes] = []
         keys.reserveCapacity(3)
 
-        // [spo]/[from]/[edge]/[to]
-        let spoKey = strategySubspaces.spo.pack(Tuple([from, edge, to]))
+        // [spo]/[from]/[edge]/[to]{/[graph]}
+        var spoElements: [any TupleElement] = [from, edge, to]
+        if let graph { spoElements.append(graph) }
+        let spoKey = strategySubspaces.spo.pack(Tuple(spoElements))
         try validateKeySize(spoKey)
         keys.append(spoKey)
 
-        // [pos]/[edge]/[to]/[from]
-        let posKey = strategySubspaces.pos.pack(Tuple([edge, to, from]))
+        // [pos]/[edge]/[to]/[from]{/[graph]}
+        var posElements: [any TupleElement] = [edge, to, from]
+        if let graph { posElements.append(graph) }
+        let posKey = strategySubspaces.pos.pack(Tuple(posElements))
         try validateKeySize(posKey)
         keys.append(posKey)
 
-        // [osp]/[to]/[from]/[edge]
-        let ospKey = strategySubspaces.osp.pack(Tuple([to, from, edge]))
+        // [osp]/[to]/[from]/[edge]{/[graph]}
+        var ospElements: [any TupleElement] = [to, from, edge]
+        if let graph { ospElements.append(graph) }
+        let ospKey = strategySubspaces.osp.pack(Tuple(ospElements))
         try validateKeySize(ospKey)
         keys.append(ospKey)
 
@@ -247,38 +267,51 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func buildHexastoreKeys(
         from: any TupleElement,
         edge: any TupleElement,
-        to: any TupleElement
+        to: any TupleElement,
+        graph: (any TupleElement)?
     ) throws -> [FDB.Bytes] {
         var keys: [FDB.Bytes] = []
         keys.reserveCapacity(6)
 
-        // SPO: [from]/[edge]/[to]
-        let spoKey = strategySubspaces.spo.pack(Tuple([from, edge, to]))
+        // SPO: [from]/[edge]/[to]{/[graph]}
+        var spoElements: [any TupleElement] = [from, edge, to]
+        if let graph { spoElements.append(graph) }
+        let spoKey = strategySubspaces.spo.pack(Tuple(spoElements))
         try validateKeySize(spoKey)
         keys.append(spoKey)
 
-        // SOP: [from]/[to]/[edge]
-        let sopKey = strategySubspaces.sop.pack(Tuple([from, to, edge]))
+        // SOP: [from]/[to]/[edge]{/[graph]}
+        var sopElements: [any TupleElement] = [from, to, edge]
+        if let graph { sopElements.append(graph) }
+        let sopKey = strategySubspaces.sop.pack(Tuple(sopElements))
         try validateKeySize(sopKey)
         keys.append(sopKey)
 
-        // PSO: [edge]/[from]/[to]
-        let psoKey = strategySubspaces.pso.pack(Tuple([edge, from, to]))
+        // PSO: [edge]/[from]/[to]{/[graph]}
+        var psoElements: [any TupleElement] = [edge, from, to]
+        if let graph { psoElements.append(graph) }
+        let psoKey = strategySubspaces.pso.pack(Tuple(psoElements))
         try validateKeySize(psoKey)
         keys.append(psoKey)
 
-        // POS: [edge]/[to]/[from]
-        let posKey = strategySubspaces.pos.pack(Tuple([edge, to, from]))
+        // POS: [edge]/[to]/[from]{/[graph]}
+        var posElements: [any TupleElement] = [edge, to, from]
+        if let graph { posElements.append(graph) }
+        let posKey = strategySubspaces.pos.pack(Tuple(posElements))
         try validateKeySize(posKey)
         keys.append(posKey)
 
-        // OSP: [to]/[from]/[edge]
-        let ospKey = strategySubspaces.osp.pack(Tuple([to, from, edge]))
+        // OSP: [to]/[from]/[edge]{/[graph]}
+        var ospElements: [any TupleElement] = [to, from, edge]
+        if let graph { ospElements.append(graph) }
+        let ospKey = strategySubspaces.osp.pack(Tuple(ospElements))
         try validateKeySize(ospKey)
         keys.append(ospKey)
 
-        // OPS: [to]/[edge]/[from]
-        let opsKey = strategySubspaces.ops.pack(Tuple([to, edge, from]))
+        // OPS: [to]/[edge]/[from]{/[graph]}
+        var opsElements: [any TupleElement] = [to, edge, from]
+        if let graph { opsElements.append(graph) }
+        let opsKey = strategySubspaces.ops.pack(Tuple(opsElements))
         try validateKeySize(opsKey)
         keys.append(opsKey)
 
@@ -292,6 +325,12 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return ""
         }
         return try extractField(from: item, fieldName: edgeField)
+    }
+
+    /// Extract graph field value (nil if no graph field configured)
+    private func extractGraphField(from item: Item) throws -> (any TupleElement)? {
+        guard let graphField else { return nil }
+        return try extractField(from: item, fieldName: graphField)
     }
 
     /// Extract a field value from an item

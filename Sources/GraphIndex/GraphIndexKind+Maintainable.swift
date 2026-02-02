@@ -48,6 +48,7 @@ extension GraphIndexKind: IndexKindMaintainable {
             fromField: fromField,
             edgeField: edgeField,
             toField: toField,
+            graphField: graphField,
             strategy: strategy
         )
     }
