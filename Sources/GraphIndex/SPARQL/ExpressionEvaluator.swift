@@ -171,7 +171,39 @@ public struct ExpressionEvaluator: Sendable {
                   let r = evaluate(rhs, binding: binding) else { return nil }
             return l.isEqual(to: r) ? .null : l
 
-        // Unsupported (subqueries, aggregates, triple, cast, etc.)
+        // RDF-star operations (W3C RDF-star / SPARQL-star)
+        case .triple(let s, let p, let o):
+            guard let sv = evaluate(s, binding: binding),
+                  let pv = evaluate(p, binding: binding),
+                  let ov = evaluate(o, binding: binding) else { return nil }
+            return .string(QuotedTripleEncoding.encode(subject: sv, predicate: pv, object: ov))
+
+        case .isTriple(let e):
+            guard let val = evaluate(e, binding: binding) else { return nil }
+            if case .string(let s) = val {
+                return .bool(QuotedTripleEncoding.isQuotedTriple(s))
+            }
+            return .bool(false)
+
+        case .subject(let e):
+            guard let val = evaluate(e, binding: binding),
+                  case .string(let s) = val,
+                  let components = QuotedTripleEncoding.decode(s) else { return nil }
+            return components.subject
+
+        case .predicate(let e):
+            guard let val = evaluate(e, binding: binding),
+                  case .string(let s) = val,
+                  let components = QuotedTripleEncoding.decode(s) else { return nil }
+            return components.predicate
+
+        case .object(let e):
+            guard let val = evaluate(e, binding: binding),
+                  case .string(let s) = val,
+                  let components = QuotedTripleEncoding.decode(s) else { return nil }
+            return components.object
+
+        // Unsupported (subqueries, aggregates, cast, etc.)
         default:
             return nil
         }

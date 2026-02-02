@@ -70,6 +70,8 @@ public final class SPARQLParser {
         "MD5", "SHA1", "SHA256", "SHA384", "SHA512",
         // 1-arg: Type checks
         "ISIRI", "ISURI", "ISBLANK", "ISLITERAL", "ISNUMERIC",
+        // RDF-star (SPARQL-star): type check + accessors
+        "ISTRIPLE", "TRIPLE", "SUBJECT", "PREDICATE", "OBJECT",
         // 2-arg
         "LANGMATCHES", "CONTAINS", "STRSTARTS", "STRENDS",
         "STRBEFORE", "STRAFTER", "SAMETERM", "STRDT", "STRLANG",
@@ -159,6 +161,14 @@ extension SPARQLParser {
             return
         }
 
+        // Multi-character symbols (must be checked before IRI to distinguish << from <iri>)
+        let twoChar = String(input[position...].prefix(2))
+        if ["<=", ">=", "!=", "&&", "||", "^^", "<<", ">>"].contains(twoChar) {
+            position = input.index(position, offsetBy: 2)
+            currentToken = .symbol(twoChar)
+            return
+        }
+
         // IRIs: <...>
         if char == "<" {
             position = input.index(after: position)
@@ -245,14 +255,6 @@ extension SPARQLParser {
                 // Bare word - treat as prefixed name with empty prefix
                 currentToken = .prefixedName(prefix: "", local: word)
             }
-            return
-        }
-
-        // Multi-character symbols
-        let twoChar = String(input[position...].prefix(2))
-        if ["<=", ">=", "!=", "&&", "||", "^^", "<<", ">>"].contains(twoChar) {
-            position = input.index(position, offsetBy: 2)
-            currentToken = .symbol(twoChar)
             return
         }
 
@@ -838,6 +840,15 @@ extension SPARQLParser {
 
     private func parseTerm() throws -> SPARQLTerm {
         switch currentToken {
+        // RDF-star: << subject predicate object >>
+        case .symbol("<<"):
+            advance() // consume <<
+            let subject = try parseTerm()
+            let predicate = try parseTerm()
+            let object = try parseTerm()
+            try expectSymbol(">>")
+            return .quotedTriple(subject: subject, predicate: predicate, object: object)
+
         case .variable(let name):
             advance()
             return .variable(name)
@@ -1068,6 +1079,46 @@ extension SPARQLParser {
         // StrReplaceExpression [124]: 'REPLACE' '(' Expression ',' Expression ',' Expression (',' Expression)? ')'
         case .keyword("REPLACE"):
             return try parseGenericFunctionCall()
+
+        // RDF-star (SPARQL-star) built-in functions
+        case .keyword("ISTRIPLE"):
+            advance()
+            try expectSymbol("(")
+            let arg = try parseExpression()
+            try expectSymbol(")")
+            return .isTriple(arg)
+
+        case .keyword("TRIPLE"):
+            advance()
+            try expectSymbol("(")
+            let s = try parseExpression()
+            try expectSymbol(",")
+            let p = try parseExpression()
+            try expectSymbol(",")
+            let o = try parseExpression()
+            try expectSymbol(")")
+            return .triple(subject: s, predicate: p, object: o)
+
+        case .keyword("SUBJECT"):
+            advance()
+            try expectSymbol("(")
+            let arg = try parseExpression()
+            try expectSymbol(")")
+            return .subject(arg)
+
+        case .keyword("PREDICATE"):
+            advance()
+            try expectSymbol("(")
+            let arg = try parseExpression()
+            try expectSymbol(")")
+            return .predicate(arg)
+
+        case .keyword("OBJECT"):
+            advance()
+            try expectSymbol("(")
+            let arg = try parseExpression()
+            try expectSymbol(")")
+            return .object(arg)
 
         default:
             throw ParseError.invalidSyntax(
@@ -1392,6 +1443,16 @@ extension SPARQLParser {
         // BuiltInCall [121]
         case .keyword(let kw) where Self.builtInFunctionKeywords.contains(kw):
             return try parseBuiltInCall()
+
+        // RDF-star: << subject predicate object >> as expression
+        case .symbol("<<"):
+            advance()
+            let subject = try parseTerm()
+            let predicate = try parseTerm()
+            let object = try parseTerm()
+            try expectSymbol(">>")
+            let qt = SPARQLTerm.quotedTriple(subject: subject, predicate: predicate, object: object)
+            return qt.toExpression()
 
         default:
             throw ParseError.invalidSyntax(

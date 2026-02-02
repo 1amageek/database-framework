@@ -552,8 +552,12 @@ public struct SPARQLQueryExecutor: Sendable {
         // Stop at first unbound term (variable or wildcard)
         for idx in elementOrder {
             let term = terms[idx]
-            guard term.isBound, case .value(let fieldValue) = term else {
+            guard term.isBound else {
                 break  // Stop at first unbound term
+            }
+            // Extract FieldValue: .value directly, .quotedTriple via canonical string
+            guard let fieldValue = term.literalValue else {
+                break
             }
             prefixElements.append(fieldValue.toTupleElement())
         }
@@ -631,24 +635,45 @@ public struct SPARQLQueryExecutor: Sendable {
         }
 
         // Check if values match bound terms (FieldValue == with cross-type support)
-        if case .value(let v) = pattern.subject, v != from { return nil }
-        if case .value(let v) = pattern.predicate, v != edge { return nil }
-        if case .value(let v) = pattern.object, v != to { return nil }
-
-        // Build binding from variables (direct FieldValue, no inference needed)
+        // Also handles quotedTriple pattern matching against stored canonical strings
         var binding = VariableBinding()
 
-        if case .variable(let name) = pattern.subject {
-            binding = binding.binding(name, to: from)
-        }
-        if case .variable(let name) = pattern.predicate {
-            binding = binding.binding(name, to: edge)
-        }
-        if case .variable(let name) = pattern.object {
-            binding = binding.binding(name, to: to)
-        }
+        if !matchTerm(pattern.subject, against: from, binding: &binding) { return nil }
+        if !matchTerm(pattern.predicate, against: edge, binding: &binding) { return nil }
+        if !matchTerm(pattern.object, against: to, binding: &binding) { return nil }
 
         return binding
+    }
+
+    /// Match a single ExecutionTerm against a stored FieldValue.
+    ///
+    /// Handles variable binding, value comparison, wildcard, and quotedTriple decomposition.
+    private func matchTerm(
+        _ term: ExecutionTerm,
+        against value: FieldValue,
+        binding: inout VariableBinding
+    ) -> Bool {
+        switch term {
+        case .variable(let name):
+            if let existing = binding[name] {
+                return existing == value
+            }
+            binding = binding.binding(name, to: value)
+            return true
+        case .value(let expected):
+            return expected == value
+        case .wildcard:
+            return true
+        case .quotedTriple(let ps, let pp, let po):
+            // Decompose stored canonical string and match sub-components
+            guard case .string(let str) = value,
+                  let components = QuotedTripleEncoding.decode(str) else {
+                return false
+            }
+            return matchTerm(ps, against: components.subject, binding: &binding)
+                && matchTerm(pp, against: components.predicate, binding: &binding)
+                && matchTerm(po, against: components.object, binding: &binding)
+        }
     }
 
     // MARK: - Join Order Optimization

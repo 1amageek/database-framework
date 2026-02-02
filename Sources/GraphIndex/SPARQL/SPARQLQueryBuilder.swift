@@ -622,8 +622,12 @@ extension ExecutionTerm {
         case .blankNode(let id):
             self = .value(.string("_:\(id)"))
         case .quotedTriple(let s, let p, let o):
-            // RDF-star quoted triples are stored as string representation
-            self = .value(.string("<<\(s) \(p) \(o)>>"))
+            // RDF-star: preserve structure as ExecutionTerm.quotedTriple
+            self = .quotedTriple(
+                subject: ExecutionTerm(s),
+                predicate: ExecutionTerm(p),
+                object: ExecutionTerm(o)
+            )
         }
     }
 }

@@ -78,19 +78,27 @@ public struct ExecutionTriple: Sendable, Hashable {
 
     // MARK: - Variables
 
-    /// All named variables in this pattern
+    /// All named variables in this pattern (recursively collects from quotedTriple)
     public var variables: Set<String> {
         var vars = Set<String>()
-        if let name = subject.variableName {
-            vars.insert(name)
-        }
-        if let name = predicate.variableName {
-            vars.insert(name)
-        }
-        if let name = object.variableName {
-            vars.insert(name)
-        }
+        Self.collectVariables(from: subject, into: &vars)
+        Self.collectVariables(from: predicate, into: &vars)
+        Self.collectVariables(from: object, into: &vars)
         return vars
+    }
+
+    /// Recursively collect variable names from an ExecutionTerm
+    private static func collectVariables(from term: ExecutionTerm, into vars: inout Set<String>) {
+        switch term {
+        case .variable(let name):
+            vars.insert(name)
+        case .quotedTriple(let s, let p, let o):
+            collectVariables(from: s, into: &vars)
+            collectVariables(from: p, into: &vars)
+            collectVariables(from: o, into: &vars)
+        case .value, .wildcard:
+            break
+        }
     }
 
     /// Check if a variable appears in this pattern

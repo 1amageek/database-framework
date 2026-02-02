@@ -135,7 +135,11 @@ public struct GraphPatternConverter: Sendable {
         case .blankNode(let id):
             return .value(.string("_:\(id)"))
         case .quotedTriple(let s, let p, let o):
-            return .value(.string("<<\(s) \(p) \(o)>>"))
+            return .quotedTriple(
+                subject: convertTerm(s, prefixes: prefixes),
+                predicate: convertTerm(p, prefixes: prefixes),
+                object: convertTerm(o, prefixes: prefixes)
+            )
         }
     }
 

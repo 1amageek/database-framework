@@ -36,6 +36,11 @@ public enum ExecutionTerm: Sendable, Hashable {
     /// Equivalent to an unnamed variable that isn't referenced elsewhere
     case wildcard
 
+    /// RDF-star quoted triple - a triple used as a term
+    /// Enables statements about statements (e.g., metadata on triples)
+    /// Reference: W3C RDF-star and SPARQL-star
+    indirect case quotedTriple(subject: ExecutionTerm, predicate: ExecutionTerm, object: ExecutionTerm)
+
     /// Whether this term is a named variable that creates bindings
     ///
     /// - `.variable` → true (creates binding during pattern matching)
@@ -60,10 +65,18 @@ public enum ExecutionTerm: Sendable, Hashable {
 
     /// Get the value if this is a literal
     public var literalValue: FieldValue? {
-        if case .value(let v) = self {
+        switch self {
+        case .value(let v):
             return v
+        case .quotedTriple(let s, let p, let o):
+            // Return canonical string encoding for storage
+            guard let sv = s.literalValue, let pv = p.literalValue, let ov = o.literalValue else {
+                return nil
+            }
+            return .string(QuotedTripleEncoding.encode(subject: sv, predicate: pv, object: ov))
+        default:
+            return nil
         }
-        return nil
     }
 
     /// Whether this term is bound (has a concrete value)
@@ -75,10 +88,14 @@ public enum ExecutionTerm: Sendable, Hashable {
     /// Use this for index optimization: bound terms can be used as
     /// prefix keys for efficient range scans.
     public var isBound: Bool {
-        if case .value = self {
+        switch self {
+        case .value:
             return true
+        case .quotedTriple(let s, let p, let o):
+            return s.isBound && p.isBound && o.isBound
+        default:
+            return false
         }
-        return false
     }
 
     /// Whether this term is a wildcard
@@ -103,6 +120,12 @@ public enum ExecutionTerm: Sendable, Hashable {
                 return .value(value)
             }
             return self
+        case .quotedTriple(let s, let p, let o):
+            return .quotedTriple(
+                subject: s.substitute(binding),
+                predicate: p.substitute(binding),
+                object: o.substitute(binding)
+            )
         case .value, .wildcard:
             return self
         }
@@ -148,6 +171,8 @@ extension ExecutionTerm: CustomStringConvertible {
             }
         case .wildcard:
             return "_"
+        case .quotedTriple(let s, let p, let o):
+            return "<< \(s) \(p) \(o) >>"
         }
     }
 }
