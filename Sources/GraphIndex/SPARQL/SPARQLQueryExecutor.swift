@@ -30,6 +30,7 @@ public struct SPARQLQueryExecutor: Sendable {
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
+    private let graphFieldName: String?
 
     // MARK: - Initialization
 
@@ -42,13 +43,15 @@ public struct SPARQLQueryExecutor: Sendable {
     ///   - fromFieldName: Name of the from/subject field
     ///   - edgeFieldName: Name of the edge/predicate field
     ///   - toFieldName: Name of the to/object field
+    ///   - graphFieldName: Name of the graph field (nil = no graph support)
     public init(
         database: any DatabaseProtocol,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         fromFieldName: String,
         edgeFieldName: String,
-        toFieldName: String
+        toFieldName: String,
+        graphFieldName: String? = nil
     ) {
         self.database = database
         self.indexSubspace = indexSubspace
@@ -56,6 +59,7 @@ public struct SPARQLQueryExecutor: Sendable {
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
+        self.graphFieldName = graphFieldName
     }
 
     // MARK: - Result Type
@@ -641,6 +645,18 @@ public struct SPARQLQueryExecutor: Sendable {
         if !matchTerm(pattern.subject, against: from, binding: &binding) { return nil }
         if !matchTerm(pattern.predicate, against: edge, binding: &binding) { return nil }
         if !matchTerm(pattern.object, against: to, binding: &binding) { return nil }
+
+        // Graph field: read from the end of the key tuple (after s/p/o elements)
+        if let patternGraph = pattern.graph, graphFieldName != nil {
+            let graphIndex = elementOrder.count
+            if graphIndex < tuple.count,
+               let graphElement = tuple[graphIndex],
+               let graphValue = FieldValue(tupleElement: graphElement) {
+                if !matchTerm(patternGraph, against: graphValue, binding: &binding) { return nil }
+            } else {
+                return nil
+            }
+        }
 
         return binding
     }

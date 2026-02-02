@@ -217,6 +217,28 @@ public indirect enum ExecutionPattern: Sendable {
     public static var empty: ExecutionPattern {
         .basic([])
     }
+
+    /// Return a new pattern with graph term set on all contained triples
+    public func withGraph(_ graphTerm: ExecutionTerm) -> ExecutionPattern {
+        switch self {
+        case .basic(let triples):
+            return .basic(triples.map { $0.withGraph(graphTerm) })
+        case .join(let left, let right):
+            return .join(left.withGraph(graphTerm), right.withGraph(graphTerm))
+        case .optional(let left, let right):
+            return .optional(left.withGraph(graphTerm), right.withGraph(graphTerm))
+        case .union(let left, let right):
+            return .union(left.withGraph(graphTerm), right.withGraph(graphTerm))
+        case .filter(let pattern, let expression):
+            return .filter(pattern.withGraph(graphTerm), expression)
+        case .groupBy(let pattern, let groupVars, let aggs, let having):
+            return .groupBy(pattern.withGraph(graphTerm), groupVariables: groupVars, aggregates: aggs, having: having)
+        case .minus(let left, let right):
+            return .minus(left.withGraph(graphTerm), right.withGraph(graphTerm))
+        case .propertyPath(let subject, let path, let object):
+            return .propertyPath(subject: subject, path: path, object: object)
+        }
+    }
 }
 
 // MARK: - CustomStringConvertible

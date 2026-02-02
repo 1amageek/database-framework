@@ -38,6 +38,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
+    private let graphFieldName: String?
 
     // MARK: - Query State
 
@@ -58,6 +59,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String,
+        graphFieldName: String? = nil,
         sourcePattern: ExecutionPattern,
         groupVariables: [String]
     ) {
@@ -65,6 +67,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
+        self.graphFieldName = graphFieldName
         self.sourcePattern = sourcePattern
         self.groupVariables = groupVariables
         self.aggregates = []
@@ -298,7 +301,11 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             having: havingExpression
         )
 
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        var indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        if let graphFieldName {
+            let g = graphFieldName.replacingOccurrences(of: ".", with: "_")
+            indexName += "_\(g)"
+        }
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
               let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
             throw SPARQLQueryError.indexNotFound(indexName)
@@ -313,7 +320,8 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             strategy: kind.strategy,
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName
+            toFieldName: toFieldName,
+            graphFieldName: kind.graphField
         )
 
         let startTime = DispatchTime.now()

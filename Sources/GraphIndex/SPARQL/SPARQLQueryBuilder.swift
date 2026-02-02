@@ -41,6 +41,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
+    private let graphFieldName: String?
 
     // MARK: - Query State
 
@@ -57,12 +58,14 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         queryContext: IndexQueryContext,
         fromFieldName: String,
         edgeFieldName: String,
-        toFieldName: String
+        toFieldName: String,
+        graphFieldName: String? = nil
     ) {
         self.queryContext = queryContext
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
+        self.graphFieldName = graphFieldName
         self.graphPattern = .basic([])
         self.projectedVariables = nil
         self.limitCount = nil
@@ -197,7 +200,8 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             queryContext: queryContext,
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName
+            toFieldName: toFieldName,
+            graphFieldName: graphFieldName
         )
         optionalBuilder = configure(optionalBuilder)
 
@@ -227,7 +231,8 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             queryContext: queryContext,
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName
+            toFieldName: toFieldName,
+            graphFieldName: graphFieldName
         )
         unionBuilder = configure(unionBuilder)
 
@@ -338,6 +343,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
             toFieldName: toFieldName,
+            graphFieldName: graphFieldName,
             sourcePattern: graphPattern,
             groupVariables: variables
         )
@@ -429,7 +435,11 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Resolve index metadata from T.self
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        var indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        if let graphFieldName {
+            let g = graphFieldName.replacingOccurrences(of: ".", with: "_")
+            indexName += "_\(g)"
+        }
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
               let kind = indexDescriptor.kind as? GraphIndexKind<T> else {
             throw SPARQLQueryError.indexNotFound(indexName)
@@ -444,7 +454,8 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             strategy: kind.strategy,
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName
+            toFieldName: toFieldName,
+            graphFieldName: kind.graphField
         )
 
         let allVariables = graphPattern.variables

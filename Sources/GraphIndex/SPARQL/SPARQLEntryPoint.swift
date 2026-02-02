@@ -84,7 +84,8 @@ public struct SPARQLEntryPoint<T: Persistable>: Sendable {
             queryContext: queryContext,
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            toFieldName: kind.toField,
+            graphFieldName: kind.graphField
         )
     }
 }
@@ -180,7 +181,8 @@ extension FDBContext {
             strategy: kind.strategy,
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            toFieldName: kind.toField,
+            graphFieldName: kind.graphField
         )
 
         let allVariables = pattern.variables

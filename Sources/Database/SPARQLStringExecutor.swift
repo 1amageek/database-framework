@@ -227,6 +227,7 @@ public func executeSPARQLString(
     fromFieldName: String,
     edgeFieldName: String,
     toFieldName: String,
+    graphFieldName: String? = nil,
     prefixes: [String: String] = [:]
 ) async throws -> SPARQLResult {
     // 1. Parse SPARQL string
@@ -301,7 +302,8 @@ public func executeSPARQLString(
         strategy: strategy,
         fromFieldName: fromFieldName,
         edgeFieldName: edgeFieldName,
-        toFieldName: toFieldName
+        toFieldName: toFieldName,
+        graphFieldName: graphFieldName
     )
 
     let isDistinct = isProjectionDistinct || selectQuery.distinct

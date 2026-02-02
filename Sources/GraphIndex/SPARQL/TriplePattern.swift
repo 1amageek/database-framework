@@ -39,28 +39,35 @@ public struct ExecutionTriple: Sendable, Hashable {
     /// Object position (or "to" in graph terminology)
     public let object: ExecutionTerm
 
+    /// Named graph position (nil = no graph constraint)
+    public let graph: ExecutionTerm?
+
     // MARK: - Initialization
 
     /// Create a triple pattern with explicit terms
     public init(
         subject: ExecutionTerm,
         predicate: ExecutionTerm,
-        object: ExecutionTerm
+        object: ExecutionTerm,
+        graph: ExecutionTerm? = nil
     ) {
         self.subject = subject
         self.predicate = predicate
         self.object = object
+        self.graph = graph
     }
 
     /// Create a triple pattern using graph terminology
     public init(
         from: ExecutionTerm,
         edge: ExecutionTerm,
-        to: ExecutionTerm
+        to: ExecutionTerm,
+        graph: ExecutionTerm? = nil
     ) {
         self.subject = from
         self.predicate = edge
         self.object = to
+        self.graph = graph
     }
 
     /// Create a triple pattern from string literals
@@ -74,6 +81,7 @@ public struct ExecutionTriple: Sendable, Hashable {
         self.subject = ExecutionTerm(stringLiteral: subject)
         self.predicate = ExecutionTerm(stringLiteral: predicate)
         self.object = ExecutionTerm(stringLiteral: object)
+        self.graph = nil
     }
 
     // MARK: - Variables
@@ -84,6 +92,9 @@ public struct ExecutionTriple: Sendable, Hashable {
         Self.collectVariables(from: subject, into: &vars)
         Self.collectVariables(from: predicate, into: &vars)
         Self.collectVariables(from: object, into: &vars)
+        if let graph {
+            Self.collectVariables(from: graph, into: &vars)
+        }
         return vars
     }
 
@@ -166,7 +177,18 @@ public struct ExecutionTriple: Sendable, Hashable {
         ExecutionTriple(
             subject: subject.substitute(binding),
             predicate: predicate.substitute(binding),
-            object: object.substitute(binding)
+            object: object.substitute(binding),
+            graph: graph?.substitute(binding)
+        )
+    }
+
+    /// Create a new pattern with the graph term set
+    public func withGraph(_ graphTerm: ExecutionTerm) -> ExecutionTriple {
+        ExecutionTriple(
+            subject: subject,
+            predicate: predicate,
+            object: object,
+            graph: graphTerm
         )
     }
 }
@@ -175,7 +197,10 @@ public struct ExecutionTriple: Sendable, Hashable {
 
 extension ExecutionTriple: CustomStringConvertible {
     public var description: String {
-        "(\(subject), \(predicate), \(object))"
+        if let graph {
+            return "GRAPH \(graph) { (\(subject), \(predicate), \(object)) }"
+        }
+        return "(\(subject), \(predicate), \(object))"
     }
 }
 

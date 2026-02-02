@@ -54,9 +54,9 @@ public struct GraphPatternConverter: Sendable {
         case .minus(let left, let right):
             return .minus(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
 
-        case .graph(_, let inner):
-            // Named graph: use the inner pattern (single-graph store)
-            return convert(inner, prefixes: prefixes)
+        case .graph(let name, let inner):
+            let graphTerm = convertTerm(name, prefixes: prefixes)
+            return convert(inner, prefixes: prefixes).withGraph(graphTerm)
 
         case .service:
             // Federation not supported — return empty pattern
