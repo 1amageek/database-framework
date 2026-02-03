@@ -84,7 +84,8 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
             queryContext: queryContext,
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
-            toFieldName: kind.toField
+            toFieldName: kind.toField,
+            explicitIndexName: desc.name  // NEW: pass actual index name
         )
     }
 }
@@ -446,6 +447,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
+    private let explicitIndexName: String?  // NEW: explicit index name from defaultIndex()
 
     private var fromPattern: Pattern = .any
     private var edgePattern: Pattern = .any
@@ -459,12 +461,14 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         queryContext: IndexQueryContext,
         fromFieldName: String,
         edgeFieldName: String,
-        toFieldName: String
+        toFieldName: String,
+        explicitIndexName: String? = nil  // NEW
     ) {
         self.queryContext = queryContext
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
+        self.explicitIndexName = explicitIndexName
     }
 
     // MARK: - Pattern Setters
@@ -568,7 +572,13 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
             throw GraphQueryError.indexNotConfigured
         }
 
-        let indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        // Use explicit index name if provided (from defaultIndex()), otherwise generate
+        let indexName: String
+        if let explicit = explicitIndexName {
+            indexName = explicit
+        } else {
+            indexName = "\(T.persistableType)_graph_\(fromFieldName)_\(edgeFieldName)_\(toFieldName)"
+        }
 
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
               let kind = indexDescriptor.kind as? GraphIndexKind<T> else {

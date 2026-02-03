@@ -33,7 +33,7 @@ struct GraphQueryPropertyFilterTests {
             to: \.target,
             graph: nil,
             strategy: .tripleStore
-        ), storedFields: [\.since, \.status, \.score], name: "social_graph_query_index")
+        ), storedFields: [\SocialEdge.since, \SocialEdge.status, \SocialEdge.score], name: "social_graph_query_index")
     }
 
     // MARK: - Setup
@@ -100,7 +100,7 @@ struct GraphQueryPropertyFilterTests {
 
         // Query with property filter
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
             .where(\.since, .equal, 2020)
@@ -124,7 +124,7 @@ struct GraphQueryPropertyFilterTests {
 
         // Query with range filter
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
             .where(\.since, .greaterThanOrEqual, 2020)
@@ -150,7 +150,7 @@ struct GraphQueryPropertyFilterTests {
 
         // Query with multiple filters (AND)
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
             .where(\.since, .equal, 2020)
@@ -176,7 +176,7 @@ struct GraphQueryPropertyFilterTests {
 
         // Query with type-erased filter
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
             .whereRaw(fieldName: "since", .greaterThanOrEqual, 2020)
@@ -204,10 +204,10 @@ struct GraphQueryPropertyFilterTests {
 
         // Filter by non-nil status
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
-            .whereRaw(fieldName: "status", .isNotNil, nil)
+            .whereRaw(fieldName: "status", .isNotNil, 0)  // Value ignored for isNotNil
             .execute()
 
         #expect(results.count == 2)  // Empty string and "active"
@@ -228,7 +228,7 @@ struct GraphQueryPropertyFilterTests {
 
         // Query without property filters (should work as before)
         let results = try await context.graph(SocialEdge.self)
-            .index(\.from, \.label, \.target)
+            .defaultIndex()
             .from(alice)
             .edge("KNOWS")
             .execute()
