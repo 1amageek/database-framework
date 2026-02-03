@@ -330,7 +330,22 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Extract graph field value (nil if no graph field configured)
     private func extractGraphField(from item: Item) throws -> (any TupleElement)? {
         guard let graphField else { return nil }
-        return try extractField(from: item, fieldName: graphField)
+
+        // Graph field is special: nil means "default graph", not a missing field
+        // Unlike other fields, nil graph values should be indexed
+        guard let value = item[dynamicMember: graphField] else {
+            return nil  // nil graph = default graph (valid for Named Graph support)
+        }
+
+        guard let tupleElement = value as? any TupleElement else {
+            throw GraphIndexError.invalidFieldType(
+                fieldName: graphField,
+                expectedType: "TupleElement",
+                actualType: String(describing: type(of: value))
+            )
+        }
+
+        return tupleElement
     }
 
     /// Extract a field value from an item

@@ -87,7 +87,9 @@ extension SQLParser {
                            "CREATE", "DROP", "TABLE", "INDEX", "GRAPH", "PROPERTY", "MATCH",
                            "WITH", "CASE", "WHEN", "THEN", "ELSE", "END", "CAST", "COUNT",
                            "SUM", "AVG", "MIN", "MAX", "EXISTS", "ANY", "SOME", "NULLS",
-                           "FIRST", "LAST", "OVER", "PARTITION", "ROWS", "RANGE"]
+                           "FIRST", "LAST", "OVER", "PARTITION", "ROWS", "RANGE",
+                           "GRAPH_TABLE", "COLUMNS", "WALK", "TRAIL", "ACYCLIC", "SIMPLE",
+                           "SHORTEST", "PATH"]
 
             if keywords.contains(upper) {
                 currentToken = .keyword(upper)
@@ -469,6 +471,11 @@ extension SQLParser {
     }
 
     private func parseTableRef() throws -> DataSource {
+        // Check for GRAPH_TABLE
+        if case .keyword("GRAPH_TABLE") = currentToken {
+            return try parseGraphTable()
+        }
+
         // Check for subquery: (SELECT ...) or (WITH ...)
         if isSymbol("(") {
             advance()
@@ -911,5 +918,441 @@ extension SQLParser {
 
     private func parseCreateGraph() throws -> CreateGraphStatement {
         throw ParseError.unsupportedFeature("CREATE PROPERTY GRAPH parsing not yet implemented")
+    }
+}
+
+// MARK: - GRAPH_TABLE Parsing (ISO/IEC 9075-16:2023 SQL/PGQ)
+
+extension SQLParser {
+    /// Parse GRAPH_TABLE clause
+    /// Syntax: GRAPH_TABLE(graphName, MATCH pattern [COLUMNS (...)])
+    private func parseGraphTable() throws -> DataSource {
+        try expect("GRAPH_TABLE")
+        try expect("(")
+
+        // Graph name
+        guard case .identifier(let graphName) = currentToken else {
+            throw ParseError.unexpectedToken(
+                expected: "graph name",
+                found: tokenDescription(currentToken),
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+        advance()
+
+        try expect(",")
+
+        // MATCH pattern
+        let matchPattern = try parseMatchPattern()
+
+        // Optional COLUMNS clause
+        var columns: [GraphTableColumn]?
+        if case .keyword("COLUMNS") = currentToken {
+            columns = try parseColumnsClause()
+        }
+
+        try expect(")")
+
+        let source = GraphTableSource(
+            graphName: graphName,
+            matchPattern: matchPattern,
+            columns: columns
+        )
+
+        return .graphTable(source)
+    }
+
+    /// Parse MATCH pattern
+    /// Syntax: MATCH [mode] pathPattern [, pathPattern] [WHERE expr]
+    private func parseMatchPattern() throws -> MatchPattern {
+        try expect("MATCH")
+
+        // Parse path patterns
+        var paths: [PathPattern] = []
+        var first = true
+
+        while first || isSymbol(",") {
+            if !first { advance() }
+            first = false
+
+            let path = try parsePathPattern()
+            paths.append(path)
+        }
+
+        // Optional WHERE clause
+        var whereExpr: Expression?
+        if case .keyword("WHERE") = currentToken {
+            advance()
+            whereExpr = try parseExpression()
+        }
+
+        return MatchPattern(paths: paths, where: whereExpr)
+    }
+
+    /// Parse path pattern
+    /// Syntax: [pathVar =] [mode] pathElement pathElement ...
+    private func parsePathPattern() throws -> PathPattern {
+        var pathVariable: String?
+        var mode: PathMode?
+
+        // Check for path variable: p = ...
+        if case .identifier(let name) = currentToken {
+            let next = peekNextToken()
+            if case .symbol("=") = next {
+                pathVariable = name
+                advance()  // identifier
+                advance()  // =
+            }
+        }
+
+        // Check for path mode
+        if case .keyword(let kw) = currentToken {
+            switch kw {
+            case "WALK":
+                mode = .walk
+                advance()
+            case "TRAIL":
+                mode = .trail
+                advance()
+            case "ACYCLIC":
+                mode = .acyclic
+                advance()
+            case "SIMPLE":
+                mode = .simple
+                advance()
+            case "SHORTEST":
+                // Check for ALL SHORTEST
+                advance()
+                if case .keyword("PATH") = currentToken {
+                    advance()
+                    mode = .anyShortest
+                } else if case .keyword("ALL") = currentToken {
+                    advance()
+                    try expect("PATH")
+                    mode = .allShortest
+                } else {
+                    mode = .anyShortest
+                }
+            case "ALL":
+                advance()
+                try expect("SHORTEST")
+                // PATH is optional
+                if case .keyword("PATH") = currentToken {
+                    advance()
+                }
+                mode = .allShortest
+            default:
+                break
+            }
+        }
+
+        // Parse path elements
+        var elements: [PathElement] = []
+
+        // First element must be a node
+        let firstNode = try parseNodePattern()
+        elements.append(.node(firstNode))
+
+        // Parse edge-node pairs
+        while isSymbol("-") || isSymbol("<") || isSymbol("<-") || isSymbol("->") {
+            let edge = try parseEdgePattern()
+            elements.append(.edge(edge))
+
+            let node = try parseNodePattern()
+            elements.append(.node(node))
+        }
+
+        return PathPattern(pathVariable: pathVariable, elements: elements, mode: mode)
+    }
+
+    /// Parse node pattern
+    /// Syntax: (var:Label {prop: val})
+    private func parseNodePattern() throws -> NodePattern {
+        try expect("(")
+
+        var variable: String?
+        var labels: [String]?
+        var properties: [(String, Expression)]?
+
+        // Parse variable and/or label
+        if case .identifier(let name) = currentToken {
+            advance()
+
+            // Check for label: var:Label
+            if isSymbol(":") {
+                variable = name
+                advance()
+
+                if case .identifier(let label) = currentToken {
+                    labels = [label]
+                    advance()
+                }
+            } else {
+                // Just variable, no label
+                variable = name
+            }
+        }
+
+        // Parse properties: {prop: val, ...}
+        if isSymbol("{") {
+            advance()
+            properties = []
+
+            var first = true
+            while first || isSymbol(",") {
+                if !first { advance() }
+                first = false
+
+                guard case .identifier(let propName) = currentToken else {
+                    break
+                }
+                advance()
+
+                try expect(":")
+
+                let expr = try parseExpression()
+                properties?.append((propName, expr))
+            }
+
+            try expect("}")
+        }
+
+        try expect(")")
+
+        return NodePattern(variable: variable, labels: labels, properties: properties)
+    }
+
+    /// Parse edge pattern using state machine
+    /// Grammar: EdgePattern ::= StartSymbol [EdgeDetails] EndSymbol
+    /// Reference: ISO/IEC 9075-16:2023 SQL/PGQ
+    private func parseEdgePattern() throws -> EdgePattern {
+        // State 1: Parse start symbol
+        enum StartSymbol {
+            case hyphen       // -
+            case leftArrow    // <-
+            case leftAngle    // <
+            case rightArrow   // -> (complete anonymous)
+        }
+
+        let start: StartSymbol
+        if isSymbol("<-") {
+            advance()
+            start = .leftArrow
+        } else if isSymbol("->") {
+            advance()
+            start = .rightArrow
+        } else if isSymbol("<") {
+            advance()
+            // Check if next token is [ (immediate bracket) or - (explicit hyphen)
+            if isSymbol("[") {
+                // <[...] pattern: immediate bracket without explicit hyphen
+                start = .leftAngle
+            } else {
+                // <-[...] or <- pattern: explicit hyphen
+                try expect("-")
+                start = .leftAngle
+            }
+        } else if isSymbol("-") {
+            advance()
+            start = .hyphen
+        } else {
+            throw ParseError.unexpectedToken(
+                expected: "edge pattern start (-, <-, <, or ->)",
+                found: tokenDescription(currentToken),
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+
+        // State 2: Check for edge details [...]
+        var variable: String?
+        var labels: [String]?
+        var properties: [(String, Expression)]?
+        var hasDetails = false
+
+        if isSymbol("[") {
+            // Validate: only -> is a complete arrow that cannot have details
+            if start == .rightArrow {
+                throw ParseError.invalidSyntax(
+                    message: "Edge brackets must come before arrow direction (use -[...]->, not ->[...])",
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+
+            hasDetails = true
+            advance()
+
+            // Parse variable and/or label
+            if case .identifier(let name) = currentToken {
+                advance()
+
+                // Check for label: var:Label
+                if isSymbol(":") {
+                    variable = name
+                    advance()
+
+                    if case .identifier(let label) = currentToken {
+                        labels = [label]
+                        advance()
+                    }
+                } else {
+                    // Just variable, no label
+                    variable = name
+                }
+            }
+
+            // Parse properties: {prop: val, ...}
+            if isSymbol("{") {
+                advance()
+                properties = []
+
+                var first = true
+                while first || isSymbol(",") {
+                    if !first { advance() }
+                    first = false
+
+                    guard case .identifier(let propName) = currentToken else {
+                        break
+                    }
+                    advance()
+
+                    try expect(":")
+
+                    let expr = try parseExpression()
+                    properties?.append((propName, expr))
+                }
+
+                try expect("}")
+            }
+
+            try expect("]")
+        }
+
+        // State 3: Parse end symbol (only if not a complete arrow)
+        enum EndSymbol {
+            case rightArrow   // ->
+            case hyphen       // -
+            case none         // ε (empty)
+        }
+
+        let end: EndSymbol
+
+        if start == .rightArrow {
+            // Complete anonymous arrow (->): no end symbol expected
+            if hasDetails {
+                // Defensive check (should have been caught above)
+                throw ParseError.invalidSyntax(
+                    message: "Internal error: -> with details",
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+            end = .none
+        } else {
+            // Expect end symbol for incomplete starts (-, <)
+            if isSymbol("->") {
+                advance()
+                end = .rightArrow
+            } else if isSymbol("-") {
+                advance()
+                if isSymbol(">") {
+                    // -> split into two tokens
+                    advance()
+                    end = .rightArrow
+                } else {
+                    end = .hyphen
+                }
+            } else {
+                end = .none
+            }
+        }
+
+        // Resolve direction using type-safe pattern matching
+        // Reference: ISO/IEC 9075-16:2023 direction resolution table
+        let direction: EdgeDirection
+
+        switch (start, end, hasDetails) {
+        // Patterns with brackets
+        case (.hyphen, .rightArrow, true):
+            direction = .outgoing  // -[...]->
+        case (.leftArrow, .hyphen, true), (.leftAngle, .hyphen, true):
+            direction = .incoming  // <-[...]- or <[...]-
+        case (.hyphen, .hyphen, true):
+            direction = .undirected  // -[...]-
+        case (.leftArrow, .rightArrow, true), (.leftAngle, .rightArrow, true):
+            direction = .any  // <-[...]-> or <[...]->
+
+        // Anonymous edges (no brackets)
+        case (.rightArrow, .none, false):
+            direction = .outgoing  // ->
+        case (.leftArrow, .none, false):
+            direction = .incoming  // <-
+        case (.hyphen, .none, false):
+            direction = .undirected  // - (anonymous)
+
+        // Patterns without brackets but with end symbol (rare)
+        case (.hyphen, .rightArrow, false):
+            direction = .outgoing  // -->
+        case (.leftArrow, .hyphen, false), (.leftAngle, .hyphen, false):
+            direction = .incoming  // <--
+        case (.hyphen, .hyphen, false):
+            direction = .undirected  // --
+
+        default:
+            throw ParseError.invalidSyntax(
+                message: "Invalid edge pattern combination",
+                position: input.distance(from: input.startIndex, to: position)
+            )
+        }
+
+        return EdgePattern(
+            variable: variable,
+            labels: labels,
+            properties: properties,
+            direction: direction
+        )
+    }
+
+    /// Parse COLUMNS clause
+    /// Syntax: COLUMNS (expr AS alias, ...)
+    private func parseColumnsClause() throws -> [GraphTableColumn] {
+        try expect("COLUMNS")
+        try expect("(")
+
+        var columns: [GraphTableColumn] = []
+        var first = true
+
+        while first || isSymbol(",") {
+            if !first { advance() }
+            first = false
+
+            let expr = try parseExpression()
+
+            try expect("AS")
+
+            guard case .identifier(let alias) = currentToken else {
+                throw ParseError.unexpectedToken(
+                    expected: "column alias",
+                    found: tokenDescription(currentToken),
+                    position: input.distance(from: input.startIndex, to: position)
+                )
+            }
+            advance()
+
+            columns.append(GraphTableColumn(expression: expr, alias: alias))
+        }
+
+        try expect(")")
+
+        return columns
+    }
+
+    /// Peek at the next token without consuming current token
+    private func peekNextToken() -> Token {
+        let savedPosition = position
+        let savedToken = currentToken
+        advance()
+        let next = currentToken
+        position = savedPosition
+        currentToken = savedToken
+        return next
     }
 }

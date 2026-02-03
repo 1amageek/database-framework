@@ -292,6 +292,9 @@ public enum TupleDecodingError: Error, Sendable, CustomStringConvertible {
     /// Target type is not supported for decoding
     case unsupportedType(String)
 
+    /// Tuple format is invalid (wrong element count, missing bitmap, etc.)
+    case invalidFormat(String)
+
     public var description: String {
         switch self {
         case .typeMismatch(let expected, let actual):
@@ -300,6 +303,8 @@ public enum TupleDecodingError: Error, Sendable, CustomStringConvertible {
             return "Integer overflow: \(value) cannot fit in \(targetType)"
         case .unsupportedType(let type):
             return "Unsupported type for decoding: \(type)"
+        case .invalidFormat(let message):
+            return "Invalid tuple format: \(message)"
         }
     }
 }

@@ -115,6 +115,14 @@ public struct GraphQueryExecutor: Sendable {
         case any
         /// Match exact value
         case exact(String)
+
+        /// Extract exact value if available
+        var exactValue: String? {
+            switch self {
+            case .any: return nil
+            case .exact(let value): return value
+            }
+        }
     }
 
     /// Query result containing matched edge components
@@ -443,6 +451,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     private var edgePattern: Pattern = .any
     private var toPattern: Pattern = .any
     private var limitCount: Int?
+    private var propertyFilters: [PropertyFilter] = []
 
     // MARK: - Initialization
 
@@ -500,11 +509,58 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    /// Add a type-safe property filter
+    ///
+    /// - Parameters:
+    ///   - keyPath: KeyPath to the property field
+    ///   - op: Comparison operator
+    ///   - value: Value to compare against
+    /// - Returns: New builder with filter added
+    public func `where`<Value: Sendable>(
+        _ keyPath: KeyPath<T, Value>,
+        _ op: ComparisonOperator,
+        _ value: Value
+    ) -> Self {
+        let fieldName = T.fieldName(for: keyPath)
+        let filter = PropertyFilter(
+            fieldName: fieldName,
+            op: op,
+            value: FieldValue(value) ?? .null
+        )
+
+        var copy = self
+        copy.propertyFilters.append(filter)
+        return copy
+    }
+
+    /// Add a type-erased property filter (for dynamic queries)
+    ///
+    /// - Parameters:
+    ///   - fieldName: Name of the property field
+    ///   - op: Comparison operator
+    ///   - value: Value to compare against
+    /// - Returns: New builder with filter added
+    public func whereRaw(
+        fieldName: String,
+        _ op: ComparisonOperator,
+        _ value: any Sendable
+    ) -> Self {
+        let filter = PropertyFilter(
+            fieldName: fieldName,
+            op: op,
+            value: FieldValue(value) ?? .null
+        )
+
+        var copy = self
+        copy.propertyFilters.append(filter)
+        return copy
+    }
+
     // MARK: - Execution
 
     /// Execute query and return matching edges
     ///
-    /// Resolves index metadata from `T.self`, then delegates to `GraphQueryExecutor`.
+    /// Uses GraphPropertyScanner for property-aware edge scanning with early filtering.
     ///
     /// - Returns: Array of matching graph edges
     public func execute() async throws -> [GraphEdge] {
@@ -522,21 +578,44 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        var executor = GraphQueryExecutor(
-            database: queryContext.context.container.database,
+        // Create GraphPropertyScanner
+        let scanner = GraphPropertyScanner(
             indexSubspace: indexSubspace,
             strategy: kind.strategy,
-            fromFieldName: fromFieldName,
-            edgeFieldName: edgeFieldName,
-            toFieldName: toFieldName
+            storedFieldNames: indexDescriptor.storedFieldNames
         )
 
-        if case .exact(let v) = fromPattern { executor = executor.from(v) }
-        if case .exact(let v) = edgePattern { executor = executor.edge(v) }
-        if case .exact(let v) = toPattern { executor = executor.to(v) }
-        if let lim = limitCount { executor = executor.limit(lim) }
+        // Extract exact values from patterns
+        let fromValue = fromPattern.exactValue
+        let edgeValue = edgePattern.exactValue
+        let toValue = toPattern.exactValue
 
-        return try await executor.execute()
+        // Execute scan with property filters
+        return try await queryContext.context.container.database.withTransaction { transaction in
+            let stream = scanner.scanEdges(
+                from: fromValue,
+                edge: edgeValue,
+                to: toValue,
+                graph: nil,
+                propertyFilters: propertyFilters.isEmpty ? nil : propertyFilters,
+                transaction: transaction
+            )
+
+            var results: [GraphEdge] = []
+            var count = 0
+            for try await edgeWithProps in stream {
+                results.append(GraphEdge(
+                    from: edgeWithProps.source,
+                    edge: edgeWithProps.edgeLabel,
+                    to: edgeWithProps.target
+                ))
+                count += 1
+                if let limit = limitCount, count >= limit {
+                    break
+                }
+            }
+            return results
+        }
     }
 
     /// Execute query and return matching items

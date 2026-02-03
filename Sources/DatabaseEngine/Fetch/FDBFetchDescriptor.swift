@@ -350,6 +350,14 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
     /// Used when typed closure is unavailable (type-erased paths from QueryRewriter/DNFConverter).
     private func evaluateViaFieldReader(_ model: T) -> Bool {
         let raw = FieldReader.read(from: model, keyPath: keyPath, fieldName: fieldName)
+        return evaluateRawValue(raw)
+    }
+
+    /// Core comparison logic for raw values
+    ///
+    /// Converts raw value to FieldValue and evaluates comparison operator.
+    /// Handles all comparison operators including string operations.
+    private func evaluateRawValue(_ raw: Any?) -> Bool {
         let modelFieldValue = raw.flatMap { FieldValue($0) } ?? .null
 
         // Handle nil check operators first

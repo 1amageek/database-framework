@@ -243,6 +243,117 @@ find Order --limit 10 --partition tenantId=tenant_123
 
 `withTransaction` はクロージャが正常終了した後、自動的にコミットします。
 
+### FDBContext の変更追跡 API パターン
+
+**重要**: FDBContext は**変更追跡**方式を採用しており、他の ORM とは異なる API パターンを使用します。
+
+#### 正しい API パターン
+
+```swift
+// ✅ 正しい: insert → save パターン
+let context = FDBContext(container: container)
+
+context.insert(user1)
+context.insert(user2)
+context.update(user3)
+context.delete(user4)
+
+try await context.save()  // 引数なし！一括コミット
+
+// ❌ 間違い: save(item) は存在しない
+try await context.save(user1)  // コンパイルエラー
+```
+
+#### FDBContext.save() の実装
+
+```swift
+// FDBContext.swift:672
+public func save() async throws  // 引数なし！
+```
+
+このメソッドは：
+- **引数を取らない**
+- insert/update/delete で登録されたアイテムを一括保存
+- 内部で `withTransaction()` を呼び出し
+- トランザクション内でインデックス更新を実行
+
+#### なぜこの設計なのか
+
+| パターン | 使用例 | トランザクション境界 |
+|---------|-------|------------------|
+| **変更追跡** (FDBContext) | Core Data, Hibernate | 明示的な save() 呼び出し |
+| **即時保存** (Active Record) | Ruby on Rails, Django ORM | 各メソッド呼び出しごと |
+
+FDBContext は**変更追跡**パターンを採用：
+
+1. **パフォーマンス**: 複数の変更を1トランザクションでコミット
+2. **一貫性**: 全ての変更が成功するか、全て失敗するか（ACID）
+3. **インデックス最適化**: 変更をバッチ処理してインデックス更新を最適化
+
+#### テストでの使用例
+
+```swift
+@Test func testDataInsertion() async throws {
+    let container = try await setupContainer()
+    let context = FDBContext(container: container)
+
+    // ✅ 正しい
+    context.insert(User(name: "Alice"))
+    context.insert(User(name: "Bob"))
+    context.insert(User(name: "Carol"))
+    try await context.save()  // 3つのアイテムを1トランザクションで保存
+
+    // ❌ 間違い
+    try await context.save(User(name: "Alice"))  // コンパイルエラー
+
+    // ❌ 間違い（他のORMとの混同）
+    let user = User(name: "Alice")
+    user.save()  // Active Record パターン（このフレームワークでは使えない）
+}
+```
+
+#### 変更のクリア
+
+```swift
+// 保存前に変更を破棄したい場合
+context.insert(user)
+context.clearChanges()  // 未保存の変更を全てクリア
+```
+
+#### よくある間違い
+
+```swift
+// ❌ 間違い: 1アイテムずつ保存しようとする
+for user in users {
+    context.insert(user)
+    try await context.save()  // 毎回トランザクション作成（非効率）
+}
+
+// ✅ 正しい: バッチで保存
+for user in users {
+    context.insert(user)
+}
+try await context.save()  // 1トランザクションで全て保存
+
+// ❌ 間違い: save() に引数を渡そうとする
+let edge = SocialEdge(from: "alice", target: "bob", ...)
+try await context.save(edge)  // コンパイルエラー
+
+// ✅ 正しい
+context.insert(edge)
+try await context.save()
+```
+
+#### 他のフレームワークとの比較
+
+| フレームワーク | パターン | API |
+|--------------|---------|-----|
+| **database-framework** | 変更追跡 | `context.insert(item)` + `context.save()` |
+| Core Data | 変更追跡 | `context.insert(object)` + `context.save()` |
+| Hibernate | 変更追跡 | `session.save(entity)` + `session.flush()` |
+| Active Record | 即時保存 | `user.save()` |
+| Eloquent (Laravel) | 即時保存 | `$user->save()` |
+
 ### Data Layout in FoundationDB
 
 ```
@@ -547,6 +658,219 @@ struct MyTests {
 - ✅ 全ての ID を `uniqueID("prefix")` で生成
 - ❌ `cleanup()` で `clearAll()` を呼ばない
 - ❌ ハードコードされた ID を使用しない
+
+## IndexKind と IndexDescriptor の正しい使い方
+
+### 重要な原則: 全ての IndexKind は KeyPath ベース
+
+**絶対に忘れないこと**: 全ての IndexKind（Vector, Graph, FullText, Spatial等）は **KeyPath ベースの初期化子**を持っており、これを使うのが正しい設計です。
+
+```swift
+// ✅ 正しい: KeyPath ベースの初期化
+let graphIndex = GraphIndexKind<Edge>(
+    from: \.source,     // KeyPath<Edge, String>
+    edge: \.label,
+    to: \.target,
+    graph: \.graphId,
+    strategy: .adjacency
+)
+
+let vectorIndex = VectorIndexKind<Product>(
+    embedding: \.embedding,  // KeyPath<Product, [Float]>
+    dimensions: 384,
+    metric: .cosine
+)
+
+// ❌ 間違い: String ベースの初期化（Codable reconstruction 用）
+let graphIndex = GraphIndexKind<Edge>(
+    fromField: "source",     // String（内部用）
+    edgeField: "label",
+    toField: "target",
+    graphField: "graphId",
+    strategy: .adjacency
+)
+```
+
+### なぜ String ベースの初期化子が存在するのか
+
+```swift
+// GraphIndexKind.swift:183-196
+/// Initialize with field name strings (for Codable reconstruction)
+public init(
+    fromField: String,
+    edgeField: String,
+    toField: String,
+    graphField: String? = nil,
+    strategy: GraphIndexStrategy = .tripleStore
+) { ... }
+```
+
+このイニシャライザは：
+- **Codable conformance** で使用（JSON/Protobuf からのデシリアライズ）
+- **SchemaRegistry** での TypeCatalog 復元用
+- **通常のコードでは使用してはいけない**
+
+### IndexDescriptor には必ず KeyPath を渡す
+
+```swift
+// ✅ 正しい
+IndexDescriptor(
+    name: "user_email_index",
+    keyPaths: [\User.email],
+    kind: ScalarIndexKind(),
+    commonOptions: .init(unique: true)
+)
+
+IndexDescriptor(
+    name: "social_graph_index",
+    keyPaths: [\Edge.from, \Edge.label, \Edge.to],
+    kind: GraphIndexKind<Edge>(
+        from: \.from,
+        edge: \.label,
+        to: \.target,
+        strategy: .tripleStore
+    ),
+    storedFieldNames: ["weight", "timestamp"]
+)
+
+// ❌ 間違い: anyKeyPaths を使う（型安全性を失う）
+IndexDescriptor(
+    name: "social_graph_index",
+    anyKeyPaths: [],  // 型推論できない
+    kind: GraphIndexKind<Edge>(
+        fromField: "from",  // String ベース（内部用初期化子）
+        edgeField: "label",
+        toField: "target",
+        ...
+    )
+)
+```
+
+### KeyPath を使う理由
+
+| 利点 | 説明 |
+|------|------|
+| **型安全性** | コンパイル時にフィールドの存在を検証 |
+| **リファクタリング耐性** | IDE でフィールド名を変更すると自動更新 |
+| **自己文書化** | KeyPath を見るだけでどのフィールドか分かる |
+| **実行時アクセス** | `Root.fieldName(for: keyPath)` で名前取得可能 |
+
+### @Persistable マクロとの統合
+
+```swift
+@Persistable
+struct SocialEdge {
+    #Directory<SocialEdge>("graphs", "social")
+
+    var id: String = UUID().uuidString
+    var from: String = ""
+    var target: String = ""
+    var label: String = ""
+    var weight: Double = 0.0
+
+    // ✅ 正しい: KeyPath を使う
+    #Index(GraphIndexKind<SocialEdge>(
+        from: \.from,
+        edge: \.label,
+        to: \.target,
+        strategy: .adjacency
+    ), storedFields: [\SocialEdge.weight])
+}
+```
+
+### よくある間違い
+
+#### 間違い 1: 空の KeyPath 配列で型推論に失敗
+
+```swift
+// ❌ エラー: generic parameter 'Root' could not be inferred
+IndexDescriptor(
+    name: "index",
+    keyPaths: [],  // 空配列から型推論できない
+    kind: GraphIndexKind<T>(...)
+)
+
+// ✅ 解決策: 実際の KeyPath を渡す
+IndexDescriptor(
+    name: "index",
+    keyPaths: [\T.field1, \T.field2],
+    kind: GraphIndexKind<T>(
+        from: \.field1,
+        edge: \.field2,
+        ...
+    )
+)
+```
+
+#### 間違い 2: anyKeyPaths を使って回避しようとする
+
+```swift
+// ❌ 技術的には動くが、型安全性を失う
+IndexDescriptor(
+    name: "index",
+    anyKeyPaths: [],  // 内部用API
+    kind: GraphIndexKind<T>(
+        fromField: "field1",  // String ベース（内部用）
+        edgeField: "field2",
+        ...
+    )
+)
+```
+
+**anyKeyPaths パラメータは内部用**：
+- SchemaRegistry での復元用
+- 通常のコードでは使用禁止
+- KeyPath の型安全性の恩恵を全て失う
+
+#### 間違い 3: 手動 Persistable 実装
+
+```swift
+// ❌ 複雑で間違いやすい
+struct MyModel: Persistable {
+    static var indexDescriptors: [IndexDescriptor] {
+        [
+            IndexDescriptor(
+                name: "...",
+                anyKeyPaths: [],  // 手動実装では anyKeyPaths を使いがち
+                kind: ...
+            )
+        ]
+    }
+
+    subscript(dynamicMember member: String) -> (any Sendable)? { ... }
+    static func fieldName<Value>(for keyPath: KeyPath<MyModel, Value>) -> String { ... }
+    // ... その他10個以上のプロトコル要件
+}
+
+// ✅ @Persistable マクロを使う
+@Persistable
+struct MyModel {
+    #Index(...)  // マクロが正しい IndexDescriptor を生成
+    var field: String = ""
+}
+```
+
+### デバッグのヒント
+
+IndexDescriptor でエラーが出たら：
+
+1. **KeyPath を使っているか確認**:
+   ```swift
+   keyPaths: [\Type.field]  // ✅
+   anyKeyPaths: [...]        // ❌
+   ```
+
+2. **IndexKind の初期化子が KeyPath ベースか確認**:
+   ```swift
+   GraphIndexKind(from: \.field, ...)  // ✅
+   GraphIndexKind(fromField: "field", ...)  // ❌
+   ```
+
+3. **@Persistable マクロを使っているか確認**:
+   ```swift
+   @Persistable struct T { ... }  // ✅
+   struct T: Persistable { ... }  // ❌（手動実装は避ける）
+   ```
 
 ## Adding a New Index Type
 
