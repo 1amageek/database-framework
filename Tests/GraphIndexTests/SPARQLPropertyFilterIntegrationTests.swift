@@ -424,6 +424,44 @@ struct SPARQLPropertyFilterIntegrationTests {
         #expect(duration < 1.0)  // Should be fast with early filtering
     }
 
+    @Test("Explicit projection excludes property variables")
+    func testExplicitProjectionExcludesPropertyVariables() async throws {
+        let container = try await setupContainer()
+        let context = FDBContext(container: container)
+
+        let alice = uniqueID("alice")
+        let bob = uniqueID("bob")
+
+        context.insert(makeConnection(from: alice, to: bob, relation: "knows", since: 2020, strength: 0.9, status: "active"))
+        try await context.save()
+
+        // Explicit projection: only ?target
+        let result = try await context.executeSPARQLPattern(
+            .basic([
+                ExecutionTriple(
+                    subject: .value(.string(alice)),
+                    predicate: .value(.string("knows")),
+                    object: .variable("?target"),
+                    graph: nil
+                )
+            ]),
+            on: SocialConnection.self,
+            projection: ["?target"]  // Explicit projection
+        )
+
+        #expect(result.bindings.count == 1)
+        let binding = result.bindings[0]
+
+        // Only ?target should be in result (property variables excluded)
+        #expect(binding["?target"] == .string(bob))
+        #expect(binding["?since"] == nil)
+        #expect(binding["?strength"] == nil)
+        #expect(binding["?status"] == nil)
+
+        // projectedVariables should only contain ?target
+        #expect(result.projectedVariables == ["?target"])
+    }
+
     @Test("Property variables are bound in results")
     func testPropertyVariablesAreBound() async throws {
         let container = try await setupContainer()

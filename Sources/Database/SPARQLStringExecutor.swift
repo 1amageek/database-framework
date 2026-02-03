@@ -326,13 +326,19 @@ public func executeSPARQLString(
     }
 
     // Step 3: Projection (SELECT)
-    var allVariables = executionPattern.variables
-    // Add property variables from storedFieldNames (auto-bound by GraphPropertyScanner)
-    for fieldName in storedFieldNames {
-        allVariables.insert("?\(fieldName)")
+    let finalProjectedVars: [String]
+    if let projectionVars = projectionVars {
+        // User specified projection: use as-is (do not auto-add property variables)
+        finalProjectedVars = projectionVars
+    } else {
+        // No projection: include pattern variables + property variables (SELECT * equivalent)
+        var allVariables = executionPattern.variables
+        for fieldName in storedFieldNames {
+            allVariables.insert("?\(fieldName)")
+        }
+        finalProjectedVars = Array(allVariables).sorted()
     }
-    let projectedVars = projectionVars ?? Array(allVariables).sorted()
-    let projectionSet = Set(projectedVars)
+    let projectionSet = Set(finalProjectedVars)
     var projected = bindings.map { $0.project(projectionSet) }
 
     // Step 4: DISTINCT
@@ -362,7 +368,7 @@ public func executeSPARQLString(
 
     return SPARQLResult(
         bindings: projected,
-        projectedVariables: projectedVars,
+        projectedVariables: finalProjectedVars,
         isComplete: isComplete,
         limitReason: limitReason,
         statistics: stats
