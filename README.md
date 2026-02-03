@@ -1,5 +1,10 @@
 # Database
 
+[![Swift](https://img.shields.io/badge/Swift-6.2-orange.svg)](https://swift.org)
+[![Platform](https://img.shields.io/badge/Platform-macOS%2015%2B-blue.svg)](https://www.apple.com/macos)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/1amageek/database-framework)](https://github.com/1amageek/database-framework/releases)
+
 A Swift package providing server-side database operations powered by FoundationDB. Database implements the index maintenance logic for index types defined in [DatabaseKit](https://github.com/1amageek/database-kit).
 
 ## Overview
@@ -127,11 +132,23 @@ The linker expects `libfdb_c` at `/usr/local/lib`.
 
 ## Installation
 
+### Swift Package Manager
+
+Add database-framework to your `Package.swift`:
+
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "1.0.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "0.1.0")
 ]
 ```
+
+### Prerequisites
+
+- **FoundationDB 7.3+** must be installed and running
+  - macOS: `brew install foundationdb`
+  - Linux: See [FoundationDB Downloads](https://github.com/apple/foundationdb/releases)
+- **Swift 6.2+**
+- **macOS 15+** or Linux
 
 ## Modules
 
