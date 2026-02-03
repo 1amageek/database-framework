@@ -31,6 +31,7 @@ public struct SPARQLQueryExecutor: Sendable {
     private let edgeFieldName: String
     private let toFieldName: String
     private let graphFieldName: String?
+    private let storedFieldNames: [String]
 
     // MARK: - Initialization
 
@@ -44,6 +45,7 @@ public struct SPARQLQueryExecutor: Sendable {
     ///   - edgeFieldName: Name of the edge/predicate field
     ///   - toFieldName: Name of the to/object field
     ///   - graphFieldName: Name of the graph field (nil = no graph support)
+    ///   - storedFieldNames: Property field names stored in CoveringValue (empty = no properties)
     public init(
         database: any DatabaseProtocol,
         indexSubspace: Subspace,
@@ -51,7 +53,8 @@ public struct SPARQLQueryExecutor: Sendable {
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String,
-        graphFieldName: String? = nil
+        graphFieldName: String? = nil,
+        storedFieldNames: [String] = []
     ) {
         self.database = database
         self.indexSubspace = indexSubspace
@@ -60,6 +63,7 @@ public struct SPARQLQueryExecutor: Sendable {
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
         self.graphFieldName = graphFieldName
+        self.storedFieldNames = storedFieldNames
     }
 
     // MARK: - Result Type
@@ -129,7 +133,8 @@ public struct SPARQLQueryExecutor: Sendable {
         pattern: ExecutionPattern,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any TransactionProtocol,
+        filter: FilterExpression? = nil
     ) async throws -> EvaluationResult {
         var stats = ExecutionStatistics()
         stats.patternsEvaluated = 1
@@ -140,7 +145,8 @@ public struct SPARQLQueryExecutor: Sendable {
                 patterns: patterns,
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                transaction: transaction
+                transaction: transaction,
+                filter: filter
             )
             stats.indexScans = basicStats.indexScans
             stats.joinOperations = basicStats.joinOperations
@@ -203,14 +209,16 @@ public struct SPARQLQueryExecutor: Sendable {
                 .mergedStats(with: rightResult.stats)
 
         case .filter(let innerPattern, let expression):
+            // Pass filter to inner pattern for pushdown optimization
             let innerResult = try await evaluate(
                 pattern: innerPattern,
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                transaction: transaction
+                transaction: transaction,
+                filter: expression
             )
-            let filtered = innerResult.bindings.filter { expression.evaluate($0) }
-            return EvaluationResult(bindings: filtered, stats: stats)
+            // Post-scan filtering is already handled in executePattern()
+            return EvaluationResult(bindings: innerResult.bindings, stats: stats)
                 .mergedStats(with: innerResult.stats)
 
         case .minus(let left, let right):
@@ -319,7 +327,8 @@ public struct SPARQLQueryExecutor: Sendable {
         patterns: [ExecutionTriple],
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any TransactionProtocol,
+        filter: FilterExpression? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var stats = ExecutionStatistics()
 
@@ -342,12 +351,13 @@ public struct SPARQLQueryExecutor: Sendable {
                 // Substitute variables in pattern
                 let substituted = pattern.substitute(binding)
 
-                // Execute pattern
+                // Execute pattern with filter
                 let (matches, scanStats) = try await executePattern(
                     substituted,
                     indexSubspace: indexSubspace,
                     strategy: strategy,
-                    transaction: transaction
+                    transaction: transaction,
+                    filter: filter
                 )
                 stats.indexScans += scanStats.indexScans
 
@@ -457,8 +467,112 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Pattern Execution
 
-    /// Execute a single triple pattern against the index
+    /// Execute a single triple pattern against the index with optional filter pushdown
     private func executePattern(
+        _ pattern: ExecutionTriple,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        filter: FilterExpression? = nil
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        // Use legacy path if no properties stored or no filter to push
+        if storedFieldNames.isEmpty || filter == nil {
+            return try await executePatternLegacy(
+                pattern,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+        }
+
+        // NEW PATH: Property-aware filtering with GraphPropertyScanner
+        var stats = ExecutionStatistics()
+        stats.indexScans = 1
+
+        // Extract structure variables
+        let subjectVar = pattern.subject.variableName
+        let predicateVar = pattern.predicate.variableName
+        let objectVar = pattern.object.variableName
+        let graphVar = pattern.graph?.variableName
+
+        // Analyze filter expression
+        let analyzer = FilterAnalyzer(
+            subjectVar: subjectVar,
+            predicateVar: predicateVar,
+            objectVar: objectVar,
+            graphVar: graphVar,
+            availablePropertyFields: Set(storedFieldNames)
+        )
+        let (pushableFilters, remainingFilter) = analyzer.analyze(filter!)  // Safe: nil checked above
+
+        // Create GraphPropertyScanner
+        let scanner = GraphPropertyScanner(
+            indexSubspace: indexSubspace,
+            strategy: strategy,
+            storedFieldNames: storedFieldNames
+        )
+
+        // Extract concrete values from pattern
+        let fromValue = pattern.subject.literalValue?.stringValue
+        let edgeValue = pattern.predicate.literalValue?.stringValue
+        let toValue = pattern.object.literalValue?.stringValue
+        let graphValue = pattern.graph?.literalValue?.stringValue
+
+        var results: [VariableBinding] = []
+
+        // Execute scan with property filters
+        let stream = scanner.scanEdges(
+            from: fromValue,
+            edge: edgeValue,
+            to: toValue,
+            graph: graphValue,
+            propertyFilters: pushableFilters.isEmpty ? nil : pushableFilters,
+            transaction: transaction
+        )
+
+        for try await edge in stream {
+            // Build binding from graph structure
+            var binding = VariableBinding()
+
+            // Match structure variables
+            if !matchTerm(pattern.subject, against: .string(edge.source), binding: &binding) {
+                continue
+            }
+            if !matchTerm(pattern.predicate, against: .string(edge.edgeLabel), binding: &binding) {
+                continue
+            }
+            if !matchTerm(pattern.object, against: .string(edge.target), binding: &binding) {
+                continue
+            }
+            if let graphTerm = pattern.graph, let graphValue = edge.graph {
+                if !matchTerm(graphTerm, against: .string(graphValue), binding: &binding) {
+                    continue
+                }
+            }
+
+            // Bind property variables
+            for (fieldName, value) in edge.properties {
+                let varName = "?\(fieldName)"
+                if let fieldValue = FieldValue(value) {
+                    binding = binding.binding(varName, to: fieldValue)
+                }
+            }
+
+            // Apply remaining complex filters (post-scan)
+            if let remaining = remainingFilter {
+                if !remaining.evaluate(binding) {
+                    continue
+                }
+            }
+
+            results.append(binding)
+        }
+
+        return (results, stats)
+    }
+
+    /// Legacy pattern execution (no property filtering)
+    private func executePatternLegacy(
         _ pattern: ExecutionTriple,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,

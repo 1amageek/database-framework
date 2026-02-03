@@ -182,7 +182,8 @@ extension FDBContext {
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
             toFieldName: kind.toField,
-            graphFieldName: kind.graphField
+            graphFieldName: kind.graphField,
+            storedFieldNames: descriptor.storedFieldNames
         )
 
         let allVariables = pattern.variables

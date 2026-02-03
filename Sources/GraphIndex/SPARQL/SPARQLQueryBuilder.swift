@@ -455,7 +455,8 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             fromFieldName: fromFieldName,
             edgeFieldName: edgeFieldName,
             toFieldName: toFieldName,
-            graphFieldName: kind.graphField
+            graphFieldName: kind.graphField,
+            storedFieldNames: indexDescriptor.storedFieldNames
         )
 
         let allVariables = graphPattern.variables
