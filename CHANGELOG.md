@@ -45,6 +45,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Predicate pushdown
   - Index selection
   - Join optimization
+- **SPARQL() SQL Function**: Hybrid SQL/SPARQL queries
+  - Execute SPARQL subqueries within SQL `IN` predicates
+  - Single-variable projection for scalar results
+  - Explicit variable selection for multi-variable SPARQL results
+  - Transaction-shared execution (consistent snapshot)
+  - Type-safe error handling (SPARQLFunctionError)
+  - Support for multiple SPARQL() calls in single query
+  - Pre-execution rewrite at FDBContext level
 
 #### DatabaseCLI
 - **DatabaseREPL**: Interactive database shell (PostgreSQL psql equivalent)

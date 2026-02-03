@@ -29,6 +29,10 @@ public enum QueryBridgeError: Error, Sendable {
 extension FDBContext {
     /// Execute a QueryIR SelectQuery and return typed results.
     ///
+    /// **Note**: This method is designed to work with pre-rewritten queries.
+    /// If the query contains SPARQL() functions, they should be rewritten
+    /// at the Database layer before calling this method.
+    ///
     /// Converts the SelectQuery to a `Query<T>` and delegates to the
     /// existing `fetch(query:)` path. This preserves all existing
     /// optimizations (query planner, index selection, cache policies).
@@ -49,3 +53,4 @@ extension FDBContext {
         return try await fetch(query)
     }
 }
+

@@ -431,6 +431,22 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
+        // Database integration tests (SPARQL() function, etc.)
+        .testTarget(
+            name: "DatabaseTests",
+            dependencies: [
+                "Database",
+                "DatabaseEngine",
+                "GraphIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
     ],
     swiftLanguageModes: [.v6]
 )

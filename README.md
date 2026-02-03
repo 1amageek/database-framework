@@ -232,6 +232,187 @@ try await context.save()
 let users = try await context.fetch(FDBFetchDescriptor<User>())
 ```
 
+## SPARQL() SQL Function
+
+Database provides a powerful `SPARQL()` SQL function that enables **hybrid SQL/SPARQL queries**, allowing you to combine relational filtering with graph pattern matching in a single query.
+
+### Overview
+
+The `SPARQL()` function executes a SPARQL subquery against a graph index and returns matching IDs, which can be used in SQL `IN` predicates. This enables seamless integration between SQL and SPARQL query paradigms.
+
+### Basic Usage
+
+```swift
+import Database
+import Core
+import Graph
+
+// 1. Define models with graph index
+@Persistable
+struct User {
+    #Directory<User>("app", "users")
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var email: String = ""
+}
+
+@Persistable
+struct Connection {
+    #Directory<Connection>("app", "connections")
+    var id: String = UUID().uuidString
+    var from: String = ""
+    var to: String = ""
+    var relationship: String = ""
+
+    #Index(GraphIndexKind<Connection>(
+        from: \.from,
+        edge: \.relationship,
+        to: \.to,
+        strategy: .tripleStore
+    ))
+}
+
+// 2. Insert data
+let context = container.newContext()
+context.insert(User(id: "alice", name: "Alice", email: "alice@example.com"))
+context.insert(User(id: "bob", name: "Bob", email: "bob@example.com"))
+context.insert(Connection(from: "alice", to: "bob", relationship: "follows"))
+try await context.save()
+
+// 3. Execute hybrid SQL/SPARQL query
+let sql = """
+SELECT * FROM User
+WHERE id IN (SPARQL(Connection, 'SELECT ?from WHERE { ?from "follows" "bob" }'))
+"""
+let users = try await context.executeSQL(sql, as: User.self)
+// Returns: [User(id: "alice", name: "Alice", ...)]
+```
+
+### Advanced Features
+
+#### Multiple SPARQL() Calls
+
+Combine multiple SPARQL subqueries with SQL logic:
+
+```swift
+let sql = """
+SELECT * FROM User
+WHERE id IN (SPARQL(Connection, 'SELECT ?from WHERE { ?from "follows" ?to }'))
+  AND id IN (SPARQL(Connection, 'SELECT ?from WHERE { ?from "likes" "tech" }'))
+"""
+// Returns users who follow someone AND like tech
+```
+
+#### Explicit Variable Selection
+
+When SPARQL returns multiple variables, explicitly select which one to use:
+
+```swift
+let sql = """
+SELECT * FROM User
+WHERE id IN (
+    SPARQL(Connection, 'SELECT ?from ?to WHERE { ?from "follows" ?to }', '?from')
+)
+"""
+// Explicitly select ?from variable from multi-variable result
+```
+
+#### Combining with SQL Filters
+
+Mix SPARQL pattern matching with SQL predicates:
+
+```swift
+let sql = """
+SELECT * FROM User
+WHERE age > 18
+  AND email LIKE '%@example.com'
+  AND id IN (SPARQL(Connection, 'SELECT ?from WHERE { ?from "verified" "true" }'))
+ORDER BY name
+"""
+```
+
+### Error Handling
+
+The `SPARQL()` function provides clear error messages:
+
+```swift
+// Error: Type not found
+WHERE id IN (SPARQL(NonExistentType, '...'))
+// Throws: SPARQLFunctionError.typeNotFound("NonExistentType")
+
+// Error: No graph index
+WHERE id IN (SPARQL(User, '...'))
+// Throws: SPARQLFunctionError.graphIndexNotFound("User")
+
+// Error: Multiple variables without explicit selection
+WHERE id IN (SPARQL(Connection, 'SELECT ?from ?to WHERE { ... }'))
+// Throws: SPARQLFunctionError.multipleVariablesNotSupported
+```
+
+### Implementation Details
+
+**Execution Flow**:
+1. Parse SQL string → `SelectQuery` (QueryIR)
+2. Detect `SPARQL()` functions in expression tree
+3. Execute SPARQL subqueries within parent transaction
+4. Inline results as literal arrays in SQL query
+5. Execute rewritten query via standard fetch path
+
+**Transaction Isolation**:
+- SPARQL subqueries share the same transaction snapshot as the parent SQL query
+- Ensures consistent reads across SQL and SPARQL operations
+- All operations participate in the same ACID transaction
+
+**Performance**:
+- SPARQL execution is optimized for index-backed graph traversal
+- Results are cached within the transaction scope
+- Suitable for large result sets (tested with 100+ items)
+
+### Limitations
+
+- **Single-variable projection**: `IN` predicate semantics require scalar values
+  - Use explicit variable selection for multi-variable SPARQL results
+- **Dynamic directories**: Types with dynamic directory partitions are not supported
+- **Query complexity**: Complex SPARQL patterns may impact performance
+
+### Use Cases
+
+**Social Network**:
+```swift
+// Find users who are followed by influencers
+SELECT * FROM User
+WHERE id IN (
+    SPARQL(Follow, 'SELECT ?follower WHERE {
+        ?follower "follows" ?influencer .
+        ?influencer "type" "influencer"
+    }')
+)
+```
+
+**Knowledge Graph**:
+```swift
+// Find products related to user interests
+SELECT * FROM Product
+WHERE id IN (
+    SPARQL(Interest, 'SELECT ?product WHERE {
+        ?user "interested_in" ?category .
+        ?product "category" ?category
+    }')
+)
+AND price < 100
+```
+
+**Access Control**:
+```swift
+// Find resources accessible to user
+SELECT * FROM Resource
+WHERE id IN (
+    SPARQL(Permission, 'SELECT ?resource WHERE {
+        "user:123" "can_access" ?resource
+    }')
+)
+```
+
 ## Extensible Architecture
 
 ### Design Philosophy
