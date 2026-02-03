@@ -4,8 +4,33 @@
 
 An interactive command-line interface for FoundationDB, equivalent to PostgreSQL's `psql`. Access and manipulate data dynamically using TypeCatalog (schema metadata) stored in FDB, without requiring compiled `@Persistable` types.
 
+## Table of Contents
+
+- [Features](#features)
+- [Getting Started](#getting-started)
+  - [CLI Mode](#cli-mode-standalone-commands)
+  - [REPL Mode](#repl-mode-interactive)
+- [Command Reference](#command-reference)
+  - [Schema Management](#schema-management)
+  - [Schema Info](#schema-info)
+  - [Data Operations](#data-operations)
+  - [Query](#query)
+  - [Graph Queries](#graph-queries)
+  - [Version History](#version-history)
+  - [Destructive Operations](#destructive-operations)
+  - [Raw FDB Access](#raw-fdb-access)
+  - [Other Commands](#other-commands)
+- [Partitions (Dynamic Directories)](#partitions-dynamic-directories)
+- [PostgreSQL Comparison](#postgresql-comparison)
+- [Important Notes](#important-notes)
+- [Quick Start Guide](#quick-start-guide)
+- [Architecture](#architecture)
+- [Related Files](#related-files)
+
 ## Features
 
+- **YAML Schema Definition**: Define schemas declaratively without Swift code
+- **Schema Management**: Apply, export, validate, and drop schemas
 - **No Type Definitions Required**: Dynamic data access using TypeCatalog
 - **Schema Introspection**: PostgreSQL-style `\dt`, `\d` equivalent commands
 - **CRUD Operations**: insert/get/update/delete
@@ -16,7 +41,50 @@ An interactive command-line interface for FoundationDB, equivalent to PostgreSQL
 
 ## Getting Started
 
-### Standalone Mode (TypeCatalog-only)
+### CLI Mode (Standalone Commands)
+
+Build the executable:
+
+```bash
+swift build -c release
+```
+
+Run subcommands directly:
+
+```bash
+# Schema management
+database schema list
+database schema show User
+database schema apply schemas/User.yaml
+database schema export User --output schemas/User.yaml
+database schema validate schemas/User.yaml
+database schema drop User --force
+
+# Data operations
+database get User user-001
+database insert User '{"id": "user-001", "name": "Alice"}'
+database find User --where age > 30 --limit 10
+
+# Graph queries
+database graph RDFTriple from=ex:Toyota
+database sparql RDFTriple 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+
+# Destructive operations
+database clear User --force
+database clear --all --force
+```
+
+### REPL Mode (Interactive)
+
+Run without arguments to enter interactive REPL:
+
+```bash
+database
+```
+
+Or programmatically:
+
+#### Standalone Mode (TypeCatalog-only)
 
 ```swift
 import DatabaseCLI
@@ -30,7 +98,7 @@ let repl = DatabaseREPL(database: database, catalogs: catalogs)
 try await repl.run()
 ```
 
-### Embedded Mode (with FDBContainer)
+#### Embedded Mode (with FDBContainer)
 
 ```swift
 let container = try await FDBContainer(for: schema)
@@ -41,6 +109,140 @@ try await repl.run()
 Embedded mode is required for version history (`history` command).
 
 ## Command Reference
+
+### Schema Management
+
+#### `schema apply <file-or-directory>`
+Apply schema from YAML file or directory
+
+**CLI Mode**:
+```bash
+# Single file
+database schema apply schemas/User.yaml
+
+# Directory (applies all .yaml/.yml files)
+database schema apply schemas/
+
+# Output:
+# Applying schema from: User.yaml
+# ✓ Schema 'User' registered successfully
+#   - 4 fields
+#   - 2 indexes
+#   - Directory: /app/users
+```
+
+**REPL Mode**:
+```bash
+database> schema apply schemas/User.yaml
+Applying schema from: User.yaml
+✓ Schema 'User' registered successfully
+  - 4 fields
+  - 2 indexes
+  - Directory: /app/users
+```
+
+**Example YAML** (`schemas/User.yaml`):
+```yaml
+User:
+  "#Directory": [app, users]
+
+  id: string
+  name: string
+  email: string#scalar(unique:true)
+  age: int#scalar
+```
+
+See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax and examples.
+
+#### `schema export <TypeName> [--output <path>]`
+Export TypeCatalog to YAML
+
+**CLI Mode**:
+```bash
+# Export to stdout
+database schema export User
+
+# Export to file
+database schema export User --output schemas/User.yaml
+
+# Export all schemas to directory
+database schema export --all --output schemas/
+```
+
+**REPL Mode**:
+```bash
+database> schema export User
+User:
+  "#Directory": [app, users]
+
+  id: string
+  name: string
+  email: string#scalar(unique:true)
+  age: int#scalar
+```
+
+Use case: Generate YAML from existing `@Persistable` types for version control.
+
+#### `schema validate <file>`
+Validate YAML schema file (no database connection required)
+
+**CLI Mode**:
+```bash
+database schema validate schemas/User.yaml
+
+# Output:
+# ✓ Schema 'User' is valid
+#   - 4 fields defined
+#   - 2 indexes defined
+#   - Directory: /app/users
+```
+
+**REPL Mode**:
+```bash
+database> schema validate schemas/User.yaml
+✓ Schema 'User' is valid
+  - 4 fields defined
+  - 2 indexes defined
+  - Directory: /app/users
+```
+
+#### `schema drop <TypeName> [--force]`
+Drop schema definition
+
+**⚠️ Warning**: This removes the schema metadata, not the data itself. Use `clear` to delete data.
+
+**CLI Mode**:
+```bash
+# Requires --force flag
+database schema drop User --force
+
+# Without --force (shows warning)
+database schema drop User
+# Output:
+# This will permanently delete the schema for 'User'
+# Use --force to confirm
+```
+
+**REPL Mode**:
+```bash
+database> schema drop User --force
+✓ Schema 'User' dropped
+```
+
+#### `schema drop --all [--force]`
+Drop all schema definitions
+
+**CLI Mode**:
+```bash
+database schema drop --all --force
+# Output:
+# Dropped 'User'
+# Dropped 'Order'
+# Dropped 'RDFTriple'
+# ✓ Dropped 3 schemas
+```
+
+---
 
 ### Schema Info
 
@@ -531,8 +733,109 @@ DatabaseCLICore/
     └── Output.swift                # Output formatting
 ```
 
+## Quick Start Guide
+
+### 1. Define Schema in YAML
+
+Create `schemas/User.yaml`:
+
+```yaml
+User:
+  "#Directory": [app, users]
+
+  id: string
+  name: string
+  email: string#scalar(unique:true)
+  age: int#scalar
+```
+
+### 2. Apply Schema
+
+```bash
+database schema apply schemas/User.yaml
+```
+
+### 3. Insert Data
+
+```bash
+database insert User '{"id": "user-001", "name": "Alice", "email": "alice@example.com", "age": 30}'
+```
+
+### 4. Query Data
+
+```bash
+# Get by ID
+database get User user-001
+
+# Find with filter
+database find User --where age > 25
+
+# Find with sort
+database find User --sort age desc --limit 10
+```
+
+### 5. Inspect Schema
+
+```bash
+# List all types
+database schema list
+
+# Show type details
+database schema show User
+```
+
+### 6. Export Schema (for version control)
+
+```bash
+database schema export User --output schemas/User.yaml
+```
+
+### Complete Example with Graph Index
+
+**schemas/RDFTriple.yaml**:
+```yaml
+RDFTriple:
+  "#Directory": [knowledge, rdf]
+
+  id: string
+  subject: string
+  predicate: string
+  object: string
+
+  "#Index":
+    - kind: graph
+      name: rdf_graph
+      from: subject
+      edge: predicate
+      to: object
+      strategy: tripleStore
+```
+
+**Apply and query**:
+```bash
+# Apply schema
+database schema apply schemas/RDFTriple.yaml
+
+# Insert triples
+database insert RDFTriple '{"id": "t1", "subject": "ex:Toyota", "predicate": "rdf:type", "object": "ex:Company"}'
+database insert RDFTriple '{"id": "t2", "subject": "ex:Toyota", "predicate": "ex:founded", "object": "1937"}'
+
+# Graph query
+database graph RDFTriple from=ex:Toyota
+
+# SPARQL query
+database sparql RDFTriple 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
+```
+
+See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax, all index types, and advanced features.
+
+---
+
 ## Related Files
 
+- `SCHEMA_DEFINITION.md` - Complete YAML schema syntax specification
+- `Sources/DatabaseCLICore/Schema/SchemaFileParser.swift` - YAML parser
+- `Sources/DatabaseCLICore/Schema/SchemaFileExporter.swift` - YAML exporter
 - `Sources/DatabaseEngine/Registry/TypeCatalog.swift` - Schema metadata
 - `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` - Catalog persistence
 - `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` - Dynamic decoding
