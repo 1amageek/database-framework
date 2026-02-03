@@ -222,7 +222,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         let alice = uniqueID("alice")
 
         context.insert(makeConnection(from: alice, to: uniqueID("bob"), relation: "knows", since: 2020, strength: 0.5, status: "active-premium"))
-        context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "inactive"))
+        context.insert(makeConnection(from: alice, to: uniqueID("carol"), relation: "knows", since: 2021, strength: 0.6, status: "disabled"))
         context.insert(makeConnection(from: alice, to: uniqueID("dave"), relation: "knows", since: 2022, strength: 0.7, status: "active"))
         try await context.save()
 
@@ -332,6 +332,20 @@ struct SPARQLPropertyFilterIntegrationTests {
 
         let directoryLayer = DirectoryLayer(database: database)
         try? await directoryLayer.remove(path: ["test", "basic_edge"])
+
+        // Set index to readable
+        let subspace = try await container.resolveDirectory(for: BasicEdge.self)
+        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
+
+        for descriptor in BasicEdge.indexDescriptors {
+            let currentState = try await indexStateManager.state(of: descriptor.name)
+            if currentState == .disabled {
+                try await indexStateManager.enable(descriptor.name)
+                try await indexStateManager.makeReadable(descriptor.name)
+            } else if currentState == .writeOnly {
+                try await indexStateManager.makeReadable(descriptor.name)
+            }
+        }
 
         let context = FDBContext(container: container)
 

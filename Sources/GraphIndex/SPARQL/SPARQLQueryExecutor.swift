@@ -539,6 +539,7 @@ public struct SPARQLQueryExecutor: Sendable {
         )
 
         for try await edge in stream {
+
             // Build binding from graph structure
             var binding = VariableBinding()
 
@@ -563,6 +564,7 @@ public struct SPARQLQueryExecutor: Sendable {
                 let varName = "?\(fieldName)"
                 if let fieldValue = FieldValue(value) {
                     binding = binding.binding(varName, to: fieldValue)
+                } else {
                 }
             }
 

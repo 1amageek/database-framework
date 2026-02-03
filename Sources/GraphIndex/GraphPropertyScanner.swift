@@ -110,7 +110,8 @@ public struct PropertyFilter: Sendable {
         case .greaterThanOrEqual:
             return value.isLessThan(fieldValue) || fieldValue.isEqual(to: value)
         case .contains:
-            if let str = rawValue as? String, let substr = value.stringValue {
+            // Use fieldValue.stringValue to get normalized string
+            if let str = fieldValue.stringValue, let substr = value.stringValue {
                 return str.contains(substr)
             }
             return false
@@ -120,12 +121,14 @@ public struct PropertyFilter: Sendable {
             }
             return false
         case .hasPrefix:
-            if let str = rawValue as? String, let prefix = value.stringValue {
+            // Use fieldValue.stringValue to get normalized string
+            if let str = fieldValue.stringValue, let prefix = value.stringValue {
                 return str.hasPrefix(prefix)
             }
             return false
         case .hasSuffix:
-            if let str = rawValue as? String, let suffix = value.stringValue {
+            // Use fieldValue.stringValue to get normalized string
+            if let str = fieldValue.stringValue, let suffix = value.stringValue {
                 return str.hasSuffix(suffix)
             }
             return false

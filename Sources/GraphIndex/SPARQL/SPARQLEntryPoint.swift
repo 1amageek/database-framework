@@ -186,7 +186,11 @@ extension FDBContext {
             storedFieldNames: descriptor.storedFieldNames
         )
 
-        let allVariables = pattern.variables
+        var allVariables = pattern.variables
+        // Add property variables from storedFieldNames (auto-bound by GraphPropertyScanner)
+        for fieldName in descriptor.storedFieldNames {
+            allVariables.insert("?\(fieldName)")
+        }
         let projectedVars = projection ?? Array(allVariables).sorted()
         let startTime = DispatchTime.now()
 

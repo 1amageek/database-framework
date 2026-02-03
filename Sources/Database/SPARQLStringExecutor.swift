@@ -326,7 +326,11 @@ public func executeSPARQLString(
     }
 
     // Step 3: Projection (SELECT)
-    let allVariables = executionPattern.variables
+    var allVariables = executionPattern.variables
+    // Add property variables from storedFieldNames (auto-bound by GraphPropertyScanner)
+    for fieldName in storedFieldNames {
+        allVariables.insert("?\(fieldName)")
+    }
     let projectedVars = projectionVars ?? Array(allVariables).sorted()
     let projectionSet = Set(projectedVars)
     var projected = bindings.map { $0.project(projectionSet) }

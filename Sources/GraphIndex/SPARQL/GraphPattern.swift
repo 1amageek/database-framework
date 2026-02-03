@@ -91,8 +91,8 @@ public indirect enum ExecutionPattern: Sendable {
             return left.variables.union(right.variables)
         case .union(let left, let right):
             return left.variables.union(right.variables)
-        case .filter(let pattern, _):
-            return pattern.variables
+        case .filter(let pattern, let expression):
+            return pattern.variables.union(expression.variables)
         case .groupBy(_, let groupVariables, let aggregates, _):
             // Output variables are group variables + aggregate aliases
             var result = Set(groupVariables)
