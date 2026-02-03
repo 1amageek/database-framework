@@ -11,12 +11,12 @@ import Core
 import Graph
 
 /// Direct FDB data access driven by TypeCatalog
-struct CatalogDataAccess: Sendable {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+public struct CatalogDataAccess: Sendable {
+    nonisolated(unsafe) public let database: any DatabaseProtocol
     private let catalogs: [String: TypeCatalog]
     private let transformer = TransformingSerializer(configuration: .default)
 
-    init(database: any DatabaseProtocol, catalogs: [TypeCatalog]) {
+    public init(database: any DatabaseProtocol, catalogs: [TypeCatalog]) {
         self.database = database
         var map: [String: TypeCatalog] = [:]
         for catalog in catalogs {

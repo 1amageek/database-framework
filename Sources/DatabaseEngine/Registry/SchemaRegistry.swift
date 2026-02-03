@@ -75,6 +75,35 @@ public struct SchemaRegistry: Sendable {
         }
     }
 
+    // MARK: - Single TypeCatalog Operations
+
+    /// Persist a single TypeCatalog entry
+    ///
+    /// Used by CLI to apply individual schema definitions.
+    /// Overwrites existing catalog entry if present.
+    public func persist(_ catalog: TypeCatalog) async throws {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+
+        try await database.withTransaction { transaction in
+            let key = Self.key(for: catalog.typeName)
+            let data = try encoder.encode(catalog)
+            let value = Array(data)
+            transaction.setValue(value, for: key)
+        }
+    }
+
+    /// Delete a single TypeCatalog entry
+    ///
+    /// Used by CLI to drop schema definitions.
+    /// No-op if entry doesn't exist.
+    public func delete(typeName: String) async throws {
+        let key = Self.key(for: typeName)
+        try await database.withTransaction { transaction in
+            transaction.clear(key: key)
+        }
+    }
+
     // MARK: - Key Construction
 
     /// Build FDB key for a catalog entry: (_catalog, typeName) as Tuple

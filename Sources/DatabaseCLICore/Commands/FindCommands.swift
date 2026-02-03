@@ -3,18 +3,18 @@
 import Foundation
 import DatabaseEngine
 
-struct FindCommands {
+public struct FindCommands {
 
     private let dataAccess: CatalogDataAccess
     private let output: OutputFormatter
 
-    init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
+    public init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
         self.dataAccess = dataAccess
         self.output = output
     }
 
     /// Usage: find <TypeName> [--where field op value] [--sort field [desc]] [--limit N] [--partition field=value ...]
-    func execute(_ args: [String]) async throws {
+    public func execute(_ args: [String]) async throws {
         guard !args.isEmpty else {
             throw CLIError.invalidArguments("Usage: find <TypeName> [--where field op value] [--sort field [desc]] [--limit N] [--partition field=value ...]")
         }

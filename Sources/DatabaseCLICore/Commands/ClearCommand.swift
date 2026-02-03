@@ -9,18 +9,18 @@
 import Foundation
 import DatabaseEngine
 
-struct ClearCommand {
+public struct ClearCommand {
 
     private let dataAccess: CatalogDataAccess
     private let output: OutputFormatter
 
-    init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
+    public init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
         self.dataAccess = dataAccess
         self.output = output
     }
 
     /// Usage: clear <TypeName> [--force] | clear --all [--force]
-    func execute(_ args: [String]) async throws {
+    public func execute(_ args: [String]) async throws {
         let force = args.contains("--force")
         let cleanArgs = args.filter { $0 != "--force" }
 

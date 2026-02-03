@@ -3,17 +3,17 @@
 import Foundation
 import DatabaseEngine
 
-struct SchemaInfoCommands {
+public struct SchemaInfoCommands {
 
     private let catalogs: [TypeCatalog]
     private let output: OutputFormatter
 
-    init(catalogs: [TypeCatalog], output: OutputFormatter) {
+    public init(catalogs: [TypeCatalog], output: OutputFormatter) {
         self.catalogs = catalogs
         self.output = output
     }
 
-    func execute(_ args: [String]) throws {
+    public func execute(_ args: [String]) throws {
         guard let subCommand = args.first?.lowercased() else {
             throw CLIError.invalidArguments("Usage: schema <list|show> [name]")
         }

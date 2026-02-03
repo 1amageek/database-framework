@@ -6,16 +6,16 @@
 
 import Foundation
 
-struct HistoryCommands {
+public struct HistoryCommands {
 
     private let output: OutputFormatter
 
-    init(output: OutputFormatter) {
+    public init(output: OutputFormatter) {
         self.output = output
     }
 
     /// Usage: history <TypeName> <id> [--limit N]
-    func execute(_ args: [String]) async throws {
+    public func execute(_ args: [String]) async throws {
         output.info("History commands require embedded mode (with compiled @Persistable types).")
         output.info("Start the CLI via DatabaseREPL with an FDBContainer for version history.")
     }

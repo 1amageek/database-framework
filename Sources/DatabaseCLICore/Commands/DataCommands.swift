@@ -3,12 +3,12 @@
 import Foundation
 import DatabaseEngine
 
-struct DataCommands {
+public struct DataCommands {
 
     private let dataAccess: CatalogDataAccess
     private let output: OutputFormatter
 
-    init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
+    public init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
         self.dataAccess = dataAccess
         self.output = output
     }
@@ -16,7 +16,7 @@ struct DataCommands {
     // MARK: - Insert
 
     /// Usage: insert <TypeName> <json> [--partition field=value ...]
-    func insert(args: [String]) async throws {
+    public func insert(args: [String]) async throws {
         guard args.count >= 2 else {
             throw CLIError.invalidArguments("Usage: insert <TypeName> <json> [--partition field=value ...]")
         }
@@ -35,7 +35,7 @@ struct DataCommands {
     // MARK: - Get
 
     /// Usage: get <TypeName> <id> [--partition field=value ...]
-    func get(args: [String]) async throws {
+    public func get(args: [String]) async throws {
         guard args.count >= 2 else {
             throw CLIError.invalidArguments("Usage: get <TypeName> <id> [--partition field=value ...]")
         }
@@ -55,7 +55,7 @@ struct DataCommands {
     // MARK: - Update
 
     /// Usage: update <TypeName> <id> <json> [--partition field=value ...]
-    func update(args: [String]) async throws {
+    public func update(args: [String]) async throws {
         guard args.count >= 3 else {
             throw CLIError.invalidArguments("Usage: update <TypeName> <id> <json> [--partition field=value ...]")
         }
@@ -86,7 +86,7 @@ struct DataCommands {
     // MARK: - Delete
 
     /// Usage: delete <TypeName> <id> [--partition field=value ...]
-    func delete(args: [String]) async throws {
+    public func delete(args: [String]) async throws {
         guard args.count >= 2 else {
             throw CLIError.invalidArguments("Usage: delete <TypeName> <id> [--partition field=value ...]")
         }

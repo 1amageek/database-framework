@@ -9,12 +9,12 @@ import GraphIndex
 import Database
 import Graph
 
-struct GraphCommands {
+public struct GraphCommands {
 
     private let dataAccess: CatalogDataAccess
     private let output: OutputFormatter
 
-    init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
+    public init(dataAccess: CatalogDataAccess, output: OutputFormatter) {
         self.dataAccess = dataAccess
         self.output = output
     }
@@ -24,7 +24,7 @@ struct GraphCommands {
     /// Execute a graph traversal query
     ///
     /// Usage: `graph <TypeName> [from=<node>] [edge=<rel>] [to=<node>] [--limit N]`
-    func execute(_ args: [String]) async throws {
+    public func execute(_ args: [String]) async throws {
         guard let typeName = args.first else {
             throw CLIError.invalidArguments("Usage: graph <TypeName> [from=<value>] [edge=<value>] [to=<value>] [--limit N]")
         }
@@ -94,7 +94,7 @@ struct GraphCommands {
     /// Execute a SPARQL query string
     ///
     /// Usage: `sparql <TypeName> <SPARQL query string>`
-    func executeSPARQL(_ args: [String]) async throws {
+    public func executeSPARQL(_ args: [String]) async throws {
         guard args.count >= 2 else {
             throw CLIError.invalidArguments("Usage: sparql <TypeName> <SPARQL query>")
         }
