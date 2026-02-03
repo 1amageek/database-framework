@@ -475,8 +475,8 @@ public struct SPARQLQueryExecutor: Sendable {
         transaction: any TransactionProtocol,
         filter: FilterExpression? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
-        // Use legacy path if no properties stored or no filter to push
-        if storedFieldNames.isEmpty || filter == nil {
+        // Use legacy path if no properties stored
+        if storedFieldNames.isEmpty {
             return try await executePatternLegacy(
                 pattern,
                 indexSubspace: indexSubspace,
@@ -495,15 +495,23 @@ public struct SPARQLQueryExecutor: Sendable {
         let objectVar = pattern.object.variableName
         let graphVar = pattern.graph?.variableName
 
-        // Analyze filter expression
-        let analyzer = FilterAnalyzer(
-            subjectVar: subjectVar,
-            predicateVar: predicateVar,
-            objectVar: objectVar,
-            graphVar: graphVar,
-            availablePropertyFields: Set(storedFieldNames)
-        )
-        let (pushableFilters, remainingFilter) = analyzer.analyze(filter!)  // Safe: nil checked above
+        // Analyze filter expression (if present)
+        let pushableFilters: [PropertyFilter]
+        let remainingFilter: FilterExpression?
+
+        if let filter = filter {
+            let analyzer = FilterAnalyzer(
+                subjectVar: subjectVar,
+                predicateVar: predicateVar,
+                objectVar: objectVar,
+                graphVar: graphVar,
+                availablePropertyFields: Set(storedFieldNames)
+            )
+            (pushableFilters, remainingFilter) = analyzer.analyze(filter)
+        } else {
+            pushableFilters = []
+            remainingFilter = nil
+        }
 
         // Create GraphPropertyScanner
         let scanner = GraphPropertyScanner(
