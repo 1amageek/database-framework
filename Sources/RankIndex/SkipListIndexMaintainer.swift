@@ -386,4 +386,67 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         return levelSubspace.pack(Tuple(allElements))
     }
 
+    // MARK: - Integrity Validation
+
+    /// Validate span counter integrity across all levels
+    ///
+    /// Verifies that the sum of span counters at each level equals the total element count.
+    /// This is a critical invariant for accurate rank calculation.
+    ///
+    /// - Parameter transaction: FDB transaction
+    /// - Returns: Dictionary mapping level to (entryCount, spanSum) tuples
+    /// - Throws: IndexError.invalidStructure if span counters are inconsistent
+    public func validateSpanIntegrity(transaction: any TransactionProtocol) async throws -> [Int: (entries: Int, spanSum: Int64)] {
+        // Read metadata directly to avoid side effects
+        guard let countBytes = try await transaction.getValue(for: subspaces.countKey, snapshot: true) else {
+            throw IndexError.invalidStructure("Count metadata not found")
+        }
+        let totalCount = ByteConversion.bytesToInt64(countBytes)
+
+        guard let numLevelsBytes = try await transaction.getValue(for: subspaces.numLevelsKey, snapshot: true) else {
+            throw IndexError.invalidStructure("numLevels metadata not found")
+        }
+        let currentLevels = Int(ByteConversion.bytesToInt64(numLevelsBytes))
+
+        var levelStats: [Int: (entries: Int, spanSum: Int64)] = [:]
+
+        for level in 0..<currentLevels {
+            var entryCount = 0
+            var spanSum: Int64 = 0
+            let levelSubspace = subspaces.subspace(for: level)
+            let range = levelSubspace.range()
+
+            let sequence = transaction.getRange(
+                from: range.begin,
+                to: range.end,
+                limit: 0,
+                reverse: false,
+                snapshot: true
+            )
+
+            for try await (_, value) in sequence {
+                entryCount += 1
+                let span = try SpanValue.decode(value)
+                spanSum += span.count
+            }
+
+            levelStats[level] = (entries: entryCount, spanSum: spanSum)
+
+            // Verify that span sum equals total count
+            guard spanSum == totalCount else {
+                // Build detailed error message
+                var debugInfo = "Span counter mismatch at level \(level):\n"
+                debugInfo += "  Expected: \(totalCount), Got: \(spanSum)\n"
+                debugInfo += "  Entries at level: \(entryCount)\n"
+                debugInfo += "Level summary:\n"
+                for (lvl, stats) in levelStats.sorted(by: { $0.key < $1.key }) {
+                    debugInfo += "  Level \(lvl): \(stats.entries) entries, span sum = \(stats.spanSum)\n"
+                }
+                throw IndexError.invalidStructure(debugInfo)
+            }
+        }
+
+        return levelStats
+    }
+
 }

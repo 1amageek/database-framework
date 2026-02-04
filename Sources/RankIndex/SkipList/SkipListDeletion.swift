@@ -135,9 +135,12 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         let range = levelSubspace.range()
 
         // Scan in descending order (highest to lowest score)
+        // Use key-based getRange with reverse=true
         let sequence = transaction.getRange(
-            beginSelector: .lastLessThan(range.end),
-            endSelector: .firstGreaterOrEqual(range.begin),
+            from: range.begin,
+            to: range.end,
+            limit: 0,  // 0 = no limit
+            reverse: true,  // CRITICAL: Must specify reverse=true for descending scan!
             snapshot: true
         )
 

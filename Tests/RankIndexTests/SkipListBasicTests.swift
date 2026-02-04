@@ -74,6 +74,15 @@ struct SkipListTestPlayer7 {
     #Index(RankIndexKind<SkipListTestPlayer7, Int64>(field: \.score, bucketSize: 100))
 }
 
+@Persistable
+struct SkipListTestPlayer8 {
+    #Directory<SkipListTestPlayer8>("test", "skip_span_test")
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var score: Int64 = 0
+    #Index(RankIndexKind<SkipListTestPlayer8, Int64>(field: \.score, bucketSize: 100))
+}
+
 // MARK: - Tests
 
 @Suite("Skip List Basic Tests", .serialized)
@@ -412,6 +421,12 @@ struct SkipListBasicTests {
             idExpression: FieldKeyExpression(fieldName: "id")
         )
 
+        // Clear any existing data before test
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+
         // Insert test data with various scores
         // IMPORTANT: Insert each player in separate transaction to ensure
         // proper span counter maintenance
@@ -468,6 +483,81 @@ struct SkipListBasicTests {
             try await maintainer.getRank(score: 100, transaction: transaction)
         }
         #expect(rank100 == 4, "Score 100 should be rank 4 (lowest)")
+
+        // Cleanup
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    // MARK: - Span Counter Accuracy Tests
+
+    @Test("Span counter accuracy with 100 entries")
+    func testSpanCounterAccuracy() async throws {
+        let database = try FDBClient.openDatabase()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "skiplist_span", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("span_rank")
+
+        let index = Index(
+            name: "span_rank",
+            kind: RankIndexKind<SkipListTestPlayer8, Int64>(field: \.score),
+            rootExpression: FieldKeyExpression(fieldName: "score"),
+            subspaceKey: "span_rank",
+            itemTypes: Set(["SkipListTestPlayer8"])
+        )
+
+        let maintainer = SkipListIndexMaintainer<SkipListTestPlayer8, Int64>(
+            index: index,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        // Clear any existing data before test
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+
+        // Insert 100 entries
+        let entryCount = 100
+        for i in 0..<entryCount {
+            var player = SkipListTestPlayer8()
+            player.name = "Player\(i)"
+            player.score = Int64(i * 10)  // 0, 10, 20, ..., 990
+
+            try await database.withTransaction { transaction in
+                try await maintainer.updateIndex(
+                    oldItem: nil as SkipListTestPlayer8?,
+                    newItem: player,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Verify total count
+        let totalCount = try await database.withTransaction { transaction in
+            try await maintainer.getCount(transaction: transaction)
+        }
+        #expect(totalCount == Int64(entryCount), "Should have \(entryCount) entries, got \(totalCount)")
+
+        // Verify span counter accuracy for each level
+        // Each level's span sum should equal the total count
+        let levelStats = try await database.withTransaction { transaction in
+            try await maintainer.validateSpanIntegrity(transaction: transaction)
+        }
+
+        // Verify that we have stats for all levels
+        #expect(!levelStats.isEmpty, "Should have stats for at least one level")
+
+        // All span sums should equal the total count (validated inside validateSpanIntegrity)
+        for (level, stats) in levelStats.sorted(by: { $0.key < $1.key }) {
+            #expect(
+                stats.spanSum == totalCount,
+                "Level \(level) span sum (\(stats.spanSum)) should equal total count (\(totalCount)), but has \(stats.entries) entries"
+            )
+        }
 
         // Cleanup
         try await database.withTransaction { transaction in
