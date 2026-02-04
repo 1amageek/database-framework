@@ -91,12 +91,25 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
             // Update span of the node before deletion point
             if let updateKey = updateKeys[level],
                let deletedSpan = deletedSpans[level] {
-                // Read current span of update node
+                // Standard case: update node before deletion point
                 if let spanBytes = try await transaction.getValue(for: updateKey, snapshot: false) {
                     let currentSpan = try SpanValue.decode(spanBytes)
                     // newSpan = currentSpan + deletedSpan - 1
                     let newSpan = currentSpan.count + deletedSpan - 1
                     transaction.setValue(SpanValue(count: newSpan).encoded(), for: updateKey)
+                }
+            } else if let deletedSpan = deletedSpans[level] {
+                // updateKey == nil: deleting first entry at this level
+                // Next entry (new first) needs to absorb the deleted span
+                let nextEntry = try await findFirstEntryAtLevel(level, transaction)
+                if let (nextScore, nextPK) = nextEntry {
+                    let nextKey = try makeKey(score: nextScore, primaryKey: nextPK, level: level)
+                    if let spanBytes = try await transaction.getValue(for: nextKey, snapshot: false) {
+                        let nextSpan = try SpanValue.decode(spanBytes).count
+                        // New first entry's span = its current span + deleted span - 1
+                        let newSpan = nextSpan + deletedSpan - 1
+                        transaction.setValue(SpanValue(count: newSpan).encoded(), for: nextKey)
+                    }
                 }
             }
         }
@@ -104,18 +117,65 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         // Phase 3: Decrement span at higher levels (where node doesn't exist)
         for level in (maxDeletedLevel + 1)..<currentLevels {
             if let updateKey = updateKeys[level] {
-                // Read current span
+                // Standard case: decrement span of update node
                 if let spanBytes = try await transaction.getValue(for: updateKey, snapshot: false) {
                     let currentSpan = try SpanValue.decode(spanBytes)
-                    // Decrement by 1
+                    // Decrement by 1 (one Level 0 entry removed)
                     let newSpan = currentSpan.count - 1
                     transaction.setValue(SpanValue(count: newSpan).encoded(), for: updateKey)
+                }
+            } else {
+                // updateKey == nil: deleted entry was before first entry at this level
+                // Decrement first entry's span
+                let firstEntry = try await findFirstEntryAtLevel(level, transaction)
+                if let (firstScore, firstPK) = firstEntry {
+                    let firstKey = try makeKey(score: firstScore, primaryKey: firstPK, level: level)
+                    if let spanBytes = try await transaction.getValue(for: firstKey, snapshot: false) {
+                        let firstSpan = try SpanValue.decode(spanBytes).count
+                        // Decrement by 1 (one Level 0 entry removed)
+                        let newSpan = firstSpan - 1
+                        transaction.setValue(SpanValue(count: newSpan).encoded(), for: firstKey)
+                    }
                 }
             }
         }
     }
 
     // MARK: - Helper Methods
+
+    /// Find first entry at a specific level (highest score)
+    ///
+    /// Returns:
+    /// - (score, primaryKey) of the first entry, or nil if level is empty
+    private func findFirstEntryAtLevel(
+        _ level: Int,
+        _ transaction: any TransactionProtocol
+    ) async throws -> (score: Score, primaryKey: Tuple)? {
+        let levelSubspace = subspaces.subspace(for: level)
+        let range = levelSubspace.range()
+
+        let sequence = transaction.getRange(
+            from: range.begin,
+            to: range.end,
+            limit: 1,
+            reverse: true,  // Descending: get highest score (first entry)
+            snapshot: true
+        )
+
+        for try await (key, _) in sequence {
+            guard levelSubspace.contains(key) else { break }
+
+            let suffix = try levelSubspace.unpack(key)
+            guard !suffix.isEmpty, let scoreElement = suffix[0] else { continue }
+
+            let score = try TupleDecoder.decode(scoreElement, as: Score.self)
+            let primaryKey = extractPrimaryKey(from: suffix)
+
+            return (score, primaryKey)
+        }
+
+        return nil
+    }
 
     /// Find deletion point at a specific level
     ///

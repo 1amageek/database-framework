@@ -81,63 +81,6 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         // Get total count for span calculation when level is empty
         let totalCountBefore = try await getCurrentCount(transaction: transaction)
 
-        // Phase 0: Pre-read first entry at each level (for updateKey == nil case)
-        var firstKeys: [[UInt8]?] = []
-        var firstSpans: [Int64?] = []
-        var firstScores: [Score?] = []
-        var firstPKs: [Tuple?] = []
-
-        for level in 0..<currentLevels {
-            let levelSubspace = subspaces.subspace(for: level)
-            let range = levelSubspace.range()
-            let firstSeq = transaction.getRange(
-                from: range.begin,
-                to: range.end,
-                limit: 1,
-                reverse: true,  // Descending: get highest score (first entry)
-                snapshot: true
-            )
-            var firstKey: [UInt8]? = nil
-            var firstSpan: Int64? = nil
-            var firstScore: Score? = nil
-            var firstPK: Tuple? = nil
-
-            for try await (key, value) in firstSeq {
-                guard levelSubspace.contains(key) else { break }
-                firstKey = key
-                firstSpan = try SpanValue.decode(value).count
-
-                // Parse score and PK
-                let suffix = try levelSubspace.unpack(key)
-                if !suffix.isEmpty, let scoreElement = suffix[0] {
-                    firstScore = try TupleDecoder.decode(scoreElement, as: Score.self)
-                    firstPK = extractPrimaryKey(from: suffix)
-                }
-                break
-            }
-            firstKeys.append(firstKey)
-            firstSpans.append(firstSpan)
-            firstScores.append(firstScore)
-            firstPKs.append(firstPK)
-        }
-
-        // Calculate Level 0 rank for each first entry (needed for span calculation)
-        var firstRanks: [Int64?] = []
-        for level in 0..<currentLevels {
-            if let firstScore = firstScores[level], let firstPK = firstPKs[level] {
-                // Calculate this entry's Level 0 rank
-                let result = try await findInsertionPoint(
-                    level: 0,
-                    targetScore: firstScore,
-                    targetPrimaryKey: firstPK,
-                    transaction: transaction
-                )
-                firstRanks.append(result.accumulatedRank)
-            } else {
-                firstRanks.append(nil)
-            }
-        }
-
         // Phase 1: Find insertion position (standard Skip List algorithm)
         // Traverse from top to bottom, accumulating rank at each level
         var rank: [Int64] = Array(repeating: 0, count: currentLevels)
@@ -190,46 +133,29 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 )
             } else {
                 // updateKey == nil: inserting at beginning of level (highest score)
-                if let firstRank = firstRanks[level] {
-                    // Level has entries, new entry becomes first (descending order)
-                    //
-                    // Descending order (high score = rank 0):
-                    // - rank[0] = new entry's Level 0 rank (before insertion)
-                    // - firstRank = old first entry's Level 0 rank (before insertion)
-                    //
-                    // After insertion:
-                    // - new entry: rank = rank[0]
-                    // - old first entry: rank = firstRank + 1 (pushed down by 1)
-                    //
-                    // newSpan = (old first entry's new rank) - (new entry's rank)
-                    //         = (firstRank + 1) - rank[0]
-                    //
-                    // Example 1: new entry at top
-                    // - rank[0] = 0, firstRank = 0 (old first was at rank 0)
-                    // - newSpan = (0 + 1) - 0 = 1
-                    //
-                    // Example 2: new entry not at top (middle insertion)
-                    // - rank[0] = 5, firstRank = 3
-                    // - newSpan = (3 + 1) - 5 = -1 (ERROR: this shouldn't happen)
-                    //   (because updateKey would not be nil if rank[0] > firstRank)
-
-                    let calculatedSpan = (firstRank + 1) - rank[0]
-
-                    // Validation: span must be positive
-                    guard calculatedSpan > 0 else {
-                        throw IndexError.invalidStructure(
-                            "Invalid span calculation at level \(level): firstRank=\(firstRank), rank[0]=\(rank[0]), calculatedSpan=\(calculatedSpan), score=\(score)"
-                        )
-                    }
-
-                    newSpan = calculatedSpan
-
-                    // IMPORTANT: In descending order, old first entry's span does NOT change
-                    // because it still points to the same Level 0 elements below it
-                    // NO UPDATE to firstKey
+                // Standard algorithm: find next entry and calculate span
+                if level == 0 {
+                    // Level 0: all entries have span = 1 (always)
+                    newSpan = 1
                 } else {
-                    // Level is truly empty
-                    newSpan = totalCountBefore - rank[0] + 1
+                    // Level > 0: find next entry (current first entry) and calculate span
+                    let nextEntry = try await findFirstEntryAtLevel(level, transaction)
+                    if let (nextScore, nextPK) = nextEntry {
+                        // Calculate next entry's Level 0 rank
+                        let nextResult = try await findInsertionPoint(
+                            level: 0,
+                            targetScore: nextScore,
+                            targetPrimaryKey: nextPK,
+                            transaction: transaction
+                        )
+                        let nextLevel0Rank = nextResult.accumulatedRank
+                        // newSpan = distance from new entry to next entry at Level 0
+                        // After insertion, new entry will be at rank[0], next entry at nextLevel0Rank + 1
+                        newSpan = (nextLevel0Rank + 1) - rank[0]
+                    } else {
+                        // Level is empty, span = distance to end
+                        newSpan = totalCountBefore - rank[0] + 1
+                    }
                 }
             }
 
@@ -243,11 +169,18 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 // Standard case: increment span by 1 (one new Level 0 entry added)
                 let newSpan = currentSpan + 1
                 transaction.setValue(SpanValue(count: newSpan).encoded(), for: updateKey)
-            } else if let firstKey = firstKeys[level], let firstSpan = firstSpans[level] {
+            } else {
                 // updateKey == nil: new entry inserted at beginning of level
                 // Increment old first entry's span (it now skips one more Level 0 entry)
-                let newSpan = firstSpan + 1
-                transaction.setValue(SpanValue(count: newSpan).encoded(), for: firstKey)
+                let firstEntry = try await findFirstEntryAtLevel(level, transaction)
+                if let (firstScore, firstPK) = firstEntry {
+                    let firstKey = try makeKey(score: firstScore, primaryKey: firstPK, level: level)
+                    if let spanBytes = try await transaction.getValue(for: firstKey, snapshot: false) {
+                        let firstSpan = try SpanValue.decode(spanBytes).count
+                        let newSpan = firstSpan + 1
+                        transaction.setValue(SpanValue(count: newSpan).encoded(), for: firstKey)
+                    }
+                }
             }
         }
 
@@ -262,6 +195,40 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             return 0
         }
         return ByteConversion.bytesToInt64(value)
+    }
+
+    /// Find first entry at a specific level (highest score)
+    ///
+    /// Returns:
+    /// - (score, primaryKey) of the first entry, or nil if level is empty
+    private func findFirstEntryAtLevel(
+        _ level: Int,
+        _ transaction: any TransactionProtocol
+    ) async throws -> (score: Score, primaryKey: Tuple)? {
+        let levelSubspace = subspaces.subspace(for: level)
+        let range = levelSubspace.range()
+
+        let sequence = transaction.getRange(
+            from: range.begin,
+            to: range.end,
+            limit: 1,
+            reverse: true,  // Descending: get highest score (first entry)
+            snapshot: true
+        )
+
+        for try await (key, _) in sequence {
+            guard levelSubspace.contains(key) else { break }
+
+            let suffix = try levelSubspace.unpack(key)
+            guard !suffix.isEmpty, let scoreElement = suffix[0] else { continue }
+
+            let score = try TupleDecoder.decode(scoreElement, as: Score.self)
+            let primaryKey = extractPrimaryKey(from: suffix)
+
+            return (score, primaryKey)
+        }
+
+        return nil
     }
 
     /// Find insertion point at a specific level (descending order)

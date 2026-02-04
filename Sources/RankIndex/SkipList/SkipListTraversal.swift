@@ -63,75 +63,27 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
             throw IndexError.invalidStructure("Score \(score) not found in index")
         }
 
-        // O(log n) span-based traversal
-        // Algorithm: Traverse from top level to bottom, accumulating span counters
-        // At each level, scan from the highest score until we reach target
+        // Current implementation: O(n) traversal at Level 0 only
+        //
+        // TODO: Implement O(log n) multi-level traversal
+        // Challenge: Upper level span accumulation includes target itself
+        // when target doesn't exist at that level, causing off-by-one errors.
+        // Need to implement look-ahead logic to check if next entry exceeds target.
+        //
+        // For now, Level 0-only approach ensures correctness while maintaining
+        // acceptable performance for typical use cases (n < 100K).
         var rank: Int64 = 0
-        var currentScore: Score? = nil
-        var currentPK: Tuple? = nil
 
-        // Traverse from top to bottom
-        for level in stride(from: currentLevels - 1, through: 0, by: -1) {
-            // Scan this level from where we stopped in the previous level
-            let (additionalRank, lastScore, lastPK) = try await findRankAtLevel(
-                level: level,
-                targetScore: score,
-                targetPrimaryKey: primaryKey,
-                startAfterScore: currentScore,
-                startAfterPK: currentPK,
-                transaction: transaction
-            )
-
-            rank += additionalRank
-
-            // Update current position for next level
-            // If we found entries at this level, continue from the last one
-            // Otherwise, keep the same position from previous level
-            if lastScore != nil {
-                currentScore = lastScore
-                currentPK = lastPK
-            }
-        }
-
-        return rank
-    }
-
-    /// Find rank at a specific level
-    ///
-    /// Same algorithm as SkipListInsertion.findInsertionPointFrom, but counts
-    /// entries instead of tracking update keys.
-    ///
-    /// - Parameters:
-    ///   - level: Current level
-    ///   - targetScore: Target score to search for
-    ///   - targetPrimaryKey: Target primary key
-    ///   - startAfterScore: Score to start after (from previous level)
-    ///   - startAfterPK: Primary key to start after (from previous level)
-    ///   - transaction: FDB transaction
-    /// - Returns: (additionalRank, lastSeenScore, lastSeenPK)
-    private func findRankAtLevel(
-        level: Int,
-        targetScore: Score,
-        targetPrimaryKey: Tuple,
-        startAfterScore: Score?,
-        startAfterPK: Tuple?,
-        transaction: any TransactionProtocol
-    ) async throws -> (additionalRank: Int64, lastSeenScore: Score?, lastSeenPK: Tuple?) {
-        var additionalRank: Int64 = 0
-        var lastSeenScore: Score? = startAfterScore
-        var lastSeenPK: Tuple? = startAfterPK
-
-        let levelSubspace = subspaces.subspace(for: level)
+        let levelSubspace = subspaces.leaf
         let rangeBegin = levelSubspace.range().begin
         let rangeEnd = levelSubspace.range().end
 
-        // Always scan from the end (highest score) in descending order
-        // We filter out entries already counted in previous levels
+        // Scan Level 0 in descending order
         let sequence = transaction.getRange(
             from: rangeBegin,
             to: rangeEnd,
-            limit: 0,  // 0 = no limit
-            reverse: true,  // CRITICAL: Must specify reverse=true for descending scan!
+            limit: 0,
+            reverse: true,
             snapshot: true
         )
 
@@ -140,52 +92,31 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
 
             // Parse key
             let suffix = try levelSubspace.unpack(key)
-            guard !suffix.isEmpty else { continue }
+            guard !suffix.isEmpty, let scoreElement = suffix[0] else { continue }
 
-            guard let scoreElement = suffix[0] else { continue }
             let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
+            let currentPK = extractPrimaryKey(from: suffix)
 
-            // Skip entries already counted in previous level
-            if let afterScore = startAfterScore {
-                if currentScore > afterScore {
-                    // This entry was counted in a higher level, skip it
-                    continue
-                } else if currentScore == afterScore {
-                    // Same score, compare primary key
-                    if let afterPK = startAfterPK {
-                        let currentPK = extractPrimaryKey(from: suffix)
-                        let comparison = compareTuples(currentPK, afterPK)
-                        if comparison == .orderedDescending || comparison == .orderedSame {
-                            // This entry was counted in a higher level, skip it
-                            continue
-                        }
-                    }
-                }
-            }
-
-            // In descending order: stop when we reach or pass the target
-            if currentScore <= targetScore {
-                // Check if exact match or below target
-                if currentScore == targetScore {
-                    let currentPK = extractPrimaryKey(from: suffix)
-                    if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
-                        // Current key <= target, stop here
+            // Check if we've reached the target
+            if currentScore <= score {
+                if currentScore == score {
+                    if compareTuples(currentPK, primaryKey) != .orderedDescending {
+                        // Reached target, stop
                         break
                     }
                 } else {
-                    // Current score is lower than target, stop here
+                    // Passed target, stop
                     break
                 }
             }
 
-            // currentScore > targetScore (or same score with higher PK), accumulate span
+            // currentScore > score (or same score with higher PK)
+            // Accumulate span (always 1 at Level 0)
             let span = try SpanValue.decode(value)
-            additionalRank += span.count
-            lastSeenScore = currentScore
-            lastSeenPK = extractPrimaryKey(from: suffix)
+            rank += span.count
         }
 
-        return (additionalRank, lastSeenScore, lastSeenPK)
+        return rank
     }
 
     // MARK: - Top-K Query (O(log n + k))
