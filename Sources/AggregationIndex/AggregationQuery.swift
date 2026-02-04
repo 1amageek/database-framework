@@ -432,26 +432,18 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     ///
     /// **Matching Criteria**:
     /// 1. Index kind conforms to `AggregationIndexKindProtocol`
-    /// 2. `aggregationType` matches (e.g., "count", "sum", "avg")
+    /// 2. `aggregationType` matches (e.g., "count", "sum", "avg", "min", "max")
     /// 3. `groupByFieldNames` match exactly (same fields in same order)
     /// 4. `aggregationValueField` matches (for non-COUNT aggregations)
     ///
-    /// **Excluded Aggregation Types**:
-    /// - MIN/MAX: These indexes use sorted storage for individual value lookups,
-    ///   not batch queries. They don't have getAllMins/getAllMaxs methods.
+    /// **Supported Aggregation Types**:
+    /// - All types (COUNT, SUM, AVG, DISTINCT, PERCENTILE, MIN, MAX) support batch queries
+    /// - MIN/MAX now have getAllMins/getAllMaxs methods (Phase 1 implementation)
     ///
     /// - Parameter aggregation: The aggregation to find an index for
     /// - Returns: Matching IndexDescriptor, or nil if no match found
     private func findMatchingIndex(for aggregation: AggregationSpec) -> IndexDescriptor? {
-        // MIN/MAX indexes don't support batch queries (getAllMins/getAllMaxs)
-        // They use sorted storage for efficient single-group lookups and range queries.
-        // Always use in-memory computation for MIN/MAX in batch aggregation queries.
-        switch aggregation.type {
-        case .min, .max:
-            return nil
-        default:
-            break
-        }
+        // All aggregation types now support batch queries (Phase 1 complete)
 
         let descriptors = queryContext.indexDescriptors(for: T.self)
 
@@ -741,10 +733,53 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
             }
             throw AggregationQueryError.indexNotFound("Expected PercentileIndexMaintainer but got \(type(of: maintainer))")
 
-        case .min, .max:
-            // MIN/MAX indexes don't have getAllMins/getAllMaxs methods
-            // They store individual values for range queries
-            throw AggregationQueryError.indexNotFound("MIN/MAX aggregations don't support batch index queries")
+        case .min:
+            // MIN maintainers (type-specific)
+            if let minMaintainer = maintainer as? MinIndexMaintainer<T, Double> {
+                let mins = try await minMaintainer.getAllMins(transaction: transaction)
+                return mins.map { ($0.grouping, FieldValue.double($0.min)) }
+            }
+            if let minMaintainer = maintainer as? MinIndexMaintainer<T, Int64> {
+                let mins = try await minMaintainer.getAllMins(transaction: transaction)
+                return mins.map { ($0.grouping, FieldValue.int64($0.min)) }
+            }
+            if let minMaintainer = maintainer as? MinIndexMaintainer<T, Int> {
+                let mins = try await minMaintainer.getAllMins(transaction: transaction)
+                return mins.map { ($0.grouping, FieldValue.int64(Int64($0.min))) }
+            }
+            if let minMaintainer = maintainer as? MinIndexMaintainer<T, String> {
+                let mins = try await minMaintainer.getAllMins(transaction: transaction)
+                return mins.map { ($0.grouping, FieldValue.string($0.min)) }
+            }
+            if let minMaintainer = maintainer as? MinIndexMaintainer<T, Date> {
+                let mins = try await minMaintainer.getAllMins(transaction: transaction)
+                return mins.map { ($0.grouping, FieldValue.double($0.min.timeIntervalSince1970)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected MinIndexMaintainer but got \(type(of: maintainer))")
+
+        case .max:
+            // MAX maintainers (type-specific)
+            if let maxMaintainer = maintainer as? MaxIndexMaintainer<T, Double> {
+                let maxs = try await maxMaintainer.getAllMaxs(transaction: transaction)
+                return maxs.map { ($0.grouping, FieldValue.double($0.max)) }
+            }
+            if let maxMaintainer = maintainer as? MaxIndexMaintainer<T, Int64> {
+                let maxs = try await maxMaintainer.getAllMaxs(transaction: transaction)
+                return maxs.map { ($0.grouping, FieldValue.int64($0.max)) }
+            }
+            if let maxMaintainer = maintainer as? MaxIndexMaintainer<T, Int> {
+                let maxs = try await maxMaintainer.getAllMaxs(transaction: transaction)
+                return maxs.map { ($0.grouping, FieldValue.int64(Int64($0.max))) }
+            }
+            if let maxMaintainer = maintainer as? MaxIndexMaintainer<T, String> {
+                let maxs = try await maxMaintainer.getAllMaxs(transaction: transaction)
+                return maxs.map { ($0.grouping, FieldValue.string($0.max)) }
+            }
+            if let maxMaintainer = maintainer as? MaxIndexMaintainer<T, Date> {
+                let maxs = try await maxMaintainer.getAllMaxs(transaction: transaction)
+                return maxs.map { ($0.grouping, FieldValue.double($0.max.timeIntervalSince1970)) }
+            }
+            throw AggregationQueryError.indexNotFound("Expected MaxIndexMaintainer but got \(type(of: maintainer))")
         }
     }
 

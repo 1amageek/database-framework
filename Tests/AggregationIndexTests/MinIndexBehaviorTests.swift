@@ -155,7 +155,8 @@ struct MinIndexBehaviorTests {
         }
 
         let count = try await ctx.countIndexEntries()
-        #expect(count == 1, "Should have 1 index entry after insert")
+        // 2-layer architecture: Layer 1 (individual) + Layer 2 (aggregate) = 2 entries
+        #expect(count == 2, "Should have 2 index entries after insert (Layer 1 + Layer 2)")
 
         try await ctx.cleanup()
     }
@@ -182,7 +183,8 @@ struct MinIndexBehaviorTests {
         }
 
         let count = try await ctx.countIndexEntries()
-        #expect(count == 3, "Should have 3 index entries")
+        // 2-layer: Layer 1 (3 items) + Layer 2 (1 group aggregate) = 4 entries
+        #expect(count == 4, "Should have 4 index entries")
 
         try await ctx.cleanup()
     }
@@ -206,7 +208,8 @@ struct MinIndexBehaviorTests {
         }
 
         let countBefore = try await ctx.countIndexEntries()
-        #expect(countBefore == 1)
+        // 2-layer: Layer 1 + Layer 2 = 2 entries
+        #expect(countBefore == 2)
 
         // Delete
         try await ctx.database.withTransaction { transaction in
@@ -252,7 +255,8 @@ struct MinIndexBehaviorTests {
         }
 
         let count = try await ctx.countIndexEntries()
-        #expect(count == 1, "Should still have 1 entry after update")
+        // 2-layer: Layer 1 + Layer 2 = 2 entries
+        #expect(count == 2, "Should still have 2 entries after update")
 
         let min = try await ctx.getMin(for: "Electronics")
         #expect(min == 499, "Min should be updated to 499")
@@ -355,7 +359,8 @@ struct MinIndexBehaviorTests {
         }
 
         let count = try await ctx.countIndexEntries()
-        #expect(count == 2, "Should have 2 entries after scanItem")
+        // 2-layer: Layer 1 (2 items) + Layer 2 (1 group aggregate) = 3 entries
+        #expect(count == 3, "Should have 3 entries after scanItem")
 
         let min = try await ctx.getMin(for: "Electronics")
         #expect(min == 199, "Min should be 199")

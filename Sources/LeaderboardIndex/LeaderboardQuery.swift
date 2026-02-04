@@ -108,6 +108,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
         return copy
     }
 
+    /// Set number of bottom entries to return
+    ///
+    /// - Parameter k: Number of entries
+    /// - Returns: Updated query builder
+    public func bottom(_ k: Int) -> Self {
+        var copy = self
+        copy.topK = k
+        return copy
+    }
+
     // MARK: - Execution
 
     /// Execute the query and return top K entries with scores
@@ -161,6 +171,57 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
         return finalResults
     }
 
+    /// Execute the query and return bottom K entries with scores
+    ///
+    /// - Returns: Array of (item, score) tuples sorted by score ascending
+    public func executeBottom() async throws -> [(item: T, score: Int64)] {
+        let indexName = buildIndexName()
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        let results: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
+            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+
+            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+
+            if let wid = self.windowId {
+                return try await maintainer.getBottomK(
+                    k: self.topK,
+                    windowId: wid,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            } else {
+                return try await maintainer.getBottomK(
+                    k: self.topK,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Fetch items
+        let ids = results.map { $0.pk }
+        let items = try await queryContext.fetchItems(ids: ids, type: T.self)
+
+        // Match items with scores
+        var finalResults: [(item: T, score: Int64)] = []
+        for result in results {
+            let pkBytes = result.pk.pack()
+            for item in items {
+                if let itemId = item.id as? any TupleElement {
+                    let itemPkBytes = Tuple(itemId).pack()
+                    if pkBytes == itemPkBytes {
+                        finalResults.append((item: item, score: result.score))
+                        break
+                    }
+                }
+            }
+        }
+
+        return finalResults
+    }
+
     /// Get rank for a specific item
     ///
     /// - Parameter id: The item's ID
@@ -179,6 +240,72 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
                 grouping: grouping,
                 transaction: transaction
             )
+        }
+    }
+
+    /// Get dense rank for a specific item
+    ///
+    /// Dense ranking counts unique scores higher than the target.
+    /// Ties receive the same rank, but the next rank is incremented by 1.
+    ///
+    /// **Example**:
+    /// Scores: [100, 90, 90, 80, 70]
+    /// - Score 100: Dense rank = 1
+    /// - Score 90: Dense rank = 2 (both players with 90 share this rank)
+    /// - Score 80: Dense rank = 3 (not 4)
+    /// - Score 70: Dense rank = 4
+    ///
+    /// - Parameter id: The item's ID
+    /// - Returns: Dense rank (1-based) or nil if not found
+    public func denseRank<ID: TupleElement>(for id: ID) async throws -> Int? {
+        let indexName = buildIndexName()
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        return try await queryContext.withTransaction { transaction in
+            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+
+            return try await maintainer.getRankDense(
+                pk: Tuple(id),
+                grouping: grouping,
+                transaction: transaction
+            )
+        }
+    }
+
+    /// Get score at a given percentile
+    ///
+    /// **Time Complexity**: O(n) where n is the total number of entries
+    ///
+    /// **Percentile Calculation**: Uses the "exclusive" method where
+    /// percentile p returns the score where approximately p% of scores are below it.
+    ///
+    /// - Parameter percentile: Percentile value between 0.0 and 1.0 (e.g., 0.5 for median)
+    /// - Returns: Score at the given percentile, or nil if no entries
+    public func percentile(_ percentile: Double) async throws -> Int64? {
+        let indexName = buildIndexName()
+        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
+        let indexSubspace = typeSubspace.subspace(indexName)
+
+        return try await queryContext.withTransaction { transaction in
+            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let grouping = self.groupingValues?.map { $0 as any TupleElement }
+
+            if let wid = self.windowId {
+                return try await maintainer.getPercentile(
+                    percentile,
+                    windowId: wid,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            } else {
+                return try await maintainer.getPercentile(
+                    percentile,
+                    grouping: grouping,
+                    transaction: transaction
+                )
+            }
         }
     }
 

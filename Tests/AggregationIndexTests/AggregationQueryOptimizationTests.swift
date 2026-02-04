@@ -267,8 +267,8 @@ struct AggregationQueryOptimizationTests {
 
     // MARK: - Index Matching Tests
 
-    @Test("findMatchingIndex returns nil for MIN aggregation")
-    func testMinAggregationAlwaysInMemory() async throws {
+    @Test("MIN aggregation uses index when available")
+    func testMinAggregationUsesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
@@ -301,7 +301,7 @@ struct AggregationQueryOptimizationTests {
             .groupBy(\AggQueryTestOrder.region)
             .min(\AggQueryTestOrder.amount, as: "minAmount")
 
-        // Check that determineExecutionStrategies returns inMemory for MIN
+        // Check that determineExecutionStrategies returns useIndex for MIN (Phase 1 implementation)
         let strategies = builder.determineExecutionStrategies()
         guard let minStrategy = strategies["minAmount"] else {
             Issue.record("minAmount strategy should exist")
@@ -309,11 +309,11 @@ struct AggregationQueryOptimizationTests {
         }
 
         switch minStrategy {
-        case .inMemory:
-            // Expected: MIN should always use in-memory
-            break
         case .useIndex:
-            Issue.record("MIN aggregation should not use index-backed execution")
+            // Expected: MIN should use index-backed execution (Phase 1)
+            break
+        case .inMemory:
+            Issue.record("MIN aggregation should use index when available")
         }
 
         // Cleanup
@@ -323,8 +323,8 @@ struct AggregationQueryOptimizationTests {
         }
     }
 
-    @Test("findMatchingIndex returns nil for MAX aggregation")
-    func testMaxAggregationAlwaysInMemory() async throws {
+    @Test("MAX aggregation uses index when available")
+    func testMaxAggregationUsesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
@@ -357,7 +357,7 @@ struct AggregationQueryOptimizationTests {
             .groupBy(\AggQueryTestOrder.region)
             .max(\AggQueryTestOrder.amount, as: "maxAmount")
 
-        // Check that determineExecutionStrategies returns inMemory for MAX
+        // Check that determineExecutionStrategies returns useIndex for MAX (Phase 1 implementation)
         let strategies = builder.determineExecutionStrategies()
         guard let maxStrategy = strategies["maxAmount"] else {
             Issue.record("maxAmount strategy should exist")
@@ -365,11 +365,11 @@ struct AggregationQueryOptimizationTests {
         }
 
         switch maxStrategy {
-        case .inMemory:
-            // Expected: MAX should always use in-memory
-            break
         case .useIndex:
-            Issue.record("MAX aggregation should not use index-backed execution")
+            // Expected: MAX should use index-backed execution (Phase 1)
+            break
+        case .inMemory:
+            Issue.record("MAX aggregation should use index when available")
         }
 
         // Cleanup
@@ -489,8 +489,8 @@ struct AggregationQueryOptimizationTests {
 
     // MARK: - Mixed Aggregation Tests
 
-    @Test("Mixed aggregations with MIN fall back to in-memory")
-    func testMixedAggregationsWithMinFallbackToInMemory() async throws {
+    @Test("Mixed aggregations with COUNT and MIN both use indexes")
+    func testMixedAggregationsWithCountAndMinUseIndexes() async throws {
         try await FDBTestSetup.shared.initialize()
 
         let database = try FDBClient.openDatabase()
@@ -522,7 +522,7 @@ struct AggregationQueryOptimizationTests {
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
         let context = container.newContext()
 
-        // Build query with both COUNT (has index) and MIN (always in-memory)
+        // Build query with both COUNT and MIN (both have indexes)
         let builder = context.aggregate(AggQueryTestOrder.self)
             .groupBy(\AggQueryTestOrder.region)
             .count(as: "orderCount")
@@ -538,15 +538,14 @@ struct AggregationQueryOptimizationTests {
             Issue.record("COUNT should use index")
         }
 
-        // MIN should be in-memory
-        if case .inMemory = strategies["minAmount"] {
+        // MIN should also use index (Phase 1 implementation)
+        if case .useIndex = strategies["minAmount"] {
             // Good
         } else {
-            Issue.record("MIN should use in-memory")
+            Issue.record("MIN should use index")
         }
 
-        // Overall execution: since not all are index-backed, execute() should use in-memory path
-        // This is the "all-or-nothing" behavior by design
+        // Overall execution: both are index-backed, so execute() should use index path
 
         // Cleanup
         try await database.withTransaction { transaction in

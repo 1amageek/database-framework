@@ -985,41 +985,113 @@ public static func extractNumeric<Value>(
 
 ## Swift Concurrency Pattern
 
-### final class + Mutex パターン
+### このプロジェクトでの使い分け
 
-**重要**: このプロジェクトは `actor` を使用せず、`final class: Sendable` + `Mutex` パターンを採用。
+database-frameworkは**メモリ内キャッシュが多い**ため、ほとんどのケースでMutexが適切です。
 
-**理由**: スループット最適化
-- actor はシリアライズされた実行 → 低スループット
-- Mutex は細粒度ロック → 高い並行性
-- データベース I/O 中も他のタスクを実行可能
+#### 現在の実装（Mutex優先）
+
+**キャッシュ層**: すべてMutexベース
+```swift
+// ✅ IndexStateCache: メモリアクセスのみ
+final class IndexStateCache: Sendable {
+    private let state: Mutex<State>
+
+    func get(_ key: String) -> IndexState? {
+        state.withLock { $0.cache[key] }  // マイクロ秒オーダー
+    }
+}
+
+// ✅ ReadVersionCache: メモリアクセスのみ
+final class ReadVersionCache: Sendable {
+    private let cache: Mutex<CachedVersion?>
+
+    func getCachedVersion(policy: CachePolicy) -> Int64? {
+        // 高頻度、I/Oなし
+    }
+}
+```
+
+**理由**:
+- I/O操作を含まない（メモリアクセスのみ）
+- 高頻度アクセスで細粒度ロックが有利
+- ロック中に`await`する必要がない
+
+#### 将来actorが必要になる箇所
+
+以下のような**I/O操作を含む**コンポーネントには`actor`を使用：
+
+```swift
+// ✅ Actor: FDB watch（I/O操作）
+actor WatchManager {
+    private var watchers: [String: Continuation] = [:]
+
+    func watch(key: String) async -> ChangeEvent {
+        // FDB watch API - I/O待ちの間に他のタスクを処理
+        await fdbWatch(key)
+    }
+}
+
+// ✅ Actor: オンラインインデックス構築（長時間I/O）
+actor OnlineIndexBuilder {
+    private var progress: Int = 0
+
+    func buildIndex() async {
+        while hasMore {
+            let batch = await fetchBatch()  // I/O
+            await processBatch(batch)       // I/O
+            progress += batch.count
+        }
+    }
+}
+```
+
+### 判断基準（`~/.claude/rules/swift.md`参照）
+
+```
+ロック中にI/O操作（await）が必要？
+  ├─ YES → Actor
+  └─ NO → 処理の実行順序が重要？
+            ├─ YES → Actor
+            └─ NO → Mutex
+```
+
+### Mutex パターンのテンプレート
 
 ```swift
 import Synchronization
 
 public final class ClassName: Sendable {
+    // FDBなど、Sendableな外部リソース
     nonisolated(unsafe) private let database: any DatabaseProtocol
 
+    // 可変状態をStructでまとめる
     private struct State: Sendable {
         var counter: Int = 0
+        var cache: [String: Value] = [:]
     }
     private let state: Mutex<State>
 
     public func operation() async throws {
+        // 1. ロック内でメモリアクセス（短時間）
         let count = state.withLock { state in
             state.counter += 1
             return state.counter
         }
-        // I/O 中はロックを保持しない
-        try await database.withTransaction { transaction in ... }
+
+        // 2. I/O操作はロック外（Mutexを保持しない）
+        try await database.withTransaction { transaction in
+            // FDB I/O
+        }
     }
 }
 ```
 
-**ガイドライン**:
-- ✅ `final class: Sendable` を使用（actor は使用しない）
+### ガイドライン
+
+- ✅ メモリアクセスのみ → `final class + Mutex`
+- ✅ I/O操作を含む → `actor`
 - ✅ `DatabaseProtocol` には `nonisolated(unsafe)` を使用
-- ✅ 可変状態は `Mutex<State>` で保護
 - ✅ ロックスコープは最小限（I/O を含めない）
 - ❌ `@unchecked Sendable` は避ける
 

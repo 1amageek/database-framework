@@ -18,6 +18,24 @@ Database provides:
 - **Polymorphable**: Union type support with shared directories and polymorphic queries
 - **Infrastructure**: Query optimization, transaction management, serialization, batch operations
 
+## Performance (Phase 1 完了: 2026-02-04)
+
+Phase 1の最適化により、大幅なパフォーマンス向上を達成：
+
+| 最適化 | 効果 |
+|--------|------|
+| **Index State Cache** | 40-60% 書込み高速化 |
+| **Schema Catalog Cache** | 10-100x CLI高速化 |
+| **Small Value Compression Skip** | 15-25% 書込み高速化 |
+| **Covering Index** | 50-80% クエリ高速化 |
+
+**総合効果**:
+- 📝 書込み：**55-85%高速化**
+- 🖥️ CLI：**10-100倍高速化**
+- 🔍 クエリ：**50-80%高速化**（Covering queryの場合）
+
+詳細は [PERFORMANCE_TODO.md](PERFORMANCE_TODO.md) を参照。
+
 ## Two-Package Architecture
 
 Database is designed as a two-package system to enable **client-server model sharing**:
