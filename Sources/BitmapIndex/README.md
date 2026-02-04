@@ -392,39 +392,58 @@ struct Article {
 
 ## Benchmark Results
 
-Run with: `swift test --filter BitmapIndexPerformanceTests`
+Run with: `swift test --filter "SerializationBenchmark"`
 
-### Insert Performance
+### JSON Serialization Performance (Current Implementation)
 
-| Records | Distinct Values | Insert Time | Throughput |
-|---------|-----------------|-------------|------------|
-| 100 | 10 | ~15ms | ~6,600/s |
-| 1,000 | 10 | ~150ms | ~6,600/s |
-| 1,000 | 100 | ~180ms | ~5,500/s |
-| 10,000 | 10 | ~1.5s | ~6,600/s |
-| 10,000 | 100 | ~1.8s | ~5,500/s |
+**Test Configuration**:
+- Warmup: 5 iterations
+- Measurement: 100 iterations
+- Throughput test: 5.0 seconds
+- Test bitmaps: Sparse (100 values), Dense (8000 values), Mixed (1500 values)
 
-### Query Performance
+| Metric | Baseline | Optimized | Notes |
+|--------|----------|-----------|-------|
+| **Latency (p50)** | 0.06ms | 0.06ms | JSON encoding |
+| **Latency (p95)** | 0.07ms | 0.07ms | Consistent performance |
+| **Latency (p99)** | 0.10ms | 0.07ms | Low variance |
+| **Throughput** | 15,541 ops/s | 15,566 ops/s | 3 bitmap serializations |
 
-| Bitmap Size | Operation | Latency (p50) |
-|-------------|-----------|---------------|
-| 1,000 values | equals | ~1ms |
-| 1,000 values | count | ~0.5ms |
-| 10,000 values | equals | ~2ms |
-| 10,000 values | count | ~0.5ms |
-| 10,000 values | AND (2 bitmaps) | ~1ms |
-| 10,000 values | OR (2 bitmaps) | ~2ms |
+**Serialization Sizes** (JSON Format):
+- Sparse bitmap (100 values): **532 bytes**
+- Dense bitmap (8000 values): **4,468 bytes**
+- Mixed bitmap (1500 values): **6,434 bytes**
+
+**Expected Improvements with Binary Format**:
+- 50-70% faster serialization/deserialization
+- 30-50% smaller storage footprint
+- Reference: [Roaring Bitmap Format Spec](https://github.com/RoaringBitmap/RoaringFormatSpec)
+
+### Round-trip Performance (Serialize + Deserialize)
+
+| Data Size | Latency (p50) | Latency (p95) | Throughput |
+|-----------|---------------|---------------|------------|
+| 100 values | 0.57ms | 0.61ms | 1,702 ops/s |
+| 500 values | 13.03ms | 13.48ms | 76 ops/s |
+| 1,000 values | 50.82ms | 51.99ms | 19 ops/s |
+| 5,000 values | 841.59ms | 864.15ms | 1 ops/s |
+| 10,000 values | 841.30ms | 850.26ms | 1 ops/s |
 
 ### Bitmap Operations (In-Memory)
 
-| Bitmap Size | AND | OR | Cardinality |
-|-------------|-----|-----|-------------|
-| 1,000 | <1ms | <1ms | <1ms |
-| 10,000 | ~1ms | ~1ms | <1ms |
-| 100,000 | ~5ms | ~5ms | ~1ms |
-| 1,000,000 | ~20ms | ~30ms | ~5ms |
+**Test Setup**: 5000 ∩ 3333 values (10,000 value range)
 
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+| Operation | Latency (p50) | Latency (p95) | Throughput |
+|-----------|---------------|---------------|------------|
+| **AND** | 0.20ms | 0.23ms | 4,884 ops/s |
+| **OR** | 0.20ms | 0.23ms | 4,757 ops/s |
+
+**Memory Efficiency**:
+- Container auto-selection (Array vs Bitmap vs Run)
+- Sparse bitmaps: 2 bytes per value
+- Dense bitmaps: 8KB fixed per 65,536 value range
+
+*Benchmarks run on Apple Silicon Mac with local FoundationDB cluster.*
 
 ## References
 

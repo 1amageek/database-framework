@@ -23,6 +23,7 @@ let package = Package(
         .library(name: "QueryIR", targets: ["QueryIR"]),
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
+        .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
@@ -193,6 +194,15 @@ let package = Package(
                 "RelationshipIndex",
                 "QueryIR",
                 "QueryAST",
+            ]
+        ),
+        // BenchmarkFramework - Performance benchmarking infrastructure
+        .target(
+            name: "BenchmarkFramework",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
             ]
         ),
         // DatabaseCLICore - Embeddable CLI library with REPL, commands, and catalog access
@@ -446,6 +456,38 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
             ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // BenchmarkFramework tests
+        .testTarget(
+            name: "BenchmarkFrameworkTests",
+            dependencies: [
+                "BenchmarkFramework",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // Performance Benchmarks
+        .testTarget(
+            name: "PerformanceBenchmarks",
+            dependencies: [
+                "BenchmarkFramework",
+                "TestSupport",
+                "ScalarIndex",
+                "RankIndex",
+                "AggregationIndex",
+                "BitmapIndex",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Rank", package: "database-kit"),
+            ],
+            path: "Benchmarks",
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
