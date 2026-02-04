@@ -40,11 +40,13 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
     /// 3. Accumulate span counters during traversal
     /// 4. Drop to lower level when can't advance
     /// 5. Repeat until Level 0
+    /// 6. Convert ascending position to descending rank
     ///
     /// - Parameters:
     ///   - score: Target score to find rank for
     ///   - primaryKey: Primary key tuple
     ///   - currentLevels: Current number of levels in the skip list
+    ///   - totalCount: Total number of elements in the skip list
     ///   - transaction: FDB transaction
     /// - Returns: Rank (0-based, 0 = highest score)
     /// - Throws: Error if score not found or traversal fails
@@ -52,14 +54,16 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         score: Score,
         primaryKey: Tuple,
         currentLevels: Int,
+        totalCount: Int64,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        var rank: Int64 = 0
+        var ascendingPosition: Int64 = 0
 
         // Traverse from highest level to Level 0
+        // Accumulate span to find ascending position (number of elements smaller than target)
         for level in stride(from: currentLevels - 1, through: 0, by: -1) {
             // Move forward at this level while next < target
-            rank += try await advanceAtLevel(
+            ascendingPosition += try await advanceAtLevel(
                 level: level,
                 targetScore: score,
                 targetPrimaryKey: primaryKey,
@@ -73,7 +77,10 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
             throw IndexError.invalidStructure("Score \(score) not found in index")
         }
 
-        return rank
+        // Convert ascending position to descending rank
+        // Rank 0 = highest score (at position totalCount-1 in ascending order)
+        // Rank = totalCount - ascendingPosition - 1
+        return totalCount - ascendingPosition - 1
     }
 
     /// Advance at a specific level and accumulate spans

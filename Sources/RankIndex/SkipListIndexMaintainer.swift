@@ -206,23 +206,35 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         // Find any entry with this score at Level 0
         let levelSubspace = subspaces.leaf
         let scoreElement = try TupleEncoder.encode(score)
-        let scorePrefix = levelSubspace.subspace(Tuple([scoreElement]))
-        let range = scorePrefix.range()
+
+        // Build prefix for keys with this score
+        // Keys are: levelSubspace.pack(Tuple([score, pk...]))
+        // So prefix is: levelSubspace.pack(Tuple([score]))
+        let scorePrefixBytes = levelSubspace.pack(Tuple([scoreElement]))
+        let rangeEnd = levelSubspace.range().end
 
         let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+            beginSelector: .firstGreaterOrEqual(scorePrefixBytes),
+            endSelector: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         var foundPrimaryKey: Tuple?
         for try await (key, _) in sequence {
-            guard scorePrefix.contains(key) else { break }
+            // Check if key starts with our score prefix
+            guard key.count > scorePrefixBytes.count,
+                  key.prefix(scorePrefixBytes.count).elementsEqual(scorePrefixBytes) else {
+                break
+            }
 
-            let suffix = try scorePrefix.unpack(key)
+            // Extract full tuple and get primary key part
+            let fullTuple = try levelSubspace.unpack(key)
+            guard fullTuple.count > 1 else { continue }
+
+            // Primary key is everything after the score
             var pkElements: [any TupleElement] = []
-            for i in 0..<suffix.count {
-                if let element = suffix[i] {
+            for i in 1..<fullTuple.count {
+                if let element = fullTuple[i] {
                     pkElements.append(element)
                 }
             }
@@ -234,14 +246,16 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
             throw IndexError.invalidStructure("Score \(score) not found in index")
         }
 
-        // Get current levels
+        // Get current levels and total count
         let currentLevels = try await getCurrentLevels(transaction: transaction)
+        let totalCount = try await getCount(transaction: transaction)
 
         // Use O(log n) traversal
         return try await traversal.getRank(
             score: score,
             primaryKey: primaryKey,
             currentLevels: currentLevels,
+            totalCount: totalCount,
             transaction: transaction
         )
     }

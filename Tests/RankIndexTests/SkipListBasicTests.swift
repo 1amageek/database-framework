@@ -65,6 +65,15 @@ struct SkipListTestPlayer6 {
     #Index(RankIndexKind<SkipListTestPlayer6, Int64>(field: \.score, bucketSize: 100))
 }
 
+@Persistable
+struct SkipListTestPlayer7 {
+    #Directory<SkipListTestPlayer7>("test", "skip_rank_test")
+    var id: String = UUID().uuidString
+    var name: String = ""
+    var score: Int64 = 0
+    #Index(RankIndexKind<SkipListTestPlayer7, Int64>(field: \.score, bucketSize: 100))
+}
+
 // MARK: - Tests
 
 @Suite("Skip List Basic Tests", .serialized)
@@ -266,5 +275,204 @@ struct SkipListBasicTests {
         // Names should be sorted by primary key (id)
         let names = results.map { $0.item.name }.sorted()
         #expect(names == ["Alice", "Bob", "Carol"])
+    }
+
+    @Test("getRank single entry")
+    func testGetRankSingleEntry() async throws {
+        // Simplified test: insert one entry and get its rank
+        let database = try FDBClient.openDatabase()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "skiplist_single", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("single_rank")
+
+        let index = Index(
+            name: "single_rank",
+            kind: RankIndexKind<SkipListTestPlayer7, Int64>(field: \.score),
+            rootExpression: FieldKeyExpression(fieldName: "score"),
+            subspaceKey: "single_rank",
+            itemTypes: Set(["SkipListTestPlayer7"])
+        )
+
+        let maintainer = SkipListIndexMaintainer<SkipListTestPlayer7, Int64>(
+            index: index,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        // Insert single entry
+        let player = SkipListTestPlayer7(name: "Only", score: 500)
+        try await database.withTransaction { transaction in
+            try await maintainer.updateIndex(
+                oldItem: nil as SkipListTestPlayer7?,
+                newItem: player,
+                transaction: transaction
+            )
+        }
+
+        // Check count
+        let count = try await database.withTransaction { transaction in
+            try await maintainer.getCount(transaction: transaction)
+        }
+        #expect(count == 1, "Should have 1 entry")
+
+
+        // Get rank (should be 0)
+        let rank = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 500, transaction: transaction)
+        }
+        #expect(rank == 0, "Single entry should have rank 0")
+
+        // Cleanup
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("getRank with two entries")
+    func testGetRankTwoEntries() async throws {
+        // Simplified test: two entries to debug span accumulation
+        let database = try FDBClient.openDatabase()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "skiplist_two", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("two_rank")
+
+        let index = Index(
+            name: "two_rank",
+            kind: RankIndexKind<SkipListTestPlayer7, Int64>(field: \.score),
+            rootExpression: FieldKeyExpression(fieldName: "score"),
+            subspaceKey: "two_rank",
+            itemTypes: Set(["SkipListTestPlayer7"])
+        )
+
+        let maintainer = SkipListIndexMaintainer<SkipListTestPlayer7, Int64>(
+            index: index,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        // Insert two entries
+        let player1 = SkipListTestPlayer7(name: "Low", score: 100)
+        let player2 = SkipListTestPlayer7(name: "High", score: 200)
+
+        for player in [player1, player2] {
+            try await database.withTransaction { transaction in
+                try await maintainer.updateIndex(
+                    oldItem: nil as SkipListTestPlayer7?,
+                    newItem: player,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Check count
+        let count = try await database.withTransaction { transaction in
+            try await maintainer.getCount(transaction: transaction)
+        }
+        #expect(count == 2, "Should have 2 entries")
+
+        // Rank of 200 (highest) should be 0
+        let rank200 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 200, transaction: transaction)
+        }
+        #expect(rank200 == 0, "Score 200 should be rank 0, got \(rank200)")
+
+        // Rank of 100 (lowest) should be 1
+        let rank100 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 100, transaction: transaction)
+        }
+        #expect(rank100 == 1, "Score 100 should be rank 1, got \(rank100)")
+
+        // Cleanup
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("getRank returns correct descending rank")
+    func testGetRankDescendingOrder() async throws {
+        // Setup: Create SkipListIndexMaintainer directly
+        let database = try FDBClient.openDatabase()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "skiplist_rank", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("SkipListTestPlayer7_rank_score")
+
+        let index = Index(
+            name: "SkipListTestPlayer7_rank_score",
+            kind: RankIndexKind<SkipListTestPlayer7, Int64>(field: \.score),
+            rootExpression: FieldKeyExpression(fieldName: "score"),
+            subspaceKey: "SkipListTestPlayer7_rank_score",
+            itemTypes: Set(["SkipListTestPlayer7"])
+        )
+
+        let maintainer = SkipListIndexMaintainer<SkipListTestPlayer7, Int64>(
+            index: index,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id")
+        )
+
+        // Insert test data with various scores
+        // IMPORTANT: Insert each player in separate transaction to ensure
+        // proper span counter maintenance
+        let players = [
+            SkipListTestPlayer7(name: "Fifth", score: 100),
+            SkipListTestPlayer7(name: "Fourth", score: 200),
+            SkipListTestPlayer7(name: "Third", score: 600),
+            SkipListTestPlayer7(name: "Second", score: 800),
+            SkipListTestPlayer7(name: "First", score: 1000),
+        ]
+
+        for player in players {
+            try await database.withTransaction { transaction in
+                try await maintainer.updateIndex(
+                    oldItem: nil as SkipListTestPlayer7?,
+                    newItem: player,
+                    transaction: transaction
+                )
+            }
+        }
+
+        // Verify count
+        let count = try await database.withTransaction { transaction in
+            try await maintainer.getCount(transaction: transaction)
+        }
+        #expect(count == 5, "Should have 5 entries, got \(count)")
+
+        // Rank 0 = highest score (1000)
+        let rank1000 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 1000, transaction: transaction)
+        }
+        #expect(rank1000 == 0, "Score 1000 should be rank 0 (highest)")
+
+        // Rank 1 = second highest (800)
+        let rank800 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 800, transaction: transaction)
+        }
+        #expect(rank800 == 1, "Score 800 should be rank 1")
+
+        // Rank 2 = middle (600)
+        let rank600 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 600, transaction: transaction)
+        }
+        #expect(rank600 == 2, "Score 600 should be rank 2")
+
+        // Rank 3 = fourth (200)
+        let rank200 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 200, transaction: transaction)
+        }
+        #expect(rank200 == 3, "Score 200 should be rank 3")
+
+        // Rank 4 = lowest (100)
+        let rank100 = try await database.withTransaction { transaction in
+            try await maintainer.getRank(score: 100, transaction: transaction)
+        }
+        #expect(rank100 == 4, "Score 100 should be rank 4 (lowest)")
+
+        // Cleanup
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
     }
 }
