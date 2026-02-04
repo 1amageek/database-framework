@@ -56,6 +56,12 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     /// Skip list traversal for O(log n) operations
     private let traversal: SkipListTraversal<Score>
 
+    /// Skip list insertion with Span Counter maintenance
+    private let insertion: SkipListInsertion<Score>
+
+    /// Skip list deletion with Span Counter maintenance
+    private let deletion: SkipListDeletion<Score>
+
     // MARK: - Initialization
 
     /// Initialize skip list index maintainer
@@ -88,6 +94,11 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
             subspaces: subspaces,
             maxLevels: maxLevels
         )
+        self.insertion = SkipListInsertion<Score>(
+            subspaces: subspaces,
+            levelAssignment: levelAssignment
+        )
+        self.deletion = SkipListDeletion<Score>(subspaces: subspaces)
     }
 
     // MARK: - IndexMaintainer Protocol
@@ -282,7 +293,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         return (score: score, primaryKey: primaryKeyTuple)
     }
 
-    /// Insert entry into skip list
+    /// Insert entry into skip list with accurate Span Counter updates
     private func insertEntry(
         item: Item,
         id: Tuple?,
@@ -292,31 +303,22 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
             return
         }
 
-        // Phase 1: Get current number of levels
         let currentLevels = try await getCurrentLevels(transaction: transaction)
 
-        // Phase 2: Assign level to new node
-        let newLevel = levelAssignment.randomLevel()
+        // Use SkipListInsertion for accurate Span Counter maintenance
+        _ = try await insertion.insert(
+            score: score,
+            primaryKey: primaryKey,
+            currentLevels: currentLevels,
+            transaction: transaction
+        )
 
-        // Phase 3: Insert at each level
-        for level in 0..<min(newLevel, currentLevels) {
-            let key = try makeKey(score: score, primaryKey: primaryKey, level: level)
-            let span = SpanValue(count: 1)
-            transaction.setValue(span.encoded(), for: key)
-        }
-
-        // Phase 4: Update count (atomic)
+        // Update count (atomic)
         let incrementBytes = ByteConversion.int64ToBytes(1)
         transaction.atomicOp(key: subspaces.countKey, param: incrementBytes, mutationType: .add)
-
-        // TODO: Implement proper span counter updates
-        // This is a simplified version - full implementation requires:
-        // 1. Find insertion position at each level
-        // 2. Update span counters for all affected links
-        // 3. Handle level expansion if needed
     }
 
-    /// Delete entry from skip list
+    /// Delete entry from skip list with accurate Span Counter updates
     private func deleteEntry(
         item: Item,
         id: Tuple?,
@@ -328,17 +330,17 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
 
         let currentLevels = try await getCurrentLevels(transaction: transaction)
 
-        // Delete from all levels where it exists
-        for level in 0..<currentLevels {
-            let key = try makeKey(score: score, primaryKey: primaryKey, level: level)
-            transaction.clear(key: key)
-        }
+        // Use SkipListDeletion for accurate Span Counter maintenance
+        try await deletion.delete(
+            score: score,
+            primaryKey: primaryKey,
+            currentLevels: currentLevels,
+            transaction: transaction
+        )
 
         // Update count (atomic)
         let decrementBytes = ByteConversion.int64ToBytes(-1)
         transaction.atomicOp(key: subspaces.countKey, param: decrementBytes, mutationType: .add)
-
-        // TODO: Implement proper span counter updates on deletion
     }
 
     /// Get current number of levels
