@@ -53,6 +53,9 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     /// Default number of levels for new skip lists
     private let defaultLevels: Int
 
+    /// Skip list traversal for O(log n) operations
+    private let traversal: SkipListTraversal<Score>
+
     // MARK: - Initialization
 
     /// Initialize skip list index maintainer
@@ -80,6 +83,10 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         self.levelAssignment = LevelAssignment(
             maxLevel: maxLevels,
             strategy: strategy
+        )
+        self.traversal = SkipListTraversal<Score>(
+            subspaces: subspaces,
+            maxLevels: maxLevels
         )
     }
 
@@ -133,8 +140,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
 
     /// Get top K elements (highest scores)
     ///
-    /// Time Complexity: O(k) scan (temporary fallback)
-    /// TODO: Implement O(log n + k) using skip list traversal
+    /// Time Complexity: O(log n + k) using skip list traversal
     ///
     /// - Parameters:
     ///   - k: Number of elements to retrieve
@@ -146,14 +152,32 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
-        // Temporary: O(k) scan from leaf level
-        return try await scanTopKFromLeaf(k: k, transaction: transaction)
+        // Get total count
+        let totalCount = try await getCount(transaction: transaction)
+        guard totalCount > 0 else { return [] }
+
+        // Use O(log n + k) traversal
+        let results = try await traversal.getTopK(
+            k: k,
+            totalCount: totalCount,
+            transaction: transaction
+        )
+
+        // Convert to expected format
+        return results.map { (score, primaryKey, _) in
+            var elements: [any TupleElement] = []
+            for i in 0..<primaryKey.count {
+                if let element = primaryKey[i] {
+                    elements.append(element)
+                }
+            }
+            return (score: score, primaryKey: elements)
+        }
     }
 
     /// Get rank of a specific score
     ///
-    /// Time Complexity: O(n - rank) scan (temporary fallback)
-    /// TODO: Implement O(log n) using span accumulation
+    /// Time Complexity: O(log n) using span accumulation
     ///
     /// - Parameters:
     ///   - score: Score to find rank for
@@ -164,8 +188,51 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         score: Score,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        // Temporary: O(n) scan from leaf level
-        return try await scanRankFromLeaf(score: score, transaction: transaction)
+        // We need a primary key to identify the exact entry
+        // For now, use the first entry with this score
+        // TODO: Accept primaryKey parameter for exact lookup
+
+        // Find any entry with this score at Level 0
+        let levelSubspace = subspaces.leaf
+        let scoreElement = try TupleEncoder.encode(score)
+        let scorePrefix = levelSubspace.subspace(Tuple([scoreElement]))
+        let range = scorePrefix.range()
+
+        let sequence = transaction.getRange(
+            beginSelector: .firstGreaterOrEqual(range.begin),
+            endSelector: .firstGreaterOrEqual(range.end),
+            snapshot: true
+        )
+
+        var foundPrimaryKey: Tuple?
+        for try await (key, _) in sequence {
+            guard scorePrefix.contains(key) else { break }
+
+            let suffix = try scorePrefix.unpack(key)
+            var pkElements: [any TupleElement] = []
+            for i in 0..<suffix.count {
+                if let element = suffix[i] {
+                    pkElements.append(element)
+                }
+            }
+            foundPrimaryKey = Tuple(pkElements)
+            break
+        }
+
+        guard let primaryKey = foundPrimaryKey else {
+            throw IndexError.invalidStructure("Score \(score) not found in index")
+        }
+
+        // Get current levels
+        let currentLevels = try await getCurrentLevels(transaction: transaction)
+
+        // Use O(log n) traversal
+        return try await traversal.getRank(
+            score: score,
+            primaryKey: primaryKey,
+            currentLevels: currentLevels,
+            transaction: transaction
+        )
     }
 
     /// Get total element count
@@ -303,96 +370,4 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         return levelSubspace.pack(Tuple(allElements))
     }
 
-    // MARK: - Fallback Implementations (Temporary)
-
-    /// Scan top K from leaf level (O(k) scan, temporary)
-    private func scanTopKFromLeaf(
-        k: Int,
-        transaction: any TransactionProtocol
-    ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
-        let range = subspaces.leaf.range()
-        var results: [(score: Score, primaryKey: [any TupleElement])] = []
-
-        // Scan in reverse order (highest scores first)
-        let sequence = transaction.getRange(
-            beginSelector: .lastLessThan(range.end),
-            endSelector: .firstGreaterOrEqual(range.begin),
-            snapshot: true
-        )
-
-        for try await (key, _) in sequence {
-            guard subspaces.leaf.contains(key) else { break }
-
-            let suffix = try subspaces.leaf.unpack(key)
-
-            // Extract score and primary key
-            var elements: [any TupleElement] = []
-            for i in 0..<suffix.count {
-                if let element = suffix[i] {
-                    elements.append(element)
-                }
-            }
-
-            guard elements.count >= 2 else { continue }
-
-            let score = try TupleDecoder.decode(elements[0], as: Score.self)
-            let primaryKey = Array(elements.dropFirst())
-
-            results.append((score: score, primaryKey: primaryKey))
-
-            if results.count >= k {
-                break
-            }
-        }
-
-        return results
-    }
-
-    /// Scan rank from leaf level (O(n) scan, temporary)
-    private func scanRankFromLeaf(
-        score: Score,
-        transaction: any TransactionProtocol
-    ) async throws -> Int64 {
-        let range = subspaces.leaf.range()
-        var rank: Int64 = 0
-        var found = false
-
-        // Scan in reverse order (highest scores first)
-        let sequence = transaction.getRange(
-            beginSelector: .lastLessThan(range.end),
-            endSelector: .firstGreaterOrEqual(range.begin),
-            snapshot: true
-        )
-
-        for try await (key, _) in sequence {
-            guard subspaces.leaf.contains(key) else { break }
-
-            let suffix = try subspaces.leaf.unpack(key)
-
-            // Extract score
-            var elements: [any TupleElement] = []
-            for i in 0..<suffix.count {
-                if let element = suffix[i] {
-                    elements.append(element)
-                }
-            }
-
-            guard !elements.isEmpty else { continue }
-
-            let currentScore = try TupleDecoder.decode(elements[0], as: Score.self)
-
-            if currentScore == score {
-                found = true
-                break
-            }
-
-            rank += 1
-        }
-
-        guard found else {
-            throw IndexError.invalidStructure("Score \(score) not found in index")
-        }
-
-        return rank
-    }
 }
