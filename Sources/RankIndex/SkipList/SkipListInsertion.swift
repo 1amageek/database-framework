@@ -299,7 +299,9 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         let levelSubspace = subspaces.subspace(for: level)
         let scoreElement = try TupleEncoder.encode(score)
 
-        var allElements: [any TupleElement] = [scoreElement]
+        var allElements: [any TupleElement] = []
+        allElements.reserveCapacity(1 + primaryKey.count)
+        allElements.append(scoreElement)
         for i in 0..<primaryKey.count {
             if let element = primaryKey[i] {
                 allElements.append(element)
@@ -312,6 +314,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     /// Extract primary key from suffix tuple
     private func extractPrimaryKey(from suffix: Tuple) -> Tuple {
         var pkElements: [any TupleElement] = []
+        pkElements.reserveCapacity(max(0, suffix.count - 1))
         for i in 1..<suffix.count {
             if let element = suffix[i] {
                 pkElements.append(element)
