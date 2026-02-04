@@ -81,17 +81,15 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         // Get total count for span calculation when level is empty
         let totalCountBefore = try await getCurrentCount(transaction: transaction)
 
-        // Phase 1: Find insertion position (standard Skip List algorithm)
-        // Traverse from top to bottom, accumulating rank at each level
+        // Phase 1: Find insertion position (FoundationDB Record Layer approach)
+        // Each level independently finds insertion position
+        // No position carried forward - ensures correctness
         var rank: [Int64] = Array(repeating: 0, count: currentLevels)
         var updateKeys: [[UInt8]?] = Array(repeating: nil, count: currentLevels)
         var updateSpans: [Int64?] = Array(repeating: nil, count: currentLevels)
 
-        for level in stride(from: currentLevels - 1, through: 0, by: -1) {
-            // Inherit rank from level above
-            rank[level] = (level == currentLevels - 1) ? 0 : rank[level + 1]
-
-            // Scan this level from the beginning (standard algorithm)
+        for level in 0..<currentLevels {
+            // Each level independently scans from the beginning
             let result = try await findInsertionPoint(
                 level: level,
                 targetScore: score,
@@ -99,7 +97,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 transaction: transaction
             )
 
-            rank[level] += result.accumulatedRank
+            rank[level] = result.accumulatedRank
             updateKeys[level] = result.lastKeyBeforeInsert
             if let updateKey = result.lastKeyBeforeInsert {
                 // Read span of updateKey
@@ -112,7 +110,10 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         // Phase 2: Assign level to new node
         let newLevel = min(levelAssignment.randomLevel(), currentLevels)
 
-        // Phase 3: Insert at each level with standard Span Counter updates
+        // Phase 3: Insert at each level with correct Span Counter updates
+        // Since each level independently calculated rank, the formula is:
+        // updateSpan = distance from update node to new node in Level 0 = rank[0] - rank[level]
+        // newSpan = distance from new node to next node = oldSpan - updateSpan
         for level in 0..<newLevel {
             let key = try makeKey(score: score, primaryKey: primaryKey, level: level)
 
@@ -122,13 +123,16 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 // Level 0: all entries have span = 1 (always)
                 newSpan = 1
             } else if let updateKey = updateKeys[level], let oldSpan = updateSpans[level] {
-                // Standard formula: works for all cases (middle, end)
-                newSpan = oldSpan - (rank[0] - rank[level])
+                // Calculate spans based on independent rank calculations
+                // updateSpan = how many Level 0 entries between update node and new node
+                let updateSpan = rank[0] - rank[level]
+
+                // newSpan = how many Level 0 entries from new node to next node at this level
+                newSpan = oldSpan - updateSpan
 
                 // Update span of the node before insertion point
-                let newUpdateSpan = (rank[0] - rank[level]) + 1
                 transaction.setValue(
-                    SpanValue(count: newUpdateSpan).encoded(),
+                    SpanValue(count: updateSpan).encoded(),
                     for: updateKey
                 )
             } else {
@@ -141,7 +145,15 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                     // Level > 0: find next entry (current first entry) and calculate span
                     let nextEntry = try await findFirstEntryAtLevel(level, transaction)
                     if let (nextScore, nextPK) = nextEntry {
-                        // Calculate next entry's Level 0 rank
+                        // newSpan = distance from new entry to next entry at Level 0
+                        // Since we already have rank[0] (new entry's rank) and know the next entry exists,
+                        // we can use rank[level] (this level's rank before new entry) to calculate span
+                        //
+                        // If next entry exists at this level, the span should be:
+                        // (next entry's Level 0 rank) - (new entry's Level 0 rank)
+                        //
+                        // But since we don't have next entry's exact rank, use a simpler approach:
+                        // Find next entry's rank independently
                         let nextResult = try await findInsertionPoint(
                             level: 0,
                             targetScore: nextScore,
@@ -150,8 +162,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                         )
                         let nextLevel0Rank = nextResult.accumulatedRank
                         // newSpan = distance from new entry to next entry at Level 0
-                        // After insertion, new entry will be at rank[0], next entry at nextLevel0Rank + 1
-                        newSpan = (nextLevel0Rank + 1) - rank[0]
+                        newSpan = nextLevel0Rank - rank[0]
                     } else {
                         // Level is empty, span = distance to end
                         newSpan = totalCountBefore - rank[0] + 1
@@ -236,6 +247,15 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     /// Scans in descending order (high to low scores).
     /// Accumulates span counters until reaching the insertion point.
     ///
+    /// Based on FoundationDB Record Layer approach: each level independently
+    /// scans from the beginning to find the insertion point.
+    ///
+    /// Parameters:
+    /// - level: Level to scan
+    /// - targetScore: Target score
+    /// - targetPrimaryKey: Target primary key
+    /// - transaction: FDB transaction
+    ///
     /// Returns:
     /// - accumulatedRank: Total span traversed at this level
     /// - lastKeyBeforeInsert: Key of the last entry before insertion point (nil if inserting at beginning)
@@ -253,8 +273,10 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
 
         // Scan in descending order (high to low scores)
         let sequence = transaction.getRange(
-            beginSelector: .lastLessThan(range.end),
-            endSelector: .firstGreaterOrEqual(range.begin),
+            from: range.begin,
+            to: range.end,
+            limit: 0,
+            reverse: true,
             snapshot: true
         )
 
