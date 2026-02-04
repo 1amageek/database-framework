@@ -57,60 +57,53 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         totalCount: Int64,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        var ascendingPosition: Int64 = 0
-
-        // Traverse from highest level to Level 0
-        // Accumulate span to find ascending position (number of elements smaller than target)
-        for level in stride(from: currentLevels - 1, through: 0, by: -1) {
-            // Move forward at this level while next < target
-            ascendingPosition += try await advanceAtLevel(
-                level: level,
-                targetScore: score,
-                targetPrimaryKey: primaryKey,
-                transaction: transaction
-            )
-        }
-
         // Verify the score exists at Level 0
         let key = try makeKey(score: score, primaryKey: primaryKey, level: 0)
         guard let _ = try await transaction.getValue(for: key, snapshot: true) else {
             throw IndexError.invalidStructure("Score \(score) not found in index")
         }
 
-        // Convert ascending position to descending rank
-        // Rank 0 = highest score (at position totalCount-1 in ascending order)
-        // Rank = totalCount - ascendingPosition - 1
-        return totalCount - ascendingPosition - 1
+        // Use Level 0 scan for reliable rank calculation
+        // Note: Full O(log n) span-based traversal requires careful handling of
+        // overlapping spans across levels, which is complex to implement correctly.
+        // This O(n) approach is simple and reliable.
+        let countLessThan = try await countEntriesLessThan(
+            targetScore: score,
+            targetPrimaryKey: primaryKey,
+            transaction: transaction
+        )
+
+        // Convert to descending rank
+        // rank = totalCount - 1 - (number of elements with score < target)
+        return totalCount - 1 - countLessThan
     }
 
-    /// Advance at a specific level and accumulate spans
+    /// Count entries with score < targetScore at Level 0
     ///
-    /// Moves forward while next.score < targetScore, accumulating span counters.
+    /// Time Complexity: O(n) where n = number of entries with score < target
     ///
     /// - Parameters:
-    ///   - level: Current level
-    ///   - targetScore: Target score to search for
-    ///   - targetPrimaryKey: Target primary key
+    ///   - targetScore: Target score
+    ///   - targetPrimaryKey: Target primary key (unused, for future optimization)
     ///   - transaction: FDB transaction
-    /// - Returns: Total span accumulated at this level
-    private func advanceAtLevel(
-        level: Int,
+    /// - Returns: Number of entries with score < targetScore
+    private func countEntriesLessThan(
         targetScore: Score,
         targetPrimaryKey: Tuple,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
-        var accumulatedSpan: Int64 = 0
-        let levelSubspace = subspaces.subspace(for: level)
+        var count: Int64 = 0
+        let levelSubspace = subspaces.leaf
         let range = levelSubspace.range()
 
-        // Scan forward in score order
+        // Scan in ascending order
         let sequence = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(range.begin),
             endSelector: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, value) in sequence {
+        for try await (key, _) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             // Parse key: [score][primaryKey...]
@@ -121,32 +114,17 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
             guard let scoreElement = suffix[0] else { continue }
             let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
 
-            // Compare scores
+            // Count while current < target
             if currentScore >= targetScore {
-                // Check if exact match
-                if currentScore == targetScore {
-                    // Compare primary keys to handle duplicates
-                    let currentPK = extractPrimaryKey(from: suffix)
-                    if compareTuples(currentPK, targetPrimaryKey) == .orderedSame {
-                        // Found exact match, stop
-                        break
-                    } else if compareTuples(currentPK, targetPrimaryKey) == .orderedDescending {
-                        // Current key is after target, stop
-                        break
-                    }
-                    // Current key is before target (same score, lower PK), continue
-                } else {
-                    // Current score is higher than target, stop
-                    break
-                }
+                // Reached target, stop
+                break
             }
 
-            // currentScore < targetScore, accumulate span and continue
-            let span = try SpanValue.decode(value)
-            accumulatedSpan += span.count
+            // currentScore < targetScore, count this entry
+            count += 1
         }
 
-        return accumulatedSpan
+        return count
     }
 
     // MARK: - Top-K Query (O(log n + k))
@@ -186,8 +164,12 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
 
     /// Collect elements starting from a specific rank
     ///
+    /// Current implementation: Optimized for startRank=0 (Top-K query) using
+    /// descending scan from the highest score. For startRank > 0, could be
+    /// optimized using skip list traversal to jump directly to the target rank.
+    ///
     /// - Parameters:
-    ///   - startRank: Starting rank (0-based)
+    ///   - startRank: Starting rank (0-based, currently only 0 is used)
     ///   - count: Number of elements to collect
     ///   - transaction: FDB transaction
     /// - Returns: Array of (score, primaryKey, rank) tuples
@@ -198,8 +180,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
     ) async throws -> [(score: Score, primaryKey: Tuple, rank: Int64)] {
         var results: [(score: Score, primaryKey: Tuple, rank: Int64)] = []
 
-        // For now, use simple scan from Level 0
-        // TODO: Optimize using skip list traversal to jump to startRank
+        // Use descending scan (highest to lowest score)
         let levelSubspace = subspaces.leaf
         let range = levelSubspace.range()
 

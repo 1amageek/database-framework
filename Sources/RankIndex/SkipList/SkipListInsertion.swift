@@ -67,24 +67,38 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         currentLevels: Int,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
+        // Get total count for span calculation when inserting at beginning
+        let totalCountBefore = try await getCurrentCount(transaction: transaction)
+
         // Phase 1: Find insertion position and track ranks
+        // Traverse from top to bottom, accumulating rank
         var rank: [Int64] = Array(repeating: 0, count: currentLevels)
         var updateKeys: [[UInt8]?] = Array(repeating: nil, count: currentLevels)
+
+        // Track the last score/PK seen at previous level
+        var lastSeenScore: Score? = nil
+        var lastSeenPK: Tuple? = nil
+
 
         for level in stride(from: currentLevels - 1, through: 0, by: -1) {
             // Inherit rank from level above
             rank[level] = (level == currentLevels - 1) ? 0 : rank[level + 1]
 
-            // Scan at this level to find insertion point
-            let (accumulatedRank, lastKeyBeforeInsert) = try await findInsertionPoint(
+            // Scan this level starting from where the previous level ended
+            let (additionalRank, lastKeyBeforeInsert, lastScore, lastPK) = try await findInsertionPointFrom(
                 level: level,
                 targetScore: score,
                 targetPrimaryKey: primaryKey,
+                startAfterScore: lastSeenScore,
+                startAfterPK: lastSeenPK,
                 transaction: transaction
             )
 
-            rank[level] += accumulatedRank
+            rank[level] += additionalRank
             updateKeys[level] = lastKeyBeforeInsert
+            lastSeenScore = lastScore
+            lastSeenPK = lastPK
+
         }
 
         // Phase 2: Assign level to new node
@@ -104,6 +118,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                     let oldSpan = try SpanValue.decode(oldSpanBytes)
                     newSpan = oldSpan.count - (rank[0] - rank[level])
 
+
                     // Update span of the node before insertion point
                     // newUpdateSpan = (rank[0] - rank[level]) + 1
                     let newUpdateSpan = (rank[0] - rank[level]) + 1
@@ -112,6 +127,10 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                         for: updateKey
                     )
                 }
+            } else {
+                // Inserting at the beginning of this level
+                // newSpan should be totalCountBefore - rank[0] + 1
+                newSpan = totalCountBefore - rank[0] + 1
             }
 
             // Insert new entry with calculated span
@@ -136,7 +155,92 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
 
     // MARK: - Helper Methods
 
-    /// Find insertion point at a specific level
+    /// Get current count before insertion
+    private func getCurrentCount(transaction: any TransactionProtocol) async throws -> Int64 {
+        guard let value = try await transaction.getValue(for: subspaces.countKey, snapshot: false) else {
+            return 0
+        }
+        return ByteConversion.bytesToInt64(value)
+    }
+
+    /// Find insertion point starting from a given position
+    ///
+    /// Returns:
+    /// - additionalRank: Additional span traversed from the start position
+    /// - lastKeyBeforeInsert: Key of the last entry before insertion point
+    /// - lastSeenScore: Score of the last key traversed
+    /// - lastSeenPK: Primary key of the last key traversed
+    private func findInsertionPointFrom(
+        level: Int,
+        targetScore: Score,
+        targetPrimaryKey: Tuple,
+        startAfterScore: Score?,
+        startAfterPK: Tuple?,
+        transaction: any TransactionProtocol
+    ) async throws -> (additionalRank: Int64, lastKeyBeforeInsert: [UInt8]?, lastSeenScore: Score?, lastSeenPK: Tuple?) {
+        var additionalRank: Int64 = 0
+        var lastKey: [UInt8]? = nil
+        var lastSeenScore: Score? = startAfterScore
+        var lastSeenPK: Tuple? = startAfterPK
+
+        let levelSubspace = subspaces.subspace(for: level)
+        let rangeBegin = levelSubspace.range().begin
+        let rangeEnd = levelSubspace.range().end
+
+        // Determine scan start position (descending order)
+        let startKey: [UInt8]
+        if let afterScore = startAfterScore, let afterPK = startAfterPK {
+            // Continue from where previous level ended
+            startKey = try makeKey(score: afterScore, primaryKey: afterPK, level: level)
+        } else {
+            // Start from the end (highest score) for descending scan
+            startKey = rangeEnd
+        }
+
+        // Scan in descending order (highest to lowest score)
+        let sequence = transaction.getRange(
+            beginSelector: .lastLessThan(startKey),
+            endSelector: .firstGreaterOrEqual(rangeBegin),
+            snapshot: true
+        )
+
+        for try await (key, value) in sequence {
+            guard levelSubspace.contains(key) else { break }
+
+            // Parse key
+            let suffix = try levelSubspace.unpack(key)
+            guard !suffix.isEmpty else { continue }
+
+            guard let scoreElement = suffix[0] else { continue }
+            let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
+
+            // In descending order: stop when we reach or pass the target
+            if currentScore <= targetScore {
+                // Check if exact match or below target
+                if currentScore == targetScore {
+                    let currentPK = extractPrimaryKey(from: suffix)
+                    if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
+                        // Current key <= target, stop here
+                        break
+                    }
+                } else {
+                    // Current score is lower than target, stop here
+                    break
+                }
+            }
+
+            // currentScore > targetScore (or same score with higher PK), accumulate span
+            let span = try SpanValue.decode(value)
+            additionalRank += span.count
+            lastKey = key
+            lastSeenScore = currentScore
+            lastSeenPK = extractPrimaryKey(from: suffix)
+        }
+
+        return (additionalRank, lastKey, lastSeenScore, lastSeenPK)
+    }
+
+    /// Find insertion point at a specific level (legacy - for reference)
     ///
     /// Returns:
     /// - accumulatedRank: Total span traversed at this level
@@ -153,9 +257,10 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
+        // Scan in descending order (highest to lowest score)
         let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+            beginSelector: .lastLessThan(range.end),
+            endSelector: .firstGreaterOrEqual(range.begin),
             snapshot: true
         )
 
@@ -169,22 +274,22 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             guard let scoreElement = suffix[0] else { continue }
             let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
 
-            // Compare scores
-            if currentScore >= targetScore {
-                // Check if exact match or after target
+            // In descending order: stop when we reach or pass the target
+            if currentScore <= targetScore {
+                // Check if exact match or below target
                 if currentScore == targetScore {
                     let currentPK = extractPrimaryKey(from: suffix)
-                    if compareTuples(currentPK, targetPrimaryKey) != .orderedAscending {
-                        // Current key >= target, stop here
+                    if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
+                        // Current key <= target, stop here
                         break
                     }
                 } else {
-                    // Current score > target, stop here
+                    // Current score is lower than target, stop here
                     break
                 }
             }
 
-            // currentScore < targetScore (or same score with lower PK), accumulate span
+            // currentScore > targetScore (or same score with higher PK), accumulate span
             let span = try SpanValue.decode(value)
             accumulatedRank += span.count
             lastKey = key

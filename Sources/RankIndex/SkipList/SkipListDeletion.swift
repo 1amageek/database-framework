@@ -134,9 +134,10 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
+        // Scan in descending order (highest to lowest score)
         let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+            beginSelector: .lastLessThan(range.end),
+            endSelector: .firstGreaterOrEqual(range.begin),
             snapshot: true
         )
 
@@ -150,7 +151,7 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
             guard let scoreElement = suffix[0] else { continue }
             let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
 
-            // Compare scores
+            // In descending order
             if currentScore == targetScore {
                 let currentPK = extractPrimaryKey(from: suffix)
                 if compareTuples(currentPK, targetPrimaryKey) == .orderedSame {
@@ -158,16 +159,16 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
                     let span = try SpanValue.decode(value)
                     deletedSpan = span.count
                     break
-                } else if compareTuples(currentPK, targetPrimaryKey) == .orderedDescending {
-                    // Passed the target
+                } else if compareTuples(currentPK, targetPrimaryKey) == .orderedAscending {
+                    // Passed the target (in descending PK order)
                     break
                 }
-            } else if currentScore > targetScore {
-                // Passed the target
+            } else if currentScore < targetScore {
+                // Passed the target (in descending score order)
                 break
             }
 
-            // currentScore < targetScore (or same score with lower PK)
+            // currentScore > targetScore (or same score with higher PK)
             lastKey = key
         }
 
