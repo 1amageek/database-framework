@@ -967,8 +967,7 @@ public struct SearchStatisticsCollector: Sendable {
         guard !norms.isEmpty else { return [] }
 
         let sorted = norms.sorted()
-        let minNorm = sorted.first!
-        let maxNorm = sorted.last!
+        guard let minNorm = sorted.first, let maxNorm = sorted.last else { return [] }
         let range = maxNorm - minNorm
 
         guard range > 0 else {

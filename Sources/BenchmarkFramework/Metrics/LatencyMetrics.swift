@@ -77,8 +77,9 @@ public struct LatencyMetrics: Codable, Sendable, Hashable {
         let p95 = percentile(sorted, 0.95)
         let p99 = percentile(sorted, 0.99)
         let avg = samples.reduce(0.0, +) / Double(count)
-        let min = sorted.first!
-        let max = sorted.last!
+        guard let min = sorted.first, let max = sorted.last else {
+            return LatencyMetrics(p50: 0, p95: 0, p99: 0, avg: 0, min: 0, max: 0, samples: 0)
+        }
 
         return LatencyMetrics(
             p50: p50,

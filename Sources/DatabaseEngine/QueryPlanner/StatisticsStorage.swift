@@ -85,13 +85,25 @@ public final class StatisticsStorage: Sendable {
 
             let (begin, end) = tableSubspace.range()
             for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                guard let keyTuple = try? tableSubspace.unpack(key),
-                      let typeName = keyTuple[0] as? String else {
+                // Graceful skip for malformed keys (batch operation pattern)
+                let keyTuple: Tuple
+                do {
+                    keyTuple = try tableSubspace.unpack(key)
+                } catch {
+                    // Skip malformed statistics key - may occur during migration or corruption
+                    continue
+                }
+                guard let typeName = keyTuple[0] as? String else {
                     continue
                 }
 
-                if let stats = try? decoder.decode(TableStatisticsData.self, from: Data(value)) {
+                // Graceful skip for corrupted statistics data
+                do {
+                    let stats = try decoder.decode(TableStatisticsData.self, from: Data(value))
                     results[typeName] = stats
+                } catch {
+                    // Skip corrupted entry - statistics can be regenerated
+                    continue
                 }
             }
 
@@ -133,13 +145,25 @@ public final class StatisticsStorage: Sendable {
 
             let (begin, end) = fieldSubspace.range()
             for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: true) {
-                guard let keyTuple = try? fieldSubspace.unpack(key),
-                      let fieldName = keyTuple[0] as? String else {
+                // Graceful skip for malformed keys (batch operation pattern)
+                let keyTuple: Tuple
+                do {
+                    keyTuple = try fieldSubspace.unpack(key)
+                } catch {
+                    // Skip malformed field statistics key - may occur during migration or corruption
+                    continue
+                }
+                guard let fieldName = keyTuple[0] as? String else {
                     continue
                 }
 
-                if let stats = try? decoder.decode(FieldStatisticsData.self, from: Data(value)) {
+                // Graceful skip for corrupted statistics data
+                do {
+                    let stats = try decoder.decode(FieldStatisticsData.self, from: Data(value))
                     results[fieldName] = stats
+                } catch {
+                    // Skip corrupted entry - statistics can be regenerated
+                    continue
                 }
             }
 

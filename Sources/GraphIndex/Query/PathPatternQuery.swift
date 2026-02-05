@@ -174,7 +174,7 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
             var nextPaths: [(path: [String], edges: [String])] = []
 
             // Process current level paths in batches
-            let currentNodes = Set(currentPaths.map { $0.path.last! })
+            let currentNodes = Set(currentPaths.compactMap { $0.path.last })
 
             for node in currentNodes {
                 if visited.count >= maxNodesValue { break }

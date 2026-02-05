@@ -689,8 +689,7 @@ public final class CompletionGraph: @unchecked Sendable {
         let paths = findChainPaths(chain)
 
         for path in paths {
-            let start = path.first!
-            let end = path.last!
+            guard let start = path.first, let end = path.last else { continue }
 
             if addEdge(from: start, role: implies, to: end) {
                 changed = true

@@ -151,11 +151,21 @@ public enum LocalCluster {
     // MARK: - PID File
 
     /// Reads the PID from the PID file in the given .database directory.
+    ///
+    /// Returns `nil` if the file doesn't exist or contains invalid data.
+    /// This is intentional as PID file absence indicates no running process.
     public static func readPID(fromDBDir dbDir: String) -> Int32? {
         let pidFile = (dbDir as NSString).appendingPathComponent("fdb.pid")
-        guard let pidString = try? String(contentsOfFile: pidFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              let pid = Int32(pidString) else {
+        let pidString: String
+        do {
+            pidString = try String(contentsOfFile: pidFile, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            // File doesn't exist or can't be read - no process running
+            return nil
+        }
+        guard let pid = Int32(pidString) else {
+            // Invalid PID format - treat as no valid process
             return nil
         }
         return pid
@@ -171,10 +181,20 @@ public enum LocalCluster {
 
     /// Parses the port number from a cluster file.
     /// Expected format: `local:<clusterID>@127.0.0.1:<port>`
+    ///
+    /// Returns `nil` if the file doesn't exist or has invalid format.
+    /// This is intentional as cluster file absence indicates no running cluster.
     public static func parsePort(fromClusterFile path: String) -> UInt16? {
-        guard let content = try? String(contentsOfFile: path, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              let colonIndex = content.lastIndex(of: ":") else {
+        let content: String
+        do {
+            content = try String(contentsOfFile: path, encoding: .utf8)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        } catch {
+            // File doesn't exist or can't be read - no cluster configured
+            return nil
+        }
+        guard let colonIndex = content.lastIndex(of: ":") else {
+            // Invalid format - missing port separator
             return nil
         }
         return UInt16(content[content.index(after: colonIndex)...])

@@ -445,6 +445,13 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
+        // QueryIR tests (SQL/SPARQL escape, Expression operators)
+        .testTarget(
+            name: "QueryIRTests",
+            dependencies: [
+                "QueryIR",
+            ]
+        ),
         // Database integration tests (SPARQL() function, etc.)
         .testTarget(
             name: "DatabaseTests",

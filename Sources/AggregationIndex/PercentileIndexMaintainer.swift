@@ -283,11 +283,10 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
             return
         }
 
-        guard allValues.count >= 1 else { return }
+        guard let valueElement = allValues.last else { return }
 
         // Split: [grouping..., value]
         let groupingValues = allValues.count > 1 ? Array(allValues.dropLast()) : []
-        let valueElement = allValues.last!
 
         // Extract numeric value
         guard let numericValue = try? TypeConversion.double(from: valueElement) else {

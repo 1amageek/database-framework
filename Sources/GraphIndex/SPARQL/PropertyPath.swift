@@ -37,6 +37,12 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
 
     // MARK: - Atomic Paths
 
+    /// Empty path (identity - matches subject == object)
+    ///
+    /// Used as a degenerate case for operations on empty path lists.
+    /// Semantically equivalent to zero-length path.
+    case empty
+
     /// Simple IRI property (predicate)
     ///
     /// Matches a single edge with the given predicate.
@@ -110,7 +116,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// Whether this path requires recursive/iterative evaluation
     public var isRecursive: Bool {
         switch self {
-        case .iri, .negatedPropertySet:
+        case .empty, .iri, .negatedPropertySet:
             return false
         case .inverse(let path):
             return path.isRecursive
@@ -140,6 +146,8 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// All IRIs used in this path
     public var allIRIs: Set<String> {
         switch self {
+        case .empty:
+            return []
         case .iri(let value):
             return [value]
         case .negatedPropertySet(let iris):
@@ -156,6 +164,8 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// Estimated complexity for query planning (higher = more expensive)
     public var complexityEstimate: Int {
         switch self {
+        case .empty:
+            return 0  // Identity path
         case .iri:
             return 1
         case .negatedPropertySet:
@@ -183,7 +193,7 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
     /// - Flattens nested alternatives
     public func normalized() -> ExecutionPropertyPath {
         switch self {
-        case .iri, .negatedPropertySet:
+        case .empty, .iri, .negatedPropertySet:
             return self
 
         case .inverse(let inner):
@@ -225,7 +235,8 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
             }
 
             // Rebuild as right-associative chain
-            return alternatives.dropLast().reversed().reduce(alternatives.last!) { acc, next in
+            guard let last = alternatives.last else { return .empty }
+            return alternatives.dropLast().reversed().reduce(last) { acc, next in
                 ExecutionPropertyPath.alternative(next, acc)
             }
 
@@ -246,6 +257,8 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
 extension ExecutionPropertyPath: CustomStringConvertible {
     public var description: String {
         switch self {
+        case .empty:
+            return "()"  // Empty path representation
         case .iri(let value):
             return value
         case .negatedPropertySet(let iris):
@@ -267,7 +280,7 @@ extension ExecutionPropertyPath: CustomStringConvertible {
 
     private var parenthesizedIfComplex: String {
         switch self {
-        case .iri, .negatedPropertySet:
+        case .empty, .iri, .negatedPropertySet:
             return description
         default:
             return "(\(description))"
@@ -314,20 +327,16 @@ extension ExecutionPropertyPath {
 extension ExecutionPropertyPath {
     /// Create a sequence from multiple paths
     public static func sequencePaths(_ paths: ExecutionPropertyPath...) -> ExecutionPropertyPath {
-        guard !paths.isEmpty else {
-            fatalError("ExecutionPropertyPath.sequencePaths requires at least one path")
-        }
-        return paths.dropFirst().reduce(paths.first!) { acc, next in
+        guard let first = paths.first else { return .empty }
+        return paths.dropFirst().reduce(first) { acc, next in
             ExecutionPropertyPath.sequence(acc, next)
         }
     }
 
     /// Create an alternative from multiple paths
     public static func alternativePaths(_ paths: ExecutionPropertyPath...) -> ExecutionPropertyPath {
-        guard !paths.isEmpty else {
-            fatalError("ExecutionPropertyPath.alternativePaths requires at least one path")
-        }
-        return paths.dropFirst().reduce(paths.first!) { acc, next in
+        guard let first = paths.first else { return .empty }
+        return paths.dropFirst().reduce(first) { acc, next in
             ExecutionPropertyPath.alternative(acc, next)
         }
     }

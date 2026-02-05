@@ -592,12 +592,16 @@ public struct HistogramBuilder: Sendable {
             }
 
             let bucketValues = Array(sorted[startIndex..<endIndex])
+            guard let first = bucketValues.first, let last = bucketValues.last else {
+                i = endIndex
+                continue
+            }
             let count = Int64(Double(bucketValues.count) * scaleFactor)
             let distinctCount = Int64(Set(bucketValues).count)
 
             buckets.append(Histogram.Bucket(
-                lowerBound: bucketValues.first!,
-                upperBound: bucketValues.last!,
+                lowerBound: first,
+                upperBound: last,
                 count: count,
                 distinctCount: distinctCount
             ))

@@ -1097,6 +1097,12 @@ public struct SPARQLQueryExecutor: Sendable {
         }
 
         switch path {
+        case .empty:
+            // Empty path - identity, matches when subject == object
+            // This is a degenerate case used for operations on empty path lists
+            // Return empty bindings (no matches) as we cannot enumerate all identity pairs
+            return EvaluationResult(bindings: [], stats: stats)
+
         case .iri(let predicate):
             // Simple predicate - equivalent to a triple pattern
             let pattern = ExecutionTriple(subject: subject, predicate: .value(.string(predicate)), object: object)

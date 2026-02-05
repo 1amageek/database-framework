@@ -145,7 +145,7 @@ public enum Geohash {
             break
         }
 
-        let lastChar = geohash.last!
+        guard let lastChar = geohash.last else { return nil }
         var base = String(geohash.dropLast())
 
         let neighborMap = direction.neighborMap(even: geohash.count % 2 == 0)

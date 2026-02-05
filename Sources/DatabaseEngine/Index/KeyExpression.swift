@@ -147,7 +147,10 @@ public enum KeyExpressionFactory {
 
         // Build nested expression from right to left
         // ["user", "address", "city"] → Nest("user", Nest("address", Field("city")))
-        var expression: KeyExpression = FieldKeyExpression(fieldName: components.last!)
+        guard let lastComponent = components.last else {
+            return EmptyKeyExpression()
+        }
+        var expression: KeyExpression = FieldKeyExpression(fieldName: lastComponent)
         for i in stride(from: components.count - 2, through: 0, by: -1) {
             expression = NestExpression(parentField: components[i], child: expression)
         }
