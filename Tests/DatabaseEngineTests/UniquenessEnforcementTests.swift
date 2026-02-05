@@ -1,6 +1,7 @@
 import Testing
 import Foundation
 import FoundationDB
+import TestSupport
 @testable import DatabaseEngine
 @testable import Core
 
@@ -278,326 +279,342 @@ struct UniquenessEnforcementTests {
 
     @Test("UniquenessViolationTracker record and scan violations")
     func trackerRecordAndScan() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
+
+            let tracker = fdbStore.violationTracker
+            let indexName = "test_violation_idx"
+
+            // Record a violation
+            try await container.database.withTransaction { transaction in
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: Tuple("duplicate@email.com").pack(),
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Scan violations
+            let violations = try await tracker.scanViolations(indexName: indexName)
+            #expect(violations.count == 1)
+            #expect(violations[0].primaryKeys.count == 2)
+
+            // Cleanup
+            try await tracker.clearAllViolations(indexName: indexName)
         }
-
-        let tracker = fdbStore.violationTracker
-        let indexName = "test_violation_idx"
-
-        // Record a violation
-        try await container.database.withTransaction { transaction in
-            try await tracker.recordViolation(
-                indexName: indexName,
-                persistableType: "TestType",
-                valueKey: Tuple("duplicate@email.com").pack(),
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
-            )
-        }
-
-        // Scan violations
-        let violations = try await tracker.scanViolations(indexName: indexName)
-        #expect(violations.count == 1)
-        #expect(violations[0].primaryKeys.count == 2)
-
-        // Cleanup
-        try await tracker.clearAllViolations(indexName: indexName)
     }
 
     @Test("UniquenessViolationTracker hasViolations")
     func trackerHasViolations() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
+
+            let tracker = fdbStore.violationTracker
+            let indexName = "test_has_violations_idx"
+
+            // Initially no violations
+            let hasBefore = try await tracker.hasViolations(indexName: indexName)
+            #expect(hasBefore == false)
+
+            // Add a violation
+            try await container.database.withTransaction { transaction in
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: Tuple("value").pack(),
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Now has violations
+            let hasAfter = try await tracker.hasViolations(indexName: indexName)
+            #expect(hasAfter == true)
+
+            // Cleanup
+            try await tracker.clearAllViolations(indexName: indexName)
         }
-
-        let tracker = fdbStore.violationTracker
-        let indexName = "test_has_violations_idx"
-
-        // Initially no violations
-        let hasBefore = try await tracker.hasViolations(indexName: indexName)
-        #expect(hasBefore == false)
-
-        // Add a violation
-        try await container.database.withTransaction { transaction in
-            try await tracker.recordViolation(
-                indexName: indexName,
-                persistableType: "TestType",
-                valueKey: Tuple("value").pack(),
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
-            )
-        }
-
-        // Now has violations
-        let hasAfter = try await tracker.hasViolations(indexName: indexName)
-        #expect(hasAfter == true)
-
-        // Cleanup
-        try await tracker.clearAllViolations(indexName: indexName)
     }
 
     @Test("UniquenessViolationTracker countViolations")
     func trackerCountViolations() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
-        }
-
-        let tracker = fdbStore.violationTracker
-        let indexName = "test_count_idx"
-
-        // Add multiple violations
-        try await container.database.withTransaction { transaction in
-            for i in 0..<5 {
-                try await tracker.recordViolation(
-                    indexName: indexName,
-                    persistableType: "TestType",
-                    valueKey: Tuple("value\(i)").pack(),
-                    existingPrimaryKey: Tuple("pk\(i)a"),
-                    newPrimaryKey: Tuple("pk\(i)b"),
-                    transaction: transaction
-                )
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
             }
+
+            let tracker = fdbStore.violationTracker
+            let indexName = "test_count_idx"
+
+            // Add multiple violations
+            try await container.database.withTransaction { transaction in
+                for i in 0..<5 {
+                    try await tracker.recordViolation(
+                        indexName: indexName,
+                        persistableType: "TestType",
+                        valueKey: Tuple("value\(i)").pack(),
+                        existingPrimaryKey: Tuple("pk\(i)a"),
+                        newPrimaryKey: Tuple("pk\(i)b"),
+                        transaction: transaction
+                    )
+                }
+            }
+
+            let count = try await tracker.countViolations(indexName: indexName)
+            #expect(count == 5)
+
+            // Cleanup
+            try await tracker.clearAllViolations(indexName: indexName)
         }
-
-        let count = try await tracker.countViolations(indexName: indexName)
-        #expect(count == 5)
-
-        // Cleanup
-        try await tracker.clearAllViolations(indexName: indexName)
     }
 
     @Test("UniquenessViolationTracker clearViolation")
     func trackerClearViolation() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
+
+            let tracker = fdbStore.violationTracker
+            let indexName = "test_clear_idx"
+            let valueKey = Tuple("clearme").pack()
+
+            // Add violation
+            try await container.database.withTransaction { transaction in
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: valueKey,
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Verify it exists
+            let countBefore = try await tracker.countViolations(indexName: indexName)
+            #expect(countBefore == 1)
+
+            // Clear it
+            try await tracker.clearViolation(indexName: indexName, valueKey: valueKey)
+
+            // Verify it's gone
+            let countAfter = try await tracker.countViolations(indexName: indexName)
+            #expect(countAfter == 0)
         }
-
-        let tracker = fdbStore.violationTracker
-        let indexName = "test_clear_idx"
-        let valueKey = Tuple("clearme").pack()
-
-        // Add violation
-        try await container.database.withTransaction { transaction in
-            try await tracker.recordViolation(
-                indexName: indexName,
-                persistableType: "TestType",
-                valueKey: valueKey,
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
-            )
-        }
-
-        // Verify it exists
-        let countBefore = try await tracker.countViolations(indexName: indexName)
-        #expect(countBefore == 1)
-
-        // Clear it
-        try await tracker.clearViolation(indexName: indexName, valueKey: valueKey)
-
-        // Verify it's gone
-        let countAfter = try await tracker.countViolations(indexName: indexName)
-        #expect(countAfter == 0)
     }
 
     @Test("UniquenessViolationTracker violationSummary")
     func trackerViolationSummary() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
+
+            let tracker = fdbStore.violationTracker
+            let indexName = "test_summary_idx"
+
+            // Add violations with different conflict counts
+            try await container.database.withTransaction { transaction in
+                // Violation 1: 2 conflicts
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: Tuple("val1").pack(),
+                    existingPrimaryKey: Tuple("pk1a"),
+                    newPrimaryKey: Tuple("pk1b"),
+                    transaction: transaction
+                )
+
+                // Violation 2: 2 conflicts
+                try await tracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "TestType",
+                    valueKey: Tuple("val2").pack(),
+                    existingPrimaryKey: Tuple("pk2a"),
+                    newPrimaryKey: Tuple("pk2b"),
+                    transaction: transaction
+                )
+            }
+
+            let summary = try await tracker.violationSummary(indexName: indexName)
+            #expect(summary.indexName == indexName)
+            #expect(summary.violationCount == 2)
+            #expect(summary.totalConflictingRecords == 4)
+            #expect(summary.hasViolations == true)
+
+            // Cleanup
+            try await tracker.clearAllViolations(indexName: indexName)
         }
-
-        let tracker = fdbStore.violationTracker
-        let indexName = "test_summary_idx"
-
-        // Add violations with different conflict counts
-        try await container.database.withTransaction { transaction in
-            // Violation 1: 2 conflicts
-            try await tracker.recordViolation(
-                indexName: indexName,
-                persistableType: "TestType",
-                valueKey: Tuple("val1").pack(),
-                existingPrimaryKey: Tuple("pk1a"),
-                newPrimaryKey: Tuple("pk1b"),
-                transaction: transaction
-            )
-
-            // Violation 2: 2 conflicts
-            try await tracker.recordViolation(
-                indexName: indexName,
-                persistableType: "TestType",
-                valueKey: Tuple("val2").pack(),
-                existingPrimaryKey: Tuple("pk2a"),
-                newPrimaryKey: Tuple("pk2b"),
-                transaction: transaction
-            )
-        }
-
-        let summary = try await tracker.violationSummary(indexName: indexName)
-        #expect(summary.indexName == indexName)
-        #expect(summary.violationCount == 2)
-        #expect(summary.totalConflictingRecords == 4)
-        #expect(summary.hasViolations == true)
-
-        // Cleanup
-        try await tracker.clearAllViolations(indexName: indexName)
     }
 
     // MARK: - FDBContext Violation API Tests
 
     @Test("FDBContext scanUniquenessViolations")
     func contextScanViolations() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let context = container.newContext()
-        let indexName = "test_context_scan_idx"
+            let context = container.newContext()
+            let indexName = "test_context_scan_idx"
 
-        // Add a violation directly to tracker
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
-        }
+            // Add a violation directly to tracker
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
 
-        try await container.database.withTransaction { transaction in
-            try await fdbStore.violationTracker.recordViolation(
-                indexName: indexName,
-                persistableType: "UniqueTestUser",
-                valueKey: Tuple("context@test.com").pack(),
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
+            try await container.database.withTransaction { transaction in
+                try await fdbStore.violationTracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "UniqueTestUser",
+                    valueKey: Tuple("context@test.com").pack(),
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Use context API to scan
+            let violations = try await context.scanUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
+            )
+            #expect(violations.count == 1)
+
+            // Cleanup
+            try await context.clearAllUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
             )
         }
-
-        // Use context API to scan
-        let violations = try await context.scanUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
-        #expect(violations.count == 1)
-
-        // Cleanup
-        try await context.clearAllUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
     }
 
     @Test("FDBContext hasUniquenessViolations")
     func contextHasViolations() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let context = container.newContext()
-        let indexName = "test_context_has_idx"
+            let context = container.newContext()
+            let indexName = "test_context_has_idx"
 
-        // Check no violations initially
-        let hasBefore = try await context.hasUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
-        #expect(hasBefore == false)
+            // Check no violations initially
+            let hasBefore = try await context.hasUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
+            )
+            #expect(hasBefore == false)
 
-        // Add a violation
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
-        }
+            // Add a violation
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
 
-        try await container.database.withTransaction { transaction in
-            try await fdbStore.violationTracker.recordViolation(
-                indexName: indexName,
-                persistableType: "UniqueTestUser",
-                valueKey: Tuple("test").pack(),
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
+            try await container.database.withTransaction { transaction in
+                try await fdbStore.violationTracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "UniqueTestUser",
+                    valueKey: Tuple("test").pack(),
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Check violations exist
+            let hasAfter = try await context.hasUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
+            )
+            #expect(hasAfter == true)
+
+            // Cleanup
+            try await context.clearAllUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
             )
         }
-
-        // Check violations exist
-        let hasAfter = try await context.hasUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
-        #expect(hasAfter == true)
-
-        // Cleanup
-        try await context.clearAllUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
     }
 
     @Test("FDBContext uniquenessViolationSummary")
     func contextViolationSummary() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let context = container.newContext()
-        let indexName = "test_context_summary_idx"
+            let context = container.newContext()
+            let indexName = "test_context_summary_idx"
 
-        // Add violations
-        let store = try await container.store(for: UniqueTestUser.self)
-        guard let fdbStore = store as? FDBDataStore else {
-            Issue.record("Store is not FDBDataStore")
-            return
-        }
+            // Add violations
+            let store = try await container.store(for: UniqueTestUser.self)
+            guard let fdbStore = store as? FDBDataStore else {
+                Issue.record("Store is not FDBDataStore")
+                return
+            }
 
-        try await container.database.withTransaction { transaction in
-            try await fdbStore.violationTracker.recordViolation(
-                indexName: indexName,
-                persistableType: "UniqueTestUser",
-                valueKey: Tuple("val1").pack(),
-                existingPrimaryKey: Tuple("pk1"),
-                newPrimaryKey: Tuple("pk2"),
-                transaction: transaction
+            try await container.database.withTransaction { transaction in
+                try await fdbStore.violationTracker.recordViolation(
+                    indexName: indexName,
+                    persistableType: "UniqueTestUser",
+                    valueKey: Tuple("val1").pack(),
+                    existingPrimaryKey: Tuple("pk1"),
+                    newPrimaryKey: Tuple("pk2"),
+                    transaction: transaction
+                )
+            }
+
+            // Get summary via context API
+            let summary = try await context.uniquenessViolationSummary(
+                for: UniqueTestUser.self,
+                indexName: indexName
+            )
+            #expect(summary.violationCount == 1)
+            #expect(summary.totalConflictingRecords == 2)
+
+            // Cleanup
+            try await context.clearAllUniquenessViolations(
+                for: UniqueTestUser.self,
+                indexName: indexName
             )
         }
-
-        // Get summary via context API
-        let summary = try await context.uniquenessViolationSummary(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
-        #expect(summary.violationCount == 1)
-        #expect(summary.totalConflictingRecords == 2)
-
-        // Cleanup
-        try await context.clearAllUniquenessViolations(
-            for: UniqueTestUser.self,
-            indexName: indexName
-        )
     }
 
     // MARK: - OnlineIndexerError Tests

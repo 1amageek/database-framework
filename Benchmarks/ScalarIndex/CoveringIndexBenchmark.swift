@@ -42,6 +42,10 @@ struct CoveringIndexBenchmark {
 
     @Test("Covering Index Baseline")
     func coveringIndexBaseline() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+
         // Setup: Create test users
         let userCount = 300
         var users: [User] = []
@@ -54,13 +58,17 @@ struct CoveringIndexBenchmark {
             ))
         }
 
+        // Re-create context after directory cleanup
+        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
         // Insert all users
         for user in users {
-            context.insert(user)
+            ctx.insert(user)
         }
-        try await context.save()
-
-        nonisolated(unsafe) let ctx = context
+        try await ctx.save()
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 3,
@@ -99,6 +107,16 @@ struct CoveringIndexBenchmark {
 
     @Test("Index Scan Scalability")
     func indexScanScalability() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+
+        // Re-create context after directory cleanup
+        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
         // Setup: Create test users
         let userCount = 500
 
@@ -108,11 +126,9 @@ struct CoveringIndexBenchmark {
                 name: "Scan User \(i)",
                 age: 20 + (i % 50)
             )
-            context.insert(user)
+            ctx.insert(user)
         }
-        try await context.save()
-
-        nonisolated(unsafe) let ctx = context
+        try await ctx.save()
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,
@@ -143,6 +159,16 @@ struct CoveringIndexBenchmark {
 
     @Test("Batch Fetch Performance")
     func batchFetchPerformance() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+
+        // Re-create context after directory cleanup
+        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
         // Setup: Create test dataset
         let userCount = 300
         for i in 0..<userCount {
@@ -151,11 +177,9 @@ struct CoveringIndexBenchmark {
                 name: "Batch User \(i)",
                 age: 25 + (i % 40)
             )
-            context.insert(user)
+            ctx.insert(user)
         }
-        try await context.save()
-
-        nonisolated(unsafe) let ctx = context
+        try await ctx.save()
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,

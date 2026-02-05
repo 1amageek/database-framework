@@ -2,6 +2,7 @@ import Testing
 import Foundation
 import FoundationDB
 import Core
+import TestSupport
 @testable import DatabaseEngine
 
 /// Tests for FDBContainer.resolveDirectory functionality
@@ -71,167 +72,187 @@ struct ResolveDirectoryTests {
 
     @Test("resolveDirectory returns valid subspace for Persistable type")
     func resolveDirectoryReturnsValidSubspace() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        // Subspace should have a non-empty prefix
-        #expect(subspace.prefix.count > 0)
+            // Subspace should have a non-empty prefix
+            #expect(subspace.prefix.count > 0)
+        }
     }
 
     @Test("resolveDirectory returns same subspace for same type")
     func resolveDirectorySameTypeReturnsSameSubspace() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
-        let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        // Both calls should return the same subspace (cached)
-        #expect(subspace1.prefix == subspace2.prefix)
+            // Both calls should return the same subspace (cached)
+            #expect(subspace1.prefix == subspace2.prefix)
+        }
     }
 
     @Test("resolveDirectory returns different subspaces for different types")
     func resolveDirectoryDifferentTypesReturnsDifferentSubspaces() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let userSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
-        let productSubspace = try await container.resolveDirectory(for: DirectoryProduct.self)
+            let userSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let productSubspace = try await container.resolveDirectory(for: DirectoryProduct.self)
 
-        // Different types should have different subspaces
-        #expect(userSubspace.prefix != productSubspace.prefix)
+            // Different types should have different subspaces
+            #expect(userSubspace.prefix != productSubspace.prefix)
+        }
     }
 
     @Test("resolveDirectory handles nested directory paths")
     func resolveDirectoryHandlesNestedPaths() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let subspace = try await container.resolveDirectory(for: NestedDirectoryItem.self)
+            let subspace = try await container.resolveDirectory(for: NestedDirectoryItem.self)
 
-        // Should resolve deeply nested path successfully
-        #expect(subspace.prefix.count > 0)
+            // Should resolve deeply nested path successfully
+            #expect(subspace.prefix.count > 0)
+        }
     }
 
     // MARK: - Type-Erased Resolution Tests
 
     @Test("resolveDirectory works with type-erased Persistable type")
     func resolveDirectoryTypeErased() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let persistableType: any Persistable.Type = DirectoryUser.self
+            let persistableType: any Persistable.Type = DirectoryUser.self
 
-        let subspace = try await container.resolveDirectory(for: persistableType)
+            let subspace = try await container.resolveDirectory(for: persistableType)
 
-        #expect(subspace.prefix.count > 0)
+            #expect(subspace.prefix.count > 0)
+        }
     }
 
     @Test("Type-erased resolution returns same subspace as generic resolution")
     func typeErasedResolutionMatchesGeneric() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let genericSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let genericSubspace = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        let persistableType: any Persistable.Type = DirectoryUser.self
-        let typeErasedSubspace = try await container.resolveDirectory(for: persistableType)
+            let persistableType: any Persistable.Type = DirectoryUser.self
+            let typeErasedSubspace = try await container.resolveDirectory(for: persistableType)
 
-        #expect(genericSubspace.prefix == typeErasedSubspace.prefix)
+            #expect(genericSubspace.prefix == typeErasedSubspace.prefix)
+        }
     }
 
     // MARK: - Caching Tests
 
     @Test("Directory resolution is cached")
     func directoryResolutionIsCached() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        // First call resolves directory
-        let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
+            // First call resolves directory
+            let subspace1 = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        // Second call should hit cache and return same result
-        let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
+            // Second call should hit cache and return same result
+            let subspace2 = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        // Verify same subspace
-        #expect(subspace1.prefix == subspace2.prefix)
+            // Verify same subspace
+            #expect(subspace1.prefix == subspace2.prefix)
+        }
     }
 
     // MARK: - Integration Tests
 
     @Test("Resolved subspace can be used for data storage")
     func resolvedSubspaceCanStoreData() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
+            let subspace = try await container.resolveDirectory(for: DirectoryUser.self)
 
-        // Write test data
-        let testKey = subspace.pack(Tuple("test", "key"))
-        let testValue: [UInt8] = [1, 2, 3, 4, 5]
+            // Write test data
+            let testKey = subspace.pack(Tuple("test", "key"))
+            let testValue: [UInt8] = [1, 2, 3, 4, 5]
 
-        try await container.database.withTransaction { transaction in
-            transaction.setValue(testValue, for: testKey)
-        }
+            try await container.database.withTransaction { transaction in
+                transaction.setValue(testValue, for: testKey)
+            }
 
-        // Read back in a new transaction
-        let readValue: FDB.Bytes? = try await container.database.withTransaction { transaction in
-            try await transaction.getValue(for: testKey, snapshot: false)
-        }
+            // Read back in a new transaction
+            let readValue: FDB.Bytes? = try await container.database.withTransaction { transaction in
+                try await transaction.getValue(for: testKey, snapshot: false)
+            }
 
-        #expect(readValue == testValue)
+            #expect(readValue == testValue)
 
-        // Cleanup
-        try await container.database.withTransaction { transaction in
-            transaction.clear(key: testKey)
+            // Cleanup
+            try await container.database.withTransaction { transaction in
+                transaction.clear(key: testKey)
+            }
         }
     }
 
     @Test("Multiple containers share same directory for same type")
     func multipleContainersShareDirectory() async throws {
-        try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        try await FDBTestSetup.shared.withSerializedAccess {
+            try await FDBTestEnvironment.shared.ensureInitialized()
+            let database = try FDBClient.openDatabase()
 
-        // Clean up first
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "resolve"])
+            // Clean up first
+            let directoryLayer = DirectoryLayer(database: database)
+            try? await directoryLayer.remove(path: ["test", "resolve"])
 
-        let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
+            let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
-        let container1 = FDBContainer(database: database, schema: schema, security: .disabled)
-        let container2 = FDBContainer(database: database, schema: schema, security: .disabled)
+            let container1 = FDBContainer(database: database, schema: schema, security: .disabled)
+            let container2 = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
-        let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)
+            let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
+            let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)
 
-        // Same type should resolve to same directory across containers
-        #expect(subspace1.prefix == subspace2.prefix)
+            // Same type should resolve to same directory across containers
+            #expect(subspace1.prefix == subspace2.prefix)
 
-        // Cleanup
-        try? await directoryLayer.remove(path: ["test", "resolve"])
+            // Cleanup
+            try? await directoryLayer.remove(path: ["test", "resolve"])
+        }
     }
 
     // MARK: - store(for:) Tests
 
     @Test("store(for:) returns DataStore with correct subspace")
     func storeForReturnsCorrectDataStore() async throws {
-        let container = try await setupContainer()
-        // Clean up at START of test
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            // Clean up at START of test
+            try await cleanup(container: container)
 
-        let store = try await container.store(for: DirectoryUser.self)
+            let store = try await container.store(for: DirectoryUser.self)
 
-        // Store should be functional
-        #expect(store is FDBDataStore)
+            // Store should be functional
+            #expect(store is FDBDataStore)
+        }
     }
 }

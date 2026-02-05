@@ -16,7 +16,7 @@ public enum SchemaFileExporter {
 
         // Directory
         if !catalog.directoryComponents.isEmpty {
-            lines.append("  #Directory:")
+            lines.append("  \"#Directory\":")
             for component in catalog.directoryComponents {
                 switch component {
                 case .staticPath(let path):
@@ -25,7 +25,6 @@ public enum SchemaFileExporter {
                     lines.append("    - field: \(fieldName)")
                 }
             }
-            lines.append("")
         }
 
         // Fields
@@ -53,8 +52,7 @@ public enum SchemaFileExporter {
         }
 
         if !complexIndexes.isEmpty {
-            lines.append("")
-            lines.append("  #Index:")
+            lines.append("  \"#Index\":")
             for index in complexIndexes {
                 lines.append(contentsOf: indexToYAML(index))
             }
@@ -222,7 +220,7 @@ public enum SchemaFileExporter {
 
         case "relationship_meta":
             // This is #Relationship, not #Index
-            lines.append("  #Relationship:")
+            lines.append("  \"#Relationship\":")
             if let type = index.metadata["relationshipType"] {
                 lines.append("    - type: \(type)")
             }

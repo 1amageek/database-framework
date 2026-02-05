@@ -179,13 +179,17 @@ public struct SPARQLQueryExecutor: Sendable {
                 strategy: strategy,
                 transaction: transaction
             )
-            let (bindings, optionalStats) = try await evaluateOptional(
+            var (bindings, optionalStats) = try await evaluateOptional(
                 leftBindings: leftResult.bindings,
                 rightPattern: right,
                 indexSubspace: indexSubspace,
                 strategy: strategy,
                 transaction: transaction
             )
+            // Apply filter after OPTIONAL evaluation (e.g., FILTER(BOUND(?x)))
+            if let filter = filter {
+                bindings = bindings.filter { filter.evaluate($0) }
+            }
             return EvaluationResult(bindings: bindings, stats: stats)
                 .mergedStats(with: leftResult.stats)
                 .mergedStats(with: optionalStats)
@@ -209,13 +213,20 @@ public struct SPARQLQueryExecutor: Sendable {
                 .mergedStats(with: rightResult.stats)
 
         case .filter(let innerPattern, let expression):
-            // Pass filter to inner pattern for pushdown optimization
+            // Combine nested filters with AND
+            // e.g., .filter(.filter(pattern, A), B) → pattern with filter: AND(A, B)
+            let combinedFilter: FilterExpression
+            if let existingFilter = filter {
+                combinedFilter = .and(existingFilter, expression)
+            } else {
+                combinedFilter = expression
+            }
             let innerResult = try await evaluate(
                 pattern: innerPattern,
                 indexSubspace: indexSubspace,
                 strategy: strategy,
                 transaction: transaction,
-                filter: expression
+                filter: combinedFilter
             )
             // Post-scan filtering is already handled in executePattern()
             return EvaluationResult(bindings: innerResult.bindings, stats: stats)
@@ -342,28 +353,45 @@ public struct SPARQLQueryExecutor: Sendable {
         // Start with empty binding
         var currentBindings: [VariableBinding] = [VariableBinding()]
 
+        // Determine which variables the filter needs
+        let filterVariables = filter?.variables ?? []
+
         // Execute patterns in optimized order
-        for pattern in orderedPatterns {
+        for (index, pattern) in orderedPatterns.enumerated() {
             stats.joinOperations += 1
             var newBindings: [VariableBinding] = []
+
+            // Determine which variables will be bound after this pattern
+            var boundVariablesAfterPattern = Set<String>()
+            for i in 0...index {
+                boundVariablesAfterPattern.formUnion(orderedPatterns[i].variables)
+            }
+
+            // Only apply filter to this pattern if all filter variables are bound
+            let canApplyFilter = filterVariables.isSubset(of: boundVariablesAfterPattern)
+            let patternFilter = canApplyFilter ? filter : nil
 
             for binding in currentBindings {
                 // Substitute variables in pattern
                 let substituted = pattern.substitute(binding)
 
-                // Execute pattern with filter
+                // Execute pattern (without filter - filter applied after merge)
                 let (matches, scanStats) = try await executePattern(
                     substituted,
                     indexSubspace: indexSubspace,
                     strategy: strategy,
                     transaction: transaction,
-                    filter: filter
+                    filter: nil  // Don't push filter into single pattern scan
                 )
                 stats.indexScans += scanStats.indexScans
 
-                // Merge bindings
+                // Merge bindings and apply filter
                 for match in matches {
                     if let merged = binding.merged(with: match) {
+                        // Apply filter only if all needed variables are now bound
+                        if let f = patternFilter {
+                            guard f.evaluate(merged) else { continue }
+                        }
                         newBindings.append(merged)
                     }
                 }
@@ -375,6 +403,15 @@ public struct SPARQLQueryExecutor: Sendable {
             // Early termination if no results
             if currentBindings.isEmpty {
                 break
+            }
+        }
+
+        // Apply filter one final time if not yet applied (safety)
+        if let filter = filter, !currentBindings.isEmpty {
+            let finalVars = orderedPatterns.reduce(into: Set<String>()) { $0.formUnion($1.variables) }
+            if !filterVariables.isSubset(of: finalVars) {
+                // Filter variables not in any pattern - apply post-hoc
+                currentBindings = currentBindings.filter { filter.evaluate($0) }
             }
         }
 
@@ -481,7 +518,8 @@ public struct SPARQLQueryExecutor: Sendable {
                 pattern,
                 indexSubspace: indexSubspace,
                 strategy: strategy,
-                transaction: transaction
+                transaction: transaction,
+                filter: filter
             )
         }
 
@@ -581,12 +619,13 @@ public struct SPARQLQueryExecutor: Sendable {
         return (results, stats)
     }
 
-    /// Legacy pattern execution (no property filtering)
+    /// Legacy pattern execution (with optional filter support)
     private func executePatternLegacy(
         _ pattern: ExecutionTriple,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any TransactionProtocol,
+        filter: FilterExpression?
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var stats = ExecutionStatistics()
         stats.indexScans = 1
@@ -606,6 +645,10 @@ public struct SPARQLQueryExecutor: Sendable {
 
         for try await (key, _) in stream {
             if let binding = try parseKeyToBinding(key, pattern: pattern, ordering: ordering, subspace: orderingSubspace) {
+                // Apply filter if provided
+                if let filter = filter {
+                    guard filter.evaluate(binding) else { continue }
+                }
                 results.append(binding)
             }
         }

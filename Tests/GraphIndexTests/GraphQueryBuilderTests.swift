@@ -107,24 +107,26 @@ struct GraphQueryBuilderTests {
 
     @Test("executeItems() throws executeItemsNotSupported error")
     func executeItemsThrowsError() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
-        let edge1 = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
+            let alice = uniqueID("Alice")
+            let edge1 = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
 
-        context.insert(edge1)
-        try await context.save()
+            context.insert(edge1)
+            try await context.save()
 
-        // Test: executeItems() should throw
-        await #expect(throws: GraphQueryError.self) {
-            _ = try await context.graph(GraphQueryTestEdge.self)
-                .defaultIndex()
-                .from(alice)
-                .executeItems()
+            // Test: executeItems() should throw
+            await #expect(throws: GraphQueryError.self) {
+                _ = try await context.graph(GraphQueryTestEdge.self)
+                    .defaultIndex()
+                    .from(alice)
+                    .executeItems()
+            }
         }
     }
 
@@ -142,164 +144,176 @@ struct GraphQueryBuilderTests {
 
     @Test("execute() returns edges with from pattern")
     func executeWithFromPattern() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
-        let bob = uniqueID("Bob")
-        let carol = uniqueID("Carol")
+            let alice = uniqueID("Alice")
+            let bob = uniqueID("Bob")
+            let carol = uniqueID("Carol")
 
-        let edge1 = makeEdge(source: alice, predicate: "knows", target: bob)
-        let edge2 = makeEdge(source: alice, predicate: "knows", target: carol)
-        let edge3 = makeEdge(source: bob, predicate: "knows", target: carol)
+            let edge1 = makeEdge(source: alice, predicate: "knows", target: bob)
+            let edge2 = makeEdge(source: alice, predicate: "knows", target: carol)
+            let edge3 = makeEdge(source: bob, predicate: "knows", target: carol)
 
-        context.insert(edge1)
-        context.insert(edge2)
-        context.insert(edge3)
-        try await context.save()
+            context.insert(edge1)
+            context.insert(edge2)
+            context.insert(edge3)
+            try await context.save()
 
-        // Test: Query edges from Alice
-        let edges = try await context.graph(GraphQueryTestEdge.self)
-            .defaultIndex()
-            .from(alice)
-            .execute()
+            // Test: Query edges from Alice
+            let edges = try await context.graph(GraphQueryTestEdge.self)
+                .defaultIndex()
+                .from(alice)
+                .execute()
 
-        #expect(edges.count == 2)
-        #expect(edges.allSatisfy { $0.from == alice })
+            #expect(edges.count == 2)
+            #expect(edges.allSatisfy { $0.from == alice })
+        }
     }
 
     @Test("execute() returns edges with from and edge pattern")
     func executeWithFromAndEdgePattern() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
-        let bob = uniqueID("Bob")
-        let carol = uniqueID("Carol")
+            let alice = uniqueID("Alice")
+            let bob = uniqueID("Bob")
+            let carol = uniqueID("Carol")
 
-        let edge1 = makeEdge(source: alice, predicate: "knows", target: bob)
-        let edge2 = makeEdge(source: alice, predicate: "likes", target: carol)
+            let edge1 = makeEdge(source: alice, predicate: "knows", target: bob)
+            let edge2 = makeEdge(source: alice, predicate: "likes", target: carol)
 
-        context.insert(edge1)
-        context.insert(edge2)
-        try await context.save()
+            context.insert(edge1)
+            context.insert(edge2)
+            try await context.save()
 
-        // Test: Query edges from Alice with "knows" predicate
-        let edges = try await context.graph(GraphQueryTestEdge.self)
-            .defaultIndex()
-            .from(alice)
-            .edge("knows")
-            .execute()
+            // Test: Query edges from Alice with "knows" predicate
+            let edges = try await context.graph(GraphQueryTestEdge.self)
+                .defaultIndex()
+                .from(alice)
+                .edge("knows")
+                .execute()
 
-        #expect(edges.count == 1)
-        #expect(edges.first?.from == alice)
-        #expect(edges.first?.edge == "knows")
-        #expect(edges.first?.to == bob)
+            #expect(edges.count == 1)
+            #expect(edges.first?.from == alice)
+            #expect(edges.first?.edge == "knows")
+            #expect(edges.first?.to == bob)
+        }
     }
 
     @Test("execute() returns edges with to pattern")
     func executeWithToPattern() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
-        let bob = uniqueID("Bob")
-        let carol = uniqueID("Carol")
+            let alice = uniqueID("Alice")
+            let bob = uniqueID("Bob")
+            let carol = uniqueID("Carol")
 
-        let edge1 = makeEdge(source: alice, predicate: "knows", target: carol)
-        let edge2 = makeEdge(source: bob, predicate: "likes", target: carol)
+            let edge1 = makeEdge(source: alice, predicate: "knows", target: carol)
+            let edge2 = makeEdge(source: bob, predicate: "likes", target: carol)
 
-        context.insert(edge1)
-        context.insert(edge2)
-        try await context.save()
+            context.insert(edge1)
+            context.insert(edge2)
+            try await context.save()
 
-        // Test: Query edges to Carol
-        let edges = try await context.graph(GraphQueryTestEdge.self)
-            .defaultIndex()
-            .to(carol)
-            .execute()
+            // Test: Query edges to Carol
+            let edges = try await context.graph(GraphQueryTestEdge.self)
+                .defaultIndex()
+                .to(carol)
+                .execute()
 
-        #expect(edges.count == 2)
-        #expect(edges.allSatisfy { $0.to == carol })
+            #expect(edges.count == 2)
+            #expect(edges.allSatisfy { $0.to == carol })
+        }
     }
 
     @Test("execute() returns empty when no matches")
     func executeReturnsEmptyWhenNoMatches() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
-        let nonExistent = uniqueID("NonExistent")
+            let alice = uniqueID("Alice")
+            let nonExistent = uniqueID("NonExistent")
 
-        let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
+            let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Bob"))
 
-        context.insert(edge)
-        try await context.save()
+            context.insert(edge)
+            try await context.save()
 
-        // Test: Query with non-existent source
-        let edges = try await context.graph(GraphQueryTestEdge.self)
-            .defaultIndex()
-            .from(nonExistent)
-            .execute()
+            // Test: Query with non-existent source
+            let edges = try await context.graph(GraphQueryTestEdge.self)
+                .defaultIndex()
+                .from(nonExistent)
+                .execute()
 
-        #expect(edges.isEmpty)
+            #expect(edges.isEmpty)
+        }
     }
 
     @Test("execute() respects limit")
     func executeRespectsLimit() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        let alice = uniqueID("Alice")
+            let alice = uniqueID("Alice")
 
-        // Setup: Save many edges
-        for i in 1...10 {
-            let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Person\(i)"))
-            context.insert(edge)
+            // Setup: Save many edges
+            for i in 1...10 {
+                let edge = makeEdge(source: alice, predicate: "knows", target: uniqueID("Person\(i)"))
+                context.insert(edge)
+            }
+            try await context.save()
+
+            // Test: Query with limit
+            let edges = try await context.graph(GraphQueryTestEdge.self)
+                .defaultIndex()
+                .from(alice)
+                .limit(5)
+                .execute()
+
+            #expect(edges.count == 5)
         }
-        try await context.save()
-
-        // Test: Query with limit
-        let edges = try await context.graph(GraphQueryTestEdge.self)
-            .defaultIndex()
-            .from(alice)
-            .limit(5)
-            .execute()
-
-        #expect(edges.count == 5)
     }
 
     // MARK: - Error Cases
 
     @Test("execute() throws when index not found")
     func executeThrowsWhenIndexNotFound() async throws {
-        let container = try await setupContainer()
-        try await cleanup(container: container)
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
 
-        let context = FDBContext(container: container)
+            let context = FDBContext(container: container)
 
-        // Test: Using field combination that doesn't have an index should throw
-        // The actual index is defined on (source, predicate, target), not (id, source, target)
-        await #expect(throws: GraphQueryError.self) {
-            _ = try await context.graph(GraphQueryTestEdge.self)
-                .index(\.id, \.source, \.target)
-                .from("Alice")
-                .execute()
+            // Test: Using field combination that doesn't have an index should throw
+            // The actual index is defined on (source, predicate, target), not (id, source, target)
+            await #expect(throws: GraphQueryError.self) {
+                _ = try await context.graph(GraphQueryTestEdge.self)
+                    .index(\.id, \.source, \.target)
+                    .from("Alice")
+                    .execute()
+            }
         }
     }
 }

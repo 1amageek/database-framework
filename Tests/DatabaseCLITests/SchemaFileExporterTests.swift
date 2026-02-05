@@ -29,7 +29,7 @@ struct SchemaFileExporterTests {
         let yaml = try SchemaFileExporter.toYAML(catalog)
 
         #expect(yaml.contains("User:"))
-        #expect(yaml.contains("#Directory:"))
+        #expect(yaml.contains("\"#Directory\":"))
         #expect(yaml.contains("- app"))
         #expect(yaml.contains("- users"))
         #expect(yaml.contains("id: string"))
@@ -119,7 +119,7 @@ struct SchemaFileExporterTests {
 
         let yaml = try SchemaFileExporter.toYAML(catalog)
 
-        #expect(yaml.contains("#Index:"))
+        #expect(yaml.contains("\"#Index\":"))
         #expect(yaml.contains("- kind: graph"))
         #expect(yaml.contains("from: follower"))
         #expect(yaml.contains("edge: follows"))
@@ -144,7 +144,7 @@ struct SchemaFileExporterTests {
 
         let yaml = try SchemaFileExporter.toYAML(catalog)
 
-        #expect(yaml.contains("#Directory:"))
+        #expect(yaml.contains("\"#Directory\":"))
         #expect(yaml.contains("- orders"))
         #expect(yaml.contains("- field: tenantId"))
     }
@@ -172,7 +172,7 @@ struct SchemaFileExporterTests {
 
         let yaml = try SchemaFileExporter.toYAML(catalog)
 
-        #expect(yaml.contains("#Index:"))
+        #expect(yaml.contains("\"#Index\":"))
         #expect(yaml.contains("- kind: scalar"))
         #expect(yaml.contains("name: name_age_idx"))
         #expect(yaml.contains("fields: [name, age]"))
@@ -226,6 +226,9 @@ struct SchemaFileExporterTests {
 
         // Export to YAML
         let yaml = try SchemaFileExporter.toYAML(original)
+        print("=== YAML ===")
+        print(yaml)
+        print("=== END ===")
 
         // Re-import
         let reimported = try SchemaFileParser.parseYAML(yaml)

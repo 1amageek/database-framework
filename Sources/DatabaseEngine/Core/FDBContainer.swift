@@ -207,7 +207,11 @@ public final class FDBContainer: Sendable {
     ///
     /// Index state is persisted in FoundationDB. Once indexes are `readable`,
     /// subsequent calls are no-ops.
-    private func ensureIndexesReady() async throws {
+    ///
+    /// - Note: The async `init(for:)` calls this automatically. When using the
+    ///   synchronous `init(database:schema:)`, call this method manually before
+    ///   performing index operations.
+    public func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
 

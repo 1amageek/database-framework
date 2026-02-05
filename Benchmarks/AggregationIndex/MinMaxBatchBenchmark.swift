@@ -39,6 +39,16 @@ struct MinMaxBatchBenchmark {
 
     @Test("MIN/MAX Index vs Full Scan")
     func minMaxIndexedVsScan() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+
+        // Re-create context after directory cleanup
+        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
         // Setup: Create test data with 50 regions
         let regions = (0..<50).map { "region_\($0)" }
         var sales: [Sale] = []
@@ -55,12 +65,9 @@ struct MinMaxBatchBenchmark {
 
         // Insert all sales
         for sale in sales {
-            context.insert(sale)
+            ctx.insert(sale)
         }
-        try await context.save()
-
-        nonisolated(unsafe) let ctx = context
-        nonisolated(unsafe) let testRegions = regions
+        try await ctx.save()
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 3,
@@ -117,16 +124,31 @@ struct MinMaxBatchBenchmark {
 
     @Test("Aggregation Scalability Test")
     func aggregationScalability() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+
+        // Re-create context and insert test data
+        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
+        // Create test data: 50 regions x 50 sales each
+        let regions = (0..<50).map { "region_\($0)" }
+        for region in regions {
+            for _ in 0..<50 {
+                ctx.insert(Sale(region: region, amount: Double.random(in: 100...1000)))
+            }
+        }
+        try await ctx.save()
+
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,
             measurementIterations: 20,
             throughputDuration: 2.0,
             measureMemory: false
         ))
-
-        nonisolated(unsafe) let ctx = context
-        nonisolated(unsafe) let db = database
-        nonisolated(unsafe) let cont = container
 
         // Test different numbers of returned groups
         let result = try await runner.scale(
@@ -156,6 +178,16 @@ struct MinMaxBatchBenchmark {
 
     @Test("Multiple Aggregations Performance")
     func multipleAggregations() async throws {
+        // Clean up previous test data to ensure isolation
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+
+        // Re-create context after directory cleanup
+        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
+        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await cont.ensureIndexesReady()
+        let ctx = FDBContext(container: cont)
+
         // Setup: Create test data
         let regions = (0..<30).map { "region_\($0)" }
         var sales: [Sale] = []
@@ -170,11 +202,9 @@ struct MinMaxBatchBenchmark {
         }
 
         for sale in sales {
-            context.insert(sale)
+            ctx.insert(sale)
         }
-        try await context.save()
-
-        nonisolated(unsafe) let ctx = context
+        try await ctx.save()
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,

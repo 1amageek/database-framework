@@ -44,10 +44,14 @@ struct SPARQLFunctionDebugTest {
     func testDataInsertionAndIndex() async throws {
         let database = try FDBClient.openDatabase()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        // Wait for indexes to be ready
-        try await Task.sleep(for: .milliseconds(100))
+        // Clean up directory BEFORE creating container to avoid stale state
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["test", "sparql_debug"])
+
+        // Create container and ensure indexes are ready
+        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await container.ensureIndexesReady()
 
         let context = container.newContext()
 
@@ -95,24 +99,14 @@ struct SPARQLFunctionDebugTest {
     func testExecuteSPARQLString() async throws {
         let database = try FDBClient.openDatabase()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
+
+        // Clean up directory BEFORE creating container to avoid stale state
+        let directoryLayer = DirectoryLayer(database: database)
+        try? await directoryLayer.remove(path: ["test", "sparql_debug"])
+
+        // Create container and ensure indexes are ready (handles all index state management)
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
-
-        // Set index to readable (required for SPARQL queries)
-        let subspace = try await container.resolveDirectory(for: TestTriple.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in TestTriple.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-            print("DEBUG: Index '\(descriptor.name)' state = \(currentState)")
-            if currentState == .disabled {
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-                print("DEBUG: Enabled and made readable")
-            } else if currentState == .writeOnly {
-                try await indexStateManager.makeReadable(descriptor.name)
-                print("DEBUG: Made readable")
-            }
-        }
+        try await container.ensureIndexesReady()
 
         let context = container.newContext()
 

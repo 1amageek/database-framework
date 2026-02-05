@@ -1,9 +1,42 @@
 # Benchmark Baseline
 
 **Date**: 2026-02-05
-**Optimizations Applied**: Parallel FDB reads, FieldMap caching, Varint optimization, Zero-copy Skip List
+**Optimizations Applied**: Parallel FDB reads, FieldMap caching, Varint optimization, Zero-copy Skip List, IndexDescriptor fieldNames cache
 
-## Results
+## Latest Benchmark Results (2026-02-05)
+
+### ScalarIndex: Covering Index Benchmark
+
+| テスト | p95 Latency | Throughput | 改善 |
+|--------|-------------|------------|------|
+| Fetch All Users | 5.49ms | 208 ops/s | Throughput +3.4% ✅ |
+| Batch Fetch | 25.87ms | 40 ops/s | Latency +4.3% ✅ |
+
+### AggregationIndex: MIN/MAX Benchmark
+
+| テスト | p95 Latency | Throughput | 改善 |
+|--------|-------------|------------|------|
+| MIN/MAX vs Full Scan | 3.82ms | 372 ops/s | Throughput +0.6% ✅ |
+| Multiple Aggregations | 2.83ms | 496 ops/s | Throughput +25.9% ✅ |
+
+### RankIndex: Range Tree Benchmark
+
+| テスト | p95 Latency | Throughput | 改善 |
+|--------|-------------|------------|------|
+| TopKHeap | 403ms | 2 ops/s | Latency +31.8% ✅, Throughput +19.5% ✅ |
+
+### BitmapIndex: Serialization Benchmark
+
+| テスト | p95 Latency | Throughput | 改善 |
+|--------|-------------|------------|------|
+| JSON Serialization | 0.07ms | 14,706 ops/s | Latency +6.2% ✅ |
+| JSON Deserialization | 0.53ms | 2,371 ops/s | Throughput +5.4% ✅ |
+| AND Operation | 0.21ms | 4,865 ops/s | Latency +4.4% ✅ |
+| OR Operation | 0.22ms | 4,852 ops/s | Throughput +3.0% ✅ |
+
+---
+
+## Historical Results
 
 ### RankIndex Performance Tests (11 tests)
 

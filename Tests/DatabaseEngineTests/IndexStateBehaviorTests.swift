@@ -319,14 +319,14 @@ struct IndexStateBehaviorTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let ctx = try TestContext()
 
-            let indexStateManager = IndexStateManager(container: ctx.container, subspace: ctx.subspace)
+            // Create FDBDataStore first, then use its internal indexStateManager
+            // This ensures cache consistency between state changes and delete operations
+            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
             let indexName = "IndexedUser_email"
 
-            // Start with readable index
-            try await indexStateManager.enable(indexName)
-            try await indexStateManager.makeReadable(indexName)
-
-            let dataStore = FDBDataStore(container: ctx.container, subspace: ctx.subspace)
+            // Start with readable index (using dataStore's indexStateManager)
+            try await dataStore.indexStateManager.enable(indexName)
+            try await dataStore.indexStateManager.makeReadable(indexName)
 
             // Insert user (index entry created)
             let user = IndexedUser(id: "deletetest", email: "delete@example.com", name: "Delete Test")
@@ -336,8 +336,8 @@ struct IndexStateBehaviorTests {
             let countBefore = try await ctx.countIndexEntries(indexName: indexName)
             #expect(countBefore == 1)
 
-            // Disable the index
-            try await indexStateManager.disable(indexName)
+            // Disable the index (using the same indexStateManager to ensure cache is invalidated)
+            try await dataStore.indexStateManager.disable(indexName)
 
             // Delete user - index entry should remain because index is now disabled
             try await dataStore.delete([user])

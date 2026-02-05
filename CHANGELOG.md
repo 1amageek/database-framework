@@ -5,6 +5,49 @@ All notable changes to database-framework will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-02-05
+
+### Added
+
+#### IndexDescriptor Enhancement
+- **fieldNames cache**: Pre-computed field names at construction time
+  - Eliminates repeated KeyPath → field name resolution
+  - Used by QueryPlanner and IndexMaintainer for efficient field matching
+
+### Changed
+
+#### API Changes (Breaking)
+- **IndexDescriptor.init**: Now requires `Root: Persistable` constraint
+  - Enforces type-safe KeyPath-based initialization
+  - Prevents use of internal string-based APIs
+- **Removed**: `IndexDescriptor.init(anyKeyPaths:)` initializer
+  - Internal API removed to enforce KeyPath usage
+  - Use `keyPaths:` parameter with typed KeyPaths instead
+
+#### Performance Improvements
+- **Phase 2 Optimizations**:
+  - Parallel FDB reads via TaskGroup
+  - FieldMap caching in TypeCatalog
+  - Zero-copy Skip List operations
+  - Varint encoding optimization
+
+#### Test Infrastructure
+- **FDBTestSetup.shared.withSerializedAccess**: Global test serialization
+  - Fixes flaky tests caused by parallel execution race conditions
+  - Applied to: ResolveDirectoryTests, GraphQueryBuilderTests, AdminContextTests, UniquenessEnforcementTests
+
+### Benchmark Results
+
+| Component | Metric | Improvement |
+|-----------|--------|-------------|
+| TopKHeap | Latency (p95) | +31.8% |
+| TopKHeap | Throughput | +19.5% |
+| Multiple Aggregations | Throughput | +25.9% |
+| JSON Serialization | Latency (p95) | +6.2% |
+| Batch Fetch | Latency (p95) | +4.3% |
+
+---
+
 ## [0.1.0] - 2026-02-03
 
 ### Added

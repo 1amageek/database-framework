@@ -27,7 +27,7 @@ struct SchemaDefinitionIntegrationTests {
         // Create YAML
         let yaml = """
         TestUser:
-          #Directory: [test, schema_def, users]
+          "#Directory": [test, schema_def, users]
 
           id: string
           name: string
@@ -106,7 +106,7 @@ struct SchemaDefinitionIntegrationTests {
 
         let originalYAML = """
         TestArticle:
-          #Directory: [test, articles]
+          "#Directory": [test, articles]
 
           id: string
           title: string#fulltext(language:english)
@@ -146,14 +146,14 @@ struct SchemaDefinitionIntegrationTests {
 
         let yaml = """
         TestFollow:
-          #Directory: [test, social, follows]
+          "#Directory": [test, social, follows]
 
           id: string
           follower: string
           following: string
           timestamp: date
 
-          #Index:
+          "#Index":
             - kind: graph
               name: social_graph
               from: follower
@@ -184,7 +184,7 @@ struct SchemaDefinitionIntegrationTests {
 
         let yaml = """
         TestOrder:
-          #Directory:
+          "#Directory":
             - test
             - orders
             - field: tenantId
@@ -214,19 +214,19 @@ struct SchemaDefinitionIntegrationTests {
         let schemas = [
             """
             TestUser1:
-              #Directory: [test, multi, users]
+              "#Directory": [test, multi, users]
               id: string
               name: string
             """,
             """
             TestUser2:
-              #Directory: [test, multi, users2]
+              "#Directory": [test, multi, users2]
               id: string
               email: string#scalar(unique:true)
             """,
             """
             TestUser3:
-              #Directory: [test, multi, users3]
+              "#Directory": [test, multi, users3]
               id: string
               age: int#scalar
             """
@@ -252,7 +252,7 @@ struct SchemaDefinitionIntegrationTests {
     func testValidateOnly() throws {
         let yaml = """
         ValidUser:
-          #Directory: [test, validation]
+          "#Directory": [test, validation]
 
           id: string
           name: string
@@ -270,7 +270,7 @@ struct SchemaDefinitionIntegrationTests {
     func testInvalidSchemaValidation() throws {
         let yaml = """
         InvalidUser:
-          #Directory: [test, invalid]
+          "#Directory": [test, invalid]
 
           id: invalidtype
         """
@@ -296,14 +296,14 @@ struct SchemaDefinitionIntegrationTests {
 
         let yaml1 = """
         TestOverwrite:
-          #Directory: [test, overwrite]
+          "#Directory": [test, overwrite]
           id: string
           name: string
         """
 
         let yaml2 = """
         TestOverwrite:
-          #Directory: [test, overwrite]
+          "#Directory": [test, overwrite]
           id: string
           name: string
           email: string#scalar(unique:true)

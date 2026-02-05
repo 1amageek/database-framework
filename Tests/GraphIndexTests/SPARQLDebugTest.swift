@@ -28,7 +28,7 @@ fileprivate struct DebugEdge {
     ), storedFields: [\DebugEdge.score], name: "debug_graph")
 }
 
-@Suite("SPARQL Debug Test")
+@Suite("SPARQL Debug Test", .serialized)
 struct SPARQLDebugTest {
 
     init() async throws {
@@ -39,10 +39,14 @@ struct SPARQLDebugTest {
     func testStoredFieldNamesPropagation() async throws {
         let database = try FDBClient.openDatabase()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
+        // Clean up directory BEFORE creating container to avoid stale state
         let directoryLayer = DirectoryLayer(database: database)
         try? await directoryLayer.remove(path: ["test", "debug_edge"])
+
+        // Create container and ensure indexes are ready AFTER cleanup
+        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await container.ensureIndexesReady()
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: DebugEdge.self)
@@ -111,10 +115,14 @@ struct SPARQLDebugTest {
     func testDirectGraphPropertyScanner() async throws {
         let database = try FDBClient.openDatabase()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
+        // Clean up directory BEFORE creating container to avoid stale state
         let directoryLayer = DirectoryLayer(database: database)
         try? await directoryLayer.remove(path: ["test", "debug_edge"])
+
+        // Create container and ensure indexes are ready AFTER cleanup
+        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        try await container.ensureIndexesReady()
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: DebugEdge.self)
@@ -145,8 +153,9 @@ struct SPARQLDebugTest {
         }
 
         // Direct GraphPropertyScanner test
+        // Index entries are stored at [typeSubspace]/I/[indexName], not [typeSubspace]/[indexName]
         let typeSubspace = try await container.resolveDirectory(for: DebugEdge.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes).subspace(indexName)
 
         guard let kind = indexDescriptor.kind as? GraphIndexKind<DebugEdge> else {
             Issue.record("Failed to cast index kind")
