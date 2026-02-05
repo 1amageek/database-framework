@@ -139,7 +139,8 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                         "Expected span value for first entry at level \(level) (score: \(firstEntry.score)), but key not found"
                     )
                 }
-                firstEntrySpans[level] = try SpanValue.decode(spanBytes).count
+                let span = try SpanValue.decode(spanBytes).count
+                firstEntrySpans[level] = span
             }
         }
 
@@ -166,21 +167,33 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 )
             } else {
                 // updateKey == nil: inserting at beginning of level (highest score)
-                if let firstEntry = firstEntriesAtInsertionTime[level],
-                   let firstRank = firstEntryRanks[level],
-                   let oldFirstSpan = firstEntrySpans[level] {
-                    // First entry's new rank (after insertion) = firstRank + 1
-                    // newSpan = first entry's new rank - new node's rank
+                // This new entry becomes the first entry at this level
+                //
+                // Key insight: We use headSpan[level] to track "Level 0 entries before first entry".
+                // When a new entry becomes the first, we need to:
+                // 1. Include the old headSpan in the new entry's span calculation
+                // 2. Reset headSpan to 0 (no entries before the new first entry)
+                if let firstRank = firstEntryRanks[level] {
+                    // First entry exists at this level
+                    // newSpan = (old headSpan + distance from new entry to old first entry)
+                    // Since rank[0] is the new entry's rank (always 0 for highest score insertions),
+                    // and firstRank is the old first entry's rank (before insertion):
+                    // newSpan = (firstRank + 1) - rank[0]
+                    // This naturally includes the old headSpan if firstRank was calculated correctly
                     newSpan = (firstRank + 1) - rank[0]
 
-                    // Existing first entry's span does NOT change
-                    // Reason: All ranks shift by +1, but relative distance remains the same
-                    // Example: Before: [A]─2→[C] (A.rank=0, C.rank=2)
-                    //          After:  [Z]─1→[A]─2→[C] (Z.rank=0, A.rank=1, C.rank=3)
-                    //          A's span = C.rank - A.rank = 3 - 1 = 2 (unchanged)
+                    // NOTE: Existing first entry's span does NOT change
+                    // Reason: Distance from old first entry to its next entry remains the same
                 } else {
-                    // Level is empty, span = distance to end
+                    // Level is empty (no entries at this level)
+                    // newSpan = distance from new node to end
                     newSpan = (totalCountBefore + 1) - rank[0]
+                }
+
+                // Reset headSpan for this level (new entry is now the first)
+                if level > 0 {
+                    let headSpanKey = subspaces.headSpanKey(for: level)
+                    transaction.setValue(ByteConversion.int64ToBytes(0), for: headSpanKey)
                 }
             }
 
@@ -189,13 +202,33 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         }
 
         // Phase 4: Increment span at higher levels (levels >= newLevel)
-        // Standard Pugh 1990: only process update[level] != NIL
+        // One new Level 0 entry was added, so span at higher levels must be incremented
+        //
+        // Key insight: Pugh 1990 uses virtual HEAD at each level. FDB doesn't have HEAD.
+        // We use headSpan[level] to track "number of Level 0 entries before first entry".
+        //
+        // When updateKey != nil: new entry falls within updateKey's span range
+        //                        → updateKey.span += 1
+        // When updateKey == nil: new entry is inserted before first entry
+        //                        → headSpan[level] += 1 (equivalent to HEAD.span += 1)
         for level in newLevel..<currentLevels {
             if let updateKey = updateKeys[level], let currentSpan = updateSpans[level] {
-                // Standard case: increment span by 1 (one new Level 0 entry added)
+                // updateKey != nil: new entry is inserted AFTER updateKey
+                // This means the new entry falls within updateKey's span range
+                // Therefore, updateKey.span must be incremented by 1
                 let newSpan = currentSpan + 1
                 transaction.setValue(SpanValue(count: newSpan).encoded(), for: updateKey)
+            } else if updateKeys[level] == nil && level > 0 {
+                // updateKey == nil: new entry is inserted BEFORE the first entry
+                // Increment headSpan[level] (equivalent to Pugh 1990's HEAD.span += 1)
+                let headSpanKey = subspaces.headSpanKey(for: level)
+                var headSpan: Int64 = 0
+                if let headSpanBytes = try await transaction.getValue(for: headSpanKey, snapshot: false) {
+                    headSpan = ByteConversion.bytesToInt64(headSpanBytes)
+                }
+                transaction.setValue(ByteConversion.int64ToBytes(headSpan + 1), for: headSpanKey)
             }
+            // Level 0 has no headSpan (all entries are at Level 0)
         }
 
         return rank[0]
@@ -227,7 +260,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             to: range.end,
             limit: 1,
             reverse: true,  // Descending: get highest score (first entry)
-            snapshot: true  // Can use snapshot for Phase 1 information gathering
+            snapshot: false  // Must see current transaction's changes
         )
 
         for try await (key, _) in sequence {
@@ -294,16 +327,20 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
 
             // In descending order: stop when we reach or pass the target
+            // Pugh 1990: while (x→forward[i]→key > searchKey) do advance
+            // Stop when: currentScore <= targetScore
             if currentScore <= targetScore {
                 // Check if exact match or below target
                 if currentScore == targetScore {
                     let currentPK = extractPrimaryKey(from: suffix)
                     if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
                         // Current key <= target, stop here
+                        // Do NOT accumulate this entry's span (it's after the insertion point)
                         break
                     }
                 } else {
                     // Current score is lower than target, stop here
+                    // Do NOT accumulate this entry's span
                     break
                 }
             }

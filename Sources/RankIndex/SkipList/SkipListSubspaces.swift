@@ -92,4 +92,17 @@ public struct SkipListSubspaces: Sendable {
     public var countKey: [UInt8] {
         metadata.pack(Tuple(MetadataKey.count.rawValue))
     }
+
+    // MARK: - Head Span Keys (Virtual HEAD equivalent)
+
+    /// Key for storing head span at a specific level
+    ///
+    /// This replaces Pugh 1990's virtual HEAD entry.
+    /// headSpan[level] = number of Level 0 entries before the first entry at this level.
+    ///
+    /// - Parameter level: Level number (1+ only, Level 0 has no head span)
+    /// - Returns: Key for storing head span
+    public func headSpanKey(for level: Int) -> [UInt8] {
+        metadata.pack(Tuple("_headSpan", Int64(level)))
+    }
 }

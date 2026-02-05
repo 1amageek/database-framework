@@ -413,6 +413,16 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         for level in 0..<currentLevels {
             var entryCount = 0
             var spanSum: Int64 = 0
+
+            // For Level 1+, include headSpan (virtual HEAD equivalent)
+            // headSpan[level] = number of Level 0 entries before the first entry at this level
+            if level > 0 {
+                let headSpanKey = subspaces.headSpanKey(for: level)
+                if let headSpanBytes = try await transaction.getValue(for: headSpanKey, snapshot: true) {
+                    spanSum += ByteConversion.bytesToInt64(headSpanBytes)
+                }
+            }
+
             let levelSubspace = subspaces.subspace(for: level)
             let range = levelSubspace.range()
 
@@ -435,9 +445,16 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
             // Verify that span sum equals total count
             guard spanSum == totalCount else {
                 // Build detailed error message
+                var headSpan: Int64 = 0
+                if level > 0 {
+                    let headSpanKey = subspaces.headSpanKey(for: level)
+                    if let headSpanBytes = try await transaction.getValue(for: headSpanKey, snapshot: true) {
+                        headSpan = ByteConversion.bytesToInt64(headSpanBytes)
+                    }
+                }
                 var debugInfo = "Span counter mismatch at level \(level):\n"
                 debugInfo += "  Expected: \(totalCount), Got: \(spanSum)\n"
-                debugInfo += "  Entries at level: \(entryCount)\n"
+                debugInfo += "  Entries at level: \(entryCount), headSpan: \(headSpan)\n"
                 debugInfo += "Level summary:\n"
                 for (lvl, stats) in levelStats.sorted(by: { $0.key < $1.key }) {
                     debugInfo += "  Level \(lvl): \(stats.entries) entries, span sum = \(stats.spanSum)\n"
