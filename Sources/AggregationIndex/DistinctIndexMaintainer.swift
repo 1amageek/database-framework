@@ -222,16 +222,10 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
         // Add value to HLL based on its TupleElement type
         // HyperLogLog.add() requires FieldValue
-        if let stringValue = valueElement as? String {
-            hll.add(FieldValue.string(stringValue))
-        } else if let int64Value = valueElement as? Int64 {
-            hll.add(FieldValue.int64(int64Value))
-        } else if let doubleValue = valueElement as? Double {
-            hll.add(FieldValue.double(doubleValue))
-        } else {
-            // For other types, convert to string representation
-            hll.add(FieldValue.string(String(describing: valueElement)))
-        }
+        // Use TypeConversion for consistent type handling
+        // This properly converts all supported types (Int, UInt, Float, Bool, Date, UUID, etc.)
+        let fieldValue = TypeConversion.toFieldValue(valueElement)
+        hll.add(fieldValue)
 
         // Write updated HLL back
         let encodedData = try JSONEncoder().encode(hll)

@@ -185,7 +185,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
             // Increment global facet counts
             for value in values {
                 let facetKey = facetsSubspace.subspace(field).pack(Tuple(value))
-                transaction.atomicOp(key: facetKey, param: int64ToBytes(1), mutationType: .add)
+                transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
             }
         }
     }
@@ -206,7 +206,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
             // Decrement global facet counts
             for value in values {
                 let facetKey = facetsSubspace.subspace(field).pack(Tuple(value))
-                transaction.atomicOp(key: facetKey, param: int64ToBytes(-1), mutationType: .add)
+                transaction.atomicOp(key: facetKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
             }
         }
     }
@@ -229,7 +229,7 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
                 continue
             }
 
-            let count = bytesToInt64(value)
+            let count = ByteConversion.bytesToInt64(value)
             if count > 0 {  // Only include non-zero counts
                 facets.append((value: facetValue, count: count))
             }
@@ -283,16 +283,6 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
         }
 
         return []
-    }
-
-    /// Convert Int64 to little-endian bytes
-    private func int64ToBytes(_ value: Int64) -> [UInt8] {
-        ByteConversion.int64ToBytes(value)
-    }
-
-    /// Convert little-endian bytes to Int64
-    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        ByteConversion.bytesToInt64(bytes)
     }
 }
 

@@ -805,15 +805,10 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
 
     /// Convert TupleElement to FieldValue
     ///
-    /// Note: This conversion follows the same type mapping as TupleDecoder
-    /// (Int64 for integers, Double for floats, Bool, String, Data).
-    /// FieldValue is AggregationIndex-specific and cannot use TupleDecoder directly.
+    /// Uses TypeConversion for consistent type handling across all index modules.
+    /// This properly handles all supported types (Int, UInt, Float, Bool, Date, UUID, etc.)
     private func tupleElementToFieldValue(_ element: any TupleElement) -> FieldValue {
-        if let fieldValue = FieldValue(tupleElement: element) {
-            return fieldValue
-        }
-        assertionFailure("Unsupported TupleElement type: \(type(of: element))")
-        return .string(String(describing: element))
+        TypeConversion.toFieldValue(element)
     }
 
     // MARK: - Helper Functions

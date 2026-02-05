@@ -124,7 +124,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
                     // Decrement df for this term (BM25)
                     let dfKey = dfSubspace.pack(Tuple(term))
-                    transaction.atomicOp(key: dfKey, param: int64ToBytes(-1), mutationType: .add)
+                    transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
                 }
 
                 // Remove document metadata
@@ -132,8 +132,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 transaction.clear(key: docKey)
 
                 // Decrement BM25 corpus statistics
-                transaction.atomicOp(key: statsNKey, param: int64ToBytes(-1), mutationType: .add)
-                transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
+                transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
+                transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(-Int64(oldDocLength)), mutationType: .add)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil text was not indexed, nothing to remove
             }
@@ -173,7 +173,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
                     // Increment df for this term (BM25)
                     let dfKey = dfSubspace.pack(Tuple(term))
-                    transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
+                    transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
                 }
 
                 // Store document metadata: (uniqueTermCount, docLength)
@@ -183,8 +183,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 transaction.setValue(docValue, for: docKey)
 
                 // Increment BM25 corpus statistics
-                transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
-                transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(newDocLength)), mutationType: .add)
+                transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+                transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(newDocLength)), mutationType: .add)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil text is not indexed
             }
@@ -232,7 +232,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
             // Increment df for this term (BM25)
             let dfKey = dfSubspace.pack(Tuple(term))
-            transaction.atomicOp(key: dfKey, param: int64ToBytes(1), mutationType: .add)
+            transaction.atomicOp(key: dfKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
         }
 
         // Store document metadata: (uniqueTermCount, docLength)
@@ -242,8 +242,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         transaction.setValue(docValue, for: docKey)
 
         // Increment BM25 corpus statistics
-        transaction.atomicOp(key: statsNKey, param: int64ToBytes(1), mutationType: .add)
-        transaction.atomicOp(key: statsTotalLengthKey, param: int64ToBytes(Int64(docLength)), mutationType: .add)
+        transaction.atomicOp(key: statsNKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
+        transaction.atomicOp(key: statsTotalLengthKey, param: ByteConversion.int64ToBytes(Int64(docLength)), mutationType: .add)
     }
 
     /// Compute expected index keys for this item
@@ -669,16 +669,6 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return Data(packed).base64EncodedString()
     }
 
-    /// Convert Int64 to little-endian bytes for atomic operations
-    private func int64ToBytes(_ value: Int64) -> [UInt8] {
-        ByteConversion.int64ToBytes(value)
-    }
-
-    /// Convert little-endian bytes to Int64
-    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        ByteConversion.bytesToInt64(bytes)
-    }
-
     // MARK: - BM25 Statistics
 
     /// Get BM25 corpus statistics
@@ -690,11 +680,11 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> BM25Statistics {
         // Read N (total document count)
         let nValue = try await transaction.getValue(for: statsNKey, snapshot: true)
-        let n: Int64 = nValue.map { bytesToInt64($0) } ?? 0
+        let n: Int64 = nValue.map { ByteConversion.bytesToInt64($0) } ?? 0
 
         // Read totalLength
         let lengthValue = try await transaction.getValue(for: statsTotalLengthKey, snapshot: true)
-        let totalLength: Int64 = lengthValue.map { bytesToInt64($0) } ?? 0
+        let totalLength: Int64 = lengthValue.map { ByteConversion.bytesToInt64($0) } ?? 0
 
         return BM25Statistics(totalDocuments: n, totalLength: totalLength)
     }
@@ -734,7 +724,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ) async throws -> Int64 {
         let dfKey = dfSubspace.pack(Tuple(normalizedTerm))
         let value = try await transaction.getValue(for: dfKey, snapshot: true)
-        return value.map { bytesToInt64($0) } ?? 0
+        return value.map { ByteConversion.bytesToInt64($0) } ?? 0
     }
 
     /// Get document metadata (term count and document length)

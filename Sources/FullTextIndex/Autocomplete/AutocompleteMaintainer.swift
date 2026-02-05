@@ -144,7 +144,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
                 continue
             }
 
-            let score = bytesToInt64(value)
+            let score = ByteConversion.bytesToInt64(value)
             if score > 0 {
                 suggestions.append((term: term, score: score))
             }
@@ -184,7 +184,7 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
                 continue
             }
 
-            let score = bytesToInt64(value)
+            let score = ByteConversion.bytesToInt64(value)
             if score > 0 {
                 terms.append((term: term, score: score))
             }
@@ -210,13 +210,13 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
             for term in terms {
                 // Increment term count
                 let termKey = termsSubspace.subspace(field).pack(Tuple(term))
-                transaction.atomicOp(key: termKey, param: int64ToBytes(1), mutationType: .add)
+                transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
 
                 // Add all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
                     let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
-                    transaction.atomicOp(key: suggestionKey, param: int64ToBytes(1), mutationType: .add)
+                    transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(1), mutationType: .add)
                 }
             }
         }
@@ -233,13 +233,13 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
             for term in terms {
                 // Decrement term count
                 let termKey = termsSubspace.subspace(field).pack(Tuple(term))
-                transaction.atomicOp(key: termKey, param: int64ToBytes(-1), mutationType: .add)
+                transaction.atomicOp(key: termKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
 
                 // Remove all prefixes
                 let prefixes = generatePrefixes(for: term)
                 for prefix in prefixes {
                     let suggestionKey = suggestionsSubspace.subspace(field).subspace(prefix).pack(Tuple(term))
-                    transaction.atomicOp(key: suggestionKey, param: int64ToBytes(-1), mutationType: .add)
+                    transaction.atomicOp(key: suggestionKey, param: ByteConversion.int64ToBytes(-1), mutationType: .add)
                 }
             }
         }
@@ -298,16 +298,6 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         }
 
         return prefixes
-    }
-
-    /// Convert Int64 to little-endian bytes
-    private func int64ToBytes(_ value: Int64) -> [UInt8] {
-        ByteConversion.int64ToBytes(value)
-    }
-
-    /// Convert little-endian bytes to Int64
-    private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
-        ByteConversion.bytesToInt64(bytes)
     }
 }
 
