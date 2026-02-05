@@ -19,22 +19,6 @@ Database provides:
 - **Polymorphable**: Union type support with shared directories and polymorphic queries
 - **Infrastructure**: Query optimization, transaction management, serialization, batch operations
 
-## What's New in v0.2.0
-
-### Breaking Changes
-- Replaced `IndexCatalog` with `AnyIndexDescriptor` for unified index representation
-- Changed access level from `package` to `public` for `IndexMetadataValue`, `AnyIndexKind`, `AnyIndexDescriptor`
-
-### New Features
-- Added `Codable` conformance to `IndexMetadataValue`, `AnyIndexKind`, `AnyIndexDescriptor`
-- Added convenience accessors: `unique`, `sparse`, `storedFieldNames`
-- Type-safe metadata values (`.int(384)` instead of `.string("384")`)
-
-### Improvements
-- Unified index type representation across CLI and core engine
-- Better type preservation in schema serialization/deserialization
-- **3,129 tests** across 183 test files
-
 ## Performance (Phase 2 完了: 2026-02-05)
 
 Phase 1 + Phase 2 の最適化により、大幅なパフォーマンス向上を達成：
