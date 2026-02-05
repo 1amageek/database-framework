@@ -59,14 +59,22 @@ public struct SpanValue: Codable, Sendable, Equatable {
     public static func decode(_ bytes: [UInt8]) throws -> SpanValue {
         let tuple = try Tuple.unpack(from: bytes)
 
-        guard tuple.count >= 1,
-              let count = tuple[0] as? Int64 else {
+        guard tuple.count >= 1 else {
             throw IndexError.invalidStructure(
-                "Failed to decode SpanValue: expected Int64, got \(tuple)"
+                "Failed to decode SpanValue: tuple is empty, bytes: \(bytes)"
             )
         }
 
-        return SpanValue(count: count)
+        // Try Int64 first, then Int (for compatibility)
+        if let count = tuple[0] as? Int64 {
+            return SpanValue(count: count)
+        } else if let count = tuple[0] as? Int {
+            return SpanValue(count: Int64(count))
+        } else {
+            throw IndexError.invalidStructure(
+                "Failed to decode SpanValue: expected Int64 or Int, got \(type(of: tuple[0])), tuple: \(tuple), bytes: \(bytes)"
+            )
+        }
     }
 }
 
