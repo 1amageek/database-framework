@@ -270,7 +270,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             guard !suffix.isEmpty, let scoreElement = suffix[0] else { continue }
 
             let score = try TupleDecoder.decode(scoreElement, as: Score.self)
-            let primaryKey = extractPrimaryKey(from: suffix)
+            let primaryKey = SkipListSubspaces.extractPrimaryKey(from: suffix)
 
             return (score, primaryKey)
         }
@@ -362,18 +362,6 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         }
 
         return levelSubspace.pack(Tuple(allElements))
-    }
-
-    /// Extract primary key from suffix tuple
-    private func extractPrimaryKey(from suffix: Tuple) -> Tuple {
-        var pkElements: [any TupleElement] = []
-        pkElements.reserveCapacity(max(0, suffix.count - 1))
-        for i in 1..<suffix.count {
-            if let element = suffix[i] {
-                pkElements.append(element)
-            }
-        }
-        return Tuple(pkElements)
     }
 
 }

@@ -489,10 +489,11 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         for try await (key, _) in sequence {
             guard valueSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? valueSubspace.unpack(key),
-                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+            guard let keyTuple = try? valueSubspace.unpack(key) else {
                 continue
             }
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(Tuple(elements))
         }
 

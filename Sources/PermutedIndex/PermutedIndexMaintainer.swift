@@ -152,7 +152,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
             // Extract primary key from the key
             // Key structure: [prefix][remaining_fields...][primaryKey]
             let keyTuple = try prefixSubspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
 
             // The last element(s) are the primary key
             // We need to know how many fields are in the permutation to extract primary key
@@ -204,7 +205,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
             // The entire remaining key is the primary key
             let keyTuple = try valueSubspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(elements)
         }
 
@@ -232,7 +234,8 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
             guard subspace.contains(key) else { break }
 
             let keyTuple = try subspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
 
             // Split into permuted fields and primary key
             let fieldCount = permutation.size

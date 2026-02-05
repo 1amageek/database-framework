@@ -314,7 +314,8 @@ extension CountAggregationMaintainer {
             if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             let count = readCount(value)
 
             results.append((grouping: elements, count: count))

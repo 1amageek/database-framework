@@ -105,4 +105,24 @@ public struct SkipListSubspaces: Sendable {
     public func headSpanKey(for level: Int) -> [UInt8] {
         metadata.pack(Tuple("_headSpan", Int64(level)))
     }
+
+    // MARK: - Tuple Utilities
+
+    /// Extract primary key from suffix tuple (skip first element which is score)
+    ///
+    /// Key structure: `[score][primaryKey elements...]`
+    /// Returns: Tuple containing only primaryKey elements
+    ///
+    /// - Parameter suffix: Tuple from unpacking key (contains score + primaryKey)
+    /// - Returns: Tuple containing only primaryKey elements
+    public static func extractPrimaryKey(from suffix: Tuple) -> Tuple {
+        var pkElements: [any TupleElement] = []
+        pkElements.reserveCapacity(max(0, suffix.count - 1))
+        for i in 1..<suffix.count {
+            if let element = suffix[i] {
+                pkElements.append(element)
+            }
+        }
+        return Tuple(pkElements)
+    }
 }

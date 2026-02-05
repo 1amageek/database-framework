@@ -164,10 +164,11 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         for try await (key, value) in sequence {
             // Decode primary key - skip corrupt entries
-            guard let primaryKeyTuple = try? subspace.unpack(key),
-                  let primaryKey = try? Tuple.unpack(from: primaryKeyTuple.pack()) else {
+            guard let primaryKeyTuple = try? subspace.unpack(key) else {
                 continue // Skip corrupt entry
             }
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let primaryKey: [any TupleElement] = (0..<primaryKeyTuple.count).compactMap { primaryKeyTuple[$0] }
 
             // Decode vector - skip corrupt entries
             guard let vectorTuple = try? Tuple.unpack(from: value) else {

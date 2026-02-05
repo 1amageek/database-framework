@@ -184,10 +184,11 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
 
             // Unpack key: [score][primaryKey] - skip corrupt entries
             guard let keyTuple = try? scoresSubspace.unpack(key),
-                  let elements = try? Tuple.unpack(from: keyTuple.pack()),
-                  elements.count >= 2 else {
+                  keyTuple.count >= 2 else {
                 continue
             }
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
 
             // First element is score - extract as Score type
             guard let score = try? TupleDecoder.decode(elements[0], as: Score.self) else {

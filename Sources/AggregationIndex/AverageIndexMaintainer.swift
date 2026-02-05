@@ -185,7 +185,8 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
             if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
 
             guard elements.count >= 1, let marker = elements.last as? String else { continue }
 

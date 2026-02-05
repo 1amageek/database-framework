@@ -167,7 +167,8 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
             if scannedKeys >= maxScanKeys { break }
 
             let keyTuple = try subspace.unpack(key)
-            let elements = try Tuple.unpack(from: keyTuple.pack())
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             let sum = readNumericValue(value)
 
             results.append((grouping: elements, sum: sum))

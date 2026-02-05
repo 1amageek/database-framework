@@ -314,10 +314,11 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
             guard termSubspace.contains(key) else { break }
 
             // Skip corrupt entries
-            guard let keyTuple = try? termSubspace.unpack(key),
-                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+            guard let keyTuple = try? termSubspace.unpack(key) else {
                 continue
             }
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(elements)
         }
 

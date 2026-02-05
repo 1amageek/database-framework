@@ -295,7 +295,8 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         var output: [(primaryKey: [any TupleElement], distance: Double)] = []
         for result in results {
             if let pk = try await getPrimaryKeyForLabel(label: result.label, transaction: transaction) {
-                let elements = try Tuple.unpack(from: pk.pack())
+                // Avoid pack/unpack cycle: convert Tuple to array directly
+                let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
                 output.append((primaryKey: elements, distance: Double(result.distance)))
             }
         }
@@ -386,7 +387,8 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 let passes = try await predicate(item)
 
                 if passes {
-                    let elements = try Tuple.unpack(from: pk.pack())
+                    // Avoid pack/unpack cycle: convert Tuple to array directly
+                    let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
                     output.append((primaryKey: elements, distance: Double(result.distance)))
 
                     // Stop if we have enough results

@@ -456,10 +456,11 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         for try await (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? termSubspace.unpack(key),
-                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
+            guard let keyTuple = try? termSubspace.unpack(key) else {
                 continue
             }
+            // Avoid pack/unpack cycle: convert Tuple to array directly
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(elements)
         }
 
