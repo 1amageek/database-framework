@@ -72,9 +72,9 @@ struct SchemaFileParserTests {
         let vectorIndex = catalog.indexes[0]
         #expect(vectorIndex.kindIdentifier == "vector")
         #expect(vectorIndex.fieldNames == ["embedding"])
-        #expect(vectorIndex.metadata["dimensions"] == "384")
-        #expect(vectorIndex.metadata["metric"] == "cosine")
-        #expect(vectorIndex.metadata["algorithm"] == "hnsw")
+        #expect(vectorIndex.kind.metadata["dimensions"]?.intValue == 384)
+        #expect(vectorIndex.kind.metadata["metric"]?.stringValue == "cosine")
+        #expect(vectorIndex.kind.metadata["algorithm"]?.stringValue == "hnsw")
     }
 
     @Test("Parse graph index")
@@ -102,10 +102,10 @@ struct SchemaFileParserTests {
 
         let graphIndex = catalog.indexes[0]
         #expect(graphIndex.kindIdentifier == "graph")
-        #expect(graphIndex.metadata["fromField"] == "follower")
-        #expect(graphIndex.metadata["edgeField"] == "follows")
-        #expect(graphIndex.metadata["toField"] == "following")
-        #expect(graphIndex.metadata["strategy"] == "tripleStore")
+        #expect(graphIndex.kind.metadata["fromField"]?.stringValue == "follower")
+        #expect(graphIndex.kind.metadata["edgeField"]?.stringValue == "follows")
+        #expect(graphIndex.kind.metadata["toField"]?.stringValue == "following")
+        #expect(graphIndex.kind.metadata["strategy"]?.stringValue == "tripleStore")
     }
 
     @Test("Parse dynamic directory")
@@ -236,8 +236,8 @@ struct SchemaFileParserTests {
 
         let fulltextIndex = catalog.indexes.first { $0.kindIdentifier == "fulltext" }
         #expect(fulltextIndex != nil)
-        #expect(fulltextIndex?.metadata["language"] == "english")
-        #expect(fulltextIndex?.metadata["tokenizer"] == "standard")
+        #expect(fulltextIndex?.kind.metadata["language"]?.stringValue == "english")
+        #expect(fulltextIndex?.kind.metadata["tokenizer"]?.stringValue == "standard")
     }
 
     @Test("Parse spatial index")
@@ -254,7 +254,7 @@ struct SchemaFileParserTests {
 
         let spatialIndex = catalog.indexes.first { $0.kindIdentifier == "spatial" }
         #expect(spatialIndex != nil)
-        #expect(spatialIndex?.metadata["strategy"] == "geohash")
+        #expect(spatialIndex?.kind.metadata["strategy"]?.stringValue == "geohash")
     }
 
     @Test("Parse leaderboard index")
@@ -271,7 +271,7 @@ struct SchemaFileParserTests {
 
         let leaderboardIndex = catalog.indexes.first { $0.kindIdentifier == "leaderboard" }
         #expect(leaderboardIndex != nil)
-        #expect(leaderboardIndex?.metadata["leaderboardName"] == "global_ranking")
+        #expect(leaderboardIndex?.kind.metadata["leaderboardName"]?.stringValue == "global_ranking")
     }
 
     @Test("Parse aggregation index")
@@ -288,7 +288,7 @@ struct SchemaFileParserTests {
 
         let aggregationIndex = catalog.indexes.first { $0.kindIdentifier == "aggregation" }
         #expect(aggregationIndex != nil)
-        #expect(aggregationIndex?.metadata["functions"] == "sum,avg,min,max")
+        #expect(aggregationIndex?.kind.metadata["functions"]?.stringValue == "sum,avg,min,max")
     }
 
     @Test("Parse relationship index")
@@ -312,8 +312,8 @@ struct SchemaFileParserTests {
 
         let relationshipIndex = catalog.indexes.first { $0.kindIdentifier == "relationship" }
         #expect(relationshipIndex != nil)
-        #expect(relationshipIndex?.metadata["from"] == "userId")
-        #expect(relationshipIndex?.metadata["to"] == "groupId")
+        #expect(relationshipIndex?.kind.metadata["from"]?.stringValue == "userId")
+        #expect(relationshipIndex?.kind.metadata["to"]?.stringValue == "groupId")
     }
 
     @Test("Error on invalid type")

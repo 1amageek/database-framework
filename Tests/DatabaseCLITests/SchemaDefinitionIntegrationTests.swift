@@ -71,12 +71,18 @@ struct SchemaDefinitionIntegrationTests {
                 .staticPath("products")
             ],
             indexes: [
-                IndexCatalog(
+                AnyIndexDescriptor(
                     name: "price_idx",
-                    kindIdentifier: "scalar",
-                    fieldNames: ["price"],
-                    unique: false,
-                    metadata: [:]
+                    kind: AnyIndexKind(
+                        identifier: "scalar",
+                        subspaceStructure: .flat,
+                        fieldNames: ["price"],
+                        metadata: [:]
+                    ),
+                    commonMetadata: [
+                        "unique": .bool(false),
+                        "sparse": .bool(false)
+                    ]
                 )
             ]
         )
@@ -170,8 +176,8 @@ struct SchemaDefinitionIntegrationTests {
 
         let graphIndex = retrieved?.indexes.first { $0.kindIdentifier == "graph" }
         #expect(graphIndex != nil)
-        #expect(graphIndex?.metadata["fromField"] == "follower")
-        #expect(graphIndex?.metadata["strategy"] == "adjacency")
+        #expect(graphIndex?.kind.metadata["fromField"]?.stringValue == "follower")
+        #expect(graphIndex?.kind.metadata["strategy"]?.stringValue == "adjacency")
 
         // Clean up
         try await registry.delete(typeName: "TestFollow")
@@ -211,21 +217,23 @@ struct SchemaDefinitionIntegrationTests {
         let database = try FDBClient.openDatabase()
         let registry = SchemaRegistry(database: database)
 
+        // Use unique type names to avoid conflicts with old format data
+        let testSuffix = UUID().uuidString.prefix(8)
         let schemas = [
             """
-            TestUser1:
+            TestMultiUser1_\(testSuffix):
               "#Directory": [test, multi, users]
               id: string
               name: string
             """,
             """
-            TestUser2:
+            TestMultiUser2_\(testSuffix):
               "#Directory": [test, multi, users2]
               id: string
               email: string#scalar(unique:true)
             """,
             """
-            TestUser3:
+            TestMultiUser3_\(testSuffix):
               "#Directory": [test, multi, users3]
               id: string
               age: int#scalar
@@ -237,15 +245,18 @@ struct SchemaDefinitionIntegrationTests {
             try await registry.persist(catalog)
         }
 
-        // Verify all exist
-        let allCatalogs = try await registry.loadAll()
-        let testCatalogs = allCatalogs.filter { $0.typeName.hasPrefix("TestUser") }
-        #expect(testCatalogs.count >= 3)
+        // Verify all exist by loading each one individually
+        let loaded1 = try await registry.load(typeName: "TestMultiUser1_\(testSuffix)")
+        let loaded2 = try await registry.load(typeName: "TestMultiUser2_\(testSuffix)")
+        let loaded3 = try await registry.load(typeName: "TestMultiUser3_\(testSuffix)")
+        #expect(loaded1 != nil)
+        #expect(loaded2 != nil)
+        #expect(loaded3 != nil)
 
         // Clean up
-        try await registry.delete(typeName: "TestUser1")
-        try await registry.delete(typeName: "TestUser2")
-        try await registry.delete(typeName: "TestUser3")
+        try await registry.delete(typeName: "TestMultiUser1_\(testSuffix)")
+        try await registry.delete(typeName: "TestMultiUser2_\(testSuffix)")
+        try await registry.delete(typeName: "TestMultiUser3_\(testSuffix)")
     }
 
     @Test("Validate schema without persisting")

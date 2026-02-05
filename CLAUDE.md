@@ -116,6 +116,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 | `IndexMaintenanceService` | Centralized index maintenance: uniqueness checking, index updates, violation tracking |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
 | `TypeCatalog` | Codable schema metadata for a Persistable type (pg_catalog equivalent) |
+| `AnyIndexDescriptor` | Type-erased IndexDescriptor for catalog persistence (replaces IndexCatalog) |
 | `SchemaRegistry` | Persists/loads TypeCatalog entries in FDB under `/_catalog/` |
 | `DirectoryComponentCatalog` | Codable enum: `.staticPath(String)` or `.dynamicField(fieldName: String)` |
 
@@ -129,20 +130,66 @@ PostgreSQL pg_catalog          → database-framework
 pg_class (テーブル名)          → TypeCatalog.typeName
 pg_attribute (カラム名・型)    → TypeCatalog.fields: [FieldSchema]
 pg_type (データ型定義)         → FieldSchema.type: FieldSchemaType
-pg_index (インデックス定義)    → TypeCatalog.indexes: [IndexCatalog]
+pg_index (インデックス定義)    → TypeCatalog.indexes: [AnyIndexDescriptor]
 pg_namespace (名前空間)        → TypeCatalog.directoryComponents
 ```
 
 | コンポーネント | 責務 | ファイル |
 |--------------|------|---------|
 | `TypeCatalog` | 型のメタデータ（フィールド、インデックス、ディレクトリ構造） | `Sources/DatabaseEngine/Registry/TypeCatalog.swift` |
-| `IndexCatalog` | インデックスのメタデータ（名前、種別、フィールド） | 同上 |
-| `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | 同上 |
+| `AnyIndexDescriptor` | インデックスのメタデータ（名前、種別、フィールド、オプション） | `Sources/DatabaseEngine/Index/AnyIndexDescriptor.swift` |
+| `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | `Sources/DatabaseEngine/Registry/TypeCatalog.swift` |
 | `SchemaRegistry` | FDB への TypeCatalog 永続化・読み取り | `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` |
 | `DynamicProtobufDecoder` | TypeCatalog を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
 | `DynamicProtobufEncoder` | TypeCatalog を使った Protobuf 動的エンコード | `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` |
 
 **ライフサイクル**: `FDBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にカタログが FDB に書き込まれる。
+
+### AnyIndexDescriptor
+
+`AnyIndexDescriptor` は `IndexDescriptor` の型消去版で、カタログの永続化に使用される。
+
+```swift
+// 構造
+AnyIndexDescriptor
+├── name: String                           // インデックス名
+├── kind: AnyIndexKind                     // 型消去された IndexKind
+│   ├── identifier: String                 // "scalar", "vector", "graph" etc.
+│   ├── subspaceStructure: SubspaceStructure
+│   ├── fieldNames: [String]
+│   └── metadata: [String: IndexMetadataValue]  // Kind 固有のメタデータ
+└── commonMetadata: [String: IndexMetadataValue] // CommonIndexOptions
+    ├── "unique": Bool
+    ├── "sparse": Bool
+    └── "storedFieldNames": [String]
+```
+
+**便利アクセサ**:
+```swift
+let index: AnyIndexDescriptor = ...
+
+// Kind ショートカット
+index.kindIdentifier  // → kind.identifier
+index.fieldNames      // → kind.fieldNames
+index.subspaceStructure // → kind.subspaceStructure
+
+// CommonOptions ショートカット
+index.unique          // → commonMetadata["unique"]?.boolValue ?? false
+index.sparse          // → commonMetadata["sparse"]?.boolValue ?? false
+index.storedFieldNames // → commonMetadata["storedFieldNames"]?.stringArrayValue ?? []
+```
+
+**IndexMetadataValue**: Codable なメタデータ値
+```swift
+public enum IndexMetadataValue: Sendable, Hashable, Codable {
+    case string(String)
+    case int(Int)
+    case double(Double)
+    case bool(Bool)
+    case stringArray([String])
+    case intArray([Int])
+}
+```
 
 ### DatabaseCLI
 

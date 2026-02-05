@@ -103,7 +103,7 @@ public enum SchemaFileExporter {
 
     // MARK: - Find Field Index
 
-    private static func findFieldIndex(fieldName: String, in indexes: [IndexCatalog]) -> String? {
+    private static func findFieldIndex(fieldName: String, in indexes: [AnyIndexDescriptor]) -> String? {
         guard let index = indexes.first(where: { $0.fieldNames == [fieldName] }) else {
             return nil
         }
@@ -117,29 +117,32 @@ public enum SchemaFileExporter {
 
         case "vector":
             var options: [String] = []
-            if let dimensions = index.metadata["dimensions"] {
+            // dimensions can be Int (from actual IndexKind) or String (legacy)
+            if let dimensions = index.kind.metadata["dimensions"]?.intValue {
+                options.append("dimensions:\(dimensions)")
+            } else if let dimensions = index.kind.metadata["dimensions"]?.stringValue {
                 options.append("dimensions:\(dimensions)")
             }
-            if let metric = index.metadata["metric"] {
+            if let metric = index.kind.metadata["metric"]?.stringValue {
                 options.append("metric:\(metric)")
             }
-            if let algorithm = index.metadata["algorithm"] {
+            if let algorithm = index.kind.metadata["algorithm"]?.stringValue {
                 options.append("algorithm:\(algorithm)")
             }
             return "vector(\(options.joined(separator: ", ")))"
 
         case "fulltext":
             var options: [String] = []
-            if let language = index.metadata["language"] {
+            if let language = index.kind.metadata["language"]?.stringValue {
                 options.append("language:\(language)")
             }
-            if let tokenizer = index.metadata["tokenizer"] {
+            if let tokenizer = index.kind.metadata["tokenizer"]?.stringValue {
                 options.append("tokenizer:\(tokenizer)")
             }
             return "fulltext(\(options.joined(separator: ", ")))"
 
         case "spatial":
-            if let strategy = index.metadata["strategy"] {
+            if let strategy = index.kind.metadata["strategy"]?.stringValue {
                 return "spatial(strategy:\(strategy))"
             }
             return "spatial"
@@ -151,13 +154,13 @@ public enum SchemaFileExporter {
             return "bitmap"
 
         case "leaderboard":
-            if let name = index.metadata["leaderboardName"] {
+            if let name = index.kind.metadata["leaderboardName"]?.stringValue {
                 return "leaderboard(name:\(name))"
             }
             return "leaderboard"
 
         case "aggregation":
-            if let functions = index.metadata["functions"] {
+            if let functions = index.kind.metadata["functions"]?.stringValue {
                 return "aggregation(functions:\(functions))"
             }
             return "aggregation"
@@ -172,7 +175,7 @@ public enum SchemaFileExporter {
 
     // MARK: - Index to YAML
 
-    private static func indexToYAML(_ index: IndexCatalog) -> [String] {
+    private static func indexToYAML(_ index: AnyIndexDescriptor) -> [String] {
         var lines: [String] = []
 
         switch index.kindIdentifier {
@@ -187,19 +190,19 @@ public enum SchemaFileExporter {
         case "graph":
             lines.append("    - kind: graph")
             lines.append("      name: \(index.name)")
-            if let from = index.metadata["fromField"] {
+            if let from = index.kind.metadata["fromField"]?.stringValue {
                 lines.append("      from: \(from)")
             }
-            if let edge = index.metadata["edgeField"] {
+            if let edge = index.kind.metadata["edgeField"]?.stringValue {
                 lines.append("      edge: \(edge)")
             }
-            if let to = index.metadata["toField"] {
+            if let to = index.kind.metadata["toField"]?.stringValue {
                 lines.append("      to: \(to)")
             }
-            if let graph = index.metadata["graphField"] {
+            if let graph = index.kind.metadata["graphField"]?.stringValue {
                 lines.append("      graph: \(graph)")
             }
-            if let strategy = index.metadata["strategy"] {
+            if let strategy = index.kind.metadata["strategy"]?.stringValue {
                 lines.append("      strategy: \(strategy)")
             }
 
@@ -211,32 +214,32 @@ public enum SchemaFileExporter {
         case "relationship":
             lines.append("    - kind: relationship")
             lines.append("      name: \(index.name)")
-            if let from = index.metadata["from"] {
+            if let from = index.kind.metadata["from"]?.stringValue {
                 lines.append("      from: \(from)")
             }
-            if let to = index.metadata["to"] {
+            if let to = index.kind.metadata["to"]?.stringValue {
                 lines.append("      to: \(to)")
             }
 
         case "relationship_meta":
             // This is #Relationship, not #Index
             lines.append("  \"#Relationship\":")
-            if let type = index.metadata["relationshipType"] {
+            if let type = index.kind.metadata["relationshipType"]?.stringValue {
                 lines.append("    - type: \(type)")
             }
-            if let target = index.metadata["target"] {
+            if let target = index.kind.metadata["target"]?.stringValue {
                 lines.append("      target: \(target)")
             }
-            if let foreignKey = index.metadata["foreignKey"] {
+            if let foreignKey = index.kind.metadata["foreignKey"]?.stringValue {
                 lines.append("      foreignKey: \(foreignKey)")
             }
-            if let through = index.metadata["through"] {
+            if let through = index.kind.metadata["through"]?.stringValue {
                 lines.append("      through: \(through)")
             }
-            if let partition = index.metadata["partition"] {
+            if let partition = index.kind.metadata["partition"]?.stringValue {
                 lines.append("      partition: \(partition)")
             }
-            if let name = index.metadata["name"] {
+            if let name = index.kind.metadata["name"]?.stringValue {
                 lines.append("      name: \(name)")
             }
 

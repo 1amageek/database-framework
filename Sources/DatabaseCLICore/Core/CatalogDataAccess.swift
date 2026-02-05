@@ -162,7 +162,7 @@ public struct CatalogDataAccess: Sendable {
     /// Resolve graph index metadata from catalog
     ///
     /// Extracts the graph index name, strategy, and field roles from the
-    /// `IndexCatalog.metadata` dictionary (populated by JSON-encoding the IndexKind).
+    /// `AnyIndexDescriptor.kind.metadata` dictionary (populated by JSON-encoding the IndexKind).
     ///
     /// - Parameter catalog: The type catalog to extract graph index metadata from
     /// - Returns: Tuple of (indexName, strategy, fromField, edgeField, toField)
@@ -178,14 +178,14 @@ public struct CatalogDataAccess: Sendable {
             throw CLIError.invalidArguments("Type '\(catalog.typeName)' has no graph index")
         }
 
-        guard let strategyStr = graphIndex.metadata["strategy"],
+        guard let strategyStr = graphIndex.kind.metadata["strategy"]?.stringValue,
               let strategy = GraphIndexStrategy(rawValue: strategyStr) else {
             throw CLIError.invalidArguments("Graph index '\(graphIndex.name)' missing strategy metadata. Re-run schema registration to populate metadata.")
         }
 
-        let fromField = graphIndex.metadata["fromField"] ?? graphIndex.fieldNames[0]
-        let edgeField = graphIndex.metadata["edgeField"] ?? (graphIndex.fieldNames.count > 1 ? graphIndex.fieldNames[1] : "")
-        let toField = graphIndex.metadata["toField"] ?? (graphIndex.fieldNames.count > 2 ? graphIndex.fieldNames[2] : "")
+        let fromField = graphIndex.kind.metadata["fromField"]?.stringValue ?? graphIndex.fieldNames[0]
+        let edgeField = graphIndex.kind.metadata["edgeField"]?.stringValue ?? (graphIndex.fieldNames.count > 1 ? graphIndex.fieldNames[1] : "")
+        let toField = graphIndex.kind.metadata["toField"]?.stringValue ?? (graphIndex.fieldNames.count > 2 ? graphIndex.fieldNames[2] : "")
 
         return (graphIndex.name, strategy, fromField, edgeField, toField)
     }

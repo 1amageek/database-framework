@@ -1,7 +1,7 @@
 /// GraphCommands - Graph traversal and SPARQL queries using dynamic execution
 ///
 /// Executes graph and SPARQL queries without compiled @Persistable types.
-/// Uses TypeCatalog/IndexCatalog metadata to resolve index subspaces,
+/// Uses TypeCatalog/AnyIndexDescriptor metadata to resolve index subspaces,
 /// then delegates to non-generic GraphQueryExecutor / executeSPARQLString.
 
 import Foundation

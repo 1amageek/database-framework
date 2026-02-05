@@ -10,6 +10,31 @@ import Core
 @Suite("Schema File Exporter Tests")
 struct SchemaFileExporterTests {
 
+    // MARK: - Helper
+
+    /// Create an AnyIndexDescriptor for testing
+    private func makeIndex(
+        name: String,
+        kindIdentifier: String,
+        fieldNames: [String],
+        unique: Bool = false,
+        kindMetadata: [String: IndexMetadataValue] = [:]
+    ) -> AnyIndexDescriptor {
+        AnyIndexDescriptor(
+            name: name,
+            kind: AnyIndexKind(
+                identifier: kindIdentifier,
+                subspaceStructure: kindIdentifier == "scalar" ? .flat : .hierarchical,
+                fieldNames: fieldNames,
+                metadata: kindMetadata
+            ),
+            commonMetadata: [
+                "unique": .bool(unique),
+                "sparse": .bool(false)
+            ]
+        )
+    }
+
     @Test("Export simple schema")
     func testExportSimpleSchema() throws {
         let catalog = TypeCatalog(
@@ -47,12 +72,11 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("app"), .staticPath("users")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "email_scalar_idx",
                     kindIdentifier: "scalar",
                     fieldNames: ["email"],
-                    unique: true,
-                    metadata: [:]
+                    unique: true
                 )
             ]
         )
@@ -72,15 +96,14 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("catalog")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "embedding_vector_idx",
                     kindIdentifier: "vector",
                     fieldNames: ["embedding"],
-                    unique: false,
-                    metadata: [
-                        "dimensions": "384",
-                        "metric": "cosine",
-                        "algorithm": "hnsw"
+                    kindMetadata: [
+                        "dimensions": .int(384),
+                        "metric": .string("cosine"),
+                        "algorithm": .string("hnsw")
                     ]
                 )
             ]
@@ -102,16 +125,15 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("social"), .staticPath("follows")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "social_graph",
                     kindIdentifier: "graph",
                     fieldNames: ["follower", "follows", "following"],
-                    unique: false,
-                    metadata: [
-                        "fromField": "follower",
-                        "edgeField": "follows",
-                        "toField": "following",
-                        "strategy": "tripleStore"
+                    kindMetadata: [
+                        "fromField": .string("follower"),
+                        "edgeField": .string("follows"),
+                        "toField": .string("following"),
+                        "strategy": .string("tripleStore")
                     ]
                 )
             ]
@@ -160,12 +182,10 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("app")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "name_age_idx",
                     kindIdentifier: "scalar",
-                    fieldNames: ["name", "age"],
-                    unique: false,
-                    metadata: [:]
+                    fieldNames: ["name", "age"]
                 )
             ]
         )
@@ -214,12 +234,10 @@ struct SchemaFileExporterTests {
                 .staticPath("products")
             ],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "price_scalar_idx",
                     kindIdentifier: "scalar",
-                    fieldNames: ["price"],
-                    unique: false,
-                    metadata: [:]
+                    fieldNames: ["price"]
                 )
             ]
         )
@@ -255,14 +273,13 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("content")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "content_fulltext_idx",
                     kindIdentifier: "fulltext",
                     fieldNames: ["content"],
-                    unique: false,
-                    metadata: [
-                        "language": "english",
-                        "tokenizer": "standard"
+                    kindMetadata: [
+                        "language": .string("english"),
+                        "tokenizer": .string("standard")
                     ]
                 )
             ]
@@ -283,12 +300,11 @@ struct SchemaFileExporterTests {
             ],
             directoryComponents: [.staticPath("game")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "score_leaderboard_idx",
                     kindIdentifier: "leaderboard",
                     fieldNames: ["score"],
-                    unique: false,
-                    metadata: ["leaderboardName": "global_ranking"]
+                    kindMetadata: ["leaderboardName": .string("global_ranking")]
                 )
             ]
         )

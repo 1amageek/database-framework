@@ -130,66 +130,67 @@ struct TypeCatalogTests {
     }
 }
 
-// MARK: - IndexCatalog Codable
+// MARK: - AnyIndexDescriptor Codable
 
-@Suite("IndexCatalog Codable")
-struct IndexCatalogCodableTests {
+@Suite("AnyIndexDescriptor Codable")
+struct AnyIndexDescriptorCodableTests {
+
+    /// Create an AnyIndexDescriptor for testing
+    private func makeIndex(
+        name: String,
+        kindIdentifier: String,
+        fieldNames: [String],
+        unique: Bool = false,
+        sparse: Bool = false,
+        kindMetadata: [String: IndexMetadataValue] = [:]
+    ) -> AnyIndexDescriptor {
+        AnyIndexDescriptor(
+            name: name,
+            kind: AnyIndexKind(
+                identifier: kindIdentifier,
+                subspaceStructure: kindIdentifier == "scalar" ? .flat : .hierarchical,
+                fieldNames: fieldNames,
+                metadata: kindMetadata
+            ),
+            commonMetadata: [
+                "unique": .bool(unique),
+                "sparse": .bool(sparse)
+            ]
+        )
+    }
 
     @Test func roundTripsWithMetadata() throws {
-        let original = IndexCatalog(
+        let original = makeIndex(
             name: "RDFTriple_graph_subject_predicate_object",
             kindIdentifier: "graph",
             fieldNames: ["subject", "predicate", "object"],
-            unique: false,
-            sparse: false,
-            metadata: ["strategy": "tripleStore", "fromField": "subject", "edgeField": "predicate", "toField": "object"]
+            kindMetadata: [
+                "strategy": .string("tripleStore"),
+                "fromField": .string("subject"),
+                "edgeField": .string("predicate"),
+                "toField": .string("object")
+            ]
         )
 
         let data = try JSONEncoder().encode(original)
-        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
+        let decoded = try JSONDecoder().decode(AnyIndexDescriptor.self, from: data)
 
         #expect(decoded == original)
-        #expect(decoded.metadata["strategy"] == "tripleStore")
-        #expect(decoded.metadata["fromField"] == "subject")
-    }
-
-    @Test func decodesLegacyJSONWithoutMetadata() throws {
-        // Simulate catalog JSON stored before `metadata` field was added
-        let legacyJSON = """
-        {
-            "name": "User_email",
-            "kindIdentifier": "scalar",
-            "fieldNames": ["email"],
-            "unique": true,
-            "sparse": false
-        }
-        """
-        let data = Data(legacyJSON.utf8)
-        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
-
-        #expect(decoded.name == "User_email")
-        #expect(decoded.kindIdentifier == "scalar")
-        #expect(decoded.fieldNames == ["email"])
-        #expect(decoded.unique == true)
-        #expect(decoded.sparse == false)
-        #expect(decoded.metadata.isEmpty)
+        #expect(decoded.kind.metadata["strategy"]?.stringValue == "tripleStore")
+        #expect(decoded.kind.metadata["fromField"]?.stringValue == "subject")
     }
 
     @Test func decodesEmptyMetadata() throws {
-        let json = """
-        {
-            "name": "Test_idx",
-            "kindIdentifier": "scalar",
-            "fieldNames": ["field"],
-            "unique": false,
-            "sparse": false,
-            "metadata": {}
-        }
-        """
-        let data = Data(json.utf8)
-        let decoded = try JSONDecoder().decode(IndexCatalog.self, from: data)
+        let original = makeIndex(
+            name: "Test_idx",
+            kindIdentifier: "scalar",
+            fieldNames: ["field"]
+        )
 
-        #expect(decoded.metadata.isEmpty)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(AnyIndexDescriptor.self, from: data)
+
+        #expect(decoded.kind.metadata.isEmpty)
     }
 
     @Test func typeCatalogRoundTripsWithIndexMetadata() throws {
@@ -198,11 +199,16 @@ struct IndexCatalogCodableTests {
             fields: [],
             directoryComponents: [.staticPath("app"), .staticPath("triples")],
             indexes: [
-                IndexCatalog(
+                makeIndex(
                     name: "RDFTriple_graph_subject_predicate_object",
                     kindIdentifier: "graph",
                     fieldNames: ["subject", "predicate", "object"],
-                    metadata: ["strategy": "hexastore", "fromField": "subject", "edgeField": "predicate", "toField": "object"]
+                    kindMetadata: [
+                        "strategy": .string("hexastore"),
+                        "fromField": .string("subject"),
+                        "edgeField": .string("predicate"),
+                        "toField": .string("object")
+                    ]
                 )
             ]
         )
@@ -211,6 +217,40 @@ struct IndexCatalogCodableTests {
         let decoded = try JSONDecoder().decode(TypeCatalog.self, from: data)
 
         #expect(decoded == catalog)
-        #expect(decoded.indexes[0].metadata["strategy"] == "hexastore")
+        #expect(decoded.indexes[0].kind.metadata["strategy"]?.stringValue == "hexastore")
+    }
+
+    @Test func convenienceAccessors() {
+        let index = makeIndex(
+            name: "test_index",
+            kindIdentifier: "scalar",
+            fieldNames: ["email"],
+            unique: true,
+            sparse: true
+        )
+
+        #expect(index.unique == true)
+        #expect(index.sparse == true)
+        #expect(index.kindIdentifier == "scalar")
+        #expect(index.fieldNames == ["email"])
+    }
+
+    @Test func storedFieldNamesAccessor() {
+        let index = AnyIndexDescriptor(
+            name: "test_index",
+            kind: AnyIndexKind(
+                identifier: "vector",
+                subspaceStructure: .hierarchical,
+                fieldNames: ["embedding"],
+                metadata: [:]
+            ),
+            commonMetadata: [
+                "unique": .bool(false),
+                "sparse": .bool(false),
+                "storedFieldNames": .stringArray(["title", "content"])
+            ]
+        )
+
+        #expect(index.storedFieldNames == ["title", "content"])
     }
 }

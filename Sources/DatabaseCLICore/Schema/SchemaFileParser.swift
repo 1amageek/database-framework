@@ -47,7 +47,7 @@ public enum SchemaFileParser {
 
     private static func parseTypeDefinition(typeName: String, mapping: Node.Mapping) throws -> TypeCatalog {
         var fields: [FieldSchema] = []
-        var indexes: [IndexCatalog] = []
+        var indexes: [AnyIndexDescriptor] = []
         var directoryComponents: [DirectoryComponentCatalog] = []
         var fieldNumber = 1
 
@@ -163,7 +163,7 @@ public enum SchemaFileParser {
 
     // MARK: - Field Parsing
 
-    private static func parseField(name: String, fieldNumber: Int, definition: Any) throws -> (FieldSchema, [IndexCatalog]) {
+    private static func parseField(name: String, fieldNumber: Int, definition: Any) throws -> (FieldSchema, [AnyIndexDescriptor]) {
         guard let typeString = definition as? String else {
             throw SchemaFileError.invalidField(name, "Field definition must be a string")
         }
@@ -182,7 +182,7 @@ public enum SchemaFileParser {
             isArray: isArray
         )
 
-        var indexes: [IndexCatalog] = []
+        var indexes: [AnyIndexDescriptor] = []
         if let indexSpec = indexSpec {
             let index = try parseFieldIndex(fieldName: name, indexSpec: indexSpec)
             indexes.append(index)
@@ -229,7 +229,7 @@ public enum SchemaFileParser {
 
     // MARK: - Field Index Parsing
 
-    private static func parseFieldIndex(fieldName: String, indexSpec: String) throws -> IndexCatalog {
+    private static func parseFieldIndex(fieldName: String, indexSpec: String) throws -> AnyIndexDescriptor {
         // Parse "indexKind(option:value, option:value)" or "indexKind(option:value1,value2,value3)"
         let parts = indexSpec.components(separatedBy: "(")
         let kind = parts[0].trimmingCharacters(in: .whitespaces)
@@ -272,41 +272,41 @@ public enum SchemaFileParser {
             }
         }
 
-        return try buildFieldIndexCatalog(kind: kind, fieldName: fieldName, options: options)
+        return try buildFieldIndexDescriptor(kind: kind, fieldName: fieldName, options: options)
     }
 
-    private static func buildFieldIndexCatalog(kind: String, fieldName: String, options: [String: String]) throws -> IndexCatalog {
+    private static func buildFieldIndexDescriptor(kind: String, fieldName: String, options: [String: String]) throws -> AnyIndexDescriptor {
         let indexName = "\(fieldName)_\(kind)_idx"
 
         switch kind.lowercased() {
         case "scalar":
             let unique = options["unique"] == "true"
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "scalar",
                 fieldNames: [fieldName],
                 unique: unique,
-                metadata: [:]
+                kindMetadata: [:]
             )
 
         case "vector":
             guard let dimensionsStr = options["dimensions"],
-                  let _ = Int(dimensionsStr) else {
+                  let dimensions = Int(dimensionsStr) else {
                 throw SchemaFileError.invalidIndex("Vector index requires 'dimensions' parameter")
             }
 
             let metric = options["metric"] ?? "cosine"
             let algorithm = options["algorithm"] ?? "hnsw"
 
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "vector",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: [
-                    "dimensions": dimensionsStr,
-                    "metric": metric,
-                    "algorithm": algorithm
+                kindMetadata: [
+                    "dimensions": .int(dimensions),
+                    "metric": .string(metric),
+                    "algorithm": .string(algorithm)
                 ]
             )
 
@@ -314,44 +314,44 @@ public enum SchemaFileParser {
             let language = options["language"] ?? "english"
             let tokenizer = options["tokenizer"] ?? "standard"
 
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "fulltext",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: [
-                    "language": language,
-                    "tokenizer": tokenizer
+                kindMetadata: [
+                    "language": .string(language),
+                    "tokenizer": .string(tokenizer)
                 ]
             )
 
         case "spatial":
             let strategy = options["strategy"] ?? "geohash"
 
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "spatial",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: ["strategy": strategy]
+                kindMetadata: ["strategy": .string(strategy)]
             )
 
         case "rank":
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "rank",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: [:]
+                kindMetadata: [:]
             )
 
         case "bitmap":
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "bitmap",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: [:]
+                kindMetadata: [:]
             )
 
         case "leaderboard":
@@ -359,12 +359,12 @@ public enum SchemaFileParser {
                 throw SchemaFileError.invalidIndex("Leaderboard index requires 'name' parameter")
             }
 
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "leaderboard",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: ["leaderboardName": leaderboardName]
+                kindMetadata: ["leaderboardName": .string(leaderboardName)]
             )
 
         case "aggregation":
@@ -372,21 +372,21 @@ public enum SchemaFileParser {
                 throw SchemaFileError.invalidIndex("Aggregation index requires 'functions' parameter")
             }
 
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "aggregation",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: ["functions": functionsStr]
+                kindMetadata: ["functions": .string(functionsStr)]
             )
 
         case "version":
-            return IndexCatalog(
+            return makeIndexDescriptor(
                 name: indexName,
                 kindIdentifier: "version",
                 fieldNames: [fieldName],
                 unique: false,
-                metadata: [:]
+                kindMetadata: [:]
             )
 
         default:
@@ -396,7 +396,7 @@ public enum SchemaFileParser {
 
     // MARK: - Complex Index Parsing
 
-    private static func parseIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parseIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let kind = definition["kind"] as? String else {
             throw SchemaFileError.invalidIndex("Index must have 'kind' field")
         }
@@ -415,7 +415,7 @@ public enum SchemaFileParser {
         }
     }
 
-    private static func parseScalarIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parseScalarIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let fields = definition["fields"] as? [String] else {
             throw SchemaFileError.invalidIndex("Scalar index requires 'fields' array")
         }
@@ -423,16 +423,16 @@ public enum SchemaFileParser {
         let unique = definition["unique"] as? Bool ?? false
         let name = definition["name"] as? String ?? "\(fields.joined(separator: "_"))_idx"
 
-        return IndexCatalog(
+        return makeIndexDescriptor(
             name: name,
             kindIdentifier: "scalar",
             fieldNames: fields,
             unique: unique,
-            metadata: [:]
+            kindMetadata: [:]
         )
     }
 
-    private static func parseGraphIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parseGraphIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let from = definition["from"] as? String,
               let edge = definition["edge"] as? String,
               let to = definition["to"] as? String else {
@@ -444,43 +444,43 @@ public enum SchemaFileParser {
         let _ = definition["storedFields"] as? [String] ?? []  // Reserved for future use
         let name = definition["name"] as? String ?? "graph_idx"
 
-        var metadata: [String: String] = [
-            "fromField": from,
-            "edgeField": edge,
-            "toField": to,
-            "strategy": strategy
+        var kindMetadata: [String: IndexMetadataValue] = [
+            "fromField": .string(from),
+            "edgeField": .string(edge),
+            "toField": .string(to),
+            "strategy": .string(strategy)
         ]
 
         if let graph = graph {
-            metadata["graphField"] = graph
+            kindMetadata["graphField"] = .string(graph)
         }
 
-        return IndexCatalog(
+        return makeIndexDescriptor(
             name: name,
             kindIdentifier: "graph",
             fieldNames: [from, edge, to],
             unique: false,
-            metadata: metadata
+            kindMetadata: kindMetadata
         )
     }
 
-    private static func parsePermutedIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parsePermutedIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let fields = definition["fields"] as? [String] else {
             throw SchemaFileError.invalidIndex("Permuted index requires 'fields' array")
         }
 
         let name = definition["name"] as? String ?? "\(fields.joined(separator: "_"))_permuted_idx"
 
-        return IndexCatalog(
+        return makeIndexDescriptor(
             name: name,
             kindIdentifier: "permuted",
             fieldNames: fields,
             unique: false,
-            metadata: [:]
+            kindMetadata: [:]
         )
     }
 
-    private static func parseRelationshipIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parseRelationshipIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let from = definition["from"] as? String,
               let to = definition["to"] as? String else {
             throw SchemaFileError.invalidIndex("Relationship index requires 'from' and 'to' fields")
@@ -488,50 +488,50 @@ public enum SchemaFileParser {
 
         let name = definition["name"] as? String ?? "\(from)_\(to)_rel_idx"
 
-        return IndexCatalog(
+        return makeIndexDescriptor(
             name: name,
             kindIdentifier: "relationship",
             fieldNames: [from, to],
             unique: false,
-            metadata: ["from": from, "to": to]
+            kindMetadata: ["from": .string(from), "to": .string(to)]
         )
     }
 
     // MARK: - Relationship as Index
 
-    private static func parseRelationshipAsIndex(_ definition: [String: Any]) throws -> IndexCatalog {
+    private static func parseRelationshipAsIndex(_ definition: [String: Any]) throws -> AnyIndexDescriptor {
         guard let type = definition["type"] as? String else {
             throw SchemaFileError.invalidIndex("Relationship must have 'type' field")
         }
 
         let name = definition["name"] as? String ?? "relationship_idx"
-        var metadata: [String: String] = ["relationshipType": type]
+        var kindMetadata: [String: IndexMetadataValue] = ["relationshipType": .string(type)]
 
         if let target = definition["target"] as? String {
-            metadata["target"] = target
+            kindMetadata["target"] = .string(target)
         }
         if let foreignKey = definition["foreignKey"] as? String {
-            metadata["foreignKey"] = foreignKey
+            kindMetadata["foreignKey"] = .string(foreignKey)
         }
         if let through = definition["through"] as? String {
-            metadata["through"] = through
+            kindMetadata["through"] = .string(through)
         }
         if let partition = definition["partition"] as? String {
-            metadata["partition"] = partition
+            kindMetadata["partition"] = .string(partition)
         }
 
-        return IndexCatalog(
+        return makeIndexDescriptor(
             name: name,
             kindIdentifier: "relationship_meta",
             fieldNames: [],
             unique: false,
-            metadata: metadata
+            kindMetadata: kindMetadata
         )
     }
 
     // MARK: - Node-based Index Parsing
 
-    private static func parseIndexNode(_ mapping: Node.Mapping) throws -> IndexCatalog {
+    private static func parseIndexNode(_ mapping: Node.Mapping) throws -> AnyIndexDescriptor {
         var dict: [String: Any] = [:]
         for (keyNode, valueNode) in mapping {
             guard case .scalar(let keyScalar) = keyNode else {
@@ -555,7 +555,7 @@ public enum SchemaFileParser {
         return try parseIndex(dict)
     }
 
-    private static func parseRelationshipNode(_ mapping: Node.Mapping) throws -> IndexCatalog {
+    private static func parseRelationshipNode(_ mapping: Node.Mapping) throws -> AnyIndexDescriptor {
         var dict: [String: String] = [:]
         for (keyNode, valueNode) in mapping {
             guard case .scalar(let keyScalar) = keyNode,
@@ -566,6 +566,53 @@ public enum SchemaFileParser {
         }
 
         return try parseRelationshipAsIndex(dict)
+    }
+
+    // MARK: - Helper
+
+    /// Create an AnyIndexDescriptor from parsed components
+    private static func makeIndexDescriptor(
+        name: String,
+        kindIdentifier: String,
+        fieldNames: [String],
+        unique: Bool,
+        sparse: Bool = false,
+        kindMetadata: [String: IndexMetadataValue],
+        storedFieldNames: [String] = []
+    ) -> AnyIndexDescriptor {
+        let kind = AnyIndexKind(
+            identifier: kindIdentifier,
+            subspaceStructure: subspaceStructure(for: kindIdentifier),
+            fieldNames: fieldNames,
+            metadata: kindMetadata
+        )
+
+        var commonMetadata: [String: IndexMetadataValue] = [
+            "unique": .bool(unique),
+            "sparse": .bool(sparse)
+        ]
+
+        if !storedFieldNames.isEmpty {
+            commonMetadata["storedFieldNames"] = .stringArray(storedFieldNames)
+        }
+
+        return AnyIndexDescriptor(
+            name: name,
+            kind: kind,
+            commonMetadata: commonMetadata
+        )
+    }
+
+    /// Determine subspace structure for known index kinds
+    private static func subspaceStructure(for kindIdentifier: String) -> SubspaceStructure {
+        switch kindIdentifier {
+        case "scalar", "permuted", "bitmap":
+            return .flat
+        case "vector", "graph", "fulltext", "spatial", "rank", "leaderboard", "aggregation", "version", "relationship", "relationship_meta":
+            return .hierarchical
+        default:
+            return .flat
+        }
     }
 }
 
