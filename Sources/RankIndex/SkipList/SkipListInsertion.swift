@@ -88,9 +88,8 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         var updateKeys: [[UInt8]?] = Array(repeating: nil, count: currentLevels)
         var updateSpans: [Int64?] = Array(repeating: nil, count: currentLevels)
 
-        // For updateKey == nil levels, record the first entry and its span
+        // For updateKey == nil levels, record the first entry
         var firstEntriesAtInsertionTime: [(score: Score, primaryKey: Tuple)?] = Array(repeating: nil, count: currentLevels)
-        var firstEntrySpansAtInsertion: [Int64?] = Array(repeating: nil, count: currentLevels)
 
         for level in 0..<currentLevels {
             // Each level independently scans from the beginning
@@ -122,7 +121,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         var firstEntryRanks: [Int64?] = Array(repeating: nil, count: currentLevels)
         var firstEntrySpans: [Int64?] = Array(repeating: nil, count: currentLevels)
 
-        for level in 1..<newLevel {
+        for level in 0..<newLevel {
             if updateKeys[level] == nil, let firstEntry = firstEntriesAtInsertionTime[level] {
                 // Calculate first entry's Level 0 rank
                 let firstRank = try await findInsertionPoint(
@@ -176,8 +175,9 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
 
                     // Existing first entry's span does NOT change
                     // Reason: All ranks shift by +1, but relative distance remains the same
-                    // Example: [Z]─1→[A]─3→[D] where A's span to D is still 3
-                    // No update needed - the span value already correct
+                    // Example: Before: [A]─2→[C] (A.rank=0, C.rank=2)
+                    //          After:  [Z]─1→[A]─2→[C] (Z.rank=0, A.rank=1, C.rank=3)
+                    //          A's span = C.rank - A.rank = 3 - 1 = 2 (unchanged)
                 } else {
                     // Level is empty, span = distance to end
                     newSpan = (totalCountBefore + 1) - rank[0]
@@ -196,7 +196,6 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
                 let newSpan = currentSpan + 1
                 transaction.setValue(SpanValue(count: newSpan).encoded(), for: updateKey)
             }
-            // updateKey == nil: do nothing (standard algorithm)
         }
 
         return rank[0]
