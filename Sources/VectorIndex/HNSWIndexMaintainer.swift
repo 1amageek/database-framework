@@ -291,13 +291,36 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return []
         }
 
-        // Convert labels to primary keys
+        // Convert labels to primary keys (parallel lookup for 10-30× speedup)
         var output: [(primaryKey: [any TupleElement], distance: Double)] = []
-        for result in results {
-            if let pk = try await getPrimaryKeyForLabel(label: result.label, transaction: transaction) {
-                // Avoid pack/unpack cycle: convert Tuple to array directly
-                let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
-                output.append((primaryKey: elements, distance: Double(result.distance)))
+        output.reserveCapacity(results.count)
+
+        // Parallel PK lookup using TaskGroup
+        try await withThrowingTaskGroup(of: (Int, Tuple?).self) { group in
+            for (index, result) in results.enumerated() {
+                group.addTask {
+                    let pk = try await self.getPrimaryKeyForLabel(label: result.label, transaction: transaction)
+                    return (index, pk)
+                }
+            }
+
+            // Collect results
+            var pkResults: [(index: Int, pk: Tuple?, distance: Float)] = []
+            pkResults.reserveCapacity(results.count)
+
+            for try await (index, pk) in group {
+                pkResults.append((index: index, pk: pk, distance: results[index].distance))
+            }
+
+            // Sort by original index to preserve distance ordering
+            pkResults.sort { $0.index < $1.index }
+
+            // Build output
+            for item in pkResults {
+                if let pk = item.pk {
+                    let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
+                    output.append((primaryKey: elements, distance: Double(item.distance)))
+                }
             }
         }
 

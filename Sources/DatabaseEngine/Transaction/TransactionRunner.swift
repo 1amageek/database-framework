@@ -61,12 +61,14 @@ internal struct TransactionRunner: Sendable {
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority, weak read semantics)
     ///   - readVersionCache: Optional cache for weak read semantics
+    ///   - asyncOperationTracker: Optional tracker for async operations (getRange iterators)
     ///   - operation: The operation to execute within the transaction
     /// - Returns: The result of the operation
     /// - Throws: FDBError if the transaction cannot be committed after retries
     func run<T: Sendable>(
         configuration: TransactionConfiguration,
         readVersionCache: ReadVersionCache? = nil,
+        asyncOperationTracker: TransactionAsyncOperationTracker? = nil,
         operation: @Sendable (any TransactionProtocol) async throws -> T
     ) async throws -> T {
         let maxRetries = max(1, configuration.retryLimit)
@@ -93,10 +95,18 @@ internal struct TransactionRunner: Sendable {
                 // 4. Execute operation
                 let result = try await operation(transaction)
 
-                // 5. Commit
+                // 5. Wait for async operations to complete before commit
+                //    This prevents "Operation issued while a commit was outstanding" errors
+                //    caused by background preFetchTasks in AsyncKVSequence iterators.
+                //    Reference: FoundationDB Record Layer transaction lifecycle pattern
+                if let tracker = asyncOperationTracker {
+                    await tracker.waitForCompletion(timeout: .seconds(5))
+                }
+
+                // 6. Commit
                 let committed = try await transaction.commit()
                 if committed {
-                    // 6. Update cache after successful commit
+                    // 7. Update cache after successful commit
                     await updateCacheAfterCommit(
                         transaction: transaction,
                         cache: readVersionCache

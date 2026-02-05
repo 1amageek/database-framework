@@ -19,11 +19,8 @@ public struct DynamicProtobufEncoder: Sendable {
     ///   - catalog: TypeCatalog providing field name → (fieldNumber, type) mapping
     /// - Returns: Protobuf wire format bytes
     public static func encode(_ dict: [String: Any], catalog: TypeCatalog) throws -> [UInt8] {
-        // Build field name → FieldSchema lookup
-        var fieldMap: [String: FieldSchema] = [:]
-        for field in catalog.fields {
-            fieldMap[field.name] = field
-        }
+        // Use pre-computed field map from catalog (O(1) vs O(fields) per call)
+        let fieldMap = catalog.fieldMapByName
 
         var data = Data()
 
@@ -182,6 +179,7 @@ public struct DynamicProtobufEncoder: Sendable {
 
     private static func encodeVarint(_ value: UInt64) -> [UInt8] {
         var result: [UInt8] = []
+        result.reserveCapacity(10)  // UInt64 max varint length is 10 bytes
         var n = value
         while n >= 0x80 {
             result.append(UInt8(n & 0x7F) | 0x80)

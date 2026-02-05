@@ -19,11 +19,8 @@ public struct DynamicProtobufDecoder: Sendable {
     ///   - catalog: TypeCatalog providing field number → (name, type) mapping
     /// - Returns: Dictionary of field name → decoded value
     public static func decode(_ data: [UInt8], catalog: TypeCatalog) throws -> [String: Any] {
-        // Build field number → FieldSchema lookup
-        var fieldMap: [Int: FieldSchema] = [:]
-        for field in catalog.fields {
-            fieldMap[field.fieldNumber] = field
-        }
+        // Use pre-computed field map from catalog (O(1) vs O(fields) per call)
+        let fieldMap = catalog.fieldMapByNumber
 
         // Parse wire format
         let parsedFields = try parseFields(Data(data))

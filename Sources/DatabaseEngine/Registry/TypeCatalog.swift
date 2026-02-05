@@ -52,6 +52,22 @@ public struct TypeCatalog: Sendable, Codable, Equatable {
         self.indexes = indexes
         self.enumMetadata = enumMetadata
     }
+
+    // MARK: - Field Lookup (for Encoder/Decoder optimization)
+
+    /// Build field name → FieldSchema map (for Encoder)
+    ///
+    /// Call once and cache for batch operations to avoid O(fields) per encode.
+    public var fieldMapByName: [String: FieldSchema] {
+        Dictionary(uniqueKeysWithValues: fields.map { ($0.name, $0) })
+    }
+
+    /// Build field number → FieldSchema map (for Decoder)
+    ///
+    /// Call once and cache for batch operations to avoid O(fields) per decode.
+    public var fieldMapByNumber: [Int: FieldSchema] {
+        Dictionary(uniqueKeysWithValues: fields.map { ($0.fieldNumber, $0) })
+    }
 }
 
 // MARK: - Directory Resolution
