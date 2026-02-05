@@ -177,7 +177,11 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         return nil
     }
 
-    /// Find deletion point at a specific level
+    /// Find deletion point at a specific level - Zero-Copy Implementation
+    ///
+    /// **Zero-Copy Design**: Uses direct byte comparison of packed FDB keys.
+    /// FDB Tuple Layer guarantees lexicographic byte order, so packed keys
+    /// `[score][primaryKey]` can be compared without unpacking.
     ///
     /// Returns:
     /// - lastKeyBeforeDelete: Key of the last entry before deletion point
@@ -191,47 +195,36 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         var lastKey: [UInt8]? = nil
         var deletedSpan: Int64? = nil
 
+        // Zero-copy: Pre-compute target key once (includes levelSubspace prefix)
+        let targetKey = try makeKey(score: targetScore, primaryKey: targetPrimaryKey, level: level)
+
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
         // Scan in descending order (highest to lowest score)
-        // Use key-based getRange with reverse=true
         let sequence = transaction.getRange(
             from: range.begin,
             to: range.end,
-            limit: 0,  // 0 = no limit
-            reverse: true,  // CRITICAL: Must specify reverse=true for descending scan!
+            limit: 0,
+            reverse: true,
             snapshot: true
         )
 
         for try await (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
-            // Parse key
-            let suffix = try levelSubspace.unpack(key)
-            guard !suffix.isEmpty else { continue }
-
-            guard let scoreElement = suffix[0] else { continue }
-            let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
-
-            // In descending order
-            if currentScore == targetScore {
-                let currentPK = extractPrimaryKey(from: suffix)
-                if compareTuples(currentPK, targetPrimaryKey) == .orderedSame {
-                    // Found the entry to delete at this level
-                    let span = try SpanValue.decode(value)
-                    deletedSpan = span.count
-                    break
-                } else if compareTuples(currentPK, targetPrimaryKey) == .orderedAscending {
-                    // Passed the target (in descending PK order)
-                    break
-                }
-            } else if currentScore < targetScore {
-                // Passed the target (in descending score order)
+            // Zero-copy: Direct byte comparison without unpack/pack cycle
+            if key == targetKey {
+                // Found the entry to delete at this level
+                let span = try SpanValue.decode(value)
+                deletedSpan = span.count
+                break
+            } else if key.lexicographicallyPrecedes(targetKey) {
+                // key < targetKey: passed the target in descending order
                 break
             }
 
-            // currentScore > targetScore (or same score with higher PK)
+            // key > targetKey: update lastKey and continue
             lastKey = key
         }
 
@@ -267,26 +260,4 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         return Tuple(pkElements)
     }
 
-    /// Compare two tuples using packed byte representation
-    private func compareTuples(_ lhs: Tuple, _ rhs: Tuple) -> ComparisonResult {
-        let lhsBytes = lhs.pack()
-        let rhsBytes = rhs.pack()
-
-        let minLength = min(lhsBytes.count, rhsBytes.count)
-        for i in 0..<minLength {
-            if lhsBytes[i] < rhsBytes[i] {
-                return .orderedAscending
-            } else if lhsBytes[i] > rhsBytes[i] {
-                return .orderedDescending
-            }
-        }
-
-        if lhsBytes.count < rhsBytes.count {
-            return .orderedAscending
-        } else if lhsBytes.count > rhsBytes.count {
-            return .orderedDescending
-        } else {
-            return .orderedSame
-        }
-    }
 }

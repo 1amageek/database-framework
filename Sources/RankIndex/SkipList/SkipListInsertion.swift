@@ -278,10 +278,14 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         return nil
     }
 
-    /// Find insertion point at a specific level (descending order)
+    /// Find insertion point at a specific level (descending order) - Zero-Copy Implementation
     ///
     /// Scans in descending order (high to low scores).
     /// Accumulates span counters until reaching the insertion point.
+    ///
+    /// **Zero-Copy Design**: Uses direct byte comparison of packed FDB keys.
+    /// FDB Tuple Layer guarantees lexicographic byte order, so packed keys
+    /// `[score][primaryKey]` can be compared without unpacking.
     ///
     /// Based on FoundationDB Record Layer approach: each level independently
     /// scans from the beginning to find the insertion point.
@@ -304,6 +308,9 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         var accumulatedRank: Int64 = 0
         var lastKey: [UInt8]? = nil
 
+        // Zero-copy: Pre-compute target key once (includes levelSubspace prefix)
+        let targetKey = try makeKey(score: targetScore, primaryKey: targetPrimaryKey, level: level)
+
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
@@ -319,33 +326,17 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         for try await (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
-            // Parse key
-            let suffix = try levelSubspace.unpack(key)
-            guard !suffix.isEmpty else { continue }
-
-            guard let scoreElement = suffix[0] else { continue }
-            let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
-
-            // In descending order: stop when we reach or pass the target
-            // Pugh 1990: while (x→forward[i]→key > searchKey) do advance
-            // Stop when: currentScore <= targetScore
-            if currentScore <= targetScore {
-                // Check if exact match or below target
-                if currentScore == targetScore {
-                    let currentPK = extractPrimaryKey(from: suffix)
-                    if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
-                        // Current key <= target, stop here
-                        // Do NOT accumulate this entry's span (it's after the insertion point)
-                        break
-                    }
-                } else {
-                    // Current score is lower than target, stop here
-                    // Do NOT accumulate this entry's span
-                    break
-                }
+            // Zero-copy: Direct byte comparison without unpack/pack cycle
+            // FDB Tuple Layer guarantees: packed([score][pk]) maintains lexicographic order
+            //
+            // Descending order stop condition: key <= targetKey
+            // Using lexicographicallyPrecedes: key < targetKey || key == targetKey
+            if !targetKey.lexicographicallyPrecedes(key) {
+                // key <= targetKey: stop here, do NOT accumulate this entry's span
+                break
             }
 
-            // currentScore > targetScore (or same score with higher PK), accumulate span
+            // key > targetKey: accumulate span and continue
             let span = try SpanValue.decode(value)
             accumulatedRank += span.count
             lastKey = key
@@ -385,26 +376,4 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         return Tuple(pkElements)
     }
 
-    /// Compare two tuples using packed byte representation
-    private func compareTuples(_ lhs: Tuple, _ rhs: Tuple) -> ComparisonResult {
-        let lhsBytes = lhs.pack()
-        let rhsBytes = rhs.pack()
-
-        let minLength = min(lhsBytes.count, rhsBytes.count)
-        for i in 0..<minLength {
-            if lhsBytes[i] < rhsBytes[i] {
-                return .orderedAscending
-            } else if lhsBytes[i] > rhsBytes[i] {
-                return .orderedDescending
-            }
-        }
-
-        if lhsBytes.count < rhsBytes.count {
-            return .orderedAscending
-        } else if lhsBytes.count > rhsBytes.count {
-            return .orderedDescending
-        } else {
-            return .orderedSame
-        }
-    }
 }

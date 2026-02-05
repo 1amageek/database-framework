@@ -74,7 +74,10 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         return rank
     }
 
-    /// Traverse a single level, accumulating span until reaching target
+    /// Traverse a single level, accumulating span until reaching target - Zero-Copy Implementation
+    ///
+    /// **Zero-Copy Design**: Uses direct byte comparison of packed FDB keys.
+    /// FDB Tuple Layer guarantees lexicographic byte order.
     ///
     /// Returns: Total span traversed at this level
     private func traverseLevel(
@@ -85,6 +88,9 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
     ) async throws -> Int64 {
         var accumulatedSpan: Int64 = 0
 
+        // Zero-copy: Pre-compute target key once
+        let targetKey = try makeKey(score: targetScore, primaryKey: targetPrimaryKey, level: level)
+
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
@@ -93,36 +99,20 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
             from: range.begin,
             to: range.end,
             limit: 0,
-            reverse: true,  // Descending order
+            reverse: true,
             snapshot: true
         )
 
         for try await (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
-            // Parse key
-            let suffix = try levelSubspace.unpack(key)
-            guard !suffix.isEmpty else { continue }
-
-            guard let scoreElement = suffix[0] else { continue }
-            let currentScore = try TupleDecoder.decode(scoreElement, as: Score.self)
-
-            // In descending order: stop when we reach or pass the target
-            if currentScore <= targetScore {
-                if currentScore == targetScore {
-                    let currentPK = extractPrimaryKey(from: suffix)
-                    if compareTuples(currentPK, targetPrimaryKey) != .orderedDescending {
-                        // Reached target, stop
-                        break
-                    }
-                } else {
-                    // Passed target, stop
-                    break
-                }
+            // Zero-copy: Direct byte comparison
+            // Stop condition: key <= targetKey
+            if !targetKey.lexicographicallyPrecedes(key) {
+                break
             }
 
-            // currentScore > targetScore (or same score with higher PK)
-            // Accumulate span
+            // key > targetKey: accumulate span
             let span = try SpanValue.decode(value)
             accumulatedSpan += span.count
         }
@@ -253,35 +243,4 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         return Tuple(pkElements)
     }
 
-    /// Compare two tuples using their packed byte representation
-    ///
-    /// Tuple doesn't conform to Comparable, so we compare their packed bytes.
-    ///
-    /// - Parameters:
-    ///   - lhs: Left tuple
-    ///   - rhs: Right tuple
-    /// - Returns: Comparison result
-    private func compareTuples(_ lhs: Tuple, _ rhs: Tuple) -> ComparisonResult {
-        let lhsBytes = lhs.pack()
-        let rhsBytes = rhs.pack()
-
-        // Lexicographic comparison
-        let minLength = min(lhsBytes.count, rhsBytes.count)
-        for i in 0..<minLength {
-            if lhsBytes[i] < rhsBytes[i] {
-                return .orderedAscending
-            } else if lhsBytes[i] > rhsBytes[i] {
-                return .orderedDescending
-            }
-        }
-
-        // If all bytes are equal up to minLength, compare lengths
-        if lhsBytes.count < rhsBytes.count {
-            return .orderedAscending
-        } else if lhsBytes.count > rhsBytes.count {
-            return .orderedDescending
-        } else {
-            return .orderedSame
-        }
-    }
 }
