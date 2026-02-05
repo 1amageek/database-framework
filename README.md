@@ -4,8 +4,9 @@
 [![Platform](https://img.shields.io/badge/Platform-macOS%2015%2B-blue.svg)](https://www.apple.com/macos)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/1amageek/database-framework)](https://github.com/1amageek/database-framework/releases)
+[![Tests](https://img.shields.io/badge/Tests-3%2C129-brightgreen.svg)](Tests/)
 
-A Swift package providing server-side database operations powered by FoundationDB. Database implements the index maintenance logic for index types defined in [DatabaseKit](https://github.com/1amageek/database-kit).
+A **protocol-extensible, customizable index database** for the AI era, built on FoundationDB's transactional guarantees. Database implements the index maintenance logic for index types defined in [DatabaseKit](https://github.com/1amageek/database-kit).
 
 ## Overview
 
@@ -17,6 +18,22 @@ Database provides:
 - **Migration System**: Schema versioning and online index building
 - **Polymorphable**: Union type support with shared directories and polymorphic queries
 - **Infrastructure**: Query optimization, transaction management, serialization, batch operations
+
+## What's New in v0.2.0
+
+### Breaking Changes
+- Replaced `IndexCatalog` with `AnyIndexDescriptor` for unified index representation
+- Changed access level from `package` to `public` for `IndexMetadataValue`, `AnyIndexKind`, `AnyIndexDescriptor`
+
+### New Features
+- Added `Codable` conformance to `IndexMetadataValue`, `AnyIndexKind`, `AnyIndexDescriptor`
+- Added convenience accessors: `unique`, `sparse`, `storedFieldNames`
+- Type-safe metadata values (`.int(384)` instead of `.string("384")`)
+
+### Improvements
+- Unified index type representation across CLI and core engine
+- Better type preservation in schema serialization/deserialization
+- **3,129 tests** across 183 test files
 
 ## Performance (Phase 2 完了: 2026-02-05)
 
@@ -166,7 +183,7 @@ Add database-framework to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "0.1.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "0.2.0")
 ]
 ```
 
@@ -189,10 +206,12 @@ dependencies: [
 | `SpatialIndex` | S2/Geohash spatial indexing |
 | `RankIndex` | Skip-list based rankings |
 | `PermutedIndex` | Alternative field orderings |
-| `GraphIndex` | Adjacency list traversal |
-| `AggregationIndex` | COUNT, SUM, MIN, MAX, AVG |
+| `GraphIndex` | Adjacency list traversal, SPARQL queries |
+| `AggregationIndex` | COUNT, SUM, MIN, MAX, AVG, Percentile |
 | `VersionIndex` | Version history with versionstamps |
-| `CrossTypeIndex` | Cross-type indexes spanning relationships |
+| `BitmapIndex` | Roaring bitmap for categorical data |
+| `LeaderboardIndex` | Real-time leaderboard rankings |
+| `RelationshipIndex` | Cross-type relationship indexes |
 | `QueryAST` | SQL/SPARQL query AST parser, builder, and serializer |
 | `Database` | All-in-one re-export |
 
@@ -1298,6 +1317,15 @@ The `IndexMaintainer` protocol requires:
 
 ## Testing
 
+The project includes **3,129 tests** across **183 test files**, covering:
+
+| Category | Tests | Description |
+|----------|-------|-------------|
+| Unit Tests | 2,500+ | Core functionality, index maintainers, query planning |
+| Integration Tests | 400+ | End-to-end workflows, FDB transactions |
+| Benchmark Tests | 13 | Performance regression testing |
+| Edge Case Tests | 200+ | Boundary conditions, error handling |
+
 Tests use a shared singleton for FDB initialization to avoid "API version may be set only once" errors:
 
 ```swift
@@ -1315,6 +1343,19 @@ import Testing
         // Test your index operations...
     }
 }
+```
+
+Run tests:
+
+```bash
+# Run all tests
+swift test
+
+# Run specific test suite
+swift test --filter DatabaseEngineTests
+
+# Run benchmarks
+swift test --filter PerformanceBenchmarks
 ```
 
 ## Data Layout in FoundationDB
