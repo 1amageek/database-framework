@@ -284,6 +284,9 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         let ids: [Tuple] = try await container.database.withTransaction(configuration: .default) { transaction in
             var ids: [Tuple] = []
+            if let limit = limit {
+                ids.reserveCapacity(limit)
+            }
 
             switch scanRange {
             case .exactMatch(let begin, let end, let valueSubspace):
@@ -550,6 +553,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 blobsSubspace: self.blobsSubspace
             )
             var results: [T] = []
+            results.reserveCapacity(keys.count)
             for key in keys {
                 if let bytes = try await storage.read(for: key) {
                     let model: T = try DataAccess.deserialize(bytes)
@@ -850,6 +854,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
 
         var ids: [Tuple] = []
+        if let limit = limit {
+            ids.reserveCapacity(limit)
+        }
 
         switch scanRange {
         case .exactMatch(let begin, let end, let valueSubspace):
@@ -911,6 +918,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             blobsSubspace: self.blobsSubspace
         )
         var results: [T] = []
+        results.reserveCapacity(keys.count)
         for key in keys {
             if let bytes = try await storage.read(for: key) {
                 let model: T = try DataAccess.deserialize(bytes)

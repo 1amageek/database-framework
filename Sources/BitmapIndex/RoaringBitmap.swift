@@ -698,6 +698,7 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
     /// Get all values as an array
     public func toArray() -> [UInt32] {
         var result: [UInt32] = []
+        result.reserveCapacity(cardinality)
         for (high, container) in containers.sorted(by: { $0.key < $1.key }) {
             let highPart = UInt32(high) << 16
             for low in container.toArray() {
@@ -719,15 +720,156 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
 
     // MARK: - Serialization
 
-    /// Serialize to bytes
+    /// Serialize to bytes using binary format for maximum performance
+    ///
+    /// **Binary Format**:
+    /// - Header: UInt32 container count
+    /// - For each container:
+    ///   - UInt16 high part
+    ///   - UInt8 container type (0=array, 1=bitmap, 2=run)
+    ///   - Container data (format depends on type)
     public func serialize() throws -> Data {
-        let encoder = JSONEncoder()
-        return try encoder.encode(self)
+        var data = Data()
+        data.reserveCapacity(containers.count * 100)  // Estimate
+
+        // Container count
+        var count = UInt32(containers.count)
+        withUnsafeBytes(of: &count) { data.append(contentsOf: $0) }
+
+        // Containers sorted by high part
+        for (high, container) in containers.sorted(by: { $0.key < $1.key }) {
+            // High part
+            var highValue = high
+            withUnsafeBytes(of: &highValue) { data.append(contentsOf: $0) }
+
+            // Container type and data
+            switch container {
+            case .array(let arr):
+                data.append(0)  // Type: array
+                var arrCount = UInt32(arr.count)
+                withUnsafeBytes(of: &arrCount) { data.append(contentsOf: $0) }
+                for value in arr {
+                    var v = value
+                    withUnsafeBytes(of: &v) { data.append(contentsOf: $0) }
+                }
+
+            case .bitmap(let bits):
+                data.append(1)  // Type: bitmap
+                for word in bits {
+                    var w = word
+                    withUnsafeBytes(of: &w) { data.append(contentsOf: $0) }
+                }
+
+            case .run(let runs):
+                data.append(2)  // Type: run
+                var runCount = UInt32(runs.count)
+                withUnsafeBytes(of: &runCount) { data.append(contentsOf: $0) }
+                for (start, length) in runs {
+                    var s = start
+                    var l = length
+                    withUnsafeBytes(of: &s) { data.append(contentsOf: $0) }
+                    withUnsafeBytes(of: &l) { data.append(contentsOf: $0) }
+                }
+            }
+        }
+
+        return data
     }
 
-    /// Deserialize from bytes
+    /// Deserialize from bytes using binary format
     public static func deserialize(_ data: Data) throws -> RoaringBitmap {
-        let decoder = JSONDecoder()
-        return try decoder.decode(RoaringBitmap.self, from: data)
+        var result = RoaringBitmap()
+        var offset = 0
+
+        guard data.count >= 4 else {
+            throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Data too short"))
+        }
+
+        // Helper to read values safely (handles alignment)
+        func readUInt16() -> UInt16 {
+            var value: UInt16 = 0
+            _ = withUnsafeMutableBytes(of: &value) { dest in
+                data.copyBytes(to: dest, from: offset..<(offset + 2))
+            }
+            offset += 2
+            return value
+        }
+
+        func readUInt32() -> UInt32 {
+            var value: UInt32 = 0
+            _ = withUnsafeMutableBytes(of: &value) { dest in
+                data.copyBytes(to: dest, from: offset..<(offset + 4))
+            }
+            offset += 4
+            return value
+        }
+
+        func readUInt64() -> UInt64 {
+            var value: UInt64 = 0
+            _ = withUnsafeMutableBytes(of: &value) { dest in
+                data.copyBytes(to: dest, from: offset..<(offset + 8))
+            }
+            offset += 8
+            return value
+        }
+
+        // Container count
+        let containerCount = readUInt32()
+
+        for _ in 0..<containerCount {
+            guard offset + 3 <= data.count else {
+                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unexpected end of data"))
+            }
+
+            // High part
+            let high = readUInt16()
+
+            // Container type
+            let containerType = data[offset]
+            offset += 1
+
+            switch containerType {
+            case 0:  // Array
+                guard offset + 4 <= data.count else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Array header truncated"))
+                }
+                let arrCount = readUInt32()
+
+                var arr: [UInt16] = []
+                arr.reserveCapacity(Int(arrCount))
+                for _ in 0..<arrCount {
+                    arr.append(readUInt16())
+                }
+                result.containers[high] = .array(arr)
+
+            case 1:  // Bitmap
+                var bits: [UInt64] = []
+                bits.reserveCapacity(1024)
+                for _ in 0..<1024 {
+                    bits.append(readUInt64())
+                }
+                result.containers[high] = .bitmap(bits)
+
+            case 2:  // Run
+                guard offset + 4 <= data.count else {
+                    throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Run header truncated"))
+                }
+                let runCount = readUInt32()
+
+                var runs: [(start: UInt16, length: UInt16)] = []
+                runs.reserveCapacity(Int(runCount))
+                for _ in 0..<runCount {
+                    let start = readUInt16()
+                    let length = readUInt16()
+                    runs.append((start, length))
+                }
+                result.containers[high] = .run(runs)
+
+            default:
+                throw DecodingError.dataCorrupted(.init(codingPath: [], debugDescription: "Unknown container type: \(containerType)"))
+            }
+        }
+
+        return result
     }
 }

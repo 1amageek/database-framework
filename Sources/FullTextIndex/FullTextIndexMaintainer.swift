@@ -526,10 +526,11 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Simple whitespace and punctuation tokenization
     private func simpleTokenize(_ text: String) -> [(term: String, position: Int)] {
-        var tokens: [(String, Int)] = []
-        var position = 0
-
         let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+
+        var tokens: [(String, Int)] = []
+        tokens.reserveCapacity(words.count)
+        var position = 0
 
         for word in words {
             let trimmed = word.trimmingCharacters(in: .whitespaces)
@@ -544,10 +545,11 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Stemming tokenization (simplified - just lowercases and removes common suffixes)
     private func stemTokenize(_ text: String) -> [(term: String, position: Int)] {
-        var tokens: [(String, Int)] = []
-        var position = 0
-
         let words = text.lowercased().components(separatedBy: CharacterSet.alphanumerics.inverted)
+
+        var tokens: [(String, Int)] = []
+        tokens.reserveCapacity(words.count)
+        var position = 0
 
         for word in words {
             var stemmed = word.trimmingCharacters(in: .whitespaces)
@@ -572,11 +574,13 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// N-gram tokenization
     private func ngramTokenize(_ text: String) -> [(term: String, position: Int)] {
-        var tokens: [(String, Int)] = []
-        var position = 0
-
         let lowered = text.lowercased()
         let characters = Array(lowered)
+
+        var tokens: [(String, Int)] = []
+        let estimatedCount = max(0, characters.count - ngramSize + 1)
+        tokens.reserveCapacity(estimatedCount)
+        var position = 0
 
         for i in 0...(max(0, characters.count - ngramSize)) {
             let ngram = String(characters[i..<min(i + ngramSize, characters.count)])
@@ -809,6 +813,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Calculate BM25 scores for each document
         var scoredResults: [(id: Tuple, score: Double)] = []
+        scoredResults.reserveCapacity(matchingDocs.count)
 
         for docElements in matchingDocs {
             let docId = Tuple(docElements)

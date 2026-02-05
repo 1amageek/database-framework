@@ -78,6 +78,9 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         currentLevels: Int,
         transaction: any TransactionProtocol
     ) async throws -> Int64 {
+        // Cache score encoding to avoid repeated TupleEncoder.encode() calls
+        let scoreElement = try TupleEncoder.encode(score)
+
         // Get total count for span calculation when level is empty
         let totalCountBefore = try await getCurrentCount(transaction: transaction)
 
@@ -95,7 +98,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
             // Each level independently scans from the beginning
             let result = try await findInsertionPoint(
                 level: level,
-                targetScore: score,
+                targetScoreElement: scoreElement,
                 targetPrimaryKey: primaryKey,
                 transaction: transaction
             )
@@ -146,7 +149,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
 
         // Phase 3: Insert at each level with Pugh 1990 Span Counter formula
         for level in 0..<newLevel {
-            let key = try makeKey(score: score, primaryKey: primaryKey, level: level)
+            let key = makeKey(scoreElement: scoreElement, primaryKey: primaryKey, level: level)
 
             let newSpan: Int64
 
@@ -292,7 +295,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     ///
     /// Parameters:
     /// - level: Level to scan
-    /// - targetScore: Target score
+    /// - targetScoreElement: Pre-encoded score element (cached)
     /// - targetPrimaryKey: Target primary key
     /// - transaction: FDB transaction
     ///
@@ -301,7 +304,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     /// - lastKeyBeforeInsert: Key of the last entry before insertion point (nil if inserting at beginning)
     private func findInsertionPoint(
         level: Int,
-        targetScore: Score,
+        targetScoreElement: any TupleElement,
         targetPrimaryKey: Tuple,
         transaction: any TransactionProtocol
     ) async throws -> (accumulatedRank: Int64, lastKeyBeforeInsert: [UInt8]?) {
@@ -309,7 +312,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         var lastKey: [UInt8]? = nil
 
         // Zero-copy: Pre-compute target key once (includes levelSubspace prefix)
-        let targetKey = try makeKey(score: targetScore, primaryKey: targetPrimaryKey, level: level)
+        let targetKey = makeKey(scoreElement: targetScoreElement, primaryKey: targetPrimaryKey, level: level)
 
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
@@ -345,12 +348,34 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         return (accumulatedRank, lastKey)
     }
 
-    /// Make key for a specific level
+    /// Find insertion point with score (convenience method for different scores)
+    ///
+    /// Used when the score is different from the cached one (e.g., first entry lookup in Phase 2.5)
+    private func findInsertionPoint(
+        level: Int,
+        targetScore: Score,
+        targetPrimaryKey: Tuple,
+        transaction: any TransactionProtocol
+    ) async throws -> (accumulatedRank: Int64, lastKeyBeforeInsert: [UInt8]?) {
+        let scoreElement = try TupleEncoder.encode(targetScore)
+        return try await findInsertionPoint(
+            level: level,
+            targetScoreElement: scoreElement,
+            targetPrimaryKey: targetPrimaryKey,
+            transaction: transaction
+        )
+    }
+
+    /// Make key for a specific level with cached score element
     ///
     /// Stores score as-is (descending order: high score = rank 0)
-    private func makeKey(score: Score, primaryKey: Tuple, level: Int) throws -> [UInt8] {
+    ///
+    /// - Parameters:
+    ///   - scoreElement: Pre-encoded score element (cached to avoid repeated encoding)
+    ///   - primaryKey: Primary key tuple
+    ///   - level: Level index
+    private func makeKey(scoreElement: any TupleElement, primaryKey: Tuple, level: Int) -> [UInt8] {
         let levelSubspace = subspaces.subspace(for: level)
-        let scoreElement = try TupleEncoder.encode(score)
 
         var allElements: [any TupleElement] = []
         allElements.reserveCapacity(1 + primaryKey.count)
@@ -362,6 +387,14 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         }
 
         return levelSubspace.pack(Tuple(allElements))
+    }
+
+    /// Make key for a specific level (convenience method for different scores)
+    ///
+    /// Used when the score is different from the cached one (e.g., first entry lookup)
+    private func makeKey(score: Score, primaryKey: Tuple, level: Int) throws -> [UInt8] {
+        let scoreElement = try TupleEncoder.encode(score)
+        return makeKey(scoreElement: scoreElement, primaryKey: primaryKey, level: level)
     }
 
 }

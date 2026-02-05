@@ -414,8 +414,11 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         from bitmap: RoaringBitmap,
         transaction: any TransactionProtocol
     ) async throws -> [Tuple] {
+        let ids = bitmap.toArray()
         var results: [Tuple] = []
-        for seqId in bitmap.toArray() {
+        results.reserveCapacity(ids.count)
+
+        for seqId in ids {
             let idKey = idsSubspace.pack(Tuple(Int(seqId)))
             if let pkBytes = try await transaction.getValue(for: idKey) {
                 let pkElements = try Tuple.unpack(from: pkBytes)
