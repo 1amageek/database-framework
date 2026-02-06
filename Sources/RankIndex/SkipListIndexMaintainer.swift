@@ -14,7 +14,7 @@
 import Foundation
 import FoundationDB
 import Core
-@testable import DatabaseEngine
+import DatabaseEngine
 
 /// Skip List index maintainer with Span Counters
 ///

@@ -8,7 +8,7 @@
 import Foundation
 import FoundationDB
 import Core
-@testable import DatabaseEngine
+import DatabaseEngine
 
 /// Skip List deletion with Span Counter maintenance
 ///

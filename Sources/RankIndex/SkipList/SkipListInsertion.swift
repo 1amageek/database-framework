@@ -15,7 +15,7 @@
 import Foundation
 import FoundationDB
 import Core
-@testable import DatabaseEngine
+import DatabaseEngine
 
 /// Skip List insertion with Span Counter maintenance
 ///
