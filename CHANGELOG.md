@@ -5,6 +5,25 @@ All notable changes to database-framework will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-02-06
+
+### Changed
+
+#### Schema.Entity Codable化 (Breaking)
+- **TypeCatalog 廃止**: `Schema.Entity` が Codable なスキーマメタデータ型に統合
+  - SwiftData の `Schema` / `Schema.Entity` 設計に準拠
+  - `persistableType` は Optional（wire デコード時は nil）
+  - CodingKeys でランタイム専用フィールドを除外
+- **FDB キープレフィックス変更**: `/_catalog/` → `/_schema/`
+  - 既存データは `schema apply` で再登録が必要
+- **JSON フォーマット変更**: `{"typeName": ...}` → `{"name": ...}`
+
+#### CLI 改善
+- `database init` / `database status` コマンド追加
+- ローカルクラスターの自動検出（`.database/fdb.cluster`）
+
+---
+
 ## [0.2.0] - 2026-02-05
 
 ### Added
@@ -168,4 +187,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - [fdb-swift-bindings](https://github.com/1amageek/fdb-swift-bindings) - FoundationDB Swift bindings
 - [swift-hnsw](https://github.com/1amageek/swift-hnsw) - HNSW vector index
 
+[0.3.0]: https://github.com/1amageek/database-framework/releases/tag/v0.3.0
+[0.2.0]: https://github.com/1amageek/database-framework/releases/tag/v0.2.0
 [0.1.0]: https://github.com/1amageek/database-framework/releases/tag/v0.1.0
