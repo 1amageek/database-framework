@@ -14,6 +14,8 @@ struct DatabaseCLI: AsyncParsableCommand {
         Use subcommands for one-shot operations.
         """,
         subcommands: [
+            Init.self,
+            Status.self,
             Schema.self,
             Get.self,
             Insert.self,
@@ -29,12 +31,60 @@ struct DatabaseCLI: AsyncParsableCommand {
 
     /// 引数なし → REPLモード
     mutating func run() async throws {
-        try await FDBClient.initialize()
-        let database = try FDBClient.openDatabase()
+        let (database, _) = try await ClusterConnection.openDatabase()
         let registry = SchemaRegistry(database: database)
         let catalogs = try await registry.loadAll()
         let repl = DatabaseREPL(database: database, catalogs: catalogs)
         try await repl.run()
+    }
+}
+
+// MARK: - Cluster Management Subcommands
+
+extension DatabaseCLI {
+    struct Init: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "init",
+            abstract: "Initialize a local database directory"
+        )
+
+        @Option(name: .customLong("port"), help: "Port for fdbserver (default: 4690)")
+        var port: UInt16 = LocalCluster.defaultPort
+
+        mutating func run() throws {
+            let basePath = FileManager.default.currentDirectoryPath
+            let clusterFile = try LocalCluster.create(at: basePath, port: port)
+            let dbDir = (basePath as NSString).appendingPathComponent(LocalCluster.directoryName)
+
+            print("Initialized database at \(dbDir)")
+            print("  Cluster file: \(clusterFile)")
+            print("  Port: \(port)")
+        }
+    }
+
+    struct Status: ParsableCommand {
+        static let configuration = CommandConfiguration(
+            commandName: "status",
+            abstract: "Show local database status"
+        )
+
+        mutating func run() throws {
+            let basePath = FileManager.default.currentDirectoryPath
+            let dbDir = (basePath as NSString).appendingPathComponent(LocalCluster.directoryName)
+            let clusterFile = (dbDir as NSString).appendingPathComponent("fdb.cluster")
+
+            guard FileManager.default.fileExists(atPath: dbDir) else {
+                print("No local database found. Run 'database init' to create one.")
+                return
+            }
+
+            print("Database directory: \(dbDir)")
+            print("Cluster file: \(clusterFile)")
+
+            if let port = LocalCluster.parsePort(fromClusterFile: clusterFile) {
+                print("Port: \(port)")
+            }
+        }
     }
 }
 
@@ -55,8 +105,7 @@ extension DatabaseCLI {
             )
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let registry = SchemaRegistry(database: database)
                 let catalogs = try await registry.loadAll()
                 let output = OutputFormatter()
@@ -75,8 +124,7 @@ extension DatabaseCLI {
             var typeName: String
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let registry = SchemaRegistry(database: database)
                 let catalogs = try await registry.loadAll()
                 let output = OutputFormatter()
@@ -95,8 +143,7 @@ extension DatabaseCLI {
             var path: String
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
                 try await cmd.apply(fileOrDirectory: path)
@@ -119,8 +166,7 @@ extension DatabaseCLI {
             var exportAll: Bool = false
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
 
@@ -166,8 +212,7 @@ extension DatabaseCLI {
             var force: Bool = false
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
 
@@ -202,8 +247,7 @@ extension DatabaseCLI {
         var partitions: [String] = []
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -232,8 +276,7 @@ extension DatabaseCLI {
         var json: String
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -259,8 +302,7 @@ extension DatabaseCLI {
         var json: String
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -283,8 +325,7 @@ extension DatabaseCLI {
         var id: String
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -320,8 +361,7 @@ extension DatabaseCLI {
         var partitions: [String] = []
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -370,8 +410,7 @@ extension DatabaseCLI {
         var limit: Int?
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -401,8 +440,7 @@ extension DatabaseCLI {
         var query: String
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -432,8 +470,7 @@ extension DatabaseCLI {
         var force: Bool = false
 
         mutating func run() async throws {
-            try await FDBClient.initialize()
-            let database = try FDBClient.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
             let catalogs = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
@@ -475,8 +512,7 @@ extension DatabaseCLI {
             var key: String
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("get", args: [key])
@@ -496,8 +532,7 @@ extension DatabaseCLI {
             var value: String
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("set", args: [key, value])
@@ -514,8 +549,7 @@ extension DatabaseCLI {
             var key: String
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("delete", args: [key])
@@ -535,8 +569,7 @@ extension DatabaseCLI {
             var limit: Int?
 
             mutating func run() async throws {
-                try await FDBClient.initialize()
-                let database = try FDBClient.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase()
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
 
@@ -551,4 +584,3 @@ extension DatabaseCLI {
         }
     }
 }
-

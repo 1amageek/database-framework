@@ -48,6 +48,9 @@ DerivedData/
 TestResults/
 coverage/
 
+# Local FoundationDB instance
+.database/
+
 # Misc
 *.log
 tmp/
