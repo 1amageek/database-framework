@@ -52,7 +52,8 @@ let package = Package(
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Configuration", package: "swift-configuration"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "ScalarIndex",
@@ -60,7 +61,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "VectorIndex",
@@ -71,7 +73,8 @@ let package = Package(
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftHNSW", package: "swift-hnsw"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "FullTextIndex",
@@ -80,7 +83,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "SpatialIndex",
@@ -89,7 +93,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Spatial", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "RankIndex",
@@ -98,7 +103,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "PermutedIndex",
@@ -107,7 +113,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "GraphIndex",
@@ -117,7 +124,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "AggregationIndex",
@@ -125,7 +133,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "VersionIndex",
@@ -133,7 +142,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "BitmapIndex",
@@ -141,7 +151,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "LeaderboardIndex",
@@ -149,7 +160,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "RelationshipIndex",
@@ -158,7 +170,8 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "QueryIR",
@@ -171,7 +184,8 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         .target(
             name: "Database",
@@ -194,7 +208,8 @@ let package = Package(
                 "RelationshipIndex",
                 "QueryIR",
                 "QueryAST",
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure
         .target(
@@ -217,7 +232,8 @@ let package = Package(
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Yams", package: "Yams"),
-            ]
+            ],
+            exclude: ["README.md"]
         ),
         // DatabaseCLI - Standalone executable entry point
         .executableTarget(
@@ -228,6 +244,7 @@ let package = Package(
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
+            exclude: ["README.md"],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -262,7 +279,6 @@ let package = Package(
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "Logging", package: "swift-log"),
             ],
-            exclude: ["IndexTestDesign.md"],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])

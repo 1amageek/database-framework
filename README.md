@@ -139,7 +139,7 @@ Add database-framework to your `Package.swift`:
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "0.2.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "0.3.0")
 ]
 ```
 
@@ -1319,6 +1319,7 @@ swift test --filter PerformanceBenchmarks
 ```
 [fdb]/R/[PersistableType]/[id]           → Protobuf-encoded item
 [fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
+[fdb]/_schema/[typeName]                 → JSON-encoded Schema.Entity (schema metadata)
 [fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
 [fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
 ```

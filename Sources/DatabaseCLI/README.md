@@ -194,8 +194,6 @@ User:
   age: int#scalar
 ```
 
-See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax and examples.
-
 #### `schema export <TypeName> [--output <path>]`
 Export Schema.Entity to YAML
 
@@ -869,13 +867,10 @@ database graph RDFTriple from=ex:Toyota
 database sparql RDFTriple 'SELECT ?s ?p ?o WHERE { ?s ?p ?o } LIMIT 10'
 ```
 
-See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax, all index types, and advanced features.
-
 ---
 
 ## Related Files
 
-- `SCHEMA_DEFINITION.md` - Complete YAML schema syntax specification
 - `Sources/DatabaseCLICore/Schema/SchemaFileParser.swift` - YAML parser
 - `Sources/DatabaseCLICore/Schema/SchemaFileExporter.swift` - YAML exporter
 - `database-kit/Sources/Core/Schema.swift` - Schema metadata (Schema.Entity)
