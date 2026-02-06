@@ -1,8 +1,8 @@
 # DatabaseCLI
 
-**Interactive Database CLI powered by TypeCatalog**
+**Interactive Database CLI powered by Schema.Entity**
 
-An interactive command-line interface for FoundationDB, equivalent to PostgreSQL's `psql`. Access and manipulate data dynamically using TypeCatalog (schema metadata) stored in FDB, without requiring compiled `@Persistable` types.
+An interactive command-line interface for FoundationDB, equivalent to PostgreSQL's `psql`. Access and manipulate data dynamically using Schema.Entity (schema metadata) stored in FDB, without requiring compiled `@Persistable` types.
 
 ## Table of Contents
 
@@ -31,7 +31,7 @@ An interactive command-line interface for FoundationDB, equivalent to PostgreSQL
 
 - **YAML Schema Definition**: Define schemas declaratively without Swift code
 - **Schema Management**: Apply, export, validate, and drop schemas
-- **No Type Definitions Required**: Dynamic data access using TypeCatalog
+- **No Type Definitions Required**: Dynamic data access using Schema.Entity
 - **Schema Introspection**: PostgreSQL-style `\dt`, `\d` equivalent commands
 - **CRUD Operations**: insert/get/update/delete
 - **Query Support**: Filter, sort, and limit
@@ -41,13 +41,55 @@ An interactive command-line interface for FoundationDB, equivalent to PostgreSQL
 
 ## Getting Started
 
-### CLI Mode (Standalone Commands)
+### Initializing a Local Database
 
-Build the executable:
+Before using any data commands, initialize a local FoundationDB cluster directory:
 
 ```bash
-swift build -c release
+# Initialize with default port (4690)
+database init
+
+# Initialize with custom port
+database init --port 5000
 ```
+
+This creates a `.database/` directory in the current working directory:
+
+```
+.database/
+├── fdb.cluster          # Cluster configuration (local:<id>@127.0.0.1:<port>)
+├── data/                # FDB data files
+└── logs/                # FDB log files
+```
+
+Check the status of an initialized database:
+
+```bash
+database status
+# Output:
+# Database directory: /path/to/.database
+# Cluster file: /path/to/.database/fdb.cluster
+# Port: 4690
+```
+
+| Command | Description |
+|---------|-------------|
+| `database init [--port N]` | Initialize `.database/` directory with cluster file (default port: 4690) |
+| `database status` | Show database directory path, cluster file path, and port |
+
+### Cluster File Auto-Discovery
+
+All commands automatically discover the cluster file by walking up the directory tree from the current working directory, looking for `.database/fdb.cluster`. If no local cluster is found, the system default is used.
+
+```
+/home/user/myproject/         ← database init here
+├── .database/fdb.cluster     ← auto-discovered
+├── src/
+│   └── ...
+└── subdir/                   ← commands run here also find .database/
+```
+
+### CLI Mode (Standalone Commands)
 
 Run subcommands directly:
 
@@ -84,7 +126,7 @@ database
 
 Or programmatically:
 
-#### Standalone Mode (TypeCatalog-only)
+#### Standalone Mode (Schema.Entity-only)
 
 ```swift
 import DatabaseCLI
@@ -93,8 +135,8 @@ import DatabaseEngine
 
 let database = try FDBClient.openDatabase()
 let registry = SchemaRegistry(database: database)
-let catalogs = try await registry.loadAll()
-let repl = DatabaseREPL(database: database, catalogs: catalogs)
+let entities = try await registry.loadAll()
+let repl = DatabaseREPL(database: database, entities: entities)
 try await repl.run()
 ```
 
@@ -155,7 +197,7 @@ User:
 See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax and examples.
 
 #### `schema export <TypeName> [--output <path>]`
-Export TypeCatalog to YAML
+Export Schema.Entity to YAML
 
 **CLI Mode**:
 ```bash
@@ -696,7 +738,7 @@ get MyType record-001 --partition orgId=org_456 --partition teamId=team_789
 
 The `insert` and `update` commands write directly to the data store but do NOT update indexes. This is because:
 
-1. **TypeCatalog-only operation**: No compiled `@Persistable` types available
+1. **Schema.Entity-only operation**: No compiled `@Persistable` types available
 2. **IndexMaintainer unavailable**: Index maintenance logic requires typed context
 3. **Debug/development use**: CLI is primarily for development and debugging
 
@@ -704,8 +746,8 @@ The `insert` and `update` commands write directly to the data store but do NOT u
 
 ### Operation Modes
 
-| Mode | TypeCatalog | FDBContainer | Version History | Index Updates |
-|------|-------------|--------------|-----------------|---------------|
+| Mode | Schema.Entity | FDBContainer | Version History | Index Updates |
+|------|---------------|--------------|-----------------|---------------|
 | Standalone | ✅ | ❌ | ❌ | ❌ |
 | Embedded | ✅ | ✅ | ✅ | ❌ |
 
@@ -716,7 +758,7 @@ DatabaseCLICore/
 ├── Core/
 │   ├── DatabaseREPL.swift          # REPL loop
 │   ├── CommandRouter.swift         # Command parsing and dispatch
-│   └── CatalogDataAccess.swift     # TypeCatalog-based data access
+│   └── CatalogDataAccess.swift     # Schema.Entity-based data access
 ├── Commands/
 │   ├── DataCommands.swift          # insert/get/update/delete
 │   ├── FindCommands.swift          # find + filter/sort
@@ -836,7 +878,7 @@ See [SCHEMA_DEFINITION.md](./SCHEMA_DEFINITION.md) for complete YAML syntax, all
 - `SCHEMA_DEFINITION.md` - Complete YAML schema syntax specification
 - `Sources/DatabaseCLICore/Schema/SchemaFileParser.swift` - YAML parser
 - `Sources/DatabaseCLICore/Schema/SchemaFileExporter.swift` - YAML exporter
-- `Sources/DatabaseEngine/Registry/TypeCatalog.swift` - Schema metadata
-- `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` - Catalog persistence
+- `database-kit/Sources/Core/Schema.swift` - Schema metadata (Schema.Entity)
+- `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` - Schema persistence
 - `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` - Dynamic decoding
 - `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` - Dynamic encoding

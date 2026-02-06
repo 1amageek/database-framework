@@ -346,7 +346,9 @@ extension FDBContext {
             return nil
         }
 
-        let persistableType = entity.persistableType
+        guard let persistableType = entity.persistableType else {
+            return nil
+        }
         let subspace = try await container.resolveDirectory(for: persistableType)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let typeSubspace = itemSubspace.subspace(typeName)

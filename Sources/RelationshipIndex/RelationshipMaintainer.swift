@@ -139,8 +139,9 @@ public final class RelationshipMaintainer: Sendable {
         // Find all relationships that point TO this type
         // Iterate over all entities in the schema
         for entity in schema.entities {
+            guard let persistableType = entity.persistableType else { continue }
             // Get relationship descriptors from the persistable type
-            let relationshipDescriptors = entity.persistableType.relationshipDescriptors
+            let relationshipDescriptors = persistableType.relationshipDescriptors
 
             for descriptor in relationshipDescriptors {
                 // Check if this relationship points to the item being deleted
@@ -151,7 +152,7 @@ public final class RelationshipMaintainer: Sendable {
                 try await enforceDeleteRuleWithCycleDetection(
                     descriptor: descriptor,
                     owningTypeName: entity.name,
-                    owningType: entity.persistableType,
+                    owningType: persistableType,
                     relatedItemId: itemId,
                     transaction: transaction,
                     handler: handler,

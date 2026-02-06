@@ -1,7 +1,7 @@
-/// DynamicProtobufDecoder - Decodes Protobuf wire format using TypeCatalog metadata
+/// DynamicProtobufDecoder - Decodes Protobuf wire format using Schema.Entity metadata
 ///
 /// Converts raw Protobuf bytes → [String: Any] using field number → (name, type) mapping
-/// from TypeCatalog. Does not require compiled @Persistable types.
+/// from Schema.Entity. Does not require compiled @Persistable types.
 ///
 /// **Wire Format**:
 /// - Tag: `(fieldNumber << 3) | wireType`
@@ -12,15 +12,15 @@ import Core
 
 public struct DynamicProtobufDecoder: Sendable {
 
-    /// Decode Protobuf bytes to a dictionary using TypeCatalog field metadata
+    /// Decode Protobuf bytes to a dictionary using Schema.Entity field metadata
     ///
     /// - Parameters:
     ///   - data: Raw Protobuf bytes (payload after ItemEnvelope header)
-    ///   - catalog: TypeCatalog providing field number → (name, type) mapping
+    ///   - entity: Schema.Entity providing field number → (name, type) mapping
     /// - Returns: Dictionary of field name → decoded value
-    public static func decode(_ data: [UInt8], catalog: TypeCatalog) throws -> [String: Any] {
-        // Use pre-computed field map from catalog (O(1) vs O(fields) per call)
-        let fieldMap = catalog.fieldMapByNumber
+    public static func decode(_ data: [UInt8], entity: Schema.Entity) throws -> [String: Any] {
+        // Use pre-computed field map from entity (O(1) vs O(fields) per call)
+        let fieldMap = entity.fieldMapByNumber
 
         // Parse wire format
         let parsedFields = try parseFields(Data(data))

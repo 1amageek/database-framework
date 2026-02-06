@@ -1,13 +1,10 @@
 import Foundation
 import Synchronization
+import Core
 
-/// Thread-safe cache for TypeCatalog entries with TTL
+/// Thread-safe cache for Schema.Entity entries with TTL
 ///
 /// **Purpose**: Reduce FDB reads by caching schema metadata in memory.
-///
-/// **Use Cases**:
-/// - DatabaseCLI: Avoids loading catalogs on every command (10-100x improvement)
-/// - Schema introspection: Fast access to type metadata without FDB round-trips
 ///
 /// **Cache Strategy**:
 /// - TTL-based: Entries expire after a configurable duration (default: 5 minutes)
@@ -15,20 +12,16 @@ import Synchronization
 /// - Read-through: Cache misses fetch from FDB and populate the cache
 ///
 /// **Thread-safety**: Uses `Mutex` for concurrent access
-///
-/// **Performance Impact**:
-/// - DatabaseCLI command latency: ~1000ms → ~10-100ms (10-100x improvement)
-/// - Schema introspection: ~50ms → ~1ms (50x improvement)
 public final class SchemaCatalogCache: Sendable {
     // MARK: - Internal State
 
-    private struct CachedCatalogs: Sendable {
-        let catalogs: [TypeCatalog]
+    private struct CachedEntities: Sendable {
+        let entities: [Schema.Entity]
         let timestamp: UInt64  // Unix timestamp in milliseconds
     }
 
     private struct State: Sendable {
-        var cached: CachedCatalogs?
+        var cached: CachedEntities?
     }
 
     private let state: Mutex<State>
@@ -46,10 +39,10 @@ public final class SchemaCatalogCache: Sendable {
 
     // MARK: - Public API
 
-    /// Get cached catalogs if not expired
+    /// Get cached entities if not expired
     ///
-    /// - Returns: Cached catalogs, or nil if cache miss or expired
-    public func get() -> [TypeCatalog]? {
+    /// - Returns: Cached entities, or nil if cache miss or expired
+    public func get() -> [Schema.Entity]? {
         state.withLock { state in
             guard let cached = state.cached else {
                 return nil
@@ -64,23 +57,23 @@ public final class SchemaCatalogCache: Sendable {
                 return nil
             }
 
-            return cached.catalogs
+            return cached.entities
         }
     }
 
-    /// Set cached catalogs
+    /// Set cached entities
     ///
-    /// - Parameter catalogs: Catalogs to cache
-    public func set(_ catalogs: [TypeCatalog]) {
+    /// - Parameter entities: Entities to cache
+    public func set(_ entities: [Schema.Entity]) {
         state.withLock { state in
-            state.cached = CachedCatalogs(
-                catalogs: catalogs,
+            state.cached = CachedEntities(
+                entities: entities,
                 timestamp: currentTimestamp()
             )
         }
     }
 
-    /// Clear all cached catalogs
+    /// Clear all cached entities
     ///
     /// **When to call**:
     /// - After schema changes (persist/delete)

@@ -1,15 +1,16 @@
 import Foundation
 import Testing
 @testable import DatabaseEngine
+import Core
 
-@Suite("TypeCatalog directory resolution")
-struct TypeCatalogTests {
+@Suite("Schema.Entity directory resolution")
+struct SchemaEntityTests {
 
     // MARK: - resolvedDirectoryPath
 
     @Test func staticOnly() throws {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [],
             directoryComponents: [.staticPath("app"), .staticPath("users")],
             indexes: []
@@ -19,8 +20,8 @@ struct TypeCatalogTests {
     }
 
     @Test func withDynamicField() throws {
-        let catalog = TypeCatalog(
-            typeName: "Order",
+        let catalog = Schema.Entity(
+            name: "Order",
             fields: [],
             directoryComponents: [
                 .staticPath("tenants"),
@@ -34,8 +35,8 @@ struct TypeCatalogTests {
     }
 
     @Test func multipleDynamicFields() throws {
-        let catalog = TypeCatalog(
-            typeName: "Message",
+        let catalog = Schema.Entity(
+            name: "Message",
             fields: [],
             directoryComponents: [
                 .staticPath("tenants"),
@@ -54,8 +55,8 @@ struct TypeCatalogTests {
     }
 
     @Test func missingPartitionValueThrows() {
-        let catalog = TypeCatalog(
-            typeName: "Order",
+        let catalog = Schema.Entity(
+            name: "Order",
             fields: [],
             directoryComponents: [
                 .staticPath("tenants"),
@@ -70,8 +71,8 @@ struct TypeCatalogTests {
     }
 
     @Test func emptyComponents() throws {
-        let catalog = TypeCatalog(
-            typeName: "Simple",
+        let catalog = Schema.Entity(
+            name: "Simple",
             fields: [],
             directoryComponents: [],
             indexes: []
@@ -83,8 +84,8 @@ struct TypeCatalogTests {
     // MARK: - hasDynamicDirectory
 
     @Test func staticOnlyIsNotDynamic() {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [],
             directoryComponents: [.staticPath("app"), .staticPath("users")],
             indexes: []
@@ -93,8 +94,8 @@ struct TypeCatalogTests {
     }
 
     @Test func withDynamicFieldIsDynamic() {
-        let catalog = TypeCatalog(
-            typeName: "Order",
+        let catalog = Schema.Entity(
+            name: "Order",
             fields: [],
             directoryComponents: [.staticPath("tenants"), .dynamicField(fieldName: "tenantId")],
             indexes: []
@@ -105,8 +106,8 @@ struct TypeCatalogTests {
     // MARK: - dynamicFieldNames
 
     @Test func dynamicFieldNamesExtraction() {
-        let catalog = TypeCatalog(
-            typeName: "Message",
+        let catalog = Schema.Entity(
+            name: "Message",
             fields: [],
             directoryComponents: [
                 .staticPath("tenants"),
@@ -120,8 +121,8 @@ struct TypeCatalogTests {
     }
 
     @Test func noDynamicFieldNames() {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [],
             directoryComponents: [.staticPath("app")],
             indexes: []
@@ -194,8 +195,8 @@ struct AnyIndexDescriptorCodableTests {
     }
 
     @Test func typeCatalogRoundTripsWithIndexMetadata() throws {
-        let catalog = TypeCatalog(
-            typeName: "RDFTriple",
+        let catalog = Schema.Entity(
+            name: "RDFTriple",
             fields: [],
             directoryComponents: [.staticPath("app"), .staticPath("triples")],
             indexes: [
@@ -214,7 +215,7 @@ struct AnyIndexDescriptorCodableTests {
         )
 
         let data = try JSONEncoder().encode(catalog)
-        let decoded = try JSONDecoder().decode(TypeCatalog.self, from: data)
+        let decoded = try JSONDecoder().decode(Schema.Entity.self, from: data)
 
         #expect(decoded == catalog)
         #expect(decoded.indexes[0].kind.metadata["strategy"]?.stringValue == "hexastore")

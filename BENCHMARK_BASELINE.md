@@ -146,7 +146,7 @@
 ### Phase 2 (2026-02-05)
 1. **HNSW Vector Search parallelization**: TaskGroup for label→PK conversion (10-30× expected)
 2. **fetchByIds parallelization**: TaskGroup for batch ID fetching (10-30× expected)
-3. **FieldMap caching**: Pre-computed fieldMapByName/fieldMapByNumber in TypeCatalog (30-50% expected)
+3. **FieldMap caching**: Pre-computed fieldMapByName/fieldMapByNumber in Schema.Entity (30-50% expected)
 4. **Varint encoding optimization**: reserveCapacity(10) for varint arrays (20-30% expected)
 
 ### Phase 1 (2026-02-05)

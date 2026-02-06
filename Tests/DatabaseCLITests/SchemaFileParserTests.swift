@@ -24,7 +24,7 @@ struct SchemaFileParserTests {
 
         let catalog = try SchemaFileParser.parseYAML(yaml)
 
-        #expect(catalog.typeName == "User")
+        #expect(catalog.name == "User")
         #expect(catalog.fields.count == 4)
         #expect(catalog.directoryComponents.count == 2)
         #expect(catalog.indexes.count == 2)

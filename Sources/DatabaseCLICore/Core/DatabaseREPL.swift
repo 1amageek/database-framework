@@ -1,6 +1,6 @@
-/// DatabaseREPL - Interactive database shell powered by schema catalog
+/// DatabaseREPL - Interactive database shell powered by schema entities
 ///
-/// Connects to FDB, loads TypeCatalog entries, and provides a REPL
+/// Connects to FDB, loads Schema.Entity entries, and provides a REPL
 /// for data operations using dynamic Protobuf codec.
 ///
 /// **Standalone mode** (no compiled types needed):
@@ -11,8 +11,8 @@
 ///
 /// let database = try FDBClient.openDatabase()
 /// let registry = SchemaRegistry(database: database)
-/// let catalogs = try await registry.loadAll()
-/// let repl = DatabaseREPL(database: database, catalogs: catalogs)
+/// let entities = try await registry.loadAll()
+/// let repl = DatabaseREPL(database: database, entities: entities)
 /// try await repl.run()
 /// ```
 ///
@@ -26,31 +26,32 @@
 import Foundation
 import FoundationDB
 import DatabaseEngine
+import Core
 
 public final class DatabaseREPL: Sendable {
 
     private let dataAccess: CatalogDataAccess
-    private let catalogs: [TypeCatalog]
+    private let entities: [Schema.Entity]
 
-    /// Initialize with database and pre-loaded catalogs (standalone mode)
-    public init(database: any DatabaseProtocol, catalogs: [TypeCatalog]) {
-        self.catalogs = catalogs
-        self.dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+    /// Initialize with database and pre-loaded entities (standalone mode)
+    public init(database: any DatabaseProtocol, entities: [Schema.Entity]) {
+        self.entities = entities
+        self.dataAccess = CatalogDataAccess(database: database, entities: entities)
     }
 
     /// Initialize from FDBContainer (embedded mode)
     ///
-    /// Loads catalogs from the SchemaRegistry persisted by FDBContainer.
+    /// Loads entities from the SchemaRegistry persisted by FDBContainer.
     public init(container: FDBContainer) async throws {
         let registry = SchemaRegistry(database: container.database)
-        self.catalogs = try await registry.loadAll()
-        self.dataAccess = CatalogDataAccess(database: container.database, catalogs: self.catalogs)
+        self.entities = try await registry.loadAll()
+        self.dataAccess = CatalogDataAccess(database: container.database, entities: self.entities)
     }
 
     /// Start the interactive REPL loop
     public func run() async throws {
         let output = OutputFormatter()
-        let typeNames = catalogs.map(\.typeName).sorted()
+        let typeNames = entities.map(\.name).sorted()
 
         output.info("database - FoundationDB Interactive CLI")
         if typeNames.isEmpty {
@@ -80,7 +81,7 @@ public final class DatabaseREPL: Sendable {
                 try await CommandRouter.execute(
                     line,
                     dataAccess: dataAccess,
-                    catalogs: catalogs,
+                    entities: entities,
                     output: output
                 )
             } catch {

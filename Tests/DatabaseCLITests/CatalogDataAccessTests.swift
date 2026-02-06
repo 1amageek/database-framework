@@ -10,10 +10,10 @@ import Foundation
 @Suite("CatalogDataAccess")
 struct CatalogDataAccessTests {
 
-    /// Create a minimal test TypeCatalog
-    private func createMinimalCatalog(typeName: String) -> TypeCatalog {
-        TypeCatalog(
-            typeName: typeName,
+    /// Create a minimal test Schema.Entity
+    private func createMinimalCatalog(typeName: String) -> Schema.Entity {
+        Schema.Entity(
+            name: typeName,
             fields: [],
             directoryComponents: [],
             indexes: []
@@ -32,9 +32,9 @@ struct CatalogDataAccessTests {
 
         // Verify catalog names are stored
         #expect(catalogs.count == 3)
-        #expect(catalogs[0].typeName == "User")
-        #expect(catalogs[1].typeName == "Order")
-        #expect(catalogs[2].typeName == "Product")
+        #expect(catalogs[0].name == "User")
+        #expect(catalogs[1].name == "Order")
+        #expect(catalogs[2].name == "Product")
     }
 
     @Test func allCatalogsAreSortedByName() {
@@ -43,16 +43,16 @@ struct CatalogDataAccessTests {
         let catalogB = createMinimalCatalog(typeName: "Beta")
 
         // When sorted by typeName
-        let sorted = [catalogC, catalogA, catalogB].sorted { $0.typeName < $1.typeName }
+        let sorted = [catalogC, catalogA, catalogB].sorted { $0.name < $1.name }
 
-        #expect(sorted[0].typeName == "Alpha")
-        #expect(sorted[1].typeName == "Beta")
-        #expect(sorted[2].typeName == "Charlie")
+        #expect(sorted[0].name == "Alpha")
+        #expect(sorted[1].name == "Beta")
+        #expect(sorted[2].name == "Charlie")
     }
 
     @Test func typeCatalogStoresFieldsCorrectly() {
-        let catalog = TypeCatalog(
-            typeName: "TestType",
+        let catalog = Schema.Entity(
+            name: "TestType",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "count", fieldNumber: 2, type: .int64),
@@ -63,7 +63,7 @@ struct CatalogDataAccessTests {
             indexes: []
         )
 
-        #expect(catalog.typeName == "TestType")
+        #expect(catalog.name == "TestType")
         #expect(catalog.fields.count == 4)
         #expect(catalog.fields[0].name == "id")
         #expect(catalog.fields[0].type == .string)
@@ -76,8 +76,8 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogStoresDirectoryComponentsCorrectly() {
-        let catalog = TypeCatalog(
-            typeName: "PartitionedType",
+        let catalog = Schema.Entity(
+            name: "PartitionedType",
             fields: [],
             directoryComponents: [
                 .staticPath("tenants"),
@@ -123,8 +123,8 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogFieldMapByName() {
-        let catalog = TypeCatalog(
-            typeName: "MapTest",
+        let catalog = Schema.Entity(
+            name: "MapTest",
             fields: [
                 FieldSchema(name: "alpha", fieldNumber: 1, type: .string),
                 FieldSchema(name: "beta", fieldNumber: 2, type: .int64)
@@ -140,8 +140,8 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogFieldMapByNumber() {
-        let catalog = TypeCatalog(
-            typeName: "MapTest",
+        let catalog = Schema.Entity(
+            name: "MapTest",
             fields: [
                 FieldSchema(name: "alpha", fieldNumber: 1, type: .string),
                 FieldSchema(name: "beta", fieldNumber: 2, type: .int64)
@@ -157,8 +157,8 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogResolvedDirectoryPath() throws {
-        let catalog = TypeCatalog(
-            typeName: "TenantData",
+        let catalog = Schema.Entity(
+            name: "TenantData",
             fields: [],
             directoryComponents: [
                 .staticPath("app"),
@@ -173,15 +173,15 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogHasDynamicDirectory() {
-        let staticCatalog = TypeCatalog(
-            typeName: "Static",
+        let staticCatalog = Schema.Entity(
+            name: "Static",
             fields: [],
             directoryComponents: [.staticPath("a"), .staticPath("b")],
             indexes: []
         )
 
-        let dynamicCatalog = TypeCatalog(
-            typeName: "Dynamic",
+        let dynamicCatalog = Schema.Entity(
+            name: "Dynamic",
             fields: [],
             directoryComponents: [.staticPath("a"), .dynamicField(fieldName: "x")],
             indexes: []
@@ -192,8 +192,8 @@ struct CatalogDataAccessTests {
     }
 
     @Test func typeCatalogDynamicFieldNames() {
-        let catalog = TypeCatalog(
-            typeName: "MultiDynamic",
+        let catalog = Schema.Entity(
+            name: "MultiDynamic",
             fields: [],
             directoryComponents: [
                 .staticPath("root"),

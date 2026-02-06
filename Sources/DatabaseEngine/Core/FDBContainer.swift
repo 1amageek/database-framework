@@ -120,7 +120,7 @@ public final class FDBContainer: Sendable {
     ///
     /// - Note: This initializer performs two side effects on FDB:
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
-    ///   2. **Catalog persistence** — writes `TypeCatalog` for each entity to `(_catalog, typeName)` via `SchemaRegistry.persist()`,
+    ///   2. **Schema persistence** — writes `Schema.Entity` for each entity to `(_schema, typeName)` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,
@@ -217,7 +217,8 @@ public final class FDBContainer: Sendable {
 
             // Resolve directory for this entity
             // Use root subspace (same as FDBDataStore) so state is consistent
-            let subspace = try await resolveDirectory(for: entity.persistableType)
+            guard let persistableType = entity.persistableType else { continue }
+            let subspace = try await resolveDirectory(for: persistableType)
             let stateManager = IndexStateManager(container: self, subspace: subspace)
 
             // Get index names for this entity
@@ -521,7 +522,8 @@ public final class FDBContainer: Sendable {
         var configs: [any IndexConfiguration] = []
 
         for entity in schema.entities {
-            for descriptor in entity.persistableType.indexDescriptors {
+            guard let persistableType = entity.persistableType else { continue }
+            for descriptor in persistableType.indexDescriptors {
                 // Check if the index kind supports auto-configuration
                 guard let autoConfigurable = type(of: descriptor.kind) as? any AutoConfigurableIndexKind.Type else {
                     continue
@@ -577,7 +579,9 @@ public final class FDBContainer: Sendable {
             return nil
         }
 
-        let type = entity.persistableType
+        guard let type = entity.persistableType else {
+            return nil
+        }
 
         // Resolve directory for the type
         let pathComponents = resolveStaticDirectoryPath(for: type)
@@ -789,8 +793,9 @@ extension FDBContainer {
         var registry: [String: MigrationStoreInfo] = [:]
 
         for entity in schema.entities {
+            guard let persistableType = entity.persistableType else { continue }
             // Use resolveDirectory to respect #Directory definitions
-            let subspace = try await resolveDirectory(for: entity.persistableType)
+            let subspace = try await resolveDirectory(for: persistableType)
             let info = MigrationStoreInfo(
                 subspace: subspace,
                 indexSubspace: subspace.subspace(SubspaceKey.indexes),

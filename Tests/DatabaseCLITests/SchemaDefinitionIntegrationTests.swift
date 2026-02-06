@@ -22,7 +22,7 @@ struct SchemaDefinitionIntegrationTests {
 
         // Clean up
         let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["_catalog"])
+        try? await directoryLayer.remove(path: ["_schema"])
 
         // Create YAML
         let yaml = """
@@ -46,7 +46,7 @@ struct SchemaDefinitionIntegrationTests {
         let retrieved = try await registry.load(typeName: "TestUser")
 
         #expect(retrieved != nil)
-        #expect(retrieved?.typeName == "TestUser")
+        #expect(retrieved?.name == "TestUser")
         #expect(retrieved?.fields.count == 4)
         #expect(retrieved?.indexes.count == 2)
 
@@ -59,8 +59,8 @@ struct SchemaDefinitionIntegrationTests {
         let database = try FDBClient.openDatabase()
 
         // Create catalog
-        let catalog = TypeCatalog(
-            typeName: "TestProduct",
+        let catalog = Schema.Entity(
+            name: "TestProduct",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "name", fieldNumber: 2, type: .string),
@@ -137,7 +137,7 @@ struct SchemaDefinitionIntegrationTests {
         let catalog3 = try SchemaFileParser.parseYAML(exportedYAML)
 
         // Verify consistency
-        #expect(catalog3.typeName == catalog1.typeName)
+        #expect(catalog3.name == catalog1.name)
         #expect(catalog3.fields.count == catalog1.fields.count)
         #expect(catalog3.indexes.count == catalog1.indexes.count)
 
@@ -273,7 +273,7 @@ struct SchemaDefinitionIntegrationTests {
         // This should not throw
         let catalog = try SchemaFileParser.parseYAML(yaml)
 
-        #expect(catalog.typeName == "ValidUser")
+        #expect(catalog.name == "ValidUser")
         #expect(catalog.fields.count == 3)
     }
 

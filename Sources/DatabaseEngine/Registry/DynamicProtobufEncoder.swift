@@ -1,4 +1,4 @@
-/// DynamicProtobufEncoder - Encodes [String: Any] to Protobuf wire format using TypeCatalog
+/// DynamicProtobufEncoder - Encodes [String: Any] to Protobuf wire format using Schema.Entity
 ///
 /// Converts JSON-like dictionary → Protobuf bytes using field name → (fieldNumber, type) mapping.
 /// Does not require compiled @Persistable types.
@@ -12,15 +12,15 @@ import Core
 
 public struct DynamicProtobufEncoder: Sendable {
 
-    /// Encode a dictionary to Protobuf bytes using TypeCatalog field metadata
+    /// Encode a dictionary to Protobuf bytes using Schema.Entity field metadata
     ///
     /// - Parameters:
     ///   - dict: Dictionary of field name → value (from JSON parsing)
-    ///   - catalog: TypeCatalog providing field name → (fieldNumber, type) mapping
+    ///   - entity: Schema.Entity providing field name → (fieldNumber, type) mapping
     /// - Returns: Protobuf wire format bytes
-    public static func encode(_ dict: [String: Any], catalog: TypeCatalog) throws -> [UInt8] {
-        // Use pre-computed field map from catalog (O(1) vs O(fields) per call)
-        let fieldMap = catalog.fieldMapByName
+    public static func encode(_ dict: [String: Any], entity: Schema.Entity) throws -> [UInt8] {
+        // Use pre-computed field map from entity (O(1) vs O(fields) per call)
+        let fieldMap = entity.fieldMapByName
 
         var data = Data()
 

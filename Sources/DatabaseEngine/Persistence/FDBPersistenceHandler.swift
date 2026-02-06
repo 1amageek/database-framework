@@ -79,7 +79,9 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
             return nil
         }
 
-        let persistableType = entity.persistableType
+        guard let persistableType = entity.persistableType else {
+            throw FDBRuntimeError.internalError("Entity '\(typeName)' has no Persistable type")
+        }
 
         // Dynamic directory types cannot be loaded without partition info
         if hasDynamicDirectory(persistableType) {

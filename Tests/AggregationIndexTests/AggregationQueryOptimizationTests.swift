@@ -72,6 +72,22 @@ struct AggQueryTestOrder: Persistable {
     }
 }
 
+// MARK: - Entity Helper
+
+/// Create a Schema.Entity with runtime indexDescriptors for testing
+private func makeTestEntity(
+    name: String,
+    allFields: [String],
+    indexDescriptors: [IndexDescriptor]
+) -> Schema.Entity {
+    let fields = allFields.enumerated().map { (i, f) in
+        FieldSchema(name: f, fieldNumber: i + 1, type: .string)
+    }
+    var entity = Schema.Entity(name: name, fields: fields)
+    entity.indexDescriptors = indexDescriptors
+    return entity
+}
+
 // MARK: - Test Helper
 
 private struct OptTestContext {
@@ -285,7 +301,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [minIndexDescriptor]
@@ -341,7 +357,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [maxIndexDescriptor]
@@ -396,7 +412,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]
@@ -450,7 +466,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [sumIndexDescriptor]
@@ -511,7 +527,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor, minIndexDescriptor]
@@ -571,7 +587,7 @@ struct AggregationQueryOptimizationTests {
 
         let schema = Schema(
             entities: [
-                Schema.Entity(
+                makeTestEntity(
                     name: "AggQueryTestOrder",
                     allFields: ["id", "region", "amount", "quantity"],
                     indexDescriptors: [countIndexDescriptor]

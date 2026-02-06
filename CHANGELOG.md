@@ -27,7 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 #### Performance Improvements
 - **Phase 2 Optimizations**:
   - Parallel FDB reads via TaskGroup
-  - FieldMap caching in TypeCatalog
+  - FieldMap caching in Schema.Entity
   - Zero-copy Skip List operations
   - Varint encoding optimization
 
@@ -58,8 +58,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **FDBDataStore**: Low-level data operations within transactions
 - **IndexMaintenanceService**: Centralized index maintenance with uniqueness checking
 - **SchemaRegistry**: PostgreSQL pg_catalog equivalent for schema metadata persistence
-- **TypeCatalog**: Codable schema metadata (fields, indexes, directory structure)
-- **DynamicProtobufDecoder/Encoder**: Runtime codec for TypeCatalog-based data access
+- **Schema.Entity**: Codable schema metadata (fields, indexes, directory structure)
+- **DynamicProtobufDecoder/Encoder**: Runtime codec for Schema.Entity-based data access
 
 #### Index Types (13 modules)
 - **ScalarIndex**: Single/composite field indexing with uniqueness constraints

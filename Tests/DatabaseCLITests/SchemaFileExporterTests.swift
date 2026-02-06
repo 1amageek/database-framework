@@ -1,5 +1,5 @@
 // SchemaFileExporterTests.swift
-// Tests for TypeCatalog to YAML export
+// Tests for Schema.Entity to YAML export
 
 import Testing
 import Foundation
@@ -37,8 +37,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export simple schema")
     func testExportSimpleSchema() throws {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "name", fieldNumber: 2, type: .string),
@@ -64,8 +64,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with scalar index")
     func testExportScalarIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "email", fieldNumber: 2, type: .string)
@@ -88,8 +88,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with vector index")
     func testExportVectorIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "Product",
+        let catalog = Schema.Entity(
+            name: "Product",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "embedding", fieldNumber: 2, type: .double, isArray: true)
@@ -116,8 +116,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with graph index")
     func testExportGraphIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "Follow",
+        let catalog = Schema.Entity(
+            name: "Follow",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "follower", fieldNumber: 2, type: .string),
@@ -151,8 +151,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with dynamic directory")
     func testExportDynamicDirectory() throws {
-        let catalog = TypeCatalog(
-            typeName: "Order",
+        let catalog = Schema.Entity(
+            name: "Order",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "tenantId", fieldNumber: 2, type: .string)
@@ -173,8 +173,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with composite index")
     func testExportCompositeIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "name", fieldNumber: 2, type: .string),
@@ -200,8 +200,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export schema with optional and array types")
     func testExportComplexTypes() throws {
-        let catalog = TypeCatalog(
-            typeName: "User",
+        let catalog = Schema.Entity(
+            name: "User",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "nickname", fieldNumber: 2, type: .string, isOptional: true),
@@ -221,8 +221,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export and re-import round-trip")
     func testRoundTrip() throws {
-        let original = TypeCatalog(
-            typeName: "Product",
+        let original = Schema.Entity(
+            name: "Product",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "name", fieldNumber: 2, type: .string),
@@ -252,7 +252,7 @@ struct SchemaFileExporterTests {
         let reimported = try SchemaFileParser.parseYAML(yaml)
 
         // Verify
-        #expect(reimported.typeName == original.typeName)
+        #expect(reimported.name == original.name)
         #expect(reimported.fields.count == original.fields.count)
         #expect(reimported.directoryComponents.count == original.directoryComponents.count)
         #expect(reimported.indexes.count == original.indexes.count)
@@ -265,8 +265,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export fulltext index")
     func testExportFullTextIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "Article",
+        let catalog = Schema.Entity(
+            name: "Article",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "content", fieldNumber: 2, type: .string)
@@ -292,8 +292,8 @@ struct SchemaFileExporterTests {
 
     @Test("Export leaderboard index")
     func testExportLeaderboardIndex() throws {
-        let catalog = TypeCatalog(
-            typeName: "Player",
+        let catalog = Schema.Entity(
+            name: "Player",
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "score", fieldNumber: 2, type: .int64)

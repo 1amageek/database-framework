@@ -119,48 +119,13 @@ public struct DirectoryPath<T: Persistable>: @unchecked Sendable {
 // MARK: - Persistable Extension
 
 extension Persistable {
-    /// Returns true if directoryPathComponents contains any Field<Self>
-    public static var hasDynamicDirectory: Bool {
-        directoryPathComponents.contains { $0 is any DynamicDirectoryElement }
-    }
-
     /// Extract Field keyPaths from directoryPathComponents
     public static var directoryFieldKeyPaths: [PartialKeyPath<Self>] {
         directoryPathComponents.compactMap { ($0 as? Field<Self>)?.value }
     }
-
-    /// Get field names for directory Field components
-    public static var directoryFieldNames: [String] {
-        directoryPathComponents.compactMap { component -> String? in
-            guard let dynamicElement = component as? any DynamicDirectoryElement else { return nil }
-            return fieldName(for: dynamicElement.anyKeyPath)
-        }
-    }
 }
 
-// MARK: - DirectoryPathError
-
-/// Errors related to directory path resolution
-public enum DirectoryPathError: Error, CustomStringConvertible, Sendable {
-    /// Required fields are missing
-    case missingFields([String])
-
-    /// Type has dynamic directory but field values not provided
-    case dynamicFieldsRequired(typeName: String, fields: [String])
-
-    public var description: String {
-        switch self {
-        case .missingFields(let fields):
-            return "Missing directory field values: \(fields.joined(separator: ", ")). " +
-                   "Use .partition() to specify values for all Field components."
-
-        case .dynamicFieldsRequired(let typeName, let fields):
-            return "Type '\(typeName)' requires field values for directory resolution: " +
-                   "\(fields.joined(separator: ", ")). " +
-                   "Use .partition(\\.\(fields.first ?? "field"), equals: value)."
-        }
-    }
-}
+// DirectoryPathError and Persistable.directoryFieldNames are now in database-kit Core module.
 
 // MARK: - Type-Erased DirectoryPath
 

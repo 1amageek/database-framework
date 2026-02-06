@@ -1,19 +1,49 @@
 # DatabaseCLI
 
-FoundationDB の対話型 CLI。`@Persistable` 型のコンパイルなしで、TypeCatalog を使ってデータの読み書き・スキーマ確認ができる。
+FoundationDB の対話型 CLI。`@Persistable` 型のコンパイルなしで、Schema.Entity を使ってデータの読み書き・スキーマ確認ができる。
 
-## 前提条件
+## Prerequisites
 
-- FoundationDB がローカルで起動していること
-- `FDBContainer(for: schema)` を一度実行してカタログが FDB に書き込まれていること
+- FoundationDB must be running locally
+- Schema.Entity must be written to FDB (via `FDBContainer(for: schema)` or `database schema apply`)
 
-## 実行
+## Setup
+
+### Initialize a Local Database
 
 ```bash
-swift run database
+# Default port (4690)
+database init
+
+# Custom port
+database init --port 5000
 ```
 
-起動するとカタログを自動的に読み込み、登録済みの型を表示する:
+Creates a `.database/` directory in the current working directory:
+
+```
+.database/
+├── fdb.cluster          # Cluster config (local:<id>@127.0.0.1:<port>)
+├── data/                # FDB data files
+└── logs/                # FDB log files
+```
+
+### Check Status
+
+```bash
+database status
+# Database directory: /path/to/.database
+# Cluster file: /path/to/.database/fdb.cluster
+# Port: 4690
+```
+
+### Cluster File Auto-Discovery
+
+All commands automatically walk up the directory tree from the current directory looking for `.database/fdb.cluster`. Falls back to the system default if not found.
+
+## REPL Mode
+
+Run `database` without arguments to enter interactive mode. Catalogs are loaded automatically:
 
 ```
 database - FoundationDB Interactive CLI
@@ -154,7 +184,7 @@ Sources/
     ├── Core/
     │   ├── DatabaseREPL.swift      # REPL ループ
     │   ├── CommandRouter.swift     # コマンド解析・ディスパッチ
-    │   └── CatalogDataAccess.swift # TypeCatalog ベースのデータアクセス
+    │   └── CatalogDataAccess.swift # Schema.Entity ベースのデータアクセス
     ├── Commands/
     │   ├── DataCommands.swift      # insert/get/update/delete
     │   ├── FindCommands.swift      # find + filter/sort

@@ -1310,8 +1310,9 @@ extension FDBContext {
 
         // Security: Evaluate LIST for each conforming type
         for entity in conformingEntities {
+            guard let persistableType = entity.persistableType else { continue }
             try container.securityDelegate?.evaluateList(
-                type: entity.persistableType,
+                type: persistableType,
                 limit: nil,
                 offset: nil,
                 orderBy: nil
@@ -1334,9 +1335,10 @@ extension FDBContext {
 
             // Scan all type codes for this protocol
             for entity in conformingEntities {
-                guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
+                guard let persistableType = entity.persistableType,
+                      let polyType = persistableType as? any Polymorphable.Type else { continue }
                 let typeCode = polyType.typeCode(for: entity.name)
-                let codableType = entity.persistableType
+                let codableType = persistableType
 
                 let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let (begin, end) = typeSubspace.range()
@@ -1395,9 +1397,10 @@ extension FDBContext {
             )
 
             for entity in conformingEntities {
-                guard let polyType = entity.persistableType as? any Polymorphable.Type else { continue }
+                guard let persistableType = entity.persistableType,
+                      let polyType = persistableType as? any Polymorphable.Type else { continue }
                 let typeCode = polyType.typeCode(for: entity.name)
-                let codableType = entity.persistableType
+                let codableType = persistableType
 
                 let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
                 let key = typeSubspace.pack(idTuple)

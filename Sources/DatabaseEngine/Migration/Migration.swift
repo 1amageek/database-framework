@@ -230,9 +230,12 @@ public struct MigrationContext: Sendable {
         let configs = indexConfigurations[index.name] ?? []
 
         do {
-            // Use the persistableType directly from Entity
+            // Use the persistableType directly from Entity (always present at runtime)
+            guard let persistableType = targetEntity.persistableType else {
+                throw FDBRuntimeError.internalError("Entity '\(targetEntity.name)' has no Persistable type (decoded from wire?)")
+            }
             try await EntityIndexBuilder.buildIndex(
-                forPersistableType: targetEntity.persistableType,
+                forPersistableType: persistableType,
                 container: container,
                 storeSubspace: info.subspace,
                 index: index,
@@ -761,8 +764,11 @@ public struct MigrationContext: Sendable {
     ) throws -> Index {
         // Convert AnyKeyPaths to field name strings using the entity's Persistable type
         // (for backward compatibility with KeyExpression-based code)
+        guard let persistableType = entity.persistableType else {
+            throw FDBRuntimeError.internalError("Entity '\(entity.name)' has no Persistable type (decoded from wire?)")
+        }
         let fieldNames = descriptor.keyPaths.map { keyPath in
-            entity.persistableType.fieldName(for: keyPath)
+            persistableType.fieldName(for: keyPath)
         }
 
         // Build KeyExpression from field names using factory

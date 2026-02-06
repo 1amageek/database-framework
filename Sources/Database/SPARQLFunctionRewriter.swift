@@ -239,7 +239,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
         }
 
         // 4. Resolve type directory and index subspace
-        let typeDirectory = try await resolveTypeDirectory(entity.persistableType)
+        guard let persistableType = entity.persistableType else {
+            throw SPARQLFunctionError.invalidGraphIndex(entity.name)
+        }
+        let typeDirectory = try await resolveTypeDirectory(persistableType)
         let indexSubspace = typeDirectory
             .subspace(SubspaceKey.indexes)
             .subspace(graphIndex.name)

@@ -305,9 +305,15 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         // Step 4: Build index using EntityIndexBuilder
         // This handles type dispatch and uses OnlineIndexer internally
+        guard let persistableType = entity.persistableType else {
+            throw AdminError.operationFailed(
+                "Entity '\(entity.name)' has no Persistable type"
+            )
+        }
+
         do {
             try await EntityIndexBuilder.buildIndex(
-                forPersistableType: entity.persistableType,
+                forPersistableType: persistableType,
                 container: container,
                 storeSubspace: subspace,
                 index: index,
@@ -487,8 +493,11 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     private func resolveDirectoryForEntity(_ entity: Schema.Entity) async throws -> Subspace {
+        guard let persistableType = entity.persistableType else {
+            throw AdminError.operationFailed("Entity '\(entity.name)' has no Persistable type")
+        }
         // Use container's resolveDirectory to respect #Directory definitions
-        return try await container.resolveDirectory(for: entity.persistableType)
+        return try await container.resolveDirectory(for: persistableType)
     }
 
     private func convertToPublicPlan<T: Persistable>(_ plan: DatabaseEngine.QueryPlan<T>) -> QueryPlanPublic {

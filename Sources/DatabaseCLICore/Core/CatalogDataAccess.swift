@@ -1,4 +1,4 @@
-/// CatalogDataAccess - Direct FDB data access using TypeCatalog metadata
+/// CatalogDataAccess - Direct FDB data access using Schema.Entity metadata
 ///
 /// Provides read/write operations on FDB data without requiring compiled @Persistable types.
 /// Uses DirectoryLayer for path resolution, ItemEnvelope for wire format,
@@ -10,54 +10,54 @@ import DatabaseEngine
 import Core
 import Graph
 
-/// Direct FDB data access driven by TypeCatalog
+/// Direct FDB data access driven by Schema.Entity
 public struct CatalogDataAccess: Sendable {
     nonisolated(unsafe) public let database: any DatabaseProtocol
-    private let catalogs: [String: TypeCatalog]
+    private let entities: [String: Schema.Entity]
     private let transformer = TransformingSerializer(configuration: .default)
 
-    public init(database: any DatabaseProtocol, catalogs: [TypeCatalog]) {
+    public init(database: any DatabaseProtocol, entities: [Schema.Entity]) {
         self.database = database
-        var map: [String: TypeCatalog] = [:]
-        for catalog in catalogs {
-            map[catalog.typeName] = catalog
+        var map: [String: Schema.Entity] = [:]
+        for entity in entities {
+            map[entity.name] = entity
         }
-        self.catalogs = map
+        self.entities = map
     }
 
-    func catalog(for typeName: String) throws -> TypeCatalog {
-        guard let catalog = catalogs[typeName] else {
+    func entity(for typeName: String) throws -> Schema.Entity {
+        guard let entity = entities[typeName] else {
             throw CLIError.entityNotFound(typeName)
         }
-        return catalog
+        return entity
     }
 
-    var allCatalogs: [TypeCatalog] {
-        catalogs.values.sorted { $0.typeName < $1.typeName }
+    var allEntities: [Schema.Entity] {
+        entities.values.sorted { $0.name < $1.name }
     }
 
     // MARK: - Directory Resolution
 
-    /// Resolve the FDB subspace for a type using its catalog's directory path
-    func resolveSubspace(for catalog: TypeCatalog, partitionValues: [String: String] = [:]) async throws -> Subspace {
-        let path = try catalog.resolvedDirectoryPath(partitionValues: partitionValues)
+    /// Resolve the FDB subspace for a type using its entity's directory path
+    func resolveSubspace(for entity: Schema.Entity, partitionValues: [String: String] = [:]) async throws -> Subspace {
+        let path = try entity.resolvedDirectoryPath(partitionValues: partitionValues)
         let directoryLayer = DirectoryLayer(database: database)
         let dirSubspace = try await directoryLayer.createOrOpen(path: path)
         return dirSubspace.subspace
     }
 
     /// Build the item subspace: [directory]/R/[typeName]
-    func itemSubspace(for catalog: TypeCatalog, partitionValues: [String: String] = [:]) async throws -> Subspace {
-        let subspace = try await resolveSubspace(for: catalog, partitionValues: partitionValues)
-        return subspace.subspace(SubspaceKey.items).subspace(catalog.typeName)
+    func itemSubspace(for entity: Schema.Entity, partitionValues: [String: String] = [:]) async throws -> Subspace {
+        let subspace = try await resolveSubspace(for: entity, partitionValues: partitionValues)
+        return subspace.subspace(SubspaceKey.items).subspace(entity.name)
     }
 
     // MARK: - Get by ID
 
     /// Fetch a single record by ID, returning decoded dictionary
     func get(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws -> [String: Any]? {
-        let catalog = try catalog(for: typeName)
-        let typeSubspace = try await itemSubspace(for: catalog, partitionValues: partitionValues)
+        let entity = try entity(for: typeName)
+        let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let key = typeSubspace.pack(Tuple([id]))
 
         // Get raw bytes inside transaction
@@ -69,7 +69,7 @@ public struct CatalogDataAccess: Sendable {
 
         // Decode outside transaction (avoid Sendable issues with [String: Any])
         let protobufBytes = try unwrapEnvelope(rawValue)
-        var dict = try DynamicProtobufDecoder.decode(protobufBytes, catalog: catalog)
+        var dict = try DynamicProtobufDecoder.decode(protobufBytes, entity: entity)
         dict["id"] = id
         return dict
     }
@@ -78,8 +78,8 @@ public struct CatalogDataAccess: Sendable {
 
     /// Fetch all records for a type, returning decoded dictionaries
     func findAll(typeName: String, limit: Int?, partitionValues: [String: String] = [:]) async throws -> [[String: Any]] {
-        let catalog = try catalog(for: typeName)
-        let typeSubspace = try await itemSubspace(for: catalog, partitionValues: partitionValues)
+        let entity = try entity(for: typeName)
+        let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let (begin, end) = typeSubspace.range()
 
         // Collect raw key-value pairs inside transaction
@@ -102,7 +102,7 @@ public struct CatalogDataAccess: Sendable {
         for (key, value) in rawPairs {
             let id = extractID(from: key, subspace: typeSubspace)
             let protobufBytes = try unwrapEnvelope(value)
-            var dict = try DynamicProtobufDecoder.decode(protobufBytes, catalog: catalog)
+            var dict = try DynamicProtobufDecoder.decode(protobufBytes, entity: entity)
             dict["id"] = id
             results.append(dict)
         }
@@ -116,15 +116,15 @@ public struct CatalogDataAccess: Sendable {
     ///
     /// **Warning**: CLI writes do NOT update indexes.
     func insert(typeName: String, dict: [String: Any], partitionValues: [String: String] = [:]) async throws {
-        let catalog = try catalog(for: typeName)
-        let typeSubspace = try await itemSubspace(for: catalog, partitionValues: partitionValues)
+        let entity = try entity(for: typeName)
+        let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
 
         guard let id = dict["id"] as? String else {
             throw CLIError.invalidJSON("JSON must contain an 'id' field")
         }
 
         // Encode to Protobuf (include all fields including id)
-        let protobufBytes = try DynamicProtobufEncoder.encode(dict, catalog: catalog)
+        let protobufBytes = try DynamicProtobufEncoder.encode(dict, entity: entity)
 
         // Compress + wrap in ItemEnvelope
         let compressed = try transformer.serializeSync(Data(protobufBytes))
@@ -142,8 +142,8 @@ public struct CatalogDataAccess: Sendable {
 
     /// Delete a record by ID
     func delete(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws {
-        let catalog = try catalog(for: typeName)
-        let typeSubspace = try await itemSubspace(for: catalog, partitionValues: partitionValues)
+        let entity = try entity(for: typeName)
+        let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let key = typeSubspace.pack(Tuple([id]))
 
         try await database.withTransaction { transaction in
@@ -154,28 +154,28 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Index Resolution
 
     /// Build the index subspace: [directory]/I
-    func indexSubspace(for catalog: TypeCatalog, partitionValues: [String: String] = [:]) async throws -> Subspace {
-        let subspace = try await resolveSubspace(for: catalog, partitionValues: partitionValues)
+    func indexSubspace(for entity: Schema.Entity, partitionValues: [String: String] = [:]) async throws -> Subspace {
+        let subspace = try await resolveSubspace(for: entity, partitionValues: partitionValues)
         return subspace.subspace(SubspaceKey.indexes)
     }
 
-    /// Resolve graph index metadata from catalog
+    /// Resolve graph index metadata from entity
     ///
     /// Extracts the graph index name, strategy, and field roles from the
     /// `AnyIndexDescriptor.kind.metadata` dictionary (populated by JSON-encoding the IndexKind).
     ///
-    /// - Parameter catalog: The type catalog to extract graph index metadata from
+    /// - Parameter entity: The schema entity to extract graph index metadata from
     /// - Returns: Tuple of (indexName, strategy, fromField, edgeField, toField)
     /// - Throws: `CLIError` if the type has no graph index or metadata is incomplete
-    func graphIndexMetadata(for catalog: TypeCatalog) throws -> (
+    func graphIndexMetadata(for entity: Schema.Entity) throws -> (
         indexName: String,
         strategy: GraphIndexStrategy,
         fromField: String,
         edgeField: String,
         toField: String
     ) {
-        guard let graphIndex = catalog.indexes.first(where: { $0.kindIdentifier == "graph" }) else {
-            throw CLIError.invalidArguments("Type '\(catalog.typeName)' has no graph index")
+        guard let graphIndex = entity.indexes.first(where: { $0.kindIdentifier == "graph" }) else {
+            throw CLIError.invalidArguments("Type '\(entity.name)' has no graph index")
         }
 
         guard let strategyStr = graphIndex.kind.metadata["strategy"]?.stringValue,
@@ -194,8 +194,8 @@ public struct CatalogDataAccess: Sendable {
 
     /// Clear all data for a type (items, indexes, metadata, blobs)
     func clearAll(typeName: String, partitionValues: [String: String] = [:]) async throws {
-        let catalog = try catalog(for: typeName)
-        let subspace = try await resolveSubspace(for: catalog, partitionValues: partitionValues)
+        let entity = try entity(for: typeName)
+        let subspace = try await resolveSubspace(for: entity, partitionValues: partitionValues)
         let (begin, end) = subspace.range()
         try await database.withTransaction { transaction in
             transaction.clearRange(beginKey: begin, endKey: end)

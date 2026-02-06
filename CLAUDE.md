@@ -75,8 +75,8 @@ database-kit (client-safe)          database-framework (server-only)
 │   ├── IndexDescriptor             │   ├── IndexMaintainer (protocol)
 │   ├── FieldSchema                 │   ├── IndexKindMaintainable (protocol)
 │   ├── PersistableEnum (protocol)  │   └── Registry/
-│   └── EnumMetadata                │       ├── TypeCatalog
-│                                   │       ├── SchemaRegistry
+│   └── EnumMetadata                │       ├── SchemaRegistry
+│                                   │       │
 ├── Vector/, FullText/, etc.        │       ├── DynamicProtobufDecoder
 │   └── VectorIndexKind             │       └── DynamicProtobufEncoder
                                     ├── VectorIndex/, FullTextIndex/, etc.
@@ -115,9 +115,9 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
 | `IndexMaintenanceService` | Centralized index maintenance: uniqueness checking, index updates, violation tracking |
 | `IndexKindMaintainable` | Bridge protocol connecting IndexKind to IndexMaintainer |
-| `TypeCatalog` | Codable schema metadata for a Persistable type (pg_catalog equivalent) |
-| `AnyIndexDescriptor` | Type-erased IndexDescriptor for catalog persistence (replaces IndexCatalog) |
-| `SchemaRegistry` | Persists/loads TypeCatalog entries in FDB under `/_catalog/` |
+| `Schema.Entity` | Codable schema metadata for a Persistable type (pg_catalog equivalent) |
+| `AnyIndexDescriptor` | Type-erased IndexDescriptor for schema persistence (replaces IndexCatalog) |
+| `SchemaRegistry` | Persists/loads Schema.Entity entries in FDB under `/_schema/` |
 | `DirectoryComponentCatalog` | Codable enum: `.staticPath(String)` or `.dynamicField(fieldName: String)` |
 
 ### Schema Registry (pg_catalog)
@@ -127,23 +127,23 @@ PostgreSQL は `pg_catalog` でスキーマ情報をデータと一緒に保存�
 ```
 PostgreSQL pg_catalog          → database-framework
 ─────────────────────────────────────────────────
-pg_class (テーブル名)          → TypeCatalog.typeName
-pg_attribute (カラム名・型)    → TypeCatalog.fields: [FieldSchema]
+pg_class (テーブル名)          → Schema.Entity.name
+pg_attribute (カラム名・型)    → Schema.Entity.fields: [FieldSchema]
 pg_type (データ型定義)         → FieldSchema.type: FieldSchemaType
-pg_index (インデックス定義)    → TypeCatalog.indexes: [AnyIndexDescriptor]
-pg_namespace (名前空間)        → TypeCatalog.directoryComponents
+pg_index (インデックス定義)    → Schema.Entity.indexes: [AnyIndexDescriptor]
+pg_namespace (名前空間)        → Schema.Entity.directoryComponents
 ```
 
 | コンポーネント | 責務 | ファイル |
 |--------------|------|---------|
-| `TypeCatalog` | 型のメタデータ（フィールド、インデックス、ディレクトリ構造） | `Sources/DatabaseEngine/Registry/TypeCatalog.swift` |
-| `AnyIndexDescriptor` | インデックスのメタデータ（名前、種別、フィールド、オプション） | `Sources/DatabaseEngine/Index/AnyIndexDescriptor.swift` |
-| `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | `Sources/DatabaseEngine/Registry/TypeCatalog.swift` |
-| `SchemaRegistry` | FDB への TypeCatalog 永続化・読み取り | `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` |
-| `DynamicProtobufDecoder` | TypeCatalog を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
-| `DynamicProtobufEncoder` | TypeCatalog を使った Protobuf 動的エンコード | `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` |
+| `Schema.Entity` | 型のメタデータ（フィールド、インデックス、ディレクトリ構造） | `database-kit/Sources/Core/Schema.swift` |
+| `AnyIndexDescriptor` | インデックスのメタデータ（名前、種別、フィールド、オプション） | `database-kit/Sources/Core/AnyIndexDescriptor.swift` |
+| `DirectoryComponentCatalog` | ディレクトリパスの各要素（静的パス or 動的フィールド参照） | `database-kit/Sources/Core/DirectoryComponentCatalog.swift` |
+| `SchemaRegistry` | FDB への Schema.Entity 永続化・読み取り | `Sources/DatabaseEngine/Registry/SchemaRegistry.swift` |
+| `DynamicProtobufDecoder` | Schema.Entity を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
+| `DynamicProtobufEncoder` | Schema.Entity を使った Protobuf 動的エンコード | `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` |
 
-**ライフサイクル**: `FDBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にカタログが FDB に書き込まれる。
+**ライフサイクル**: `FDBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にスキーマが FDB に書き込まれる。
 
 ### AnyIndexDescriptor
 
@@ -193,14 +193,14 @@ public enum IndexMetadataValue: Sendable, Hashable, Codable {
 
 ### DatabaseCLI
 
-`@Persistable` 型なしで FDB データにアクセスする対話型 CLI。TypeCatalog + DynamicProtobuf コーデックで動的アクセスを実現。
+`@Persistable` 型なしで FDB データにアクセスする対話型 CLI。Schema.Entity + DynamicProtobuf コーデックで動的アクセスを実現。
 
 ```
 Sources/DatabaseCLI/
 ├── Core/
 │   ├── DatabaseREPL.swift          # REPL ループ
 │   ├── CommandRouter.swift         # コマンド解析・ディスパッチ
-│   └── CatalogDataAccess.swift     # TypeCatalog ベースのデータアクセス
+│   └── CatalogDataAccess.swift     # Schema.Entity ベースのデータアクセス
 ├── Commands/
 │   ├── DataCommands.swift          # insert/get/update/delete
 │   ├── FindCommands.swift          # find + filter/sort
@@ -216,11 +216,11 @@ Sources/DatabaseCLI/
 **使用モード**:
 
 ```swift
-// スタンドアロンモード（TypeCatalog のみ使用）
+// スタンドアロンモード（Schema.Entity のみ使用）
 let database = try FDBClient.openDatabase()
 let registry = SchemaRegistry(database: database)
-let catalogs = try await registry.loadAll()
-let repl = DatabaseREPL(database: database, catalogs: catalogs)
+let entities = try await registry.loadAll()
+let repl = DatabaseREPL(database: database, entities: entities)
 try await repl.run()
 
 // 埋め込みモード（FDBContainer と連携）
@@ -409,12 +409,12 @@ try await context.save()
 [fdb]/I/[indexName]/[values...]/[id]     → Index entry (empty value for scalar)
 [fdb]/_metadata/schema/version           → Tuple(major, minor, patch)
 [fdb]/_metadata/index/[indexName]/state  → IndexState (readable/write_only/disabled)
-[fdb]/_catalog/[typeName]                → JSON-encoded TypeCatalog (schema metadata)
+[fdb]/_schema/[typeName]                 → JSON-encoded Schema.Entity (schema metadata)
 ```
 
 **ItemEnvelope Format**: All items are wrapped in `ItemEnvelope` with magic number `ITEM` (0x49 0x54 0x45 0x4D). Reading raw data without `ItemStorage.read()` will fail.
 
-**Catalog Layout**: `/_catalog/` stores `TypeCatalog` entries as JSON, analogous to PostgreSQL's `pg_catalog`. Written by `SchemaRegistry.persist()` during `FDBContainer.init`.
+**Schema Layout**: `/_schema/` stores `Schema.Entity` entries as JSON, analogous to PostgreSQL's `pg_catalog`. Written by `SchemaRegistry.persist()` during `FDBContainer.init`.
 
 ## Implemented Features
 
@@ -754,7 +754,7 @@ public init(
 
 このイニシャライザは：
 - **Codable conformance** で使用（JSON/Protobuf からのデシリアライズ）
-- **SchemaRegistry** での TypeCatalog 復元用
+- **SchemaRegistry** での Schema.Entity 復元用
 - **通常のコードでは使用してはいけない**
 
 ### IndexDescriptor には必ず KeyPath を渡す

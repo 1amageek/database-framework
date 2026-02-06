@@ -1,15 +1,16 @@
-/// SchemaInfoCommands - Schema introspection from TypeCatalog entries
+/// SchemaInfoCommands - Schema introspection from Schema.Entity entries
 
 import Foundation
 import DatabaseEngine
+import Core
 
 public struct SchemaInfoCommands {
 
-    private let catalogs: [TypeCatalog]
+    private let entities: [Schema.Entity]
     private let output: OutputFormatter
 
-    public init(catalogs: [TypeCatalog], output: OutputFormatter) {
-        self.catalogs = catalogs
+    public init(entities: [Schema.Entity], output: OutputFormatter) {
+        self.entities = entities
         self.output = output
     }
 
@@ -34,50 +35,50 @@ public struct SchemaInfoCommands {
     // MARK: - List
 
     private func list() {
-        let sorted = catalogs.sorted { $0.typeName < $1.typeName }
+        let sorted = entities.sorted { $0.name < $1.name }
         if sorted.isEmpty {
             output.info("(no types registered)")
             return
         }
         output.info("Registered types:")
-        for catalog in sorted {
-            output.line("  \(catalog.typeName)  (\(catalog.fields.count) fields, \(catalog.indexes.count) indexes)")
+        for entity in sorted {
+            output.line("  \(entity.name)  (\(entity.fields.count) fields, \(entity.indexes.count) indexes)")
         }
     }
 
     // MARK: - Show
 
     private func show(name: String) throws {
-        guard let catalog = catalogs.first(where: { $0.typeName == name }) else {
+        guard let entity = entities.first(where: { $0.name == name }) else {
             throw CLIError.entityNotFound(name)
         }
 
-        output.header(catalog.typeName)
+        output.header(entity.name)
 
         output.line("  Fields:")
-        for field in catalog.fields {
+        for field in entity.fields {
             var info = "    \(field.name): \(field.type.rawValue)"
             if field.isOptional { info += "?" }
             if field.isArray { info = "    \(field.name): [\(field.type.rawValue)]" }
-            if let cases = catalog.enumMetadata[field.name] {
+            if let cases = entity.enumMetadata[field.name] {
                 info += " (enum: \(cases.joined(separator: ", ")))"
             }
             output.line(info)
         }
 
-        if catalog.indexes.isEmpty {
+        if entity.indexes.isEmpty {
             output.line("  Indexes: (none)")
         } else {
             output.line("  Indexes:")
-            for idx in catalog.indexes {
+            for idx in entity.indexes {
                 let unique = idx.unique ? " [unique]" : ""
                 let fields = idx.fieldNames.joined(separator: ", ")
                 output.line("    \(idx.name) (\(idx.kindIdentifier)) [\(fields)]\(unique)")
             }
         }
 
-        if !catalog.directoryComponents.isEmpty {
-            let pathDisplay = catalog.directoryComponents.map { component -> String in
+        if !entity.directoryComponents.isEmpty {
+            let pathDisplay = entity.directoryComponents.map { component -> String in
                 switch component {
                 case .staticPath(let value):
                     return "\"\(value)\""
@@ -87,8 +88,8 @@ public struct SchemaInfoCommands {
             }.joined(separator: ", ")
             output.line("  Directory: [\(pathDisplay)]")
 
-            if catalog.hasDynamicDirectory {
-                for component in catalog.directoryComponents {
+            if entity.hasDynamicDirectory {
+                for component in entity.directoryComponents {
                     switch component {
                     case .staticPath(let value):
                         output.line("    - Static: \"\(value)\"")
@@ -110,7 +111,7 @@ extension SchemaInfoCommands {
           schema list                  List all registered types
           schema show <TypeName>       Show type fields, types, and indexes
 
-        Type information is loaded from the FDB catalog (_catalog).
+        Type information is loaded from the FDB schema registry (_schema).
         """
     }
 }

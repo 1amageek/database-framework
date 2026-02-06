@@ -1,5 +1,5 @@
 // SchemaFileExporter.swift
-// Export TypeCatalog to YAML schema files
+// Export Schema.Entity to YAML schema files
 
 import Foundation
 import DatabaseEngine
@@ -7,17 +7,17 @@ import Core
 
 public enum SchemaFileExporter {
 
-    /// Export TypeCatalog to YAML string
-    public static func toYAML(_ catalog: TypeCatalog) throws -> String {
+    /// Export Schema.Entity to YAML string
+    public static func toYAML(_ entity: Schema.Entity) throws -> String {
         var lines: [String] = []
 
         // Type name
-        lines.append("\(catalog.typeName):")
+        lines.append("\(entity.name):")
 
         // Directory
-        if !catalog.directoryComponents.isEmpty {
+        if !entity.directoryComponents.isEmpty {
             lines.append("  \"#Directory\":")
-            for component in catalog.directoryComponents {
+            for component in entity.directoryComponents {
                 switch component {
                 case .staticPath(let path):
                     lines.append("    - \(path)")
@@ -28,9 +28,9 @@ public enum SchemaFileExporter {
         }
 
         // Fields
-        for field in catalog.fields {
+        for field in entity.fields {
             let typeStr = fieldTypeToString(field)
-            let indexAnnotation = findFieldIndex(fieldName: field.name, in: catalog.indexes)
+            let indexAnnotation = findFieldIndex(fieldName: field.name, in: entity.indexes)
             if let indexAnnotation = indexAnnotation {
                 lines.append("  \(field.name): \(typeStr)#\(indexAnnotation)")
             } else {
@@ -39,11 +39,11 @@ public enum SchemaFileExporter {
         }
 
         // Complex indexes (multi-field, graph, permuted, etc.)
-        let complexIndexes = catalog.indexes.filter { index in
+        let complexIndexes = entity.indexes.filter { index in
             // Skip indexes already annotated on fields
             if index.fieldNames.count == 1 {
                 let fieldName = index.fieldNames[0]
-                if catalog.fields.contains(where: { $0.name == fieldName }) {
+                if entity.fields.contains(where: { $0.name == fieldName }) {
                     // This is a field index, skip it here
                     return false
                 }

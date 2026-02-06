@@ -700,7 +700,7 @@ database drop --all
 ### スキーマエクスポート
 
 ```bash
-# TypeCatalog を YAML に変換
+# Schema.Entity を YAML に変換
 database export User > User.yaml
 database export --all > schemas/
 ```
@@ -714,18 +714,18 @@ database validate schemas/User.yaml
 
 ---
 
-## TypeCatalog との対応
+## Schema.Entity との対応
 
-YAMLで定義したスキーマは、内部的に`TypeCatalog`に変換され、`SchemaRegistry`を通じてFoundationDBに永続化されます。
+YAMLで定義したスキーマは、内部的に`Schema.Entity`に変換され、`SchemaRegistry`を通じてFoundationDBに永続化されます。
 
 ```
 YAML Schema
     ↓ (SchemaFileParser)
-TypeCatalog (Codable)
+Schema.Entity (Codable)
     ↓ (SchemaRegistry.persist)
-FoundationDB (/_catalog/{typeName})
+FoundationDB (/_schema/{typeName})
     ↓ (SchemaRegistry.load)
-TypeCatalog
+Schema.Entity
     ↓ (DynamicProtobufCodec)
 Runtime Data Access
 ```
@@ -785,5 +785,5 @@ User:
 
 - [GraphIndex README](../GraphIndex/README.md) - グラフインデックス詳細
 - [VectorIndex README](../VectorIndex/README.md) - ベクトルインデックス詳細
-- [TypeCatalog](../DatabaseEngine/Registry/TypeCatalog.swift) - スキーマメタデータ
+- [Schema.Entity](../../database-kit/Sources/Core/Schema.swift) - スキーマメタデータ
 - [SchemaRegistry](../DatabaseEngine/Registry/SchemaRegistry.swift) - スキーマ永続化

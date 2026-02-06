@@ -1,21 +1,21 @@
-/// SchemaRegistry - Persists and loads TypeCatalog entries in FoundationDB
+/// SchemaRegistry - Persists and loads Schema.Entity entries in FoundationDB
 ///
 /// Analogous to PostgreSQL's `pg_catalog` system tables.
-/// Stores type metadata under `/_catalog/[typeName]` in FDB as JSON.
+/// Stores entity metadata under `/_schema/[entityName]` in FDB as JSON.
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
 import Foundation
 import FoundationDB
 import Core
 
-/// Manages persistence and retrieval of TypeCatalog entries in FDB
+/// Manages persistence and retrieval of Schema.Entity entries in FDB
 public struct SchemaRegistry: Sendable {
     nonisolated(unsafe) private let database: any DatabaseProtocol
 
-    /// Catalog key prefix
-    private static let catalogPrefix = "_catalog"
+    /// Schema key prefix
+    private static let catalogPrefix = "_schema"
 
-    /// In-memory cache for catalogs (reduces CLI latency by 10-100x)
+    /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
 
     public init(database: any DatabaseProtocol, cacheTTLSeconds: Int = 300) {
@@ -25,19 +25,19 @@ public struct SchemaRegistry: Sendable {
 
     // MARK: - Write
 
-    /// Persist all entities from a Schema as TypeCatalog entries
+    /// Persist all entities from a Schema
     ///
     /// Called during `FDBContainer.init` after `ensureIndexesReady()`.
-    /// Overwrites existing catalog entries.
+    /// Overwrites existing entries.
     public func persist(_ schema: Schema) async throws {
-        let catalogs = try schema.entities.map { try TypeCatalog(from: $0) }
+        let entities = schema.entities
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
         try await database.withTransaction { transaction in
-            for catalog in catalogs {
-                let key = Self.key(for: catalog.typeName)
-                let data = try encoder.encode(catalog)
+            for entity in entities {
+                let key = Self.key(for: entity.name)
+                let data = try encoder.encode(entity)
                 let value = Array(data)
                 transaction.setValue(value, for: key)
             }
@@ -49,10 +49,10 @@ public struct SchemaRegistry: Sendable {
 
     // MARK: - Read
 
-    /// Load all TypeCatalog entries from FDB
+    /// Load all Schema.Entity entries from FDB
     ///
-    /// **Cache Strategy**: Returns cached catalogs if TTL not expired, otherwise fetches from FDB.
-    public func loadAll() async throws -> [TypeCatalog] {
+    /// **Cache Strategy**: Returns cached entities if TTL not expired, otherwise fetches from FDB.
+    public func loadAll() async throws -> [Schema.Entity] {
         // Check cache first
         if let cached = cache.get() {
             return cached
@@ -63,27 +63,27 @@ public struct SchemaRegistry: Sendable {
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        let catalogs = try await database.withTransaction { transaction in
-            var catalogs: [TypeCatalog] = []
+        let entities = try await database.withTransaction { transaction in
+            var entities: [Schema.Entity] = []
             let decoder = JSONDecoder()
 
             let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
             for try await (_, value) in sequence {
                 let data = Data(value)
-                let catalog = try decoder.decode(TypeCatalog.self, from: data)
-                catalogs.append(catalog)
+                let entity = try decoder.decode(Schema.Entity.self, from: data)
+                entities.append(entity)
             }
-            return catalogs
+            return entities
         }
 
         // Populate cache
-        cache.set(catalogs)
+        cache.set(entities)
 
-        return catalogs
+        return entities
     }
 
-    /// Load a single TypeCatalog by type name
-    public func load(typeName: String) async throws -> TypeCatalog? {
+    /// Load a single Schema.Entity by name
+    public func load(typeName: String) async throws -> Schema.Entity? {
         let key = Self.key(for: typeName)
 
         return try await database.withTransaction { transaction in
@@ -91,23 +91,23 @@ public struct SchemaRegistry: Sendable {
                 return nil
             }
             let data = Data(value)
-            return try JSONDecoder().decode(TypeCatalog.self, from: data)
+            return try JSONDecoder().decode(Schema.Entity.self, from: data)
         }
     }
 
-    // MARK: - Single TypeCatalog Operations
+    // MARK: - Single Entity Operations
 
-    /// Persist a single TypeCatalog entry
+    /// Persist a single Schema.Entity entry
     ///
     /// Used by CLI to apply individual schema definitions.
-    /// Overwrites existing catalog entry if present.
-    public func persist(_ catalog: TypeCatalog) async throws {
+    /// Overwrites existing entry if present.
+    public func persist(_ entity: Schema.Entity) async throws {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
         try await database.withTransaction { transaction in
-            let key = Self.key(for: catalog.typeName)
-            let data = try encoder.encode(catalog)
+            let key = Self.key(for: entity.name)
+            let data = try encoder.encode(entity)
             let value = Array(data)
             transaction.setValue(value, for: key)
         }
@@ -116,7 +116,7 @@ public struct SchemaRegistry: Sendable {
         cache.clear()
     }
 
-    /// Delete a single TypeCatalog entry
+    /// Delete a single Schema.Entity entry
     ///
     /// Used by CLI to drop schema definitions.
     /// No-op if entry doesn't exist.
@@ -132,7 +132,7 @@ public struct SchemaRegistry: Sendable {
 
     // MARK: - Key Construction
 
-    /// Build FDB key for a catalog entry: (_catalog, typeName) as Tuple
+    /// Build FDB key for a schema entry: (_schema, typeName) as Tuple
     private static func key(for typeName: String) -> FDB.Bytes {
         Tuple([catalogPrefix, typeName]).pack()
     }

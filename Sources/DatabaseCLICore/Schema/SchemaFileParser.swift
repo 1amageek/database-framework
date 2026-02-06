@@ -1,5 +1,5 @@
 // SchemaFileParser.swift
-// Parse YAML schema files to TypeCatalog
+// Parse YAML schema files to Schema.Entity
 
 import Foundation
 import DatabaseEngine
@@ -10,14 +10,14 @@ public enum SchemaFileParser {
 
     // MARK: - Public API
 
-    /// Parse YAML schema file to TypeCatalog
-    public static func parseYAML(from fileURL: URL) throws -> TypeCatalog {
+    /// Parse YAML schema file to Schema.Entity
+    public static func parseYAML(from fileURL: URL) throws -> Schema.Entity {
         let yamlString = try String(contentsOf: fileURL, encoding: .utf8)
         return try parseYAML(yamlString)
     }
 
-    /// Parse YAML schema string to TypeCatalog
-    public static func parseYAML(_ yamlString: String) throws -> TypeCatalog {
+    /// Parse YAML schema string to Schema.Entity
+    public static func parseYAML(_ yamlString: String) throws -> Schema.Entity {
         // Use compose to preserve key order
         guard let node = try Yams.compose(yaml: yamlString) else {
             throw SchemaFileError.invalidFormat("YAML must be a valid document")
@@ -45,7 +45,7 @@ public enum SchemaFileParser {
 
     // MARK: - Type Definition Parsing
 
-    private static func parseTypeDefinition(typeName: String, mapping: Node.Mapping) throws -> TypeCatalog {
+    private static func parseTypeDefinition(typeName: String, mapping: Node.Mapping) throws -> Schema.Entity {
         var fields: [FieldSchema] = []
         var indexes: [AnyIndexDescriptor] = []
         var directoryComponents: [DirectoryComponentCatalog] = []
@@ -95,8 +95,8 @@ public enum SchemaFileParser {
             }
         }
 
-        return TypeCatalog(
-            typeName: typeName,
+        return Schema.Entity(
+            name: typeName,
             fields: fields,
             directoryComponents: directoryComponents,
             indexes: indexes

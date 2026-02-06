@@ -25,21 +25,21 @@ public struct ClearCommand {
         let cleanArgs = args.filter { $0 != "--force" }
 
         if cleanArgs.first == "--all" {
-            let catalogs = dataAccess.allCatalogs
-            if catalogs.isEmpty {
+            let entities = dataAccess.allEntities
+            if entities.isEmpty {
                 output.info("No registered types found.")
                 return
             }
             output.info("The following types will be cleared:")
-            for catalog in catalogs {
-                let count = try await recordCount(for: catalog.typeName)
-                output.info("  \(catalog.typeName): \(count) records")
+            for entity in entities {
+                let count = try await recordCount(for: entity.name)
+                output.info("  \(entity.name): \(count) records")
             }
             guard try await confirmExecution(description: "ALL types", force: force) else {
                 return
             }
-            for catalog in catalogs {
-                try await dataAccess.clearAll(typeName: catalog.typeName)
+            for entity in entities {
+                try await dataAccess.clearAll(typeName: entity.name)
             }
             output.success("Cleared all types")
         } else {

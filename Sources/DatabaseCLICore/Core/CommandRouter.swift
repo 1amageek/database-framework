@@ -3,13 +3,14 @@
 import Foundation
 import FoundationDB
 import DatabaseEngine
+import Core
 
 enum CommandRouter {
 
     static func execute(
         _ line: String,
         dataAccess: CatalogDataAccess,
-        catalogs: [TypeCatalog],
+        entities: [Schema.Entity],
         output: OutputFormatter
     ) async throws {
         let tokens = tokenize(line)
@@ -21,7 +22,7 @@ enum CommandRouter {
             printHelp(topic: args.first, output: output)
 
         case "schema":
-            let cmd = SchemaInfoCommands(catalogs: catalogs, output: output)
+            let cmd = SchemaInfoCommands(entities: entities, output: output)
             try cmd.execute(args)
 
         case "insert":

@@ -1,7 +1,7 @@
 /// GraphCommands - Graph traversal and SPARQL queries using dynamic execution
 ///
 /// Executes graph and SPARQL queries without compiled @Persistable types.
-/// Uses TypeCatalog/AnyIndexDescriptor metadata to resolve index subspaces,
+/// Uses Schema.Entity/AnyIndexDescriptor metadata to resolve index subspaces,
 /// then delegates to non-generic GraphQueryExecutor / executeSPARQLString.
 
 import Foundation
@@ -29,8 +29,8 @@ public struct GraphCommands {
             throw CLIError.invalidArguments("Usage: graph <TypeName> [from=<value>] [edge=<value>] [to=<value>] [--limit N]")
         }
 
-        let catalog = try dataAccess.catalog(for: typeName)
-        let meta = try dataAccess.graphIndexMetadata(for: catalog)
+        let entity = try dataAccess.entity(for: typeName)
+        let meta = try dataAccess.graphIndexMetadata(for: entity)
 
         // Parse arguments
         var fromValue: String?
@@ -56,7 +56,7 @@ public struct GraphCommands {
         }
 
         // Resolve index subspace
-        let indexBase = try await dataAccess.indexSubspace(for: catalog)
+        let indexBase = try await dataAccess.indexSubspace(for: entity)
         let indexSubspace = indexBase.subspace(meta.indexName)
 
         // Build executor
@@ -102,11 +102,11 @@ public struct GraphCommands {
         let typeName = args[0]
         let sparqlString = args.dropFirst().joined(separator: " ")
 
-        let catalog = try dataAccess.catalog(for: typeName)
-        let meta = try dataAccess.graphIndexMetadata(for: catalog)
+        let entity = try dataAccess.entity(for: typeName)
+        let meta = try dataAccess.graphIndexMetadata(for: entity)
 
         // Resolve index subspace
-        let indexBase = try await dataAccess.indexSubspace(for: catalog)
+        let indexBase = try await dataAccess.indexSubspace(for: entity)
         let indexSubspace = indexBase.subspace(meta.indexName)
 
         // Execute SPARQL

@@ -33,8 +33,8 @@ struct DatabaseCLI: AsyncParsableCommand {
     mutating func run() async throws {
         let (database, _) = try await ClusterConnection.openDatabase()
         let registry = SchemaRegistry(database: database)
-        let catalogs = try await registry.loadAll()
-        let repl = DatabaseREPL(database: database, catalogs: catalogs)
+        let entities = try await registry.loadAll()
+        let repl = DatabaseREPL(database: database, entities: entities)
         try await repl.run()
     }
 }
@@ -107,9 +107,9 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let registry = SchemaRegistry(database: database)
-                let catalogs = try await registry.loadAll()
+                let entities = try await registry.loadAll()
                 let output = OutputFormatter()
-                let cmd = SchemaInfoCommands(catalogs: catalogs, output: output)
+                let cmd = SchemaInfoCommands(entities: entities, output: output)
                 try cmd.execute(["list"])
             }
         }
@@ -126,9 +126,9 @@ extension DatabaseCLI {
             mutating func run() async throws {
                 let (database, _) = try await ClusterConnection.openDatabase()
                 let registry = SchemaRegistry(database: database)
-                let catalogs = try await registry.loadAll()
+                let entities = try await registry.loadAll()
                 let output = OutputFormatter()
-                let cmd = SchemaInfoCommands(catalogs: catalogs, output: output)
+                let cmd = SchemaInfoCommands(entities: entities, output: output)
                 try cmd.execute(["show", typeName])
             }
         }
@@ -249,8 +249,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = DataCommands(dataAccess: dataAccess, output: output)
 
@@ -278,8 +278,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = DataCommands(dataAccess: dataAccess, output: output)
             try await cmd.insert(args: [typeName, json])
@@ -304,8 +304,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = DataCommands(dataAccess: dataAccess, output: output)
             try await cmd.update(args: [typeName, id, json])
@@ -327,8 +327,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = DataCommands(dataAccess: dataAccess, output: output)
             try await cmd.delete(args: [typeName, id])
@@ -363,8 +363,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = FindCommands(dataAccess: dataAccess, output: output)
 
@@ -412,8 +412,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = GraphCommands(dataAccess: dataAccess, output: output)
 
@@ -442,8 +442,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = GraphCommands(dataAccess: dataAccess, output: output)
             try await cmd.executeSPARQL([typeName, query])
@@ -472,8 +472,8 @@ extension DatabaseCLI {
         mutating func run() async throws {
             let (database, _) = try await ClusterConnection.openDatabase()
             let registry = SchemaRegistry(database: database)
-            let catalogs = try await registry.loadAll()
-            let dataAccess = CatalogDataAccess(database: database, catalogs: catalogs)
+            let entities = try await registry.loadAll()
+            let dataAccess = CatalogDataAccess(database: database, entities: entities)
             let output = OutputFormatter()
             let cmd = ClearCommand(dataAccess: dataAccess, output: output)
 

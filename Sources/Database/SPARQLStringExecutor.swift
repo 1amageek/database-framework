@@ -196,7 +196,7 @@ extension FDBContext {
 
 /// Execute a SPARQL query string without compiled types
 ///
-/// Uses pre-resolved index metadata from `TypeCatalog` / `AnyIndexDescriptor`.
+/// Uses pre-resolved index metadata from `Schema.Entity` / `AnyIndexDescriptor`.
 /// This enables CLI and dynamic tools to execute SPARQL queries without
 /// requiring compiled `Persistable` Swift types.
 ///

@@ -35,16 +35,16 @@ public struct SchemaDefinitionCommands {
     private func applyFile(_ fileURL: URL) async throws {
         output.info("Applying schema from: \(fileURL.lastPathComponent)")
 
-        let catalog = try SchemaFileParser.parseYAML(from: fileURL)
+        let entity = try SchemaFileParser.parseYAML(from: fileURL)
         let registry = SchemaRegistry(database: database)
 
-        try await registry.persist(catalog)
+        try await registry.persist(entity)
 
-        output.success("✓ Schema '\(catalog.typeName)' registered successfully")
-        output.info("  - \(catalog.fields.count) fields")
-        output.info("  - \(catalog.indexes.count) indexes")
+        output.success("✓ Schema '\(entity.name)' registered successfully")
+        output.info("  - \(entity.fields.count) fields")
+        output.info("  - \(entity.indexes.count) indexes")
 
-        let directoryPath = catalog.directoryComponents.map { component in
+        let directoryPath = entity.directoryComponents.map { component in
             switch component {
             case .staticPath(let path): return path
             case .dynamicField(let fieldName): return "{\(fieldName)}"
@@ -78,11 +78,11 @@ public struct SchemaDefinitionCommands {
     public func export(typeName: String, outputPath: String?) async throws {
         let registry = SchemaRegistry(database: database)
 
-        guard let catalog = try await registry.load(typeName: typeName) else {
+        guard let entity = try await registry.load(typeName: typeName) else {
             throw CLIError.invalidArguments("Type '\(typeName)' not found in catalog")
         }
 
-        let yaml = try SchemaFileExporter.toYAML(catalog)
+        let yaml = try SchemaFileExporter.toYAML(entity)
 
         if let outputPath = outputPath {
             let url = URL(fileURLWithPath: outputPath)
@@ -95,9 +95,9 @@ public struct SchemaDefinitionCommands {
 
     public func exportAll(outputDirectory: String?) async throws {
         let registry = SchemaRegistry(database: database)
-        let catalogs = try await registry.loadAll()
+        let entities = try await registry.loadAll()
 
-        if catalogs.isEmpty {
+        if entities.isEmpty {
             output.info("No schemas found in catalog")
             return
         }
@@ -106,18 +106,18 @@ public struct SchemaDefinitionCommands {
             let dirURL = URL(fileURLWithPath: outputDirectory)
             try FileManager.default.createDirectory(at: dirURL, withIntermediateDirectories: true)
 
-            for catalog in catalogs {
-                let yaml = try SchemaFileExporter.toYAML(catalog)
-                let fileURL = dirURL.appendingPathComponent("\(catalog.typeName).yaml")
+            for entity in entities {
+                let yaml = try SchemaFileExporter.toYAML(entity)
+                let fileURL = dirURL.appendingPathComponent("\(entity.name).yaml")
                 try yaml.write(to: fileURL, atomically: true, encoding: .utf8)
-                output.info("Exported '\(catalog.typeName)'")
+                output.info("Exported '\(entity.name)'")
             }
 
-            output.success("✓ Exported \(catalogs.count) schemas to \(outputDirectory)")
+            output.success("✓ Exported \(entities.count) schemas to \(outputDirectory)")
         } else {
-            for catalog in catalogs {
-                let yaml = try SchemaFileExporter.toYAML(catalog)
-                output.info("--- \(catalog.typeName) ---")
+            for entity in entities {
+                let yaml = try SchemaFileExporter.toYAML(entity)
+                output.info("--- \(entity.name) ---")
                 print(yaml)
             }
         }
@@ -130,14 +130,14 @@ public struct SchemaDefinitionCommands {
         let url = URL(fileURLWithPath: filePath)
 
         do {
-            let catalog = try SchemaFileParser.parseYAML(from: url)
+            let entity = try SchemaFileParser.parseYAML(from: url)
 
-            output.success("✓ Schema '\(catalog.typeName)' is valid")
-            output.info("  - \(catalog.fields.count) fields defined")
-            output.info("  - \(catalog.indexes.count) indexes defined")
+            output.success("✓ Schema '\(entity.name)' is valid")
+            output.info("  - \(entity.fields.count) fields defined")
+            output.info("  - \(entity.indexes.count) indexes defined")
 
-            if !catalog.directoryComponents.isEmpty {
-                let path = catalog.directoryComponents.map { component in
+            if !entity.directoryComponents.isEmpty {
+                let path = entity.directoryComponents.map { component in
                     switch component {
                     case .staticPath(let path): return path
                     case .dynamicField(let fieldName): return "{\(fieldName)}"
@@ -146,7 +146,7 @@ public struct SchemaDefinitionCommands {
                 output.info("  - Directory: /\(path)")
             }
 
-            if catalog.hasDynamicDirectory {
+            if entity.hasDynamicDirectory {
                 output.info("  - Uses dynamic directory (partition-aware)")
             }
 
@@ -180,13 +180,13 @@ public struct SchemaDefinitionCommands {
         }
 
         let registry = SchemaRegistry(database: database)
-        let catalogs = try await registry.loadAll()
+        let entities = try await registry.loadAll()
 
-        for catalog in catalogs {
-            try await registry.delete(typeName: catalog.typeName)
-            output.info("Dropped '\(catalog.typeName)'")
+        for entity in entities {
+            try await registry.delete(typeName: entity.name)
+            output.info("Dropped '\(entity.name)'")
         }
 
-        output.success("✓ Dropped \(catalogs.count) schemas")
+        output.success("✓ Dropped \(entities.count) schemas")
     }
 }
