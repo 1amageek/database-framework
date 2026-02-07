@@ -3,7 +3,7 @@
 
 import Foundation
 import FoundationDB
-@testable import DatabaseEngine
+import DatabaseEngine
 
 /// Shared FDB initialization and test serialization singleton
 ///
