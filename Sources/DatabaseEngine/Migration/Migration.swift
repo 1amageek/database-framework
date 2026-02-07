@@ -184,7 +184,7 @@ public struct MigrationContext: Sendable {
 
         let indexManager = IndexManager(
             container: container,
-            subspace: info.indexSubspace
+            subspace: info.subspace
         )
 
         // 3. Convert IndexDescriptor to Index with itemTypes
@@ -292,7 +292,7 @@ public struct MigrationContext: Sendable {
 
         let indexManager = IndexManager(
             container: container,
-            subspace: info.indexSubspace
+            subspace: info.subspace
         )
 
         // 4. Atomic transaction: FormerIndex entry + disable + clear data
@@ -359,7 +359,7 @@ public struct MigrationContext: Sendable {
 
         let indexManager = IndexManager(
             container: container,
-            subspace: info.indexSubspace
+            subspace: info.subspace
         )
 
         // 4. Convert and register index first (needed for IndexManager operations)

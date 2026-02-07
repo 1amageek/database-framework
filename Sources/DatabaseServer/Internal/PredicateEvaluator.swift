@@ -131,21 +131,31 @@ enum PredicateEvaluator {
         }
     }
 
-    /// Resolve a field value, supporting nested paths (e.g., "address.city")
+    /// Resolve a field value by name from a record dictionary
+    ///
+    /// Note: FieldValue does not have a map/object case, so nested paths
+    /// (e.g., "address.city") cannot be resolved through the FieldValue hierarchy.
+    /// Nested fields must be flattened at encoding time.
     private static func resolveFieldValue(fieldName: String, in record: [String: FieldValue]) -> FieldValue? {
-        if let value = record[fieldName] {
-            return value
-        }
-        let parts = fieldName.split(separator: ".")
-        guard parts.count > 1 else { return nil }
-        return nil
+        return record[fieldName]
     }
 
     /// Simple SQL LIKE pattern matching (% = any, _ = single char)
     private static func matchLikePattern(_ str: String, pattern: String) -> Bool {
-        let regexPattern = "^" + NSRegularExpression.escapedPattern(for: pattern)
-            .replacingOccurrences(of: "%", with: ".*")
-            .replacingOccurrences(of: "_", with: ".") + "$"
+        // Build regex by processing character-by-character to avoid
+        // NSRegularExpression.escapedPattern escaping our % and _ wildcards
+        var regexPattern = "^"
+        for char in pattern {
+            switch char {
+            case "%":
+                regexPattern += ".*"
+            case "_":
+                regexPattern += "."
+            default:
+                regexPattern += NSRegularExpression.escapedPattern(for: String(char))
+            }
+        }
+        regexPattern += "$"
         return str.range(of: regexPattern, options: .regularExpression) != nil
     }
 
