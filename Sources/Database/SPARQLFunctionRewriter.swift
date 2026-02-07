@@ -166,11 +166,11 @@ internal struct SPARQLFunctionRewriter: Sendable {
             return .cast(try await rewriteExpression(inner), targetType: targetType)
 
         case .caseWhen(let cases, let elseResult):
-            var rewrittenCases: [(condition: QueryIR.Expression, result: QueryIR.Expression)] = []
-            for (condition, result) in cases {
-                rewrittenCases.append((
-                    condition: try await rewriteExpression(condition),
-                    result: try await rewriteExpression(result)
+            var rewrittenCases: [CaseWhenPair] = []
+            for pair in cases {
+                rewrittenCases.append(CaseWhenPair(
+                    condition: try await rewriteExpression(pair.condition),
+                    result: try await rewriteExpression(pair.result)
                 ))
             }
             let rewrittenElse = try await elseResult.asyncMap { try await rewriteExpression($0) }

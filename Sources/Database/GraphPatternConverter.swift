@@ -291,9 +291,9 @@ public struct GraphPatternConverter: Sendable {
 
         // Case/When
         case .caseWhen(let cases, let elseResult):
-            for (cond, result) in cases {
-                collectExpressionVariables(from: cond, into: &vars)
-                collectExpressionVariables(from: result, into: &vars)
+            for pair in cases {
+                collectExpressionVariables(from: pair.condition, into: &vars)
+                collectExpressionVariables(from: pair.result, into: &vars)
             }
             if let el = elseResult { collectExpressionVariables(from: el, into: &vars) }
 

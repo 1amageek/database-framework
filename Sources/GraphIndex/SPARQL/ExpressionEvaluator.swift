@@ -148,9 +148,9 @@ public struct ExpressionEvaluator: Sendable {
 
         // Conditional
         case .caseWhen(let cases, let elseResult):
-            for (condition, result) in cases {
-                if evaluateAsBoolean(condition, binding: binding) {
-                    return evaluate(result, binding: binding)
+            for pair in cases {
+                if evaluateAsBoolean(pair.condition, binding: binding) {
+                    return evaluate(pair.result, binding: binding)
                 }
             }
             if let elseExpr = elseResult {

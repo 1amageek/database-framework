@@ -429,21 +429,7 @@ public struct FieldComparison<T: Persistable>: @unchecked Sendable, Hashable {
 
 // MARK: - ComparisonOperator
 
-/// Comparison operators for predicates
-public enum ComparisonOperator: String, Sendable, Hashable {
-    case equal = "=="
-    case notEqual = "!="
-    case lessThan = "<"
-    case lessThanOrEqual = "<="
-    case greaterThan = ">"
-    case greaterThanOrEqual = ">="
-    case contains = "contains"
-    case hasPrefix = "hasPrefix"
-    case hasSuffix = "hasSuffix"
-    case `in` = "in"
-    case isNil = "isNil"
-    case isNotNil = "isNotNil"
-}
+@_exported import enum DatabaseClientProtocol.ComparisonOperator
 
 
 // MARK: - SortDescriptor

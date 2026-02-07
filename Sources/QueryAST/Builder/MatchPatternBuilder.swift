@@ -6,6 +6,7 @@
 /// - GQL (Graph Query Language)
 
 import Foundation
+import QueryIR
 
 /// Result builder for constructing MATCH patterns
 @resultBuilder
@@ -37,7 +38,7 @@ public struct MatchPatternResultBuilder {
 public func node(
     _ variable: String? = nil,
     labels: [String]? = nil,
-    properties: [(String, Expression)]? = nil
+    properties: [PropertyBinding]? = nil
 ) -> PathElement {
     .node(NodePattern(variable: variable, labels: labels, properties: properties))
 }
@@ -51,7 +52,7 @@ public func node(_ variable: String? = nil, label: String) -> PathElement {
 public func node(
     _ variable: String? = nil,
     label: String,
-    where properties: [(String, Expression)]
+    where properties: [PropertyBinding]
 ) -> PathElement {
     .node(NodePattern(variable: variable, labels: [label], properties: properties))
 }
@@ -61,7 +62,7 @@ public func edge(
     direction: EdgeDirection,
     _ variable: String? = nil,
     labels: [String]? = nil,
-    properties: [(String, Expression)]? = nil
+    properties: [PropertyBinding]? = nil
 ) -> PathElement {
     .edge(EdgePattern(variable: variable, labels: labels, properties: properties, direction: direction))
 }

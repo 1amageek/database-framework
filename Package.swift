@@ -20,11 +20,12 @@ let package = Package(
         .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
-        .library(name: "QueryIR", targets: ["QueryIR"]),
+        // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
+        .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
@@ -45,8 +46,9 @@ let package = Package(
         .target(
             name: "DatabaseEngine",
             dependencies: [
-                "QueryIR",
+                .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
@@ -119,7 +121,7 @@ let package = Package(
         .target(
             name: "GraphIndex",
             dependencies: [
-                "QueryIR",
+                .product(name: "QueryIR", package: "database-kit"),
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
@@ -173,14 +175,11 @@ let package = Package(
             ],
             exclude: ["README.md"]
         ),
-        .target(
-            name: "QueryIR",
-            dependencies: []
-        ),
+        // QueryIR is now provided by database-kit
         .target(
             name: "QueryAST",
             dependencies: [
-                "QueryIR",
+                .product(name: "QueryIR", package: "database-kit"),
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FoundationDB", package: "fdb-swift-bindings"),
@@ -206,7 +205,7 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
-                "QueryIR",
+                .product(name: "QueryIR", package: "database-kit"),
                 "QueryAST",
             ],
             exclude: ["README.md"]
@@ -234,6 +233,17 @@ let package = Package(
                 .product(name: "Yams", package: "Yams"),
             ],
             exclude: ["README.md"]
+        ),
+        // DatabaseServer - Remote client endpoint library
+        .target(
+            name: "DatabaseServer",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
+                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+            ]
         ),
         // DatabaseCLI - Standalone executable entry point
         .executableTarget(
@@ -465,7 +475,7 @@ let package = Package(
         .testTarget(
             name: "QueryIRTests",
             dependencies: [
-                "QueryIR",
+                .product(name: "QueryIR", package: "database-kit"),
             ]
         ),
         // Database integration tests (SPARQL() function, etc.)

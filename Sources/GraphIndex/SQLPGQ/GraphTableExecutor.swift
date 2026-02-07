@@ -154,13 +154,15 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
     /// Simple equality and comparison expressions are supported.
     /// Complex expressions (subqueries, functions) throw an error.
     private func convertToPropertyFilters(
-        _ properties: [(String, QueryIR.Expression)]?
+        _ properties: [PropertyBinding]?
     ) throws -> [PropertyFilter] {
         guard let properties = properties else { return [] }
 
         var filters: [PropertyFilter] = []
 
-        for (fieldName, expression) in properties {
+        for binding in properties {
+            let fieldName = binding.key
+            let expression = binding.value
             // Handle simple expressions only
             switch expression {
             case .literal(let literal):

@@ -843,13 +843,13 @@ extension SQLParser {
     private func parseCaseExpression() throws -> Expression {
         try expect("CASE")
 
-        var cases: [(Expression, Expression)] = []
+        var cases: [CaseWhenPair] = []
         while case .keyword("WHEN") = currentToken {
             advance()
             let condition = try parseExpression()
             try expect("THEN")
             let result = try parseExpression()
-            cases.append((condition, result))
+            cases.append(CaseWhenPair(condition: condition, result: result))
         }
 
         var elseResult: Expression?
@@ -1072,7 +1072,7 @@ extension SQLParser {
 
         var variable: String?
         var labels: [String]?
-        var properties: [(String, Expression)]?
+        var properties: [PropertyBinding]?
 
         // Parse variable and/or label
         if case .identifier(let name) = currentToken {
@@ -1111,7 +1111,7 @@ extension SQLParser {
                 try expect(":")
 
                 let expr = try parseExpression()
-                properties?.append((propName, expr))
+                properties?.append(PropertyBinding(key: propName, value: expr))
             }
 
             try expect("}")
@@ -1166,7 +1166,7 @@ extension SQLParser {
         // State 2: Check for edge details [...]
         var variable: String?
         var labels: [String]?
-        var properties: [(String, Expression)]?
+        var properties: [PropertyBinding]?
         var hasDetails = false
 
         if isSymbol("[") {
@@ -1218,7 +1218,7 @@ extension SQLParser {
                     try expect(":")
 
                     let expr = try parseExpression()
-                    properties?.append((propName, expr))
+                    properties?.append(PropertyBinding(key: propName, value: expr))
                 }
 
                 try expect("}")
