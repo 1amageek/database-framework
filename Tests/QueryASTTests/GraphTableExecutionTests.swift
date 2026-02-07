@@ -272,13 +272,13 @@ struct GraphTableExecutionTests {
         let personNode = NodePattern(
             variable: "p",
             labels: ["Person"],
-            properties: [("age", .literal(.int(30)))]
+            properties: [PropertyBinding(key: "age", value: .literal(.int(30)))]
         )
 
         let cityNode = NodePattern(
             variable: "c",
             labels: ["City"],
-            properties: [("country", .literal(.string("Japan")))]
+            properties: [PropertyBinding(key: "country", value: .literal(.string("Japan")))]
         )
 
         let pattern = MatchPattern(paths: [
@@ -293,12 +293,12 @@ struct GraphTableExecutionTests {
 
         if case .node(let pNode) = source.matchPattern.paths[0].elements[0] {
             #expect(pNode.properties?.count == 1)
-            #expect(pNode.properties?[0].0 == "age")
+            #expect(pNode.properties?[0].key == "age")
         }
 
         if case .node(let cNode) = source.matchPattern.paths[0].elements[2] {
             #expect(cNode.properties?.count == 1)
-            #expect(cNode.properties?[0].0 == "country")
+            #expect(cNode.properties?[0].key == "country")
         }
     }
 
@@ -310,8 +310,8 @@ struct GraphTableExecutionTests {
             variable: "e",
             labels: ["Employee"],
             properties: [
-                ("department", .literal(.string("Engineering"))),
-                ("active", .literal(.bool(true)))
+                PropertyBinding(key: "department", value: .literal(.string("Engineering"))),
+                PropertyBinding(key: "active", value: .literal(.bool(true)))
             ]
         )
 
@@ -332,7 +332,7 @@ struct GraphTableExecutionTests {
 
         let edgePattern = EdgePattern(
             labels: ["TRANSACTION"],
-            properties: [("amount", .literal(.int(1000)))],
+            properties: [PropertyBinding(key: "amount", value: .literal(.int(1000)))],
             direction: .outgoing
         )
 
@@ -348,7 +348,7 @@ struct GraphTableExecutionTests {
 
         if case .edge(let edge) = source.matchPattern.paths[0].elements[1] {
             #expect(edge.properties?.count == 1)
-            #expect(edge.properties?[0].0 == "amount")
+            #expect(edge.properties?[0].key == "amount")
         }
     }
 

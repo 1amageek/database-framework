@@ -59,6 +59,26 @@ enum PredicateEvaluator {
         case .inList(let expr, let list):
             guard let v = resolveValue(expr, from: record) else { return false }
             return list.contains { resolveValue($0, from: record) == v }
+        case .between(let expr, let low, let high):
+            guard let v = resolveValue(expr, from: record),
+                  let lo = resolveValue(low, from: record),
+                  let hi = resolveValue(high, from: record),
+                  let cmpLo = v.compare(to: lo),
+                  let cmpHi = v.compare(to: hi) else { return false }
+            return cmpLo != .orderedAscending && cmpHi != .orderedDescending
+        case .regex(let expr, let pattern, let flags):
+            guard let v = resolveValue(expr, from: record),
+                  case .string(let str) = v else { return false }
+            var options: NSRegularExpression.Options = []
+            if let flags, flags.contains("i") {
+                options.insert(.caseInsensitive)
+            }
+            do {
+                let regex = try NSRegularExpression(pattern: pattern, options: options)
+                return regex.firstMatch(in: str, range: NSRange(str.startIndex..., in: str)) != nil
+            } catch {
+                return false
+            }
         case .literal(let lit):
             if case .bool(let b) = lit { return b }
             return false
@@ -96,8 +116,18 @@ enum PredicateEvaluator {
             return .string(s)
         case .date(let d):
             return .double(d.timeIntervalSince1970)
-        default:
-            return .null
+        case .timestamp(let d):
+            return .double(d.timeIntervalSince1970)
+        case .binary(let d):
+            return .data(d)
+        case .array(let arr):
+            return .array(arr.map { literalToFieldValue($0) })
+        case .iri(let s), .blankNode(let s):
+            return .string(s)
+        case .typedLiteral(let value, _):
+            return .string(value)
+        case .langLiteral(let value, _):
+            return .string(value)
         }
     }
 

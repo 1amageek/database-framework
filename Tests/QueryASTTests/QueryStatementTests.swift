@@ -80,14 +80,14 @@ struct SQLDMLStatementTests {
             target: TableRef("users"),
             source: .values([[.literal(.string("Alice"))]]),
             onConflict: .doUpdate(
-                assignments: [("name", .literal(.string("Updated")))],
+                assignments: [Assignment(column: "name", value: .literal(.string("Updated")))],
                 where: nil
             )
         )
 
         if case .doUpdate(let assignments, _) = insert.onConflict {
             #expect(assignments.count == 1)
-            #expect(assignments[0].0 == "name")
+            #expect(assignments[0].column == "name")
         } else {
             Issue.record("Expected DO UPDATE")
         }
@@ -111,8 +111,8 @@ struct SQLDMLStatementTests {
         let update = UpdateQuery(
             target: TableRef("users"),
             assignments: [
-                ("name", .literal(.string("Updated"))),
-                ("age", .literal(.int(31)))
+                Assignment(column: "name", value: .literal(.string("Updated"))),
+                Assignment(column: "age", value: .literal(.int(31)))
             ],
             filter: .equal(.column(ColumnRef(column: "id")), .literal(.int(1)))
         )
@@ -126,7 +126,7 @@ struct SQLDMLStatementTests {
     func testUpdateWithFrom() throws {
         let update = UpdateQuery(
             target: TableRef("users"),
-            assignments: [("name", .column(ColumnRef(table: "other", column: "name")))],
+            assignments: [Assignment(column: "name", value: .column(ColumnRef(table: "other", column: "name")))],
             from: .table(TableRef("other")),
             filter: .equal(
                 .column(ColumnRef(table: "users", column: "id")),
@@ -141,7 +141,7 @@ struct SQLDMLStatementTests {
     func testUpdateWithReturning() throws {
         let update = UpdateQuery(
             target: TableRef("users"),
-            assignments: [("name", .literal(.string("Updated")))],
+            assignments: [Assignment(column: "name", value: .literal(.string("Updated")))],
             returning: [
                 ProjectionItem(.column(ColumnRef(column: "id"))),
                 ProjectionItem(.column(ColumnRef(column: "name")))
@@ -211,11 +211,11 @@ struct SQLPGQGraphDefinitionTests {
                     keyColumns: ["person1_id", "person2_id"],
                     sourceVertex: VertexReference(
                         tableName: "persons",
-                        keyColumns: [(source: "person1_id", target: "id")]
+                        keyColumns: [KeyColumnMapping(source: "person1_id", target: "id")]
                     ),
                     destinationVertex: VertexReference(
                         tableName: "persons",
-                        keyColumns: [(source: "person2_id", target: "id")]
+                        keyColumns: [KeyColumnMapping(source: "person2_id", target: "id")]
                     )
                 )
             ]
@@ -319,8 +319,8 @@ struct SQLPGQGraphDefinitionTests {
         let edge = EdgeTableDefinition(
             tableName: "friendships",
             keyColumns: ["id"],
-            sourceVertex: VertexReference(tableName: "persons", keyColumns: [(source: "person1_id", target: "id")]),
-            destinationVertex: VertexReference(tableName: "persons", keyColumns: [(source: "person2_id", target: "id")]),
+            sourceVertex: VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "person1_id", target: "id")]),
+            destinationVertex: VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "person2_id", target: "id")]),
             labelExpression: .single("FRIEND")
         )
 
@@ -344,9 +344,9 @@ struct SQLPGQGraphDefinitionTests {
 
     @Test("VertexReference equality")
     func testVertexReferenceEquality() throws {
-        let ref1 = VertexReference(tableName: "persons", keyColumns: [(source: "id", target: "id")])
-        let ref2 = VertexReference(tableName: "persons", keyColumns: [(source: "id", target: "id")])
-        let ref3 = VertexReference(tableName: "users", keyColumns: [(source: "id", target: "id")])
+        let ref1 = VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "id", target: "id")])
+        let ref2 = VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "id", target: "id")])
+        let ref3 = VertexReference(tableName: "users", keyColumns: [KeyColumnMapping(source: "id", target: "id")])
 
         #expect(ref1 == ref2)
         #expect(ref1 != ref3)
@@ -642,17 +642,17 @@ struct OnConflictActionTests {
         #expect(doNothing1 == doNothing2)
 
         let doUpdate1 = OnConflictAction.doUpdate(
-            assignments: [("name", .literal(.string("test")))],
+            assignments: [Assignment(column: "name", value: .literal(.string("test")))],
             where: nil
         )
         let doUpdate2 = OnConflictAction.doUpdate(
-            assignments: [("name", .literal(.string("test")))],
+            assignments: [Assignment(column: "name", value: .literal(.string("test")))],
             where: nil
         )
         #expect(doUpdate1 == doUpdate2)
 
         let doUpdate3 = OnConflictAction.doUpdate(
-            assignments: [("name", .literal(.string("different")))],
+            assignments: [Assignment(column: "name", value: .literal(.string("different")))],
             where: nil
         )
         #expect(doUpdate1 != doUpdate3)
@@ -664,7 +664,7 @@ struct OnConflictActionTests {
     func testOnConflictActionHashable() throws {
         var set = Set<OnConflictAction>()
         set.insert(.doNothing)
-        set.insert(.doUpdate(assignments: [("x", .literal(.int(1)))], where: nil))
+        set.insert(.doUpdate(assignments: [Assignment(column: "x", value: .literal(.int(1)))], where: nil))
 
         #expect(set.count == 2)
     }

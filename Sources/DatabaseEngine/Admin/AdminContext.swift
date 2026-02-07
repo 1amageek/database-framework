@@ -40,21 +40,18 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         self.watchManager = WatchManager(container: container)
     }
 
-    // MARK: - Private: Metadata Subspace
-
-    /// Get metadata subspace for index state storage using DirectoryLayer
-    private func getMetadataSubspace() async throws -> Subspace {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
-        return dirSubspace.subspace.subspace("index")
-    }
+    // MARK: - Private: Index State
 
     /// Get index build state from IndexStateManager
     ///
-    /// Converts internal IndexState to public IndexBuildState
-    private func getIndexBuildState(_ indexName: String) async throws -> PublicIndexBuildState {
-        let indexSubspace = try await getMetadataSubspace()
-        let indexStateManager = IndexStateManager(container: container, subspace: indexSubspace)
+    /// Uses the entity's directory subspace for index state storage,
+    /// consistent with FDBDataStore and FDBContainer.ensureIndexesReady().
+    ///
+    /// - Parameters:
+    ///   - indexName: Name of the index
+    ///   - entitySubspace: The entity's resolved directory subspace
+    private func getIndexBuildState(_ indexName: String, entitySubspace: Subspace) async throws -> PublicIndexBuildState {
+        let indexStateManager = IndexStateManager(container: container, subspace: entitySubspace)
         let internalState = try await indexStateManager.state(of: indexName)
 
         switch internalState {
@@ -146,8 +143,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             return (count, Int64(sizeBytes))
         }
 
-        // Determine index state from IndexStateManager
-        let state = try await getIndexBuildState(indexName)
+        // Determine index state from IndexStateManager (using entity subspace)
+        let state = try await getIndexBuildState(indexName, entitySubspace: subspace)
 
         return IndexStatisticsPublic(
             indexName: indexName,
@@ -271,10 +268,9 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         // Resolve directory for the entity
         let subspace = try await resolveDirectoryForEntity(entity)
         let indexSubspace = subspace.subspace(SubspaceKey.indexes)
-        let metadataSubspace = try await getMetadataSubspace()
 
-        // Create IndexStateManager
-        let indexStateManager = IndexStateManager(container: container, subspace: metadataSubspace)
+        // Create IndexStateManager using entity subspace (consistent with FDBDataStore)
+        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
         progress?(0.1)
 

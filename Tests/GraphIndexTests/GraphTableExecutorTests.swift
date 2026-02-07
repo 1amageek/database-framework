@@ -152,7 +152,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("since", .literal(.int(2020)))],  // Filter: since = 2020
+                        properties: [PropertyBinding(key: "since", value: .literal(.int(2020)))],  // Filter: since = 2020
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))
@@ -192,7 +192,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("since", .greaterThanOrEqual(.column(ColumnRef(column: "since")), .literal(.int(2020))))],
+                        properties: [PropertyBinding(key: "since", value: .greaterThanOrEqual(.column(ColumnRef(column: "since")), .literal(.int(2020))))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))
@@ -235,8 +235,8 @@ struct GraphTableExecutorTests {
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
                         properties: [
-                            ("since", .literal(.int(2020))),
-                            ("status", .literal(.string("active")))
+                            PropertyBinding(key: "since", value: .literal(.int(2020))),
+                            PropertyBinding(key: "status", value: .literal(.string("active")))
                         ],
                         direction: .outgoing
                     )),
@@ -272,7 +272,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("status", .literal(.iri("http://example.org/active")))],
+                        properties: [PropertyBinding(key: "status", value: .literal(.iri("http://example.org/active")))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))
@@ -304,7 +304,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("status", .literal(.typedLiteral(value: "premium", datatype: "http://www.w3.org/2001/XMLSchema#string")))],
+                        properties: [PropertyBinding(key: "status", value: .literal(.typedLiteral(value: "premium", datatype: "http://www.w3.org/2001/XMLSchema#string")))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))
@@ -332,7 +332,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("since", .subquery(SelectQuery(
+                        properties: [PropertyBinding(key: "since", value: .subquery(SelectQuery(
                             projection: .items([ProjectionItem(.literal(.int(2020)))]),
                             source: .table(TableRef("dummy"))
                         )))],
@@ -403,7 +403,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("since", .literal(.array([.int(2020), .int(2021)])))],
+                        properties: [PropertyBinding(key: "since", value: .literal(.array([.int(2020), .int(2021)])))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))
@@ -449,7 +449,7 @@ struct GraphTableExecutorTests {
                     .node(NodePattern(variable: "a")),
                     .edge(EdgePattern(
                         labels: ["KNOWS"],
-                        properties: [("since", .literal(.int(2020)))],
+                        properties: [PropertyBinding(key: "since", value: .literal(.int(2020)))],
                         direction: .outgoing
                     )),
                     .node(NodePattern(variable: "b"))

@@ -231,8 +231,8 @@ struct VertexReferenceBuilderTests {
         let ref = VertexReference.composite(
             table: "persons",
             keys: [
-                (source: "tenant_id", target: "tenant_id"),
-                (source: "person_id", target: "id")
+                KeyColumnMapping(source: "tenant_id", target: "tenant_id"),
+                KeyColumnMapping(source: "person_id", target: "id")
             ]
         )
 
@@ -298,11 +298,11 @@ struct CreateGraphSQLGenerationTests {
             keyColumns: ["id"],
             sourceVertex: VertexReference(
                 tableName: "persons",
-                keyColumns: [(source: "person1_id", target: "id")]
+                keyColumns: [KeyColumnMapping(source: "person1_id", target: "id")]
             ),
             destinationVertex: VertexReference(
                 tableName: "persons",
-                keyColumns: [(source: "person2_id", target: "id")]
+                keyColumns: [KeyColumnMapping(source: "person2_id", target: "id")]
             ),
             labelExpression: .single("FRIEND")
         )
@@ -356,8 +356,8 @@ struct GraphSchemaValidationTests {
                 EdgeTableDefinition(
                     tableName: "friendships",
                     keyColumns: ["id"],
-                    sourceVertex: VertexReference(tableName: "persons", keyColumns: [(source: "p1", target: "id")]),
-                    destinationVertex: VertexReference(tableName: "persons", keyColumns: [(source: "p2", target: "id")])
+                    sourceVertex: VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "p1", target: "id")]),
+                    destinationVertex: VertexReference(tableName: "persons", keyColumns: [KeyColumnMapping(source: "p2", target: "id")])
                 )
             ]
         )

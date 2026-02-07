@@ -1,5 +1,6 @@
 import Foundation
 import Core
+import QueryIR
 import DatabaseEngine
 import DatabaseClientProtocol
 
@@ -33,6 +34,48 @@ final class OperationRouter: Sendable {
 
     private static func _buildHandler<T: Persistable>(_ type: T.Type) -> EntityHandler {
         EntityHandler.build(for: type)
+    }
+
+    /// Handle a QueryRequest by translating QueryStatement to a FetchRequest
+    private func handleQuery(_ request: QueryRequest) async throws -> QueryResponse {
+        guard case .select(let select) = request.statement else {
+            throw ServiceError(
+                code: "UNSUPPORTED_STATEMENT",
+                message: "Only SELECT statements are currently supported"
+            )
+        }
+
+        // Extract entity name from source DataSource
+        guard case .table(let tableRef) = select.source else {
+            throw ServiceError(
+                code: "INVALID_QUERY",
+                message: "Query must have a single table source"
+            )
+        }
+
+        let entityName = tableRef.table
+        guard let handler = handlers[entityName] else {
+            throw ServiceError(
+                code: "UNKNOWN_ENTITY",
+                message: "Entity '\(entityName)' not found in schema"
+            )
+        }
+
+        // Convert SelectQuery to FetchRequest
+        let fetchRequest = FetchRequest(
+            entityName: entityName,
+            predicate: select.filter,
+            sortDescriptors: select.orderBy ?? [],
+            limit: select.limit,
+            partitionValues: request.partitionValues
+        )
+
+        let context = container.newContext()
+        let fetchResponse = try await handler.fetch(context, fetchRequest)
+        return QueryResponse(
+            records: fetchResponse.records,
+            continuation: fetchResponse.continuation
+        )
     }
 
     /// Handle an incoming request
@@ -119,6 +162,16 @@ final class OperationRouter: Sendable {
             }
             let context = container.newContext()
             let response = try await handler.count(context, request)
+            let payload = try JSONEncoder().encode(response)
+            return ServiceEnvelope(
+                responseTo: envelope.requestID,
+                operationID: envelope.operationID,
+                payload: payload
+            )
+
+        case "query":
+            let request = try decoder.decode(QueryRequest.self, from: envelope.payload)
+            let response = try await handleQuery(request)
             let payload = try JSONEncoder().encode(response)
             return ServiceEnvelope(
                 responseTo: envelope.requestID,

@@ -614,11 +614,11 @@ struct EdgeCaseTests {
 
         let caseExpr = Expression.caseWhen(
             cases: [
-                (condition: Expression.greaterThan(
+                CaseWhenPair(condition: Expression.greaterThan(
                     Expression.column(ColumnRef(column: "a")),
                     Expression.literal(.int(10))
                 ), result: Expression.literal(.string("high"))),
-                (condition: Expression.greaterThan(
+                CaseWhenPair(condition: Expression.greaterThan(
                     Expression.column(ColumnRef(column: "a")),
                     Expression.literal(.int(5))
                 ), result: Expression.literal(.string("medium")))
