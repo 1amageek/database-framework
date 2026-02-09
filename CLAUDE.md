@@ -105,6 +105,223 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
                 Core (database-kit)          FoundationDB (fdb-swift-bindings)
 ```
 
+### Full Module Inventory
+
+#### database-kit（97 ファイル — クライアント安全・プラットフォーム非依存）
+
+| モジュール | ファイル数 | 責務 |
+|-----------|----------|------|
+| **Core** | 44 | `Persistable`, `IndexKind`, `IndexDescriptor`, `FieldValue`, `Schema`, マクロ定義、Protobuf コーデック |
+| **CoreMacros** | 5 | `@Persistable`, `#Directory`, `#Index` のコンパイラプラグイン |
+| **QueryIR** | 19 | SQL/SPARQL 統一クエリ中間表現 (`SelectQuery`, `Expression`, `DataSource`) |
+| **Graph** | 17 | `GraphIndexKind`, RDF (`RDFTerm`), OWL オントロジー型, SHACL 制約型 |
+| **Relationship** | 3 | `RelationshipIndexKind`, `RelationshipDescriptor` |
+| **DatabaseClientProtocol** | 4 | クライアント↔サーバー通信プロトコル |
+| **Vector / FullText / Spatial / Rank / Permuted** | 各1 | IndexKind 定義のみ |
+| **DatabaseKit** | 1 | re-export ファサード |
+
+#### database-framework（377 ファイル — サーバー専用・FoundationDB 依存）
+
+| モジュール | ファイル数 | 責務 |
+|-----------|----------|------|
+| **DatabaseEngine** | 163 | FDB コンテナ/コンテキスト、トランザクション、クエリプランナー、インデックス基盤 |
+| **GraphIndex** | 68 | グラフ維持、SPARQL 実行、OWL 推論、SHACL 検証、グラフアルゴリズム |
+| **AggregationIndex** | 18 | Sum/Count/Avg/Min/Max/Percentile/Distinct 集約 |
+| **FullTextIndex** | 14 | BM25 全文検索、ファセット、オートコンプリート |
+| **VectorIndex** | 14 | HNSW / Flat / IVF / PQ ベクトル検索 |
+| **BenchmarkFramework** | 13 | パフォーマンスベンチマーク |
+| **RankIndex** | 12 | Skip List ベースランキング |
+| **SpatialIndex** | 11 | Geohash/S2/Morton 空間検索 |
+| **RelationshipIndex** | 8 | リレーション維持・逆引き・参照整合性 |
+| **QueryAST** | 8 | SQL/SPARQL パーサー、AST、クエリビルダー |
+| **Database** | 5 | 全モジュール re-export + SQL/SPARQL 文字列実行 |
+| **DatabaseServer** | 5 | HTTP サーバーエンドポイント |
+| **BitmapIndex** | 5 | Roaring Bitmap インデックス |
+| **DatabaseCLICore** | 18 | 対話型 CLI（Schema.Entity ベース動的アクセス） |
+| **VersionIndex** | 4 | バージョン履歴管理 |
+| **LeaderboardIndex** | 4 | タイムウィンドウリーダーボード |
+| **PermutedIndex / ScalarIndex** | 各3 | 基本インデックス |
+
+### DatabaseEngine Internal Structure
+
+```
+DatabaseEngine/ (163 files)
+├── Core/                    ← 中核（7 files）
+│   ├── FDBContainer.swift   ← リソース管理（DB接続、Schema、Directory）
+│   ├── FDBContext.swift      ← トランザクション管理 + ユーザー API
+│   ├── DataAccess.swift      ← データアクセス抽象
+│   ├── FieldReader.swift     ← dynamicMember ベースフィールド読み取り
+│   ├── TupleEncoder.swift    ← Any → TupleElement
+│   ├── TupleDecoder.swift    ← TupleElement → T
+│   └── TypeConversion.swift  ← 統一型変換
+│
+├── Internal/                ← 内部実装（3 files）
+│   ├── FDBDataStore.swift    ← トランザクション内データ操作
+│   └── IndexMaintenanceService.swift ← インデックス一括維持
+│
+├── Index/                   ← インデックス基盤（15 files）
+│   ├── IndexMaintainer.swift      ← プロトコル定義
+│   ├── IndexKindMaintainable.swift ← IndexKind → Maintainer ブリッジ
+│   ├── IndexManager.swift         ← ライフサイクル管理
+│   └── IndexStateManager.swift    ← disabled → writeOnly → readable 状態遷移
+│
+├── QueryPlanner/            ← クエリ最適化（38 files）
+│   ├── QueryPlanner.swift    ← コストベースオプティマイザ
+│   ├── PlanExecutor.swift    ← プラン実行エンジン
+│   ├── DNFConverter.swift    ← 述語正規化（選言標準形）
+│   ├── CostEstimator.swift   ← I/O コスト見積もり
+│   ├── Histogram.swift       ← 等高ヒストグラム統計
+│   ├── Cascades/             ← Cascades フレームワーク
+│   └── StatisticsManager.swift
+│
+├── Bridge/                  ← QueryIR → 内部プラン変換（10 files）
+│   ├── SelectQueryPlanner.swift  ← SelectQuery → QueryPlan
+│   ├── ExpressionBridge.swift    ← QueryIR.Expression → Predicate
+│   └── FDBContext+QueryIR.swift  ← QueryRequest 実行
+│
+├── Fetch/                   ← データ取得（6 files）
+│   ├── FDBFetchDescriptor.swift ← Predicate / SortDescriptor（ゼロコピー評価）
+│   └── DirectoryPath.swift      ← 動的ディレクトリ解決
+│
+├── Transaction/             ← トランザクション管理（12 files）
+│   ├── TransactionRunner.swift   ← リトライロジック
+│   ├── ReadVersionCache.swift    ← 読み取りバージョンキャッシュ
+│   └── TransactionContext.swift  ← セキュアトランザクション
+│
+├── Registry/                ← スキーマレジストリ（5 files）
+│   ├── SchemaRegistry.swift      ← Schema.Entity の FDB 永続化
+│   ├── DynamicProtobufDecoder.swift ← スキーマなしデコード
+│   └── DynamicProtobufEncoder.swift ← スキーマなしエンコード
+│
+├── Fusion/                  ← マルチインデックス融合クエリ（5 files）
+├── Migration/               ← スキーママイグレーション（5 files）
+├── OnlineIndexing/          ← オンラインインデックス構築（8 files）
+├── Serialization/           ← ItemEnvelope + Protobuf（4 files）
+├── Security/                ← フィールドレベルセキュリティ（3 files）
+├── Cursor/                  ← カーソルベースページネーション（4 files）
+├── Instrumentation/         ← パフォーマンスモニタリング（3 files）
+└── Watch/                   ← FDB Watch（2 files, スタブ）
+```
+
+### GraphIndex Internal Structure
+
+```
+GraphIndex/ (68 files)
+├── GraphIndexMaintainer.swift    ← Triple/Adjacency インデックス維持
+├── GraphTraverser.swift          ← グラフ走査 API
+├── GraphQuery.swift              ← FDBContext.graph() エントリポイント
+│
+├── SPARQL/ (15 files)            ← SPARQL 1.1 実行エンジン
+│   ├── SPARQLQueryExecutor.swift  ← パターンマッチング実行
+│   ├── ExpressionEvaluator.swift  ← FILTER 式評価
+│   ├── AggregateEvaluator.swift   ← GROUP BY + 集約関数
+│   ├── SPARQLQueryOptimizer.swift ← 結合順序最適化
+│   └── PropertyPath.swift         ← プロパティパス評価
+│
+├── SHACL/ (5 files)              ← W3C SHACL バリデーション
+│   ├── SHACLValidator.swift       ← バリデーションオーケストレータ
+│   ├── SHACLConstraintEvaluator.swift ← 25種の制約評価（RDFTerm ベース）
+│   ├── SHACLTargetResolver.swift  ← ターゲット解決（SPARQL 経由）
+│   ├── SHACLShapesStore.swift     ← シェイプグラフ永続化
+│   └── FDBContext+SHACL.swift     ← context.shacl API
+│
+├── Reasoning/ (9 files)          ← OWL DL 推論エンジン
+│   ├── OWLReasoner.swift          ← Tableau ベース推論
+│   ├── TableauxReasoner.swift     ← Tableau アルゴリズム
+│   ├── ClassHierarchy.swift       ← クラス階層キャッシュ
+│   └── OWLDatatypeValidator.swift ← XSD データ型検証
+│
+├── OWLReasoning/ (4 files)       ← OWL 2 RL マテリアライゼーション
+│   ├── OWL2RLMaterializer.swift   ← ルールベース推論
+│   └── IncrementalReasoner.swift  ← 差分推論
+│
+├── Algorithms/ (7 files)         ← グラフアルゴリズム
+│   ├── PageRankComputer.swift     ← PageRank
+│   ├── ShortestPathFinder.swift   ← Dijkstra / BFS 最短経路
+│   ├── CommunityDetector.swift    ← Louvain コミュニティ検出
+│   ├── SCCFinder.swift            ← Tarjan 強連結成分
+│   ├── CycleDetector.swift        ← 閉路検出
+│   └── TopologicalSort.swift      ← トポロジカルソート
+│
+├── OntologyStorage/ (6 files)    ← オントロジー FDB 永続化
+├── SameAs/ (1 file)              ← owl:sameAs Union-Find
+├── SQLPGQ/ (2 files)             ← SQL/PGQ GRAPH_TABLE 実行
+├── Query/ (3 files)              ← グラフクエリビルダー
+└── Fusion/ (1 file)              ← Fusion API 統合
+```
+
+### Graph Module Type Hierarchy (database-kit)
+
+```
+Graph/
+├── RDFTerm (enum)                ← RDF ノード統一型
+│   ├── .iri(String)
+│   ├── .literal(OWLLiteral)      ← 型付きリテラル（OWLLiteral でラップ）
+│   └── .blankNode(String)
+│
+├── Schema/ (OWL 2)               ← オントロジー型定義
+│   ├── OWLOntology               ← コンテナ
+│   ├── OWLClass (indirect enum)  ← Named / Intersection / Union / Complement / ...
+│   ├── OWLProperty (enum)        ← Object / Data プロパティ
+│   ├── OWLAxiom (indirect enum)  ← SubClassOf / EquivalentClasses / ...
+│   ├── OWLLiteral (struct)       ← lexicalForm: String + datatype: String（non-optional）
+│   ├── OWLIndividual (enum)      ← Named / Anonymous
+│   └── OWLDataRange (indirect enum) ← Datatype + Facet 制約
+│
+└── SHACL/                        ← W3C SHACL 制約定義
+    ├── SHACLConstraint (indirect enum) ← 25 種の制約コンポーネント
+    ├── SHACLShape (enum)         ← .node(NodeShape) / .property(PropertyShape)
+    ├── SHACLShapesGraph (struct) ← シェイプグラフコンテナ
+    ├── SHACLReport (struct)      ← バリデーション結果
+    ├── SHACLPath (indirect enum) ← プロパティパス
+    └── SHACLTarget (enum)        ← ターゲット宣言
+```
+
+### Index Comparison Table
+
+| インデックス | database-kit | database-framework | アルゴリズム | 主要ユースケース |
+|------------|-------------|-------------------|-------------|----------------|
+| Scalar | `ScalarIndexKind` | Maintainer + Fusion | B-tree 相当 | 等値・範囲検索、ユニーク制約 |
+| Vector | `VectorIndexKind` | HNSW/Flat/IVF/PQ | 近似最近傍探索 | cos/L2/dot 類似検索、RAG |
+| FullText | `FullTextIndexKind` | BM25 + Facet + Autocomplete | 転置インデックス | 全文検索、ファセット、補完 |
+| Graph | `GraphIndexKind` | TripleStore/Adjacency | SPO インデックス | RDF グラフ、SPARQL、知識グラフ |
+| Spatial | `SpatialIndexKind` | Geohash/S2/Morton | 空間充填曲線 | KNN・ポリゴン空間検索 |
+| Rank | `RankIndexKind` | Skip List | 確率的データ構造 | O(log n) ランク・パーセンタイル |
+| Aggregation | 6種の Kind | Sum/Count/Avg/Min/Max/Percentile | 増分集約 | リアルタイム集約 |
+| Version | `VersionIndexKind` | 履歴チェーン | 版管理 | レコードバージョニング + Diff |
+| Bitmap | `BitmapIndexKind` | Roaring Bitmap | 圧縮ビットマップ | 高速フィルタリング |
+| Relationship | `RelationshipIndexKind` | 逆引き + 参照整合性 | 双方向リンク | Core Data 風リレーション |
+| Leaderboard | `LeaderboardIndexKind` | タイムウィンドウ | ソート済みセット | ランキングボード |
+| Permuted | `PermutedIndexKind` | 複合キー順列 | キー並べ替え | 複合インデックスの代替走査 |
+
+### Data Flow
+
+```
+ユーザーコード
+    ↓
+context.insert(item)  /  context.save()
+    ↓
+FDBContext（変更追跡: insert/update/delete をバッファ）
+    ↓
+TransactionRunner（リトライ + 自動コミット）
+    ↓
+FDBDataStore（Protobuf エンコード → FDB 書き込み）
+    ↓
+IndexMaintenanceService（各 IndexMaintainer.updateIndex() を並列実行）
+    ↓
+┌───┴───┬──────┬──────┬──────┐
+Scalar  Vector Graph  ...    ← 各インデックスの書き込み
+
+クエリ:
+context.fetch(Type.self, predicate, sort)
+    ↓
+QueryPlanner（コストベース最適化 → インデックス選択）
+    ↓
+PlanExecutor（インデックススキャン + フィルタ + ソート）
+    ↓
+結果（ゼロコピー評価でデシリアライズ済みモデルを直接比較）
+```
+
 ### Key Types
 
 | Type | Role |
@@ -1192,6 +1409,32 @@ public init(retryLimit: Int? = nil) { ... }
 | インデックス設計 | FoundationDB Record Layer |
 | 分散システム | CockroachDB, TiDB |
 | アルゴリズム全般 | CLRS "Introduction to Algorithms" |
+
+## バージョニング
+
+### CalVer: `YY.MMDD.patch`
+
+全リポジトリ（database-kit, database-framework, database-client）で統一した日付ベースのバージョニングを使用する。
+
+| セグメント | 意味 | 例 |
+|-----------|------|-----|
+| `YY` | 西暦の下2桁 | `26` (2026年) |
+| `MMDD` | 月日（ゼロ埋め4桁） | `0207` (2月7日) |
+| `patch` | 同日のリリース連番（0始まり） | `0`, `1`, `2`... |
+
+**例**: `26.0207.0` → 2026年2月7日の最初のリリース、`26.0207.1` → 同日の2回目
+
+### ルール
+
+- **全リポジトリ同時タグ**: リリース時は database-kit → database-framework → database-client の順でタグ付け・プッシュ
+- **database-kit を先にプッシュ**: database-framework が GitHub URL で依存しているため
+- **patch 番号**: 同日に複数リリースする場合のみインクリメント（通常は `0`）
+- **git tag のみ使用**: Package.swift にバージョン文字列は埋め込まない
+
+```bash
+# リリース手順
+git tag 26.0207.0 && git push && git push --tags
+```
 
 ## 開発方針
 
