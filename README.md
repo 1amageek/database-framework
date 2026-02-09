@@ -121,6 +121,40 @@ let users = try await context.fetch(User.self)
 | `FDBContext` | User-facing API, change tracking, batch operations | Creates |
 | `FDBDataStore` | Low-level operations within transactions | Receives |
 
+### Lifecycle Management
+
+```
+FDBContainer (owns FDBDatabase)
+  └── newContext() → FDBContext (references container, does NOT own database)
+
+Startup:  FDBClient.initialize() → FDBContainer.init → container.newContext()
+Teardown: context = nil → container = nil → FDBClient.shutdown() [optional]
+```
+
+| Component | Owns Database? | Cleanup |
+|-----------|---------------|---------|
+| `FDBContainer` | Yes (strong ref) | ARC — releases database on dealloc |
+| `FDBContext` | No (references container) | ARC — discards pending changes |
+
+**Process exit**: Safe without explicit cleanup. OS reclaims all resources.
+
+**Explicit shutdown** (servers, tests):
+
+```swift
+// 1. Release contexts (discard pending changes)
+context = nil
+
+// 2. Release container (triggers fdb_database_destroy via ARC)
+container = nil
+
+// 3. Stop network (optional — OS handles this at process exit)
+FDBClient.shutdown()
+```
+
+**Server pattern**: One container per process, one context per request.
+**CLI pattern**: One container, one context, `Foundation.exit(0)` is safe.
+**Test pattern**: One container per suite, `FDBClient.shutdown()` in teardown.
+
 ### Change Tracking
 
 ```swift
