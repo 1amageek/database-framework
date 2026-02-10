@@ -100,6 +100,16 @@ extension PredicateExpr {
             }
             self = .comparison(field: col.column, op: .in, value: .array(fieldValues))
 
+        // NOT IN list
+        case .notInList(.column(let col), let values):
+            var fieldValues: [FieldValue] = []
+            for v in values {
+                guard case .literal(let lit) = v,
+                      let fv = lit.toFieldValue() else { return nil }
+                fieldValues.append(fv)
+            }
+            self = .not(.comparison(field: col.column, op: .in, value: .array(fieldValues)))
+
         // Logical
         case .and(let lhs, let rhs):
             guard let left = PredicateExpr(lhs),

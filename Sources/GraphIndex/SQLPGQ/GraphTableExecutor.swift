@@ -324,6 +324,8 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         case .langLiteral(let value, _):
             // Language-tagged literal - use value as string (ignore language tag)
             return .string(value)
+        case .dirLangLiteral(let value, _, _):
+            return .string(value)
         }
     }
 

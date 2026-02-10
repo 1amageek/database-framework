@@ -59,7 +59,9 @@ internal struct SPARQLFunctionRewriter: Sendable {
             offset: query.offset,
             distinct: query.distinct,
             subqueries: query.subqueries,
-            reduced: query.reduced
+            reduced: query.reduced,
+            from: query.from,
+            fromNamed: query.fromNamed
         )
     }
 
@@ -88,6 +90,18 @@ internal struct SPARQLFunctionRewriter: Sendable {
                 }
             }
             return .inList(try await rewriteExpression(lhs), values: rewrittenValues)
+
+        case .notInList(let lhs, let values):
+            var rewrittenValues: [QueryIR.Expression] = []
+            for value in values {
+                if case .function(let call) = value, call.name.uppercased() == "SPARQL" {
+                    let literals = try await executeSPARQLFunctionAsArray(call)
+                    rewrittenValues.append(contentsOf: literals.map { .literal($0) })
+                } else {
+                    rewrittenValues.append(try await rewriteExpression(value))
+                }
+            }
+            return .notInList(try await rewriteExpression(lhs), values: rewrittenValues)
 
         case .inSubquery(let lhs, let subquery):
             // Check if subquery contains SPARQL() - recursively rewrite

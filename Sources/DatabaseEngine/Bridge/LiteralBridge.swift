@@ -66,7 +66,7 @@ extension QueryIR.Literal {
             return .array(values)
         case .date, .timestamp:
             return nil
-        case .iri, .blankNode, .typedLiteral, .langLiteral:
+        case .iri, .blankNode, .typedLiteral, .langLiteral, .dirLangLiteral:
             return nil
         }
     }

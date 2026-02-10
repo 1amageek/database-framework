@@ -142,6 +142,17 @@ public struct ExpressionEvaluator: Sendable {
             }
             return .bool(false)
 
+        // NOT IN list
+        case .notInList(let inner, let values):
+            guard let val = evaluate(inner, binding: binding) else { return nil }
+            for v in values {
+                if let candidate = evaluate(v, binding: binding),
+                   val.isEqual(to: candidate) {
+                    return .bool(false)
+                }
+            }
+            return .bool(true)
+
         // Functions
         case .function(let call):
             return evaluateFunction(call, binding: binding)
@@ -331,6 +342,46 @@ public struct ExpressionEvaluator: Sendable {
         case "DATATYPE":
             guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
             return .string(xsdDatatype(val))
+
+        // LANG (1-arg): returns language tag of a literal
+        case "LANG":
+            guard args.count == 1, let val = evaluate(args[0], binding: binding) else { return nil }
+            // In SPARQL, LANG returns the language tag; we return "" for non-language-tagged values
+            if case .string(let s) = val {
+                // Check if this is a language-tagged literal stored with tag metadata
+                // For now, return empty string (full support requires literal metadata tracking)
+                _ = s
+            }
+            return .string("")
+
+        // SPARQL 1.2: LANGDIR — returns direction of a dirLangLiteral, "" otherwise
+        case "LANGDIR":
+            guard args.count == 1 else { return nil }
+            // Direction info would need to be carried through FieldValue
+            // Return "" as default (direction not tracked in FieldValue)
+            return .string("")
+
+        // SPARQL 1.2: hasLANG — returns true if literal has a language tag
+        case "HASLANG":
+            guard args.count == 1 else { return nil }
+            // Would need language metadata; return false as default
+            return .bool(false)
+
+        // SPARQL 1.2: hasLANGDIR — returns true if literal has language direction
+        case "HASLANGDIR":
+            guard args.count == 1 else { return nil }
+            return .bool(false)
+
+        // SPARQL 1.2: STRLANGDIR(string, lang, dir) — constructs direction-tagged literal
+        case "STRLANGDIR":
+            guard args.count == 3,
+                  let str = evaluateAsString(args[0], binding: binding),
+                  let lang = evaluateAsString(args[1], binding: binding),
+                  let dir = evaluateAsString(args[2], binding: binding) else { return nil }
+            // Return the string value (direction metadata cannot be preserved in FieldValue)
+            _ = lang
+            _ = dir
+            return .string(str)
 
         // IF
         case "IF":

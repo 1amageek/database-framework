@@ -76,6 +76,12 @@ public indirect enum ExecutionPattern: Sendable {
 
     case propertyPath(subject: ExecutionTerm, path: ExecutionPropertyPath, object: ExecutionTerm)
 
+    /// LATERAL join (correlated subquery — SPARQL 1.2)
+    ///
+    /// For each solution from the left pattern, the right pattern is evaluated
+    /// with the left's variable bindings injected. Results are unioned.
+    case lateral(ExecutionPattern, ExecutionPattern)
+
     // MARK: - Variables
 
     /// All variables referenced in this pattern
@@ -107,6 +113,8 @@ public indirect enum ExecutionPattern: Sendable {
             if case .variable(let name) = subject { result.insert(name) }
             if case .variable(let name) = object { result.insert(name) }
             return result
+        case .lateral(let left, let right):
+            return left.variables.union(right.variables)
         }
     }
 
@@ -142,6 +150,8 @@ public indirect enum ExecutionPattern: Sendable {
             if case .variable(let name) = subject { result.insert(name) }
             if case .variable(let name) = object { result.insert(name) }
             return result
+        case .lateral(let left, let right):
+            return left.requiredVariables.union(right.requiredVariables)
         }
     }
 
@@ -171,6 +181,8 @@ public indirect enum ExecutionPattern: Sendable {
             return left.isEmpty
         case .propertyPath:
             return false  // Property paths are never empty
+        case .lateral(let left, _):
+            return left.isEmpty
         }
     }
 
@@ -193,6 +205,8 @@ public indirect enum ExecutionPattern: Sendable {
             return left.allExecutionTriples + right.allExecutionTriples
         case .propertyPath:
             return []  // Property paths don't have direct triple patterns
+        case .lateral(let left, let right):
+            return left.allExecutionTriples + right.allExecutionTriples
         }
     }
 
@@ -237,6 +251,8 @@ public indirect enum ExecutionPattern: Sendable {
             return .minus(left.withGraph(graphTerm), right.withGraph(graphTerm))
         case .propertyPath(let subject, let path, let object):
             return .propertyPath(subject: subject, path: path, object: object)
+        case .lateral(let left, let right):
+            return .lateral(left.withGraph(graphTerm), right.withGraph(graphTerm))
         }
     }
 }
@@ -270,6 +286,8 @@ extension ExecutionPattern: CustomStringConvertible {
             return "\(left) MINUS \(right)"
         case .propertyPath(let subject, let path, let object):
             return "{ \(subject) \(path) \(object) }"
+        case .lateral(let left, let right):
+            return "\(left) LATERAL \(right)"
         }
     }
 }
@@ -295,6 +313,8 @@ extension ExecutionPattern: Equatable {
             return ll == rl && lr == rr
         case (.propertyPath(let ls, let lp, let lo), .propertyPath(let rs, let rp, let ro)):
             return ls == rs && lp == rp && lo == ro
+        case (.lateral(let ll, let lr), .lateral(let rl, let rr)):
+            return ll == rl && lr == rr
         default:
             return false
         }

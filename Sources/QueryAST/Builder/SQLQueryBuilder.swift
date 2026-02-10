@@ -152,6 +152,8 @@ extension SQLQueryBuilder {
         case .inList:
             // For IN, value should be an array
             return self
+        case .notInList:
+            return self
         }
 
         return self.where(condition)
@@ -209,6 +211,7 @@ public enum ComparisonOperator: Sendable {
     case greaterThanOrEqual
     case like
     case inList
+    case notInList
 }
 
 // MARK: - JOIN Clause

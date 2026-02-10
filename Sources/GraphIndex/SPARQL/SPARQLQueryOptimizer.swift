@@ -149,6 +149,9 @@ public struct SPARQLQueryOptimizer: Sendable {
         case .propertyPath:
             // Property paths are atomic, cannot push filters into them
             return pattern
+
+        case .lateral(let left, let right):
+            return .lateral(pushDownFilters(left), pushDownFilters(right))
         }
     }
 
@@ -252,6 +255,17 @@ public struct SPARQLQueryOptimizer: Sendable {
         case .propertyPath:
             // Property paths are atomic, wrap with filter
             return .filter(pattern, filter)
+
+        case .lateral(let left, let right):
+            // For LATERAL, can push filter into left side only
+            let leftVars = extractPatternVariables(left)
+            if filterVariables.isSubset(of: leftVars) {
+                return .lateral(
+                    pushFilterInto(left, filter: filter),
+                    pushDownFilters(right)
+                )
+            }
+            return .filter(.lateral(pushDownFilters(left), pushDownFilters(right)), filter)
         }
     }
 
@@ -297,6 +311,9 @@ public struct SPARQLQueryOptimizer: Sendable {
 
         case .propertyPath:
             return pattern
+
+        case .lateral(let left, let right):
+            return .lateral(optimizeJoins(left), optimizeJoins(right))
         }
     }
 
@@ -480,6 +497,12 @@ public struct SPARQLQueryOptimizer: Sendable {
             case (false, false):
                 return baseCardinality * pathMultiplier  // Full scan
             }
+
+        case .lateral(let left, let right):
+            // LATERAL: correlated join — LHS cardinality * average RHS per row
+            let leftCard = estimateCardinality(left)
+            let rightCard = estimateCardinality(right)
+            return leftCard * rightCard * 0.1
         }
     }
 
@@ -547,7 +570,8 @@ public struct SPARQLQueryOptimizer: Sendable {
             return patterns.reduce(into: Set<String>()) { vars, p in
                 vars.formUnion(p.variables)
             }
-        case .join(let left, let right), .union(let left, let right), .optional(let left, let right):
+        case .join(let left, let right), .union(let left, let right), .optional(let left, let right),
+             .lateral(let left, let right):
             return extractPatternVariables(left).union(extractPatternVariables(right))
         case .minus(let left, _):
             return extractPatternVariables(left)  // MINUS does not project right variables

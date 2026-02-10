@@ -91,6 +91,9 @@ public struct GraphPatternConverter: Sendable {
                 path: convertPropertyPath(path),
                 object: convertTerm(object, prefixes: prefixes)
             )
+
+        case .lateral(let left, let right):
+            return .lateral(convert(left, prefixes: prefixes), convert(right, prefixes: prefixes))
         }
     }
 
@@ -135,6 +138,12 @@ public struct GraphPatternConverter: Sendable {
         case .blankNode(let id):
             return .value(.string("_:\(id)"))
         case .quotedTriple(let s, let p, let o):
+            return .quotedTriple(
+                subject: convertTerm(s, prefixes: prefixes),
+                predicate: convertTerm(p, prefixes: prefixes),
+                object: convertTerm(o, prefixes: prefixes)
+            )
+        case .reifiedTriple(let s, let p, let o, _):
             return .quotedTriple(
                 subject: convertTerm(s, prefixes: prefixes),
                 predicate: convertTerm(p, prefixes: prefixes),
@@ -276,6 +285,9 @@ public struct GraphPatternConverter: Sendable {
             collectExpressionVariables(from: high, into: &vars)
 
         case .inList(let e, let list):
+            collectExpressionVariables(from: e, into: &vars)
+            for item in list { collectExpressionVariables(from: item, into: &vars) }
+        case .notInList(let e, let list):
             collectExpressionVariables(from: e, into: &vars)
             for item in list { collectExpressionVariables(from: item, into: &vars) }
 

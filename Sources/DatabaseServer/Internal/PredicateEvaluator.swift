@@ -59,6 +59,9 @@ enum PredicateEvaluator {
         case .inList(let expr, let list):
             guard let v = resolveValue(expr, from: record) else { return false }
             return list.contains { resolveValue($0, from: record) == v }
+        case .notInList(let expr, let list):
+            guard let v = resolveValue(expr, from: record) else { return false }
+            return !list.contains { resolveValue($0, from: record) == v }
         case .between(let expr, let low, let high):
             guard let v = resolveValue(expr, from: record),
                   let lo = resolveValue(low, from: record),
@@ -127,6 +130,8 @@ enum PredicateEvaluator {
         case .typedLiteral(let value, _):
             return .string(value)
         case .langLiteral(let value, _):
+            return .string(value)
+        case .dirLangLiteral(let value, _, _):
             return .string(value)
         }
     }

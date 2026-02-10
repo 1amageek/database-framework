@@ -640,6 +640,13 @@ extension ExecutionTerm {
                 predicate: ExecutionTerm(p),
                 object: ExecutionTerm(o)
             )
+        case .reifiedTriple(let s, let p, let o, _):
+            // Reified triple: use quoted triple representation
+            self = .quotedTriple(
+                subject: ExecutionTerm(s),
+                predicate: ExecutionTerm(p),
+                object: ExecutionTerm(o)
+            )
         }
     }
 }

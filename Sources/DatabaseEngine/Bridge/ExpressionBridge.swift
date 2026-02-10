@@ -136,6 +136,28 @@ extension QueryIR.Expression {
                 }
             ))
 
+        // NOT IN list
+        case .notInList(.column(let col), let values):
+            guard T.allFields.contains(col.column) else { return nil }
+            var collected: [FieldValue] = []
+            for v in values {
+                guard case .literal(let lit) = v,
+                      let fv = lit.toFieldValue() else { return nil }
+                collected.append(fv)
+            }
+            let fieldValues = collected
+            let arrayValue = FieldValue.array(fieldValues)
+            let fieldName = col.column
+            return .comparison(FieldComparison<T>(
+                keyPath: \T.id as AnyKeyPath,
+                op: .in,
+                value: arrayValue,
+                evaluate: { model in
+                    let modelValue = FieldReader.readFieldValue(from: model, fieldName: fieldName)
+                    return !fieldValues.contains { modelValue.isEqual(to: $0) }
+                }
+            ))
+
         // Boolean literals
         case .literal(.bool(true)):
             return .true

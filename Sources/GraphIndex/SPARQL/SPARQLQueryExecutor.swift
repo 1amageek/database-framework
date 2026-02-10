@@ -327,6 +327,37 @@ public struct SPARQLQueryExecutor: Sendable {
             )
             return EvaluationResult(bindings: pathResult.bindings, stats: stats)
                 .mergedStats(with: pathResult.stats)
+
+        case .lateral(let left, let right):
+            // SPARQL 1.2 LATERAL: correlated join
+            // For each solution mu1 from the left, substitute mu1's bindings into
+            // the right pattern, then evaluate the substituted right pattern.
+            // This allows the RHS to reference LHS variables as bound values.
+            let leftResult = try await evaluate(
+                pattern: left,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+            var allBindings: [VariableBinding] = []
+            for mu1 in leftResult.bindings {
+                // Substitute left bindings into right pattern (correlated evaluation)
+                let substitutedRight = substitutePattern(right, with: mu1)
+                let rightResult = try await evaluate(
+                    pattern: substitutedRight,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction
+                )
+                // Merge each right result with the left binding
+                for mu2 in rightResult.bindings {
+                    if let merged = mu1.merged(with: mu2) {
+                        allBindings.append(merged)
+                    }
+                }
+            }
+            return EvaluationResult(bindings: allBindings, stats: stats)
+                .mergedStats(with: leftResult.stats)
         }
     }
 
@@ -953,6 +984,12 @@ public struct SPARQLQueryExecutor: Sendable {
                 subject: subject.substitute(binding),
                 path: path,
                 object: object.substitute(binding)
+            )
+
+        case .lateral(let left, let right):
+            return .lateral(
+                substitutePattern(left, with: binding),
+                substitutePattern(right, with: binding)
             )
         }
     }

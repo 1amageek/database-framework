@@ -286,6 +286,8 @@ extension SPARQLQueryBuilder {
             }
         case .inList:
             return self
+        case .notInList:
+            return self
         }
 
         return filter(condition)

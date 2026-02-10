@@ -366,7 +366,37 @@ struct SPARQLFunctionIntegrationTests {
         print("Performance: \(results.count) users fetched in \(String(format: "%.3f", duration))s")
     }
 
-    // MARK: - Test 10: Integration with ORDER BY and LIMIT
+    // MARK: - Test 10: SPARQLFunctionRewriter preserves from/fromNamed
+
+    @Test("SPARQLFunctionRewriter preserves from/fromNamed fields")
+    func testRewriterPreservesDatasetClauses() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        // Construct a SelectQuery with from/fromNamed and a simple filter (no SPARQL() function)
+        let query = QueryIR.SelectQuery(
+            projection: .all,
+            source: .table(QueryIR.TableRef("User")),
+            filter: .greaterThan(.column(QueryIR.ColumnRef(column: "age")), .literal(.int(25))),
+            from: ["http://example.org/graph1"],
+            fromNamed: ["http://example.org/named1", "http://example.org/named2"]
+        )
+
+        // Pass through SPARQLFunctionRewriter (filter exists, so query is reconstructed)
+        let rewriter = SPARQLFunctionRewriter(context: context)
+        let rewritten = try await rewriter.rewrite(query)
+
+        // Verify from/fromNamed are preserved
+        #expect(rewritten.from == ["http://example.org/graph1"])
+        #expect(rewritten.fromNamed == ["http://example.org/named1", "http://example.org/named2"])
+
+        // Verify other fields are also preserved
+        #expect(rewritten.projection == .all)
+        #expect(rewritten.limit == nil)
+        #expect(rewritten.distinct == false)
+    }
+
+    // MARK: - Test 11: Integration with ORDER BY and LIMIT
 
     // TODO: Enable this test when QueryBridge supports ORDER BY
     // @Test("Integration with ORDER BY and LIMIT")
