@@ -55,7 +55,7 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Get by ID
 
     /// Fetch a single record by ID, returning decoded dictionary
-    func get(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws -> [String: Any]? {
+    public func get(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws -> [String: Any]? {
         let entity = try entity(for: typeName)
         let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let key = typeSubspace.pack(Tuple([id]))
@@ -77,7 +77,7 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Find (range scan)
 
     /// Fetch all records for a type, returning decoded dictionaries
-    func findAll(typeName: String, limit: Int?, partitionValues: [String: String] = [:]) async throws -> [[String: Any]] {
+    public func findAll(typeName: String, limit: Int?, partitionValues: [String: String] = [:]) async throws -> [[String: Any]] {
         let entity = try entity(for: typeName)
         let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let (begin, end) = typeSubspace.range()
@@ -115,7 +115,7 @@ public struct CatalogDataAccess: Sendable {
     /// Insert a record from a JSON dictionary
     ///
     /// **Warning**: CLI writes do NOT update indexes.
-    func insert(typeName: String, dict: [String: Any], partitionValues: [String: String] = [:]) async throws {
+    public func insert(typeName: String, dict: [String: Any], partitionValues: [String: String] = [:]) async throws {
         let entity = try entity(for: typeName)
         let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
 
@@ -141,7 +141,7 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Delete
 
     /// Delete a record by ID
-    func delete(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws {
+    public func delete(typeName: String, id: String, partitionValues: [String: String] = [:]) async throws {
         let entity = try entity(for: typeName)
         let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let key = typeSubspace.pack(Tuple([id]))

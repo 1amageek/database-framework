@@ -389,7 +389,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
                 kvIterator = sequence.makeAsyncIterator()
             }
 
-            guard let iterator = kvIterator else {
+            guard var iterator = kvIterator else {
                 return nil
             }
 

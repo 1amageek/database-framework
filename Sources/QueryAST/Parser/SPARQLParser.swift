@@ -478,6 +478,51 @@ extension SPARQLParser {
         }
         return false
     }
+
+    // MARK: - Lookahead Helpers (LL(1) decision)
+
+    /// Check if current token can start a TriplesSameSubjectPath
+    /// SPARQL 1.1 Grammar [75] VarOrTerm, [97] RDFLiteral, etc.
+    private func canStartTriple() -> Bool {
+        switch currentToken {
+        case .variable, .iri, .prefixedName, .blankNode,
+             .string, .integer, .decimal, .double:
+            return true
+        case .symbol("<<"):  // RDF-star quoted triple
+            return true
+        case .keyword("TRUE"), .keyword("FALSE"):
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Check if current token starts a GraphPatternNotTriples [57]
+    private func canStartGraphPatternNotTriples() -> Bool {
+        switch currentToken {
+        case .symbol("{"):
+            return true
+        case .keyword("OPTIONAL"), .keyword("MINUS"), .keyword("GRAPH"),
+             .keyword("SERVICE"), .keyword("FILTER"), .keyword("BIND"),
+             .keyword("VALUES"):
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Check if current token can start a Verb (predicate)
+    /// Verb = VarOrIri | 'a'
+    private func canStartVerb() -> Bool {
+        switch currentToken {
+        case .variable, .iri, .prefixedName:
+            return true
+        case .keyword("A"):
+            return true
+        default:
+            return false
+        }
+    }
 }
 
 // MARK: - Query Parsing
@@ -639,79 +684,88 @@ extension SPARQLParser {
         return .items(items)
     }
 
+    /// SPARQL 1.1 Grammar [54]
+    /// GroupGraphPattern ::= '{' ( SubSelect | GroupGraphPatternSub ) '}'
     private func parseGroupGraphPattern() throws -> GraphPattern {
         try expectSymbol("{")
-        let pattern = try parseGroupGraphPatternSub()
+        let pattern: GraphPattern
+        if isKeyword("SELECT") {
+            // SubSelect: full SELECT query as subquery
+            pattern = .subquery(try parseSelectQuery())
+        } else {
+            pattern = try parseGroupGraphPatternSub()
+        }
         try expectSymbol("}")
         return pattern
     }
 
+    /// SPARQL 1.1 Grammar [67]
+    /// GroupOrUnionGraphPattern ::= GroupGraphPattern ( 'UNION' GroupGraphPattern )*
+    private func parseGroupOrUnionGraphPattern() throws -> GraphPattern {
+        var result = try parseGroupGraphPattern()
+        while isKeyword("UNION") {
+            advance() // consume 'UNION'
+            let right = try parseGroupGraphPattern()
+            result = .union(result, right)
+        }
+        return result
+    }
+
+    /// SPARQL 1.1 Grammar [55]
+    /// GroupGraphPatternSub ::= TriplesBlock? ( GraphPatternNotTriples '.'? TriplesBlock? )*
+    ///
+    /// Algebra translation per W3C §18.2.2:
+    /// - TriplesBlock        → Join(accumulated, BGP)
+    /// - OPTIONAL            → LeftJoin(accumulated, opt)
+    /// - MINUS               → Minus(accumulated, minus)
+    /// - FILTER              → Filter(accumulated, expr)
+    /// - BIND                → Extend(accumulated, var, expr)
+    /// - GroupOrUnion/Graph/Service/Values → Join(accumulated, pattern)
     private func parseGroupGraphPatternSub() throws -> GraphPattern {
         log("parseGroupGraphPatternSub() START, token: \(currentToken)")
-        var patterns: [GraphPattern] = []
-        var loopCount = 0
 
-        while true {
-            loopCount += 1
-            log("parseGroupGraphPatternSub() loop[\(loopCount)] token: \(currentToken)")
+        var accumulated: GraphPattern? = nil
 
-            // Check for end of group
-            if case .symbol("}") = currentToken {
-                log("parseGroupGraphPatternSub() found '}', breaking")
-                break
+        func joinAccumulated(_ pattern: GraphPattern) {
+            if let existing = accumulated {
+                accumulated = .join(existing, pattern)
+            } else {
+                accumulated = pattern
             }
-            if case .eof = currentToken {
-                log("parseGroupGraphPatternSub() found EOF, breaking")
-                break
-            }
+        }
 
-            // Track if we made progress to avoid infinite loop
-            var madeProgress = false
+        // 1. Optional leading TriplesBlock
+        if canStartTriple() {
+            let triplesBlock = try parseTriplesBlock()
+            log("parseGroupGraphPatternSub() parsed leading TriplesBlock")
+            joinAccumulated(triplesBlock)
+        }
 
-            // Parse triple patterns
-            if let tripleBlock = try? parseTriplesBlock() {
-                log("parseGroupGraphPatternSub() parsed tripleBlock")
-                patterns.append(tripleBlock)
-                madeProgress = true
-            }
+        // 2. ( GraphPatternNotTriples '.'? TriplesBlock? )*
+        while canStartGraphPatternNotTriples() {
+            log("parseGroupGraphPatternSub() GraphPatternNotTriples, token: \(currentToken)")
 
-            // Parse graph pattern not triples
+            // Parse GraphPatternNotTriples [57]
             switch currentToken {
+            case .symbol("{"):
+                // GroupOrUnionGraphPattern [67]
+                let unionPattern = try parseGroupOrUnionGraphPattern()
+                joinAccumulated(unionPattern)
+
             case .keyword("OPTIONAL"):
                 advance()
                 let optPattern = try parseGroupGraphPattern()
-                if let last = patterns.last {
-                    patterns[patterns.count - 1] = .optional(last, optPattern)
-                } else {
-                    patterns.append(.optional(.basic([]), optPattern))
-                }
-                madeProgress = true
-
-            case .keyword("UNION"):
-                advance()
-                let rightPattern = try parseGroupGraphPattern()
-                if let last = patterns.last {
-                    patterns[patterns.count - 1] = .union(last, rightPattern)
-                }
-                madeProgress = true
+                accumulated = .optional(accumulated ?? .basic([]), optPattern)
 
             case .keyword("MINUS"):
                 advance()
                 let minusPattern = try parseGroupGraphPattern()
-                if let last = patterns.last {
-                    patterns[patterns.count - 1] = .minus(last, minusPattern)
-                }
-                madeProgress = true
+                accumulated = .minus(accumulated ?? .basic([]), minusPattern)
 
             case .keyword("FILTER"):
                 advance()
                 let constraint = try parseConstraint()
-                if let last = patterns.last {
-                    patterns[patterns.count - 1] = .filter(last, constraint)
-                } else {
-                    patterns.append(.filter(.basic([]), constraint))
-                }
-                madeProgress = true
+                accumulated = .filter(accumulated ?? .basic([]), constraint)
 
             case .keyword("BIND"):
                 advance()
@@ -719,116 +773,118 @@ extension SPARQLParser {
                 let expr = try parseExpression()
                 try expect("AS")
                 guard case .variable(let varName) = currentToken else {
-                    throw ParseError.invalidSyntax(message: "Expected variable", position: input.distance(from: input.startIndex, to: position))
+                    throw ParseError.invalidSyntax(
+                        message: "Expected variable after AS",
+                        position: input.distance(from: input.startIndex, to: position)
+                    )
                 }
                 advance()
                 try expectSymbol(")")
-                if let last = patterns.last {
-                    patterns[patterns.count - 1] = .bind(last, variable: varName, expression: expr)
-                } else {
-                    patterns.append(.bind(.basic([]), variable: varName, expression: expr))
-                }
-                madeProgress = true
+                accumulated = .bind(accumulated ?? .basic([]), variable: varName, expression: expr)
 
             case .keyword("VALUES"):
                 let valuesPattern = try parseInlineData()
-                patterns.append(valuesPattern)
-                madeProgress = true
+                joinAccumulated(valuesPattern)
 
             case .keyword("GRAPH"):
                 advance()
                 let graphName = try parseTerm()
                 let graphPattern = try parseGroupGraphPattern()
-                patterns.append(.graph(name: graphName, pattern: graphPattern))
-                madeProgress = true
+                joinAccumulated(.graph(name: graphName, pattern: graphPattern))
 
             case .keyword("SERVICE"):
                 advance()
                 var silent = false
-                if case .keyword("SILENT") = currentToken {
+                if isKeyword("SILENT") {
                     silent = true
                     advance()
                 }
                 guard case .iri(let endpoint) = currentToken else {
-                    throw ParseError.invalidSyntax(message: "Expected IRI for SERVICE", position: input.distance(from: input.startIndex, to: position))
+                    throw ParseError.invalidSyntax(
+                        message: "Expected IRI for SERVICE",
+                        position: input.distance(from: input.startIndex, to: position)
+                    )
                 }
                 advance()
                 let servicePattern = try parseGroupGraphPattern()
-                patterns.append(.service(endpoint: endpoint, pattern: servicePattern, silent: silent))
-                madeProgress = true
-
-            case .symbol("{"):
-                let subPattern = try parseGroupGraphPattern()
-                patterns.append(subPattern)
-                madeProgress = true
+                joinAccumulated(.service(endpoint: endpoint, pattern: servicePattern, silent: silent))
 
             default:
-                log("parseGroupGraphPatternSub() default case, token: \(currentToken)")
                 break
             }
 
-            // If no progress was made and we're not at end, break to avoid infinite loop
-            if !madeProgress {
-                log("parseGroupGraphPatternSub() no progress, breaking")
-                break
+            // '.'? — Consume optional dot after GraphPatternNotTriples
+            if isSymbol(".") {
+                log("parseGroupGraphPatternSub() consuming optional dot after GraphPatternNotTriples")
+                advance()
+            }
+
+            // TriplesBlock? — Optional TriplesBlock after GraphPatternNotTriples
+            if canStartTriple() {
+                let triplesBlock = try parseTriplesBlock()
+                log("parseGroupGraphPatternSub() parsed TriplesBlock after GraphPatternNotTriples")
+                joinAccumulated(triplesBlock)
             }
         }
 
-        log("parseGroupGraphPatternSub() END, patterns count: \(patterns.count)")
-        // Combine patterns
-        if patterns.isEmpty {
-            return .basic([])
-        } else if patterns.count == 1 {
-            return patterns[0]
-        } else {
-            return patterns.dropFirst().reduce(patterns[0]) { .join($0, $1) }
-        }
+        log("parseGroupGraphPatternSub() END, accumulated: \(accumulated != nil)")
+        return accumulated ?? .basic([])
     }
 
+    /// SPARQL 1.1 Grammar [56]
+    /// TriplesBlock ::= TriplesSameSubjectPath ( '.' TriplesBlock? )?
     private func parseTriplesBlock() throws -> GraphPattern {
         log("parseTriplesBlock() START, token: \(currentToken)")
+        var allTriples: [TriplePattern] = []
+
+        // Parse first TriplesSameSubjectPath
+        allTriples.append(contentsOf: try parseTriplesSameSubjectPath())
+
+        // ( '.' TriplesBlock? )?  — recursive via loop
+        while isSymbol(".") {
+            advance() // consume '.'
+            // After dot, check if another triple can start.
+            // If not (e.g., '}', OPTIONAL, EOF), the dot was a terminator.
+            guard canStartTriple() else { break }
+            allTriples.append(contentsOf: try parseTriplesSameSubjectPath())
+        }
+
+        log("parseTriplesBlock() END, triples count: \(allTriples.count), next token: \(currentToken)")
+        return .basic(allTriples)
+    }
+
+    /// Parse one subject with its predicate-object lists
+    /// SPARQL 1.1 Grammar [75] TriplesSameSubjectPath ::= VarOrTerm PropertyListPathNotEmpty
+    private func parseTriplesSameSubjectPath() throws -> [TriplePattern] {
         var triples: [TriplePattern] = []
-
         let subject = try parseTerm()
-        log("parseTriplesBlock() subject parsed: \(subject), next token: \(currentToken)")
+        log("parseTriplesSameSubjectPath() subject: \(subject), next token: \(currentToken)")
 
-        // Parse predicate-object list
-        var continueOuter = true
-        while continueOuter {
-            if isSymbol(".") {
-                advance()
-                break
+        // PropertyListPathNotEmpty [77]:
+        //   Verb ObjectList ( ';' ( Verb ObjectList )? )*
+        var firstPredicate = true
+        while true {
+            if !firstPredicate {
+                guard isSymbol(";") else { break }
+                advance() // consume ';'
+                // Trailing ';' — if no verb follows, stop
+                if !canStartVerb() { break }
             }
-            if isSymbol(";") {
-                advance()
-                if isSymbol("}") { break }
-                if isSymbol(".") { continue }
-            }
+            firstPredicate = false
 
             let predicate = try parseVerb()
 
-            // Parse object list
-            var firstObject = true
-            while firstObject || isSymbol(",") {
-                if !firstObject {
-                    advance()
-                }
-                firstObject = false
-                let object = try parseTerm()
-                triples.append(TriplePattern(subject: subject, predicate: predicate, object: object))
+            // ObjectList [79]: Object ( ',' Object )*
+            let object = try parseTerm()
+            triples.append(TriplePattern(subject: subject, predicate: predicate, object: object))
+            while isSymbol(",") {
+                advance() // consume ','
+                let nextObj = try parseTerm()
+                triples.append(TriplePattern(subject: subject, predicate: predicate, object: nextObj))
             }
-
-            continueOuter = isSymbol(";")
         }
 
-        // Consume trailing dot if present
-        if isSymbol(".") {
-            log("parseTriplesBlock() consuming trailing dot")
-            advance()
-        }
-
-        log("parseTriplesBlock() END, triples count: \(triples.count), next token: \(currentToken)")
-        return .basic(triples)
+        return triples
     }
 
     private func parseVerb() throws -> SPARQLTerm {
