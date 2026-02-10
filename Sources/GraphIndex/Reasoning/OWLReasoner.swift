@@ -110,6 +110,14 @@ public final class OWLReasoner: Sendable {
         }
     }
 
+    // MARK: - Cache Key Types
+
+    /// Hashable cache key for subsumption queries
+    private struct SubsumptionPair: Hashable, Sendable {
+        let subClass: OWLClassExpression
+        let superClass: OWLClassExpression
+    }
+
     // MARK: - State
 
     private struct State: Sendable {
@@ -118,15 +126,16 @@ public final class OWLReasoner: Sendable {
         var roleHierarchy: RoleHierarchy
         var statistics: Statistics = Statistics()
 
-        // Caches
-        var satisfiabilityCache: [String: Bool] = [:]
-        var subsumptionCache: [String: Bool] = [:]
+        // Caches — keyed by canonicalized OWLClassExpression for stable identity
+        var satisfiabilityCache: [OWLClassExpression: Bool] = [:]
+        var subsumptionCache: [SubsumptionPair: Bool] = [:]
         var instanceCache: [String: Set<String>] = [:]
     }
 
     // MARK: - Properties
 
     private let ontology: OWLOntology
+    private let ontologyIndex: OntologyIndex
     private let configuration: Configuration
     private let state: Mutex<State>
     private let tableauxReasoner: TableauxReasoner
@@ -144,8 +153,12 @@ public final class OWLReasoner: Sendable {
         self.ontology = ontology
         self.configuration = configuration
 
-        let classHierarchy = ClassHierarchy(ontology: ontology)
-        let roleHierarchy = RoleHierarchy(ontology: ontology)
+        // Build O(1) index once
+        let index = ontology.buildIndex()
+        self.ontologyIndex = index
+
+        let classHierarchy = ClassHierarchy(ontology: ontology, index: index)
+        let roleHierarchy = RoleHierarchy(ontology: ontology, index: index)
 
         self.state = Mutex(State(
             classHierarchy: classHierarchy,
@@ -154,6 +167,7 @@ public final class OWLReasoner: Sendable {
 
         self.tableauxReasoner = TableauxReasoner(
             ontology: ontology,
+            index: index,
             configuration: TableauxReasoner.Configuration(
                 maxExpansionSteps: configuration.maxExpansionSteps,
                 timeout: configuration.timeout
@@ -217,7 +231,7 @@ public final class OWLReasoner: Sendable {
     /// - Parameter classExpr: The class expression to check
     /// - Returns: ReasoningResult with satisfiability status
     public func isSatisfiable(_ classExpr: OWLClassExpression) -> ReasoningResult<Bool> {
-        let cacheKey = classExpr.description
+        let cacheKey = classExpr.canonicalized()
 
         // Check cache
         if configuration.cacheClassification {
@@ -261,7 +275,10 @@ public final class OWLReasoner: Sendable {
     ///   - subClass: The potential subclass
     /// - Returns: ReasoningResult with subsumption status
     public func subsumes(superClass: OWLClassExpression, subClass: OWLClassExpression) -> ReasoningResult<Bool> {
-        let cacheKey = "\(subClass.description)⊑\(superClass.description)"
+        let cacheKey = SubsumptionPair(
+            subClass: subClass.canonicalized(),
+            superClass: superClass.canonicalized()
+        )
 
         // Check cache
         if configuration.cacheClassification {
@@ -416,12 +433,84 @@ public final class OWLReasoner: Sendable {
 
     /// Get all types of an individual
     ///
+    /// Optimized: uses ClassHierarchy for subClassOf inference,
+    /// Tableaux only for Defined Classes (equivalentClasses).
+    ///
     /// - Parameters:
     ///   - individual: The individual IRI
     ///   - direct: If true, only return most specific types
     /// - Returns: Set of class IRIs
     public func types(of individual: String, direct: Bool = false) -> Set<String> {
-        tableauxReasoner.types(of: individual)
+        // 1. Cache check
+        if let cached = state.withLock({ $0.instanceCache[individual] }) {
+            return cached
+        }
+
+        var result = Set<String>()
+
+        // 2. Collect asserted types (O(1) lookup via OntologyIndex)
+        var assertedClasses = Set<String>()
+        for type in ontologyIndex.classAssertionsByIndividual[individual] ?? [] {
+            if case .named(let iri) = type {
+                assertedClasses.insert(iri)
+            }
+        }
+        result.formUnion(assertedClasses)
+
+        // 3. Expand via ClassHierarchy transitive closure (pre-computed)
+        state.withLock { s in
+            for cls in assertedClasses {
+                result.formUnion(s.classHierarchy.superClasses(of: cls))
+            }
+        }
+
+        // 4. Check Defined Classes only via Tableaux
+        let individualType = buildIndividualType(for: individual)
+        let definedClasses: [(String, OWLClassExpression)] = state.withLock { s in
+            ontologyIndex.classSignature.compactMap { cls in
+                guard let def = s.classHierarchy.definition(of: cls) else { return nil }
+                return (cls, def)
+            }
+        }
+
+        if let indType = individualType {
+            for (className, _) in definedClasses where !result.contains(className) {
+                if tableauxReasoner.subsumes(superClass: .named(className), subClass: indType) {
+                    result.insert(className)
+                    state.withLock { s in
+                        result.formUnion(s.classHierarchy.superClasses(of: className))
+                    }
+                }
+            }
+        }
+
+        // 5. owl:Thing is always a type
+        result.insert("owl:Thing")
+        result.remove("owl:Nothing")
+
+        // 6. Cache result
+        state.withLock { $0.instanceCache[individual] = result }
+
+        return result
+    }
+
+    /// Build the individual's type as a single OWLClassExpression
+    /// by collecting all ABox assertions once via OntologyIndex (O(1) lookup).
+    private func buildIndividualType(for individual: String) -> OWLClassExpression? {
+        var types: [OWLClassExpression] = []
+
+        for type in ontologyIndex.classAssertionsByIndividual[individual] ?? [] {
+            types.append(type)
+        }
+        for (property, object) in ontologyIndex.objectPropertyAssertionsBySubject[individual] ?? [] {
+            types.append(.hasValue(property: property, individual: object))
+        }
+        for (property, value) in ontologyIndex.dataPropertyAssertionsBySubject[individual] ?? [] {
+            types.append(.dataHasValue(property: property, literal: value))
+        }
+
+        guard !types.isEmpty else { return nil }
+        return types.count == 1 ? types[0] : .intersection(types)
     }
 
     // MARK: - Property Reasoning
@@ -501,9 +590,9 @@ public final class OWLReasoner: Sendable {
     /// Clear all caches
     public func clearCaches() {
         state.withLock { s in
-            s.satisfiabilityCache = [:]
-            s.subsumptionCache = [:]
-            s.instanceCache = [:]
+            s.satisfiabilityCache.removeAll()
+            s.subsumptionCache.removeAll()
+            s.instanceCache.removeAll()
             s.statistics.cacheHits = 0
             s.statistics.cacheMisses = 0
         }
@@ -538,45 +627,37 @@ extension OWLReasoner {
     ) -> Set<String> {
         var result = Set<String>()
 
-        // Direct assertions
-        for axiom in ontology.axioms {
-            if case .objectPropertyAssertion(let subj, let prop, let obj) = axiom {
-                if subj == individual && prop == property {
-                    result.insert(obj)
-                }
+        // Direct assertions via OntologyIndex (O(1) lookup)
+        for (prop, obj) in ontologyIndex.objectPropertyAssertionsBySubject[individual] ?? [] {
+            if prop == property {
+                result.insert(obj)
             }
         }
 
         if includeInferred {
             // Add inverse property assertions
             if let inverse = inverseProperty(of: property) {
-                for axiom in ontology.axioms {
-                    if case .objectPropertyAssertion(let subj, let prop, let obj) = axiom {
-                        if obj == individual && prop == inverse {
-                            result.insert(subj)
-                        }
+                for (prop, subj) in ontologyIndex.objectPropertyAssertionsByObject[individual] ?? [] {
+                    if prop == inverse {
+                        result.insert(subj)
                     }
                 }
             }
 
             // Add symmetric property assertions
             if isSymmetric(property) {
-                for axiom in ontology.axioms {
-                    if case .objectPropertyAssertion(let subj, let prop, let obj) = axiom {
-                        if obj == individual && prop == property {
-                            result.insert(subj)
-                        }
+                for (prop, subj) in ontologyIndex.objectPropertyAssertionsByObject[individual] ?? [] {
+                    if prop == property {
+                        result.insert(subj)
                     }
                 }
             }
 
             // Add sub-property assertions
             for subProp in subProperties(of: property) {
-                for axiom in ontology.axioms {
-                    if case .objectPropertyAssertion(let subj, let prop, let obj) = axiom {
-                        if subj == individual && prop == subProp {
-                            result.insert(obj)
-                        }
+                for (prop, obj) in ontologyIndex.objectPropertyAssertionsBySubject[individual] ?? [] {
+                    if prop == subProp {
+                        result.insert(obj)
                     }
                 }
             }
@@ -592,12 +673,10 @@ extension OWLReasoner {
                         if visited.contains(node) { continue }
                         visited.insert(node)
 
-                        for axiom in ontology.axioms {
-                            if case .objectPropertyAssertion(let subj, let prop, let obj) = axiom {
-                                if subj == node && prop == property && !visited.contains(obj) {
-                                    result.insert(obj)
-                                    newFrontier.insert(obj)
-                                }
+                        for (prop, obj) in ontologyIndex.objectPropertyAssertionsBySubject[node] ?? [] {
+                            if prop == property && !visited.contains(obj) {
+                                result.insert(obj)
+                                newFrontier.insert(obj)
                             }
                         }
                     }

@@ -76,6 +76,13 @@ public struct RoleHierarchy: Sendable {
         self = hierarchy
     }
 
+    /// Initialize from ontology with pre-built index (avoids redundant O(n) scans)
+    public init(ontology: OWLOntology, index: OntologyIndex) {
+        var hierarchy = RoleHierarchy()
+        hierarchy.loadWithIndex(from: ontology, index: index)
+        self = hierarchy
+    }
+
     // MARK: - Loading
 
     /// Load role hierarchy from ontology
@@ -127,6 +134,123 @@ public struct RoleHierarchy: Sendable {
 
             case .equivalentObjectProperties(let props):
                 // Equivalent properties are mutual sub-properties
+                for i in 0..<props.count {
+                    for j in 0..<props.count where i != j {
+                        var info = getOrCreateRole(props[i])
+                        info.superRoles.insert(props[j])
+                        info.subRoles.insert(props[j])
+                        roles[props[i]] = info
+                    }
+                }
+
+            case .inverseObjectProperties(let first, let second):
+                var info1 = getOrCreateRole(first)
+                info1.inverseRole = second
+                roles[first] = info1
+
+                var info2 = getOrCreateRole(second)
+                info2.inverseRole = first
+                roles[second] = info2
+
+            case .transitiveObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.transitive)
+                roles[prop] = info
+
+            case .symmetricObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.symmetric)
+                roles[prop] = info
+
+            case .asymmetricObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.asymmetric)
+                roles[prop] = info
+
+            case .reflexiveObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.reflexive)
+                roles[prop] = info
+
+            case .irreflexiveObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.irreflexive)
+                roles[prop] = info
+
+            case .functionalObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.functional)
+                roles[prop] = info
+
+            case .inverseFunctionalObjectProperty(let prop):
+                var info = getOrCreateRole(prop)
+                info.characteristics.insert(.inverseFunctional)
+                roles[prop] = info
+
+            case .objectPropertyDomain(let prop, let domain):
+                var info = getOrCreateRole(prop)
+                info.domains.append(domain)
+                roles[prop] = info
+
+            case .objectPropertyRange(let prop, let range):
+                var info = getOrCreateRole(prop)
+                info.ranges.append(range)
+                roles[prop] = info
+
+            default:
+                break
+            }
+        }
+    }
+
+    /// Load role hierarchy using pre-built OntologyIndex
+    public mutating func loadWithIndex(from ontology: OWLOntology, index: OntologyIndex) {
+        // Clear existing data
+        roles = [:]
+        superRoleClosure = [:]
+        subRoleClosure = [:]
+        closuresComputed = false
+
+        // Load from property declarations
+        for prop in ontology.objectProperties {
+            var info = getOrCreateRole(prop.iri)
+            info.characteristics = prop.characteristics
+            info.inverseRole = prop.inverseOf
+            info.domains = prop.domains
+            info.ranges = prop.ranges
+
+            for superProp in prop.superProperties {
+                info.superRoles.insert(superProp)
+                var superInfo = getOrCreateRole(superProp)
+                superInfo.subRoles.insert(prop.iri)
+                roles[superProp] = superInfo
+            }
+
+            for chain in prop.propertyChains {
+                info.propertyChains.append(chain)
+            }
+
+            roles[prop.iri] = info
+        }
+
+        // Load from RBox axioms only (pre-filtered by index)
+        for axiom in index.rboxAxioms {
+            switch axiom {
+            case .subObjectPropertyOf(let sub, let sup):
+                var subInfo = getOrCreateRole(sub)
+                subInfo.superRoles.insert(sup)
+                roles[sub] = subInfo
+
+                var supInfo = getOrCreateRole(sup)
+                supInfo.subRoles.insert(sub)
+                roles[sup] = supInfo
+
+            case .subPropertyChainOf(let chain, let sup):
+                var info = getOrCreateRole(sup)
+                info.propertyChains.append(chain)
+                roles[sup] = info
+
+            case .equivalentObjectProperties(let props):
                 for i in 0..<props.count {
                     for j in 0..<props.count where i != j {
                         var info = getOrCreateRole(props[i])
@@ -346,47 +470,119 @@ public struct RoleHierarchy: Sendable {
         return true
     }
 
-    // MARK: - Transitive Closure Computation
+    // MARK: - Transitive Closure Computation (Topological Sort)
+    //
+    // Uses topological ordering for O(V + E) closure computation
+    // instead of per-role DFS.
+    //
+    // Reference: Kahn, A.B. (1962). "Topological sorting of large networks"
 
     private mutating func computeClosuresIfNeeded() {
         guard !closuresComputed else { return }
 
-        // Compute super-role closure using Floyd-Warshall-like approach
-        for role in roles.keys {
-            superRoleClosure[role] = computeSuperClosure(for: role, visited: [])
-            subRoleClosure[role] = computeSubClosure(for: role, visited: [])
+        let allRoles = Array(roles.keys)
+
+        // Initialize closures
+        for role in allRoles {
+            superRoleClosure[role] = []
+            subRoleClosure[role] = []
+        }
+
+        // --- Super-role closure (process roots first) ---
+        var processedSuper = Set<String>()
+        var queue: [String] = allRoles.filter { (roles[$0]?.superRoles ?? []).isEmpty }
+
+        while !queue.isEmpty {
+            let role = queue.removeFirst()
+            if processedSuper.contains(role) { continue }
+            processedSuper.insert(role)
+
+            var closure = Set<String>()
+            for superRole in roles[role]?.superRoles ?? [] {
+                closure.insert(superRole)
+                closure.formUnion(superRoleClosure[superRole] ?? [])
+            }
+            superRoleClosure[role] = closure
+
+            // Enqueue roles whose superRoles include this role
+            for (otherRole, otherInfo) in roles {
+                if processedSuper.contains(otherRole) { continue }
+                if otherInfo.superRoles.contains(role) {
+                    let allDeps = otherInfo.superRoles.allSatisfy { processedSuper.contains($0) }
+                    if allDeps {
+                        queue.append(otherRole)
+                    }
+                }
+            }
+        }
+
+        // Fallback for cycles
+        for role in allRoles where !processedSuper.contains(role) {
+            superRoleClosure[role] = computeSuperClosureFallback(for: role, visited: [])
+        }
+
+        // --- Sub-role closure (process leaves first) ---
+        var processedSub = Set<String>()
+        queue = allRoles.filter { (roles[$0]?.subRoles ?? []).isEmpty }
+
+        while !queue.isEmpty {
+            let role = queue.removeFirst()
+            if processedSub.contains(role) { continue }
+            processedSub.insert(role)
+
+            var closure = Set<String>()
+            for subRole in roles[role]?.subRoles ?? [] {
+                closure.insert(subRole)
+                closure.formUnion(subRoleClosure[subRole] ?? [])
+            }
+            subRoleClosure[role] = closure
+
+            for (otherRole, otherInfo) in roles {
+                if processedSub.contains(otherRole) { continue }
+                if otherInfo.subRoles.contains(role) {
+                    let allDeps = otherInfo.subRoles.allSatisfy { processedSub.contains($0) }
+                    if allDeps {
+                        queue.append(otherRole)
+                    }
+                }
+            }
+        }
+
+        // Fallback for cycles
+        for role in allRoles where !processedSub.contains(role) {
+            subRoleClosure[role] = computeSubClosureFallback(for: role, visited: [])
         }
 
         closuresComputed = true
     }
 
-    private func computeSuperClosure(for role: String, visited: Set<String>) -> Set<String> {
+    private func computeSuperClosureFallback(for role: String, visited: Set<String>) -> Set<String> {
         var result = Set<String>()
         guard let info = roles[role] else { return result }
-        guard !visited.contains(role) else { return result } // Avoid cycles
+        guard !visited.contains(role) else { return result }
 
         var newVisited = visited
         newVisited.insert(role)
 
         for superRole in info.superRoles {
             result.insert(superRole)
-            result.formUnion(computeSuperClosure(for: superRole, visited: newVisited))
+            result.formUnion(computeSuperClosureFallback(for: superRole, visited: newVisited))
         }
 
         return result
     }
 
-    private func computeSubClosure(for role: String, visited: Set<String>) -> Set<String> {
+    private func computeSubClosureFallback(for role: String, visited: Set<String>) -> Set<String> {
         var result = Set<String>()
         guard let info = roles[role] else { return result }
-        guard !visited.contains(role) else { return result } // Avoid cycles
+        guard !visited.contains(role) else { return result }
 
         var newVisited = visited
         newVisited.insert(role)
 
         for subRole in info.subRoles {
             result.insert(subRole)
-            result.formUnion(computeSubClosure(for: subRole, visited: newVisited))
+            result.formUnion(computeSubClosureFallback(for: subRole, visited: newVisited))
         }
 
         return result

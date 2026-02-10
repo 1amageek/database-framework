@@ -95,6 +95,13 @@ public struct ClassHierarchy: Sendable {
         self = hierarchy
     }
 
+    /// Initialize from ontology with pre-built index (avoids redundant O(n) scans)
+    public init(ontology: OWLOntology, index: OntologyIndex) {
+        var hierarchy = ClassHierarchy()
+        hierarchy.loadWithIndex(from: ontology, index: index)
+        self = hierarchy
+    }
+
     // MARK: - Loading
 
     /// Load class hierarchy from ontology
@@ -126,6 +133,54 @@ public struct ClassHierarchy: Sendable {
 
         // Load from axioms
         for axiom in ontology.axioms {
+            switch axiom {
+            case .subClassOf(let sub, let sup):
+                processSubClassOf(sub: sub, sup: sup)
+
+            case .equivalentClasses(let exprs):
+                processEquivalentClasses(exprs)
+
+            case .disjointClasses(let exprs):
+                processDisjointClasses(exprs)
+
+            case .disjointUnion(let cls, let disjuncts):
+                processDisjointUnion(class_: cls, disjuncts: disjuncts)
+
+            default:
+                break
+            }
+        }
+    }
+
+    /// Load class hierarchy using pre-built OntologyIndex
+    /// Iterates over pre-classified axiom arrays instead of full axioms
+    public mutating func loadWithIndex(from ontology: OWLOntology, index: OntologyIndex) {
+        // Clear existing data
+        classes = [:]
+        superClassClosure = [:]
+        subClassClosure = [:]
+        disjointPairs = []
+        closuresComputed = false
+
+        // Add owl:Thing as top class
+        classes["owl:Thing"] = ClassInfo(iri: "owl:Thing")
+
+        // Add owl:Nothing as bottom class
+        var nothingInfo = ClassInfo(iri: "owl:Nothing")
+        nothingInfo.directSuperClasses.insert("owl:Thing")
+        classes["owl:Nothing"] = nothingInfo
+
+        // Load from class declarations
+        for cls in ontology.classes {
+            var info = getOrCreateClass(cls.iri)
+            if cls.iri != "owl:Thing" && cls.iri != "owl:Nothing" {
+                info.directSuperClasses.insert("owl:Thing")
+            }
+            classes[cls.iri] = info
+        }
+
+        // Load from TBox axioms only (pre-filtered by index)
+        for axiom in index.tboxAxioms {
             switch axiom {
             case .subClassOf(let sub, let sup):
                 processSubClassOf(sub: sub, sup: sup)
@@ -370,60 +425,191 @@ public struct ClassHierarchy: Sendable {
         return false
     }
 
-    // MARK: - Transitive Closure Computation
+    // MARK: - Transitive Closure Computation (Topological Sort)
+    //
+    // Uses Kahn's algorithm for topological ordering, computing closures
+    // in a single O(V + E) pass instead of per-class DFS O(n * (V+E)).
+    //
+    // Reference: Kahn, A.B. (1962). "Topological sorting of large networks"
 
     private mutating func computeClosuresIfNeeded() {
         guard !closuresComputed else { return }
 
-        // Compute super-class closure
-        for class_ in classes.keys {
-            superClassClosure[class_] = computeSuperClosure(for: class_, visited: [])
-            subClassClosure[class_] = computeSubClosure(for: class_, visited: [])
+        let allClasses = Array(classes.keys)
+
+        // --- Super-class closure (bottom-up: leaves → roots) ---
+        // Compute in-degree based on directSuperClasses (edges go sub → super)
+        var superInDegree: [String: Int] = [:]
+        for cls in allClasses {
+            superInDegree[cls] = 0
+        }
+        // For super-class closure, we process leaves first
+        // An edge sub → super means super depends on sub being processed first? No.
+        // We want: closure(cls) = directSupers ∪ union(closure(each directSuper))
+        // So we need supers processed before subs → process in top-down order for supers
+        // Actually, for super-class closure: closure(C) = directSupers(C) ∪ ⋃{closure(S) | S ∈ directSupers(C)}
+        // We need each super S processed first. So process top → bottom (roots first).
+
+        // Build reverse edges: for each cls, who are its directSuperClasses
+        // Process order: classes with no super-classes first (roots)
+        var rootQueue: [String] = []
+        var superDependencyCount: [String: Int] = [:]
+
+        for cls in allClasses {
+            let supers = classes[cls]?.directSuperClasses ?? []
+            let equivs = classes[cls]?.equivalentClasses ?? []
+            // Dependencies = super-classes + equivalent classes that need processing first
+            let depCount = supers.count + equivs.count
+            superDependencyCount[cls] = depCount
+            if depCount == 0 {
+                rootQueue.append(cls)
+            }
+        }
+
+        // Initialize closures
+        for cls in allClasses {
+            superClassClosure[cls] = []
+            subClassClosure[cls] = []
+        }
+
+        // Process in topological order for super-class closure
+        var processedForSuper = Set<String>()
+        var queue = rootQueue
+
+        while !queue.isEmpty {
+            let cls = queue.removeFirst()
+            if processedForSuper.contains(cls) { continue }
+            processedForSuper.insert(cls)
+
+            var closure = Set<String>()
+            let info = classes[cls]
+
+            // Add direct super-classes and their closures
+            for superCls in info?.directSuperClasses ?? [] {
+                closure.insert(superCls)
+                closure.formUnion(superClassClosure[superCls] ?? [])
+            }
+            // Add equivalent classes' closures
+            for equiv in info?.equivalentClasses ?? [] {
+                if let equivClosure = superClassClosure[equiv] {
+                    closure.formUnion(equivClosure)
+                }
+            }
+
+            superClassClosure[cls] = closure
+
+            // Enqueue dependents: classes whose directSuperClasses include cls
+            for (otherCls, otherInfo) in classes {
+                if processedForSuper.contains(otherCls) { continue }
+                if otherInfo.directSuperClasses.contains(cls) || otherInfo.equivalentClasses.contains(cls) {
+                    // Check if all dependencies of otherCls are now processed
+                    let allDepsProcessed = otherInfo.directSuperClasses.allSatisfy { processedForSuper.contains($0) }
+                        && otherInfo.equivalentClasses.allSatisfy { processedForSuper.contains($0) }
+                    if allDepsProcessed {
+                        queue.append(otherCls)
+                    }
+                }
+            }
+        }
+
+        // Handle unprocessed classes (cycles — equivalent classes form cycles)
+        for cls in allClasses where !processedForSuper.contains(cls) {
+            superClassClosure[cls] = computeSuperClosureFallback(for: cls, visited: [])
+        }
+
+        // --- Sub-class closure (top-down: roots → leaves) ---
+        // closure(C) = directSubs(C) ∪ ⋃{closure(S) | S ∈ directSubs(C)}
+        // Process leaves first (classes with no sub-classes)
+        var processedForSub = Set<String>()
+        var leafQueue: [String] = []
+
+        for cls in allClasses {
+            let subs = classes[cls]?.directSubClasses ?? []
+            let equivs = classes[cls]?.equivalentClasses ?? []
+            if subs.isEmpty && equivs.isEmpty {
+                leafQueue.append(cls)
+            }
+        }
+
+        queue = leafQueue
+        while !queue.isEmpty {
+            let cls = queue.removeFirst()
+            if processedForSub.contains(cls) { continue }
+            processedForSub.insert(cls)
+
+            var closure = Set<String>()
+            let info = classes[cls]
+
+            for subCls in info?.directSubClasses ?? [] {
+                closure.insert(subCls)
+                closure.formUnion(subClassClosure[subCls] ?? [])
+            }
+            for equiv in info?.equivalentClasses ?? [] {
+                if let equivClosure = subClassClosure[equiv] {
+                    closure.formUnion(equivClosure)
+                }
+            }
+
+            subClassClosure[cls] = closure
+
+            // Enqueue parents
+            for (otherCls, otherInfo) in classes {
+                if processedForSub.contains(otherCls) { continue }
+                if otherInfo.directSubClasses.contains(cls) || otherInfo.equivalentClasses.contains(cls) {
+                    let allDepsProcessed = otherInfo.directSubClasses.allSatisfy { processedForSub.contains($0) }
+                        && otherInfo.equivalentClasses.allSatisfy { processedForSub.contains($0) }
+                    if allDepsProcessed {
+                        queue.append(otherCls)
+                    }
+                }
+            }
+        }
+
+        // Handle unprocessed (cycles)
+        for cls in allClasses where !processedForSub.contains(cls) {
+            subClassClosure[cls] = computeSubClosureFallback(for: cls, visited: [])
         }
 
         closuresComputed = true
     }
 
-    private func computeSuperClosure(for class_: String, visited: Set<String>) -> Set<String> {
+    /// Fallback DFS for cycles (equivalent classes form mutual sub/super relationships)
+    private func computeSuperClosureFallback(for class_: String, visited: Set<String>) -> Set<String> {
         var result = Set<String>()
         guard let info = classes[class_] else { return result }
-        guard !visited.contains(class_) else { return result } // Avoid cycles
+        guard !visited.contains(class_) else { return result }
 
         var newVisited = visited
         newVisited.insert(class_)
 
         for superClass in info.directSuperClasses {
             result.insert(superClass)
-            result.formUnion(computeSuperClosure(for: superClass, visited: newVisited))
+            result.formUnion(computeSuperClosureFallback(for: superClass, visited: newVisited))
         }
-
-        // Include equivalent classes' superclasses
         for equiv in info.equivalentClasses {
             if !visited.contains(equiv) {
-                result.formUnion(computeSuperClosure(for: equiv, visited: newVisited))
+                result.formUnion(computeSuperClosureFallback(for: equiv, visited: newVisited))
             }
         }
 
         return result
     }
 
-    private func computeSubClosure(for class_: String, visited: Set<String>) -> Set<String> {
+    private func computeSubClosureFallback(for class_: String, visited: Set<String>) -> Set<String> {
         var result = Set<String>()
         guard let info = classes[class_] else { return result }
-        guard !visited.contains(class_) else { return result } // Avoid cycles
+        guard !visited.contains(class_) else { return result }
 
         var newVisited = visited
         newVisited.insert(class_)
 
         for subClass in info.directSubClasses {
             result.insert(subClass)
-            result.formUnion(computeSubClosure(for: subClass, visited: newVisited))
+            result.formUnion(computeSubClosureFallback(for: subClass, visited: newVisited))
         }
-
-        // Include equivalent classes' subclasses
         for equiv in info.equivalentClasses {
             if !visited.contains(equiv) {
-                result.formUnion(computeSubClosure(for: equiv, visited: newVisited))
+                result.formUnion(computeSubClosureFallback(for: equiv, visited: newVisited))
             }
         }
 

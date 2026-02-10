@@ -87,36 +87,21 @@ public struct ExpansionRules {
         }
 
         // 2. Check complement clashes: C and ¬C
-        for concept in concepts {
-            // Direct complement
-            if case .complement(let inner) = concept {
-                if concepts.contains(inner) {
-                    return ClashInfo(
-                        type: .complement,
-                        nodeID: nodeID,
-                        details: "\(inner.description) and \(concept.description)"
-                    )
-                }
-            }
-
-            // Named class and its negation
-            if case .named(let iri) = concept {
-                let negation = OWLClassExpression.complement(.named(iri))
-                if concepts.contains(negation) {
-                    return ClashInfo(
-                        type: .complement,
-                        nodeID: nodeID,
-                        details: "\(iri) and ¬\(iri)"
-                    )
-                }
-            }
+        // Phase 5: O(1) check using pre-maintained complement clash index.
+        // complementClashes is non-empty iff a concept and its complement coexist.
+        if !node.complementClashes.isEmpty {
+            // Report the first clash found for diagnostics
+            let clashConcept = node.complementClashes.first!
+            return ClashInfo(
+                type: .complement,
+                nodeID: nodeID,
+                details: "\(clashConcept.description) and \(OWLClassExpression.complement(clashConcept).description)"
+            )
         }
 
         // 3. Check disjoint classes
-        let namedClasses = concepts.compactMap { concept -> String? in
-            if case .named(let iri) = concept { return iri }
-            return nil
-        }
+        // Phase 5: Use pre-maintained namedClassIRIs set instead of O(c) compactMap
+        let namedClasses = Array(node.namedClassIRIs)
 
         for i in 0..<namedClasses.count {
             for j in (i+1)..<namedClasses.count {

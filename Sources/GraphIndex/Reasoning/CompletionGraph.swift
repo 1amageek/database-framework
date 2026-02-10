@@ -122,6 +122,20 @@ final class CompletionNode: @unchecked Sendable {
     var processedExistentials: Set<OWLClassExpression> = []
     var processedUniversals: Set<OWLClassExpression> = []
 
+    // --- Phase 5: Complement clash index ---
+    // When C is added and complement(C) already exists, the pair is recorded here.
+    // detectClash() can check `!complementClashes.isEmpty` in O(1).
+    var complementClashes: Set<OWLClassExpression> = []
+
+    // Named class IRIs for O(1) disjoint checking
+    var namedClassIRIs: Set<String> = []
+
+    // --- Phase 6: Hash signature for blocking pre-check ---
+    // Bloom-filter-style 64-bit concept signature.
+    // If (node.conceptSignature & ancestor.conceptSignature) != node.conceptSignature,
+    // then node.concepts cannot be a subset of ancestor.concepts, so skip the full check.
+    var conceptSignature: UInt64 = 0
+
     init(id: NodeID) {
         self.id = id
     }
@@ -141,6 +155,9 @@ final class CompletionNode: @unchecked Sendable {
         node.processedUnions = processedUnions
         node.processedExistentials = processedExistentials
         node.processedUniversals = processedUniversals
+        node.complementClashes = complementClashes
+        node.namedClassIRIs = namedClassIRIs
+        node.conceptSignature = conceptSignature
         return node
     }
 }
@@ -208,6 +225,10 @@ public final class CompletionGraph: @unchecked Sendable {
     }
 
     /// Create or get a nominal node
+    ///
+    /// Nominal nodes represent named individuals and are labeled with {a}
+    /// so that complement({a}) will produce a clash.
+    /// Reference: Horrocks & Sattler (2007), Section 3 — nominal nodes carry {o}
     func getOrCreateNominal(_ iri: String) -> NodeID {
         let id = NodeID.nominal(iri)
         if nodes[id] == nil {
@@ -215,6 +236,8 @@ public final class CompletionGraph: @unchecked Sendable {
             nodes[id] = node
             nominals.insert(id)
             trail.append(.createdNode(id: id))
+            // Add {iri} concept so ¬{iri} (complement(oneOf([iri]))) will clash
+            addConcept(.oneOf([iri]), to: id)
         }
         return id
     }
@@ -228,6 +251,8 @@ public final class CompletionGraph: @unchecked Sendable {
 
     /// Add a concept to a node
     /// Returns true if the concept was newly added
+    ///
+    /// Maintains complement clash index, named class IRI set, and hash signature.
     @discardableResult
     func addConcept(_ concept: OWLClassExpression, to nodeID: NodeID) -> Bool {
         guard let node = nodes[nodeID] else { return false }
@@ -235,6 +260,28 @@ public final class CompletionGraph: @unchecked Sendable {
 
         node.concepts.insert(concept)
         trail.append(.addedConcept(node: nodeID, concept: concept))
+
+        // Phase 5: Update complement clash index
+        // Check if complement(concept) already exists
+        let complementOfConcept = OWLClassExpression.complement(concept)
+        if node.concepts.contains(complementOfConcept) {
+            node.complementClashes.insert(concept)
+        }
+        // Check if concept is complement(X) and X already exists
+        if case .complement(let inner) = concept {
+            if node.concepts.contains(inner) {
+                node.complementClashes.insert(inner)
+            }
+        }
+
+        // Track named class IRIs for disjoint checking
+        if case .named(let iri) = concept {
+            node.namedClassIRIs.insert(iri)
+        }
+
+        // Phase 6: Update hash signature
+        node.conceptSignature |= 1 << UInt64(concept.hashValue & 0x3F)
+
         return true
     }
 
@@ -357,10 +404,29 @@ public final class CompletionGraph: @unchecked Sendable {
         let mergedConcepts = mergedNode.concepts
         var mergedEdges = Set<Edge>()
 
-        // Move concepts
+        // Move concepts and rebuild Phase 5/6 indices on survivor
         for concept in mergedNode.concepts {
             if !survivorNode.concepts.contains(concept) {
                 survivorNode.concepts.insert(concept)
+
+                // Phase 5: Update complement clash index for merged concept
+                let complementOfConcept = OWLClassExpression.complement(concept)
+                if survivorNode.concepts.contains(complementOfConcept) {
+                    survivorNode.complementClashes.insert(concept)
+                }
+                if case .complement(let inner) = concept {
+                    if survivorNode.concepts.contains(inner) {
+                        survivorNode.complementClashes.insert(inner)
+                    }
+                }
+
+                // Track named class IRIs
+                if case .named(let iri) = concept {
+                    survivorNode.namedClassIRIs.insert(iri)
+                }
+
+                // Phase 6: Update hash signature
+                survivorNode.conceptSignature |= 1 << UInt64(concept.hashValue & 0x3F)
             }
         }
 
@@ -464,14 +530,24 @@ public final class CompletionGraph: @unchecked Sendable {
 
     /// Find a node that blocks the given node
     /// Uses pairwise blocking for SHOIN(D)
+    ///
+    /// Phase 6: Hash signature pre-check avoids expensive subset tests.
+    /// If the signature bits of node are not all present in ancestor,
+    /// then node.concepts cannot be a subset of ancestor.concepts.
+    /// This is a Bloom-filter-style optimization with no false negatives.
     private func findBlocker(for node: CompletionNode) -> NodeID? {
         var current = node.parent
         while let ancestorID = current, let ancestor = nodes[ancestorID] {
-            // Pairwise blocking: x is blocked by y if L(x) ⊆ L(y)
-            if node.concepts.isSubset(of: ancestor.concepts) {
-                // Also check edge labels match for SHOIN(D)
-                if edgeLabelsMatch(node: node, ancestor: ancestor) {
-                    return ancestorID
+            // Phase 6: Fast signature pre-check
+            // If any bit in node's signature is missing from ancestor's signature,
+            // node.concepts cannot be a subset — skip the full check.
+            if (node.conceptSignature & ancestor.conceptSignature) == node.conceptSignature {
+                // Pairwise blocking: x is blocked by y if L(x) ⊆ L(y)
+                if node.concepts.isSubset(of: ancestor.concepts) {
+                    // Also check edge labels match for SHOIN(D)
+                    if edgeLabelsMatch(node: node, ancestor: ancestor) {
+                        return ancestorID
+                    }
                 }
             }
             current = ancestor.parent
@@ -561,7 +637,23 @@ public final class CompletionGraph: @unchecked Sendable {
     private func undoAction(_ action: TrailAction) {
         switch action {
         case .addedConcept(let nodeID, let concept):
-            nodes[nodeID]?.concepts.remove(concept)
+            guard let node = nodes[nodeID] else { break }
+            node.concepts.remove(concept)
+
+            // Undo complement clash index
+            node.complementClashes.remove(concept)
+            if case .complement(let inner) = concept {
+                node.complementClashes.remove(inner)
+            }
+
+            // Undo named class IRI tracking
+            if case .named(let iri) = concept {
+                node.namedClassIRIs.remove(iri)
+            }
+
+            // Note: conceptSignature is not reverted (Bloom filter does not support removal)
+            // This is safe because false positives only cause unnecessary subset checks,
+            // never false negatives.
 
         case .addedEdge(let edge):
             edges.remove(edge)

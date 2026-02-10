@@ -147,6 +147,7 @@ public final class TableauxReasoner: @unchecked Sendable {
     // MARK: - Properties
 
     private let ontology: OWLOntology
+    private let ontologyIndex: OntologyIndex
     private let roleHierarchy: RoleHierarchy
     private let classHierarchy: ClassHierarchy
     private let configuration: Configuration
@@ -177,28 +178,40 @@ public final class TableauxReasoner: @unchecked Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize reasoner with ontology and configuration
+    /// Initialize reasoner with ontology, pre-built index, and configuration
     ///
     /// - Parameters:
     ///   - ontology: The OWL ontology to reason over
+    ///   - index: Pre-built OntologyIndex for O(1) lookups
     ///   - configuration: Reasoner configuration (default: standard settings)
-    public init(ontology: OWLOntology, configuration: Configuration = Configuration()) {
+    public init(ontology: OWLOntology, index: OntologyIndex, configuration: Configuration = Configuration()) {
         self.ontology = ontology
-        self.roleHierarchy = RoleHierarchy(ontology: ontology)
-        self.classHierarchy = ClassHierarchy(ontology: ontology)
+        self.ontologyIndex = index
+        self.roleHierarchy = RoleHierarchy(ontology: ontology, index: index)
+        self.classHierarchy = ClassHierarchy(ontology: ontology, index: index)
         self.configuration = configuration
 
-        // Precompute TBox constraints
-        self.tboxConstraints = Self.computeTBoxConstraints(from: ontology)
+        // Precompute TBox constraints from pre-filtered TBox axioms
+        self.tboxConstraints = Self.computeTBoxConstraints(from: index.tboxAxioms)
 
-        // Extract property chains
-        self.propertyChains = Self.extractPropertyChains(from: ontology, roleHierarchy: roleHierarchy)
+        // Extract property chains from pre-filtered RBox axioms + role hierarchy
+        self.propertyChains = Self.extractPropertyChains(from: index, roleHierarchy: roleHierarchy)
 
         // Perform regularity check if enabled
         if configuration.checkRegularity {
             var checker = OWLDLRegularityChecker()
             self.regularityViolations = checker.check(ontology)
         }
+    }
+
+    /// Initialize reasoner with ontology and configuration
+    ///
+    /// - Parameters:
+    ///   - ontology: The OWL ontology to reason over
+    ///   - configuration: Reasoner configuration (default: standard settings)
+    public convenience init(ontology: OWLOntology, configuration: Configuration = Configuration()) {
+        let index = ontology.buildIndex()
+        self.init(ontology: ontology, index: index, configuration: configuration)
     }
 
     /// Initialize reasoner with ontology (convenience)
@@ -210,11 +223,11 @@ public final class TableauxReasoner: @unchecked Sendable {
         self.init(ontology: ontology, configuration: Configuration(maxExpansionSteps: maxExpansionSteps))
     }
 
-    /// Compute TBox constraints in NNF form
-    private static func computeTBoxConstraints(from ontology: OWLOntology) -> [OWLClassExpression] {
+    /// Compute TBox constraints in NNF form from pre-filtered TBox axioms
+    private static func computeTBoxConstraints(from tboxAxioms: [OWLAxiom]) -> [OWLClassExpression] {
         var constraints: [OWLClassExpression] = []
 
-        for axiom in ontology.axioms {
+        for axiom in tboxAxioms {
             switch axiom {
             case .subClassOf(let sub, let sup):
                 // C ⊑ D becomes ¬C ⊔ D
@@ -244,23 +257,28 @@ public final class TableauxReasoner: @unchecked Sendable {
         return constraints
     }
 
-    /// Extract property chains from RBox
+    /// Extract property chains from OntologyIndex + role hierarchy
     private static func extractPropertyChains(
-        from ontology: OWLOntology,
+        from index: OntologyIndex,
         roleHierarchy: RoleHierarchy
     ) -> [(chain: [String], implies: String)] {
         var chains: [(chain: [String], implies: String)] = []
 
-        for axiom in ontology.axioms {
-            if case .subPropertyChainOf(let chain, let sup) = axiom {
+        // From pre-indexed property chain axioms
+        for (sup, chainList) in index.propertyChainAxiomsBySup {
+            for chain in chainList {
                 chains.append((chain: chain, implies: sup))
             }
         }
 
-        // Also get chains from role hierarchy
+        // Also get chains from role hierarchy (includes those from property declarations)
         for role in roleHierarchy.allRoles {
             for chain in roleHierarchy.propertyChains(for: role) {
-                chains.append((chain: chain, implies: role))
+                // Avoid duplicates
+                let isDuplicate = chains.contains { $0.chain == chain && $0.implies == role }
+                if !isDuplicate {
+                    chains.append((chain: chain, implies: role))
+                }
             }
         }
 
@@ -652,23 +670,15 @@ public final class TableauxReasoner: @unchecked Sendable {
     public func isInstanceOf(individual: String, classExpr: OWLClassExpression) -> Bool {
         var individualTypes: [OWLClassExpression] = []
 
-        for axiom in ontology.axioms {
-            switch axiom {
-            case .classAssertion(let ind, let type) where ind == individual:
-                individualTypes.append(type)
-
-            case .dataPropertyAssertion(let subject, let property, let value) where subject == individual:
-                // Convert data property assertion to dataHasValue class expression
-                // This enables Defined Class classification via equivalentClasses with dataHasValue
-                individualTypes.append(.dataHasValue(property: property, literal: value))
-
-            case .objectPropertyAssertion(let subject, let property, let object) where subject == individual:
-                // Convert object property assertion to hasValue class expression
-                individualTypes.append(.hasValue(property: property, individual: object))
-
-            default:
-                break
-            }
+        // O(1) lookup via OntologyIndex
+        for type in ontologyIndex.classAssertionsByIndividual[individual] ?? [] {
+            individualTypes.append(type)
+        }
+        for (property, value) in ontologyIndex.dataPropertyAssertionsBySubject[individual] ?? [] {
+            individualTypes.append(.dataHasValue(property: property, literal: value))
+        }
+        for (property, object) in ontologyIndex.objectPropertyAssertionsBySubject[individual] ?? [] {
+            individualTypes.append(.hasValue(property: property, individual: object))
         }
 
         if individualTypes.isEmpty {
@@ -694,23 +704,104 @@ public final class TableauxReasoner: @unchecked Sendable {
     /// between all pairs of named classes.
     ///
     /// - Returns: Updated ClassHierarchy with inferred relationships
+    /// Classify all named classes in the ontology using Enhanced Traversal
+    ///
+    /// Instead of O(n^2) brute-force subsumption testing, uses a top-down traversal
+    /// starting from owl:Thing. For each class C, only tests subsumption against
+    /// children of C's "told subsumers" (classes that are direct superclasses in the
+    /// asserted hierarchy). Prunes branches where subsumption fails.
+    ///
+    /// Average case: O(n * b) where b = average branching factor.
+    /// Balanced hierarchies: O(n log n).
+    ///
+    /// Reference: Baader et al. (2003), "The Description Logic Handbook", Section 8.3.2
     public func classify() -> ClassHierarchy {
         var result = classHierarchy
 
-        let allClasses = Array(ontology.classSignature)
+        let allClasses = Array(ontologyIndex.classSignature)
 
-        for i in 0..<allClasses.count {
-            for j in 0..<allClasses.count where i != j {
-                let c1 = allClasses[i]
-                let c2 = allClasses[j]
-
-                if subsumes(superClass: .named(c1), subClass: .named(c2)) {
-                    result.addSubsumption(subClass: c2, superClass: c1)
+        // Step 1: Collect "told subsumers" from TBox (O(|axioms|) via index)
+        // Told subsumers are superclasses explicitly stated in SubClassOf/EquivalentClasses axioms
+        var toldSubsumers: [String: Set<String>] = [:]
+        for cls in allClasses {
+            var told = Set<String>()
+            // From SubClassOf axioms where this class is the sub
+            for (_, sup) in ontologyIndex.subClassAxiomsBySubClass[cls] ?? [] {
+                if case .named(let supIRI) = sup {
+                    told.insert(supIRI)
                 }
+            }
+            // From EquivalentClasses axioms
+            for exprList in ontologyIndex.equivalentClassAxiomsByClass[cls] ?? [] {
+                for expr in exprList {
+                    if case .named(let iri) = expr, iri != cls {
+                        told.insert(iri)
+                    }
+                }
+            }
+            if told.isEmpty && cls != "owl:Thing" && cls != "owl:Nothing" {
+                told.insert("owl:Thing")
+            }
+            toldSubsumers[cls] = told
+        }
+
+        // Step 2: Enhanced Traversal — top-down insertion
+        // For each unclassified class, find its place in the hierarchy
+        // by traversing from owl:Thing downward
+        for cls in allClasses where cls != "owl:Thing" && cls != "owl:Nothing" {
+            // Get told subsumers as starting points
+            let startingPoints = toldSubsumers[cls] ?? ["owl:Thing"]
+
+            for startPoint in startingPoints {
+                // Try to insert cls under startPoint
+                insertIntoHierarchy(cls, under: startPoint, result: &result, toldSubsumers: toldSubsumers)
             }
         }
 
         return result
+    }
+
+    /// Insert a class into the hierarchy under a given parent
+    /// Uses top-down traversal with pruning
+    private func insertIntoHierarchy(
+        _ cls: String,
+        under parent: String,
+        result: inout ClassHierarchy,
+        toldSubsumers: [String: Set<String>]
+    ) {
+        // Check if parent subsumes cls
+        guard parent == "owl:Thing" || subsumes(superClass: .named(parent), subClass: .named(cls)) else {
+            return
+        }
+
+        // Check children of parent — if any child subsumes cls, recurse into it
+        let children = result.directSubClasses(of: parent)
+        var subsumedByChild = false
+
+        for child in children where child != cls && child != "owl:Nothing" {
+            if subsumes(superClass: .named(child), subClass: .named(cls)) {
+                subsumedByChild = true
+                insertIntoHierarchy(cls, under: child, result: &result, toldSubsumers: toldSubsumers)
+            }
+        }
+
+        // If no child subsumes cls, cls is a direct child of parent
+        if !subsumedByChild {
+            result.addSubsumption(subClass: cls, superClass: parent)
+
+            // Check if cls subsumes any current children of parent
+            // If so, those children should become children of cls instead
+            for child in children where child != cls && child != "owl:Nothing" {
+                if subsumes(superClass: .named(cls), subClass: .named(child)) {
+                    result.addSubsumption(subClass: child, superClass: cls)
+                }
+            }
+
+            // Check equivalence
+            if subsumes(superClass: .named(cls), subClass: .named(parent)) {
+                result.addEquivalence(class1: cls, class2: parent)
+            }
+        }
     }
 
     /// Find all instances of a class expression
@@ -730,7 +821,7 @@ public final class TableauxReasoner: @unchecked Sendable {
     public func types(of individual: String) -> Set<String> {
         var result = Set<String>()
 
-        for class_ in ontology.classSignature {
+        for class_ in ontologyIndex.classSignature {
             if isInstanceOf(individual: individual, classExpr: .named(class_)) {
                 result.insert(class_)
             }
