@@ -235,14 +235,22 @@ struct Department {
 
 名前空間は `@Ontology` の IRI から以下のように抽出される:
 
-| `@Ontology` の引数 | 形式 | 抽出される名前空間 |
-|---|---|---|
-| `"ex:Employee"` | CURIE | `"ex:"` |
-| `"http://example.org/onto#Employee"` | フル IRI（`#` 区切り） | `"http://example.org/onto#"` |
-| `"http://example.org/onto/Employee"` | フル IRI（`/` 区切り） | `"http://example.org/onto/"` |
+| `@Ontology` の引数 | 形式 | 抽出される名前空間 | クラス IRI |
+|---|---|---|---|
+| `"Employee"` | ベア名（区切り文字なし） | `"ex:"`（デフォルト） | `"ex:Employee"` |
+| `"ex:Employee"` | CURIE | `"ex:"` | `"ex:Employee"` |
+| `"http://example.org/onto#Employee"` | フル IRI（`#` 区切り） | `"http://example.org/onto#"` | そのまま |
+| `"http://example.org/onto/Employee"` | フル IRI（`/` 区切り） | `"http://example.org/onto/"` | そのまま |
+
+ベア名（`:`, `#`, `/` を含まない文字列）はデフォルトの `"ex:"` 名前空間で自動解決される。クラス IRI も同様に `"ex:"` が付与される。
 
 ```swift
-// 使用例: @Ontology("ex:Employee") の場合
+// 使用例: @Ontology("Employee") の場合（ベア名 → デフォルト ex:）
+@OWLProperty("name")                    // → IRI: "ex:name"
+@OWLProperty("foaf:mbox")              // → IRI: "foaf:mbox"（CURIE → そのまま）
+// ontologyClassIRI → "ex:Employee"
+
+// 使用例: @Ontology("ex:Employee") の場合（CURIE → 同じ結果）
 @OWLProperty("name")                    // → IRI: "ex:name"（ローカル名 → 自動解決）
 @OWLProperty("foaf:mbox")              // → IRI: "foaf:mbox"（CURIE → そのまま）
 @OWLProperty("worksFor", to: \Dept.id) // → IRI: "ex:worksFor"（ローカル名 → 自動解決）
