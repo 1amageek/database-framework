@@ -726,6 +726,85 @@ let ancestors = reasoner.reachableIndividuals(
 )
 ```
 
+## Ontology-Aware Persistable Types
+
+GraphIndex integrates with `@Ontology` and `@Property` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module) to bridge Persistable types and knowledge graphs. `@Persistable` handles pure persistence; `@Ontology` handles OWL class mapping independently.
+
+### Schema-Level Ontology Registration
+
+```swift
+let ontology = OWLOntology(iri: "http://example.org/company") {
+    Class("ex:Employee", subClassOf: "ex:Person")
+    Class("ex:Department")
+    ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
+}
+
+let schema = Schema(
+    [Employee.self, Department.self, RDFTriple.self],
+    ontology: ontology
+)
+let container = try await FDBContainer(for: schema)
+// → Ontology is auto-loaded to OntologyStore; no manual load needed
+```
+
+### @Ontology and @Property
+
+```swift
+@Persistable
+@Ontology("ex:Employee")
+struct Employee {
+    #Directory<Employee>("app", "employees")
+
+    @Property("ex:name")
+    var name: String                    // DataProperty (no `to:`)
+
+    @Property("ex:worksFor", to: \Department.id)
+    var departmentID: String?           // ObjectProperty (has `to:`)
+}
+```
+
+**Macro responsibility separation**:
+- `@Persistable` (Core): `id`, `persistableType`, `allFields`, `fieldSchemas`, `indexDescriptors`, `Codable`/`Sendable`
+- `@Ontology` (Graph): `OntologyEntity` conformance, `ontologyClassIRI`, `ontologyPropertyDescriptors`, reverse indexes for `@Property(to:)` fields
+
+### Virtual Triples from Persistable Types
+
+Each row of an ontology-aware Persistable type can be interpreted as virtual RDF triples:
+
+```
+Employee(id: "alice", name: "Alice", departmentID: "dept1")
+
+// Virtual triples:
+// (alice, rdf:type, ex:Employee)        ← from @Ontology("ex:Employee")
+// (alice, ex:worksFor, dept1)           ← from @Property("ex:worksFor", to:)
+```
+
+The query planner resolves `@Property` definitions to map SPARQL triple patterns to table scans, using auto-generated indexes for efficient execution.
+
+### SPARQL Federation
+
+Query across both GraphIndex triples and Persistable type tables:
+
+```swift
+let results = try await context.sparql()
+    .from(RDFTriple.self)       // Triple store
+    .from(Employee.self)         // Employee table
+    .from(Department.self)       // Department table
+    .where("?person", "rdf:type", "ex:Employee")
+    .where("?person", "ex:worksFor", "?dept")
+    .where("?dept", "ex:locatedIn", "?city")  // Only in triple store
+    .select("?person", "?city")
+    .execute()
+```
+
+The planner selects the optimal source per pattern:
+
+| Pattern | Source | Reason |
+|---------|--------|--------|
+| `?person rdf:type ex:Employee` | Employee table | Has `@Ontology("ex:Employee")` |
+| `?person ex:worksFor ?dept` | Employee table | Has `@Property("ex:worksFor")` with auto-index |
+| `?dept ex:locatedIn ?city` | RDFTriple GraphIndex | No matching `@Property` in any table |
+
 ## OWL DL Reasoning
 
 GraphIndex includes a complete OWL DL reasoner based on the Tableaux algorithm (SHOIN(D)).

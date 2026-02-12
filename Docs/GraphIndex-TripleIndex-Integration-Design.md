@@ -1,5 +1,7 @@
 # GraphIndex と TripleIndex の統合設計
 
+> **Status: Completed** — この統合は実装済み。`TripleIndex` / `Triple` モジュールは廃止され、`GraphIndex` / `Graph` に統合された。本ドキュメントは設計経緯の記録として残す。
+
 ## 1. 設計目標
 
 ### 1.1 問題点（現状）

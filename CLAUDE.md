@@ -107,20 +107,21 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 
 ### Full Module Inventory
 
-#### database-kit（97 ファイル — クライアント安全・プラットフォーム非依存）
+#### database-kit（106 ファイル — クライアント安全・プラットフォーム非依存）
 
 | モジュール | ファイル数 | 責務 |
 |-----------|----------|------|
-| **Core** | 44 | `Persistable`, `IndexKind`, `IndexDescriptor`, `FieldValue`, `Schema`, マクロ定義、Protobuf コーデック |
-| **CoreMacros** | 5 | `@Persistable`, `#Directory`, `#Index` のコンパイラプラグイン |
+| **Core** | 46 | `Persistable`, `IndexKind`, `IndexDescriptor`, `FieldValue`, `Schema`, マクロ定義、Protobuf コーデック |
+| **CoreMacros** | 6 | `@Persistable`, `#Directory`, `#Index` のコンパイラプラグイン |
 | **QueryIR** | 19 | SQL/SPARQL 統一クエリ中間表現 (`SelectQuery`, `Expression`, `DataSource`) |
-| **Graph** | 17 | `GraphIndexKind`, RDF (`RDFTerm`), OWL オントロジー型, SHACL 制約型 |
+| **Graph** | 20 | `GraphIndexKind`, RDF (`RDFTerm`), OWL オントロジー型, SHACL 制約型, `@Property` マクロ, `OntologyPropertyDescriptor` |
+| **GraphMacros** | 1 | `@Property` マクロのコンパイラプラグイン |
 | **Relationship** | 3 | `RelationshipIndexKind`, `RelationshipDescriptor` |
 | **DatabaseClientProtocol** | 4 | クライアント↔サーバー通信プロトコル |
 | **Vector / FullText / Spatial / Rank / Permuted** | 各1 | IndexKind 定義のみ |
 | **DatabaseKit** | 1 | re-export ファサード |
 
-#### database-framework（377 ファイル — サーバー専用・FoundationDB 依存）
+#### database-framework（378 ファイル — サーバー専用・FoundationDB 依存）
 
 | モジュール | ファイル数 | 責務 |
 |-----------|----------|------|
@@ -253,11 +254,20 @@ GraphIndex/ (68 files)
 ### Graph Module Type Hierarchy (database-kit)
 
 ```
-Graph/
+Graph/ (20 files)
+├── GraphIndexKind (struct)       ← グラフインデックス定義
+├── GraphIndexStrategy (enum)     ← adjacency / tripleStore / hexastore
 ├── RDFTerm (enum)                ← RDF ノード統一型
 │   ├── .iri(String)
 │   ├── .literal(OWLLiteral)      ← 型付きリテラル（OWLLiteral でラップ）
 │   └── .blankNode(String)
+│
+├── OntologyPropertyDescriptor    ← @Property メタデータ（Descriptor 準拠）
+│   ├── iri: String               ← OWL プロパティ IRI
+│   ├── isObjectProperty: Bool    ← to: 指定で true
+│   ├── targetTypeName: String?   ← ObjectProperty の対象型名
+│   └── targetFieldName: String?  ← ObjectProperty の対象フィールド
+├── PropertyMacro                 ← @Property マクロ宣言（GraphMacros に委譲）
 │
 ├── Schema/ (OWL 2)               ← オントロジー型定義
 │   ├── OWLOntology               ← コンテナ
@@ -266,7 +276,11 @@ Graph/
 │   ├── OWLAxiom (indirect enum)  ← SubClassOf / EquivalentClasses / ...
 │   ├── OWLLiteral (struct)       ← lexicalForm: String + datatype: String（non-optional）
 │   ├── OWLIndividual (enum)      ← Named / Anonymous
-│   └── OWLDataRange (indirect enum) ← Datatype + Facet 制約
+│   ├── OWLDataRange (indirect enum) ← Datatype + Facet 制約
+│   └── OntologyIndex             ← OntologyEntity プロトコル、SchemaOntology
+│
+├── Namespace/
+│   └── PrefixMap                 ← IRI プレフィックスマッピング
 │
 └── SHACL/                        ← W3C SHACL 制約定義
     ├── SHACLConstraint (indirect enum) ← 25 種の制約コンポーネント
@@ -275,6 +289,9 @@ Graph/
     ├── SHACLReport (struct)      ← バリデーション結果
     ├── SHACLPath (indirect enum) ← プロパティパス
     └── SHACLTarget (enum)        ← ターゲット宣言
+
+GraphMacros/ (1 file)
+└── PropertyMacro.swift           ← @Property マクロのコンパイラプラグイン実装
 ```
 
 ### Index Comparison Table

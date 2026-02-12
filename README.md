@@ -103,7 +103,7 @@ let users = try await context.fetch(User.self)
 | `FullTextIndex` | `FullTextIndexKind` | Tokenization, inverted index |
 | `SpatialIndex` | `SpatialIndexKind` | S2 / Geohash / Morton encoding |
 | `RankIndex` | `RankIndexKind` | Skip-list based rankings |
-| `GraphIndex` | `AdjacencyIndexKind` / `TripleIndexKind` | Graph traversal, SPARQL |
+| `GraphIndex` | `GraphIndexKind` | Graph traversal, SPARQL, OWL DL reasoning |
 | `AggregationIndex` | `Count/Sum/Min/Max/AverageIndexKind` | Atomic aggregations |
 | `VersionIndex` | `VersionIndexKind` | FDB versionstamp history |
 | `BitmapIndex` | `BitmapIndexKind` | Roaring bitmap for categorical data |
@@ -229,6 +229,72 @@ let migration = Migration(
     try await ctx.addIndex(emailIndexDescriptor)
 }
 ```
+
+### Ontology Integration
+
+Link Persistable types to OWL ontology classes with `@Ontology` and `@Property` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module). `@Persistable` handles pure persistence; `@Ontology` handles OWL class mapping independently.
+
+```swift
+import Database
+import Core
+import Graph
+
+// 1. Define ontology-aware types
+@Persistable
+@Ontology("http://example.org/onto#Employee")
+struct Employee {
+    #Directory<Employee>("app", "employees")
+
+    @Property("http://example.org/onto#name")
+    var name: String
+
+    @Property("http://example.org/onto#worksFor", to: \Department.id)
+    var departmentID: String?
+}
+
+@Persistable
+@Ontology("http://example.org/onto#Department")
+struct Department {
+    #Directory<Department>("app", "departments")
+    var name: String
+}
+
+// 2. Define RDF triple store
+@Persistable
+struct RDFTriple {
+    #Directory<RDFTriple>("app", "knowledge")
+    var subject: String = ""
+    var predicate: String = ""
+    var object: String = ""
+
+    #Index(GraphIndexKind<RDFTriple>(
+        from: \.subject, edge: \.predicate, to: \.object,
+        strategy: .hexastore
+    ))
+}
+
+// 3. Register with Schema (ontology auto-loads to OntologyStore)
+let ontology = OWLOntology(iri: "http://example.org/onto") {
+    Class("ex:Employee", subClassOf: "ex:Person")
+    Class("ex:Department")
+    ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
+}
+
+let schema = Schema(
+    [Employee.self, Department.self, RDFTriple.self],
+    ontology: ontology
+)
+let container = try await FDBContainer(for: schema)
+```
+
+**What happens automatically**:
+- `@Ontology` generates `OntologyEntity` conformance with `ontologyClassIRI`
+- `@Ontology` scans `@Property` annotations to build `ontologyPropertyDescriptors`
+- `@Property(to:)` generates a reverse index on `departmentID` for efficient lookups
+- `Schema(ontology:)` loads the ontology into OntologyStore on initialization
+- GraphIndex uses the ontology for OWL 2 RL materialization on triple writes
+
+See [GraphIndex README](Sources/GraphIndex/README.md) for SPARQL, OWL reasoning, and graph algorithms.
 
 ### Polymorphable
 
