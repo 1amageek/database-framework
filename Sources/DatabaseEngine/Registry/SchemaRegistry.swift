@@ -46,10 +46,12 @@ public struct SchemaRegistry: Sendable {
                 transaction.setValue(value, for: key)
             }
 
-            // Persist ontology metadata (if present)
+            // Persist or clear ontology metadata
             if let ontology = schema.ontology {
                 let data = try encoder.encode(ontology)
                 transaction.setValue(Array(data), for: Self.ontologyKey)
+            } else {
+                transaction.clear(key: Self.ontologyKey)
             }
         }
 
