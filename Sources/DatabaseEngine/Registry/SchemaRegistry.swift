@@ -1,7 +1,7 @@
-/// SchemaRegistry - Persists and loads Schema.Entity entries in FoundationDB
+/// SchemaRegistry - Persists and loads Schema.Entity and Schema.Ontology in FoundationDB
 ///
 /// Analogous to PostgreSQL's `pg_catalog` system tables.
-/// Stores entity metadata under `/_schema/[entityName]` in FDB as JSON.
+/// Stores entity metadata under `(_schema, entityName)` and ontology under `(_schema_ontology)`.
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
 import Foundation
@@ -15,6 +15,9 @@ public struct SchemaRegistry: Sendable {
     /// Schema key prefix
     private static let catalogPrefix = "_schema"
 
+    /// Ontology storage key: (_schema_ontology)
+    private static let ontologyKey: FDB.Bytes = Tuple(["_schema_ontology"]).pack()
+
     /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
 
@@ -25,21 +28,28 @@ public struct SchemaRegistry: Sendable {
 
     // MARK: - Write
 
-    /// Persist all entities from a Schema
+    /// Persist all entities and ontology from a Schema
     ///
     /// Called during `FDBContainer.init` after `ensureIndexesReady()`.
-    /// Overwrites existing entries.
+    /// Overwrites existing entries. Entity and ontology are written atomically.
     public func persist(_ schema: Schema) async throws {
         let entities = schema.entities
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
         try await database.withTransaction { transaction in
+            // Persist entity metadata
             for entity in entities {
                 let key = Self.key(for: entity.name)
                 let data = try encoder.encode(entity)
                 let value = Array(data)
                 transaction.setValue(value, for: key)
+            }
+
+            // Persist ontology metadata (if present)
+            if let ontology = schema.ontology {
+                let data = try encoder.encode(ontology)
+                transaction.setValue(Array(data), for: Self.ontologyKey)
             }
         }
 
@@ -80,6 +90,19 @@ public struct SchemaRegistry: Sendable {
         cache.set(entities)
 
         return entities
+    }
+
+    /// Load persisted Schema.Ontology from FDB
+    ///
+    /// Returns nil if no ontology was stored.
+    public func loadOntology() async throws -> Schema.Ontology? {
+        return try await database.withTransaction { transaction in
+            guard let value = try await transaction.getValue(for: Self.ontologyKey, snapshot: true) else {
+                return nil
+            }
+            let data = Data(value)
+            return try JSONDecoder().decode(Schema.Ontology.self, from: data)
+        }
     }
 
     /// Load a single Schema.Entity by name

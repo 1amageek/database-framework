@@ -120,7 +120,7 @@ public final class FDBContainer: Sendable {
     ///
     /// - Note: This initializer performs two side effects on FDB:
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
-    ///   2. **Schema persistence** — writes `Schema.Entity` for each entity to `(_schema, typeName)` via `SchemaRegistry.persist()`,
+    ///   2. **Schema persistence** — writes `Schema.Entity` and `Schema.Ontology` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,
@@ -153,7 +153,7 @@ public final class FDBContainer: Sendable {
         // Initialize all indexes to readable state
         try await ensureIndexesReady()
 
-        // Persist schema catalog for CLI and dynamic tools
+        // Persist schema catalog (entities + ontology) for CLI and dynamic tools
         let registry = SchemaRegistry(database: database)
         try await registry.persist(schema)
     }
