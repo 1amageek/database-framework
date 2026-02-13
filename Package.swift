@@ -29,7 +29,7 @@ let package = Package(
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0212.6"),
+        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0213.0"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
         .package(
             url: "https://github.com/1amageek/fdb-swift-bindings.git",

@@ -120,7 +120,7 @@ public final class FDBContainer: Sendable {
     ///
     /// - Note: This initializer performs two side effects on FDB:
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
-    ///   2. **Schema persistence** — writes `Schema.Entity` and `Schema.Ontology` via `SchemaRegistry.persist()`,
+    ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,

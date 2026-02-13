@@ -373,6 +373,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         public mutating func next() async throws -> Element? {
             // Check limit
             if limit > 0 && count >= limit {
+                await kvIterator?.finish()
                 return nil
             }
 

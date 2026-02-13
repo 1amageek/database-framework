@@ -22,8 +22,13 @@ enum CommandRouter {
             printHelp(topic: args.first, output: output)
 
         case "schema":
-            let cmd = SchemaInfoCommands(entities: entities, output: output)
-            try cmd.execute(args)
+            if args.first?.lowercased() == "ontology" {
+                let cmd = OntologyCommands(database: dataAccess.database, output: output)
+                try await cmd.show()
+            } else {
+                let cmd = SchemaInfoCommands(entities: entities, output: output)
+                try cmd.execute(args)
+            }
 
         case "insert":
             let cmd = DataCommands(dataAccess: dataAccess, output: output)
@@ -80,6 +85,7 @@ enum CommandRouter {
             switch topic {
             case "schema":
                 output.info(SchemaInfoCommands.helpText)
+                output.info(OntologyCommands.helpText)
             case "find":
                 output.info(FindCommands.helpText)
             case "graph", "sparql":
@@ -108,6 +114,7 @@ enum CommandRouter {
         Schema Info:
           schema list                        List all types
           schema show <TypeName>             Show type fields, types, and indexes
+          schema ontology                    Show ontology statistics and class hierarchy
 
         Data Operations:
           insert <TypeName> <json>           Insert a record

@@ -843,4 +843,114 @@ public struct OntologyStore: Sendable {
         }
         return []
     }
+
+    // MARK: - Reconstruct OWLOntology
+
+    /// Reconstruct an OWLOntology from stored data
+    ///
+    /// Reads metadata, classes, properties, and axioms from the store
+    /// and assembles them into an OWLOntology. Does not require FDBContext.
+    ///
+    /// - Parameters:
+    ///   - iri: The ontology IRI
+    ///   - transaction: Transaction to read from
+    /// - Returns: Reconstructed OWLOntology, or nil if not found
+    public func reconstruct(
+        iri: String,
+        transaction: any TransactionProtocol
+    ) async throws -> OWLOntology? {
+        guard let metadata = try await getMetadata(
+            ontologyIRI: iri,
+            transaction: transaction
+        ) else {
+            return nil
+        }
+
+        let classes = try await listClasses(
+            ontologyIRI: iri,
+            transaction: transaction
+        )
+        let properties = try await listProperties(
+            ontologyIRI: iri,
+            transaction: transaction
+        )
+        let axioms = try await listAxioms(
+            ontologyIRI: iri,
+            transaction: transaction
+        )
+
+        let owlClasses = classes.map { def in
+            OWLClass(
+                iri: def.iri,
+                label: def.label,
+                comment: def.comment,
+                annotations: def.annotations
+            )
+        }
+
+        let owlObjectProperties = properties.compactMap { def -> OWLObjectProperty? in
+            guard def.type == .objectProperty else { return nil }
+
+            var characteristics = Set<PropertyCharacteristic>()
+            if def.isFunctional { characteristics.insert(.functional) }
+            if def.isInverseFunctional { characteristics.insert(.inverseFunctional) }
+            if def.isTransitive { characteristics.insert(.transitive) }
+            if def.isSymmetric { characteristics.insert(.symmetric) }
+            if def.isAsymmetric { characteristics.insert(.asymmetric) }
+            if def.isReflexive { characteristics.insert(.reflexive) }
+            if def.isIrreflexive { characteristics.insert(.irreflexive) }
+
+            return OWLObjectProperty(
+                iri: def.iri,
+                label: def.label,
+                comment: def.comment,
+                annotations: def.annotations,
+                characteristics: characteristics,
+                inverseOf: def.inverseOf,
+                domains: def.domains.map { .named($0) },
+                ranges: def.ranges.map { .named($0) },
+                superProperties: Array(def.directSuperProperties),
+                equivalentProperties: Array(def.equivalentProperties),
+                disjointProperties: Array(def.disjointProperties),
+                propertyChains: def.propertyChains
+            )
+        }
+
+        let owlDataProperties = properties.compactMap { def -> OWLDataProperty? in
+            guard def.type == .dataProperty else { return nil }
+            return OWLDataProperty(
+                iri: def.iri,
+                label: def.label,
+                comment: def.comment,
+                annotations: def.annotations,
+                domains: def.domains.map { .named($0) },
+                ranges: [],
+                isFunctional: def.isFunctional,
+                superProperties: Array(def.directSuperProperties),
+                equivalentProperties: Array(def.equivalentProperties),
+                disjointProperties: Array(def.disjointProperties)
+            )
+        }
+
+        var ontology = OWLOntology(
+            iri: metadata.iri,
+            versionIRI: metadata.versionIRI,
+            imports: metadata.imports,
+            prefixes: metadata.prefixes
+        )
+        ontology.classes = owlClasses
+        ontology.objectProperties = owlObjectProperties
+        ontology.dataProperties = owlDataProperties
+        ontology.axioms = axioms
+
+        return ontology
+    }
+
+    // MARK: - Factory
+
+    /// Create an OntologyStore with the standard subspace prefix
+    public static func `default`() -> OntologyStore {
+        let baseSubspace = Subspace(prefix: Array("O".utf8))
+        return OntologyStore(subspace: OntologySubspace(base: baseSubspace))
+    }
 }

@@ -1,7 +1,7 @@
-/// SchemaRegistry - Persists and loads Schema.Entity and Schema.Ontology in FoundationDB
+/// SchemaRegistry - Persists and loads Schema.Entity in FoundationDB
 ///
 /// Analogous to PostgreSQL's `pg_catalog` system tables.
-/// Stores entity metadata under `(_schema, entityName)` and ontology under `(_schema_ontology)`.
+/// Stores entity metadata under `(_schema, entityName)`.
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
 import Foundation
@@ -14,9 +14,6 @@ public struct SchemaRegistry: Sendable {
 
     /// Schema key prefix
     private static let catalogPrefix = "_schema"
-
-    /// Ontology storage key: (_schema_ontology)
-    private static let ontologyKey: FDB.Bytes = Tuple(["_schema_ontology"]).pack()
 
     /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
@@ -46,13 +43,6 @@ public struct SchemaRegistry: Sendable {
                 transaction.setValue(value, for: key)
             }
 
-            // Persist or clear ontology metadata
-            if let ontology = schema.ontology {
-                let data = try encoder.encode(ontology)
-                transaction.setValue(Array(data), for: Self.ontologyKey)
-            } else {
-                transaction.clear(key: Self.ontologyKey)
-            }
         }
 
         // Invalidate cache after schema changes
@@ -92,19 +82,6 @@ public struct SchemaRegistry: Sendable {
         cache.set(entities)
 
         return entities
-    }
-
-    /// Load persisted Schema.Ontology from FDB
-    ///
-    /// Returns nil if no ontology was stored.
-    public func loadOntology() async throws -> Schema.Ontology? {
-        return try await database.withTransaction { transaction in
-            guard let value = try await transaction.getValue(for: Self.ontologyKey, snapshot: true) else {
-                return nil
-            }
-            let data = Data(value)
-            return try JSONDecoder().decode(Schema.Ontology.self, from: data)
-        }
     }
 
     /// Load a single Schema.Entity by name

@@ -95,7 +95,7 @@ extension DatabaseCLI {
         static let configuration = CommandConfiguration(
             commandName: "schema",
             abstract: "Schema management commands",
-            subcommands: [List.self, Show.self, Apply.self, Export.self, Validate.self, Drop.self]
+            subcommands: [List.self, Show.self, Apply.self, Export.self, Validate.self, Drop.self, OntologyShow.self]
         )
 
         struct List: AsyncParsableCommand {
@@ -223,6 +223,20 @@ extension DatabaseCLI {
                 } else {
                     throw ValidationError("Specify a type name or use --all")
                 }
+            }
+        }
+
+        struct OntologyShow: AsyncParsableCommand {
+            static let configuration = CommandConfiguration(
+                commandName: "ontology",
+                abstract: "Show ontology statistics and class hierarchy"
+            )
+
+            mutating func run() async throws {
+                let (database, _) = try await ClusterConnection.openDatabase()
+                let output = OutputFormatter()
+                let cmd = OntologyCommands(database: database, output: output)
+                try await cmd.show()
             }
         }
     }
