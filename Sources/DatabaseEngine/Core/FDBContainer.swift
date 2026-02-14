@@ -131,6 +131,12 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
+        // FDB ネットワーク初期化（未初期化の場合のみ）
+        if !FDBClient.isInitialized {
+            let version = configuration?.apiVersion.map { Int($0) } ?? FDBClient.defaultApiVersion
+            try await FDBClient.initialize(version: version)
+        }
+
         let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
 
         self.database = database
@@ -832,5 +838,18 @@ extension FDBContainer {
     /// - Returns: New AdminContext instance
     public func newAdminContext() -> AdminContextProtocol {
         AdminContext(container: self)
+    }
+}
+
+// MARK: - Lifecycle
+
+extension FDBContainer {
+    /// FDB ネットワークをシャットダウンする
+    ///
+    /// 全ての FDBContainer / FDBContext の使用完了後に呼ぶ。
+    /// ネットワークスレッドの終了を待ってからリターンする。
+    /// シャットダウン後、プロセスは自然に終了できる。
+    public static func shutdown() {
+        FDBClient.shutdown()
     }
 }
