@@ -730,21 +730,20 @@ let ancestors = reasoner.reachableIndividuals(
 
 GraphIndex integrates with `@Ontology` and `@Property` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module) to bridge Persistable types and knowledge graphs. `@Persistable` handles pure persistence; `@Ontology` handles OWL class mapping independently.
 
-### Schema-Level Ontology Registration
+### Ontology Registration via OntologyStore
 
 ```swift
+let schema = Schema([Employee.self, Department.self, RDFTriple.self])
+let container = try await FDBContainer(for: schema)
+let context = container.newContext()
+
+// Load ontology independently via context.ontology API
 let ontology = OWLOntology(iri: "http://example.org/company") {
     Class("ex:Employee", subClassOf: "ex:Person")
     Class("ex:Department")
     ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
 }
-
-let schema = Schema(
-    [Employee.self, Department.self, RDFTriple.self],
-    ontology: ontology
-)
-let container = try await FDBContainer(for: schema)
-// → Ontology is auto-loaded to OntologyStore; no manual load needed
+try await context.ontology.load(ontology)
 ```
 
 ### @Ontology and @Property

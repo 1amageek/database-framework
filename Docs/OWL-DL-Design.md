@@ -2002,257 +2002,136 @@ public struct ReasoningBenchmark {
 
 ---
 
-## 8. Schema.Ontology — オントロジーの永続化・転送アーキテクチャ
+## 8. OntologyStore — オントロジーの独立永続化アーキテクチャ
 
 ### 8.1 設計原理
 
-オントロジーは Schema の一部としてシステム全体を自動的に流れる必要がある。
-Entity が `Schema.Entity` として永続化・転送されるのと同様に、
-オントロジーも `Schema.Ontology` として統一的に扱う。
+オントロジーは Schema から独立して管理される。
+Schema は Entity（型メタデータ）のみを管理し、
+オントロジーは `OntologyStore` が `/_ontology/` 配下に直接永続化する。
 
 **設計制約**:
 - Core モジュールは Graph モジュールに依存できない
+- オントロジーのライフサイクルは Schema と異なる（独立して更新・削除可能）
 - DatabaseEngine は OWLOntology の具象型を知らない
-- Client-Server 間の転送は Codable ベース
 
-**解決策**: `AnyIndexDescriptor` と同じ型消去パターンを採用する。
+**解決策**: オントロジーを Schema から分離し、GraphIndex の `OntologyStore` が独立管理する。
 
 ### 8.2 モジュール境界と型の役割
 
 ```
 ┌────────────────────────────────────────────────────────────────────┐
-│  アプリケーション層 (AURORA 等)                                       │
+│  アプリケーション層                                                   │
 │                                                                    │
 │  OWLOntology (構築・推論・検証)                                      │
 │       │                                                            │
-│       │ .asSchemaOntology()                                        │
-│       ▼                                                            │
-│  Schema.Ontology (型消去済み Codable)                                │
-│       │                                                            │
-│       │ Schema(types, ontology: schemaOntology)                    │
+│       │ context.ontology.load(ontology)                            │
 │       ▼                                                            │
 ├────────────────────────────────────────────────────────────────────┤
 │  Core モジュール (database-kit)                                      │
 │                                                                    │
 │  Schema                                                            │
-│  ├── entities: [Schema.Entity]                                     │
-│  └── ontology: Schema.Ontology?  ← Codable, OWL 型に非依存          │
-│                                                                    │
-├────────────────────────────────────────────────────────────────────┤
-│  DatabaseEngine モジュール (database-framework)                      │
-│                                                                    │
-│  FDBContainer.init                                                 │
-│  ├── ensureIndexesReady()                                          │
-│  └── SchemaRegistry.persist(schema)                                │
-│       ├── _schema/[entityName] → JSON(Schema.Entity)               │
-│       └── _schema_ontology     → JSON(Schema.Ontology)  ← 自動     │
-│                                                                    │
-├────────────────────────────────────────────────────────────────────┤
-│  DatabaseServer モジュール (database-framework)                      │
-│                                                                    │
-│  OperationRouter (case "schema")                                   │
-│  └── SchemaResponse                                                │
-│       ├── entities: [Schema.Entity]                                │
-│       └── ontology: Schema.Ontology?  ← Client に自動転送           │
+│  └── entities: [Schema.Entity]   ← オントロジーは含まない             │
 │                                                                    │
 ├────────────────────────────────────────────────────────────────────┤
 │  GraphIndex モジュール (database-framework)                          │
 │                                                                    │
-│  FDBContainer+Ontology                                             │
-│  └── loadSchemaOntology()                                          │
-│       Schema.Ontology → decode → OWLOntology → OntologyStore       │
+│  FDBContext+Ontology                                               │
+│  └── context.ontology: OntologyContextAPI                          │
+│       ├── .load(ontology)    → OntologyStore に永続化               │
+│       ├── .get(iri:)         → OWLOntology を復元                   │
+│       ├── .list()            → 全オントロジー IRI 一覧               │
+│       ├── .delete(iri:)      → オントロジー削除                      │
+│       └── .reasoner(for:)    → OWLReasoner 生成                    │
+│                                                                    │
+│  OntologyStore                                                     │
+│  └── /_ontology/ 配下に直接永続化                                     │
+│       ├── metadata/[iri]     → OntologyMetadata                    │
+│       ├── classes/[iri]/[c]  → OWLClass                            │
+│       ├── properties/[iri]/  → OWLProperty                         │
+│       ├── axioms/[iri]/      → OWLAxiom                            │
+│       └── hierarchy/         → マテリアライズ済み階層                  │
 │                                                                    │
 └────────────────────────────────────────────────────────────────────┘
 ```
 
-### 8.3 Schema.Ontology（Core モジュール）
+### 8.3 OntologyContextAPI（GraphIndex モジュール）
 
-`AnyIndexDescriptor` パターンに倣った型消去 Codable 表現。
-Core は `encodedData` の内部構造を解釈しない。
+`FDBContext` の extension として提供される高レベル API。
 
 ```swift
-extension Schema {
-    /// オントロジーの Codable 表現（型消去）
-    public struct Ontology: Sendable, Codable, Hashable {
-        /// オントロジー IRI
-        public let iri: String
+extension FDBContext {
+    /// オントロジー管理 API
+    public var ontology: OntologyContextAPI { ... }
+}
 
-        /// 具象型の識別子（例: "OWLOntology"）
-        public let typeIdentifier: String
+public struct OntologyContextAPI: Sendable {
+    /// オントロジーをロード（既存があれば置換）
+    public func load(_ ontology: OWLOntology) async throws
 
-        /// JSON エンコード済みのオントロジーデータ
-        public let encodedData: Data
-    }
+    /// 複数オントロジーを一括ロード
+    public func loadAll(_ ontologies: [OWLOntology]) async throws
+
+    /// IRI でオントロジーを取得
+    public func get(iri: String) async throws -> OWLOntology?
+
+    /// 全オントロジー IRI を一覧
+    public func list() async throws -> [String]
+
+    /// オントロジーを削除
+    public func delete(iri: String) async throws
+
+    /// OWL Reasoner を生成
+    public func reasoner(for iri: String) async throws -> OWLReasoner
 }
 ```
 
-**Schema の ontology プロパティ**:
+### 8.4 使用例
 
 ```swift
-// 旧: protocol ベース（Codable 不可、永続化不可）
-public let ontology: (any SchemaOntology)?
+// 1. Schema にオントロジーは含めない
+let schema = Schema([Employee.self, Department.self, RDFTriple.self])
+let container = try await FDBContainer(for: schema)
 
-// 新: 型消去 struct（Codable、自動永続化・転送）
-public let ontology: Schema.Ontology?
-```
+// 2. オントロジーは context.ontology API で独立管理
+let context = container.newContext()
 
-### 8.4 OWLOntology ⇔ Schema.Ontology 変換（Graph モジュール）
-
-Graph モジュールが変換メソッドを提供する。
-
-```swift
-extension OWLOntology {
-    /// OWLOntology → Schema.Ontology（永続化・転送用）
-    public func asSchemaOntology() -> Schema.Ontology {
-        let data = try! JSONEncoder().encode(self)
-        return Schema.Ontology(
-            iri: self.iri,
-            typeIdentifier: "OWLOntology",
-            encodedData: data
-        )
-    }
-
-    /// Schema.Ontology → OWLOntology（復元用）
-    public init(schemaOntology: Schema.Ontology) throws {
-        self = try JSONDecoder().decode(OWLOntology.self, from: schemaOntology.encodedData)
-    }
+let ontology = OWLOntology(iri: "http://example.org/company") {
+    Class("ex:Employee", subClassOf: "ex:Person")
+    Class("ex:Department")
+    ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
 }
+try await context.ontology.load(ontology)
+
+// 3. 推論
+let reasoner = try await context.ontology.reasoner(for: "http://example.org/company")
+let isConsistent = reasoner.isConsistent()
 ```
 
-**使用例（アプリケーション側）**:
+### 8.5 OWLOntology が必要な理由
 
-```swift
-// OWLOntology を構築
-let owlOntology = OntologyPolicy.buildBaseOntology()
-
-// Schema.Ontology に変換して Schema に渡す
-let schema = Schema(
-    [RDFTriple.self, CrawlHistory.self],
-    ontology: owlOntology.asSchemaOntology()
-)
-
-// FDBContainer.init で自動永続化
-let container = try await FDBContainer(for: schema, ...)
-// → SchemaRegistry が _schema_ontology に JSON 保存
-```
-
-### 8.5 SchemaRegistry のオントロジー永続化
-
-`SchemaRegistry.persist()` が entities と ontology を一括永続化する。
-
-```swift
-// SchemaRegistry 内部
-public func persist(_ schema: Schema) async throws {
-    try await database.withTransaction { transaction in
-        // 1. Entity の永続化（既存）
-        for entity in schema.entities {
-            let key = Self.key(for: entity.name)
-            let data = try encoder.encode(entity)
-            transaction.setValue(Array(data), for: key)
-        }
-
-        // 2. Ontology の永続化（追加）
-        if let ontology = schema.ontology {
-            let key = Self.ontologyKey
-            let data = try encoder.encode(ontology)
-            transaction.setValue(Array(data), for: key)
-        }
-    }
-}
-```
-
-**FDB キーレイアウト**:
-
-```
-(_schema, "EntityName")  → JSON(Schema.Entity)     ← 既存
-(_schema_ontology)       → JSON(Schema.Ontology)    ← 新規
-```
-
-### 8.6 SchemaResponse のオントロジー転送
-
-Client-Server 間で ontology を自動転送する。
-
-```swift
-// DatabaseClientProtocol
-public struct SchemaResponse: Sendable, Codable {
-    public let entities: [Schema.Entity]
-    public let ontology: Schema.Ontology?  // 追加
-}
-
-// OperationRouter (server 側)
-case "schema":
-    let entities = container.schema.entities
-    let ontology = container.schema.ontology
-    let response = SchemaResponse(entities: entities, ontology: ontology)
-```
-
-### 8.7 GraphIndex でのオントロジー復元
-
-GraphIndex は `Schema.Ontology` から `OWLOntology` を復元し、
-`OntologyStore` にロードする。
-
-```swift
-// FDBContainer+Ontology.swift (GraphIndex)
-extension FDBContainer {
-    public func loadSchemaOntology() async throws {
-        guard let schemaOntology = schema.ontology else { return }
-
-        // Schema.Ontology → OWLOntology に復元
-        let owlOntology = try OWLOntology(schemaOntology: schemaOntology)
-
-        let context = newContext()
-        let api = context.ontology
-
-        let exists = try await api.exists(iri: owlOntology.iri)
-        if exists { return }
-
-        try await api.load(owlOntology)
-    }
-}
-```
-
-### 8.8 AnyIndexDescriptor との類似性
-
-| 観点 | AnyIndexDescriptor | Schema.Ontology |
-|------|-------------------|-----------------|
-| 目的 | IndexDescriptor の型消去 | OWLOntology の型消去 |
-| 配置 | Core モジュール | Core モジュール |
-| 具象型 | IndexDescriptor (Core) | OWLOntology (Graph) |
-| Codable | `name + kind + commonMetadata` | `iri + typeIdentifier + encodedData` |
-| 永続化 | SchemaRegistry → `_schema/[name]` | SchemaRegistry → `_schema_ontology` |
-| 転送 | SchemaResponse.entities[].indexes | SchemaResponse.ontology |
-| 復元 | 各 IndexMaintainer が decode | GraphIndex が decode → OntologyStore |
-
-### 8.9 OWLOntology が必要な理由
-
-`Schema.Ontology` は転送・永続化のための中間表現であり、
-`OWLOntology` はアプリケーション層でのリッチな作業表現である。
+`OWLOntology` はアプリケーション層でのリッチな作業表現であり、
+OntologyStore は内部でコンポーネント（class, property, axiom, hierarchy）に分解して永続化する。
 
 | 型 | モジュール | 役割 |
 |---|---------|------|
-| `OWLOntology` | Graph | 構築（DSL）、推論（Tableaux, RETE）、検証（NNF, 正規性） |
-| `Schema.Ontology` | Core | 永続化、Client-Server 転送、モジュール境界の型消去 |
-
-`OWLOntology` は以下の機能を提供するため、`Schema.Ontology` では代替できない:
-- `@resultBuilder` による宣言的構築（OWLOntologyBuilder）
-- OWL DL セマンティクス（class expression, axiom, property characteristics）
-- NNF 変換、正規性チェック、一貫性検証
-- Tableaux 推論エンジンの入力型
+| `OWLOntology` | Graph (database-kit) | 構築（DSL）、推論（Tableaux）、検証（NNF, 正規性） |
+| `OntologyStore` | GraphIndex (database-framework) | FDB 永続化、マテリアライゼーション、階層インデックス |
+| `OntologyContextAPI` | GraphIndex (database-framework) | FDBContext 経由の高レベル CRUD API |
 
 ---
 
 ## 9. 実装計画
 
-### Phase 0: Schema.Ontology 型消去パターン（database-kit + database-framework）
-- [ ] Schema.Ontology struct を Core に定義（iri + typeIdentifier + encodedData）
-- [ ] SchemaOntology protocol を削除
-- [ ] Schema.ontology の型を `(any SchemaOntology)?` → `Schema.Ontology?` に変更
-- [ ] OWLOntology に `asSchemaOntology()` / `init(schemaOntology:)` を追加
-- [ ] SchemaRegistry でオントロジー永続化（`_schema_ontology` キー）
-- [ ] SchemaResponse に `ontology: Schema.Ontology?` を追加
-- [ ] OperationRouter でオントロジーをレスポンスに含める
-- [ ] FDBContainer+Ontology を Schema.Ontology ベースに更新
-- [ ] FDBContainer.init の壊れた `loadSchemaOntology()` 呼び出しを削除
+### Phase 0: OntologyStore 独立永続化（完了）
+- [x] Schema.Ontology を Core から削除
+- [x] Schema.ontology プロパティを削除
+- [x] SchemaResponse.ontology を削除
+- [x] OWLOntology.asSchemaOntology() / init(schemaOntology:) を削除
+- [x] FDBContainer+Ontology.swift を削除
+- [x] OntologyStore で /_ontology/ 配下に独立永続化
+- [x] OntologyContextAPI (FDBContext+Ontology) で CRUD API を提供
+- [x] SchemaRegistry からオントロジー永続化コードを削除
 
 ### Phase 1: スキーマ定義（database-kit）
 - [ ] OWLOntology, OWLClass, OWLClassExpression

@@ -46,7 +46,7 @@ brew services start foundationdb
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0207.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0213.0")
 ]
 ```
 
@@ -273,25 +273,26 @@ struct RDFTriple {
     ))
 }
 
-// 3. Register with Schema (ontology auto-loads to OntologyStore)
+// 3. Create container
+let schema = Schema([Employee.self, Department.self, RDFTriple.self])
+let container = try await FDBContainer(for: schema)
+
+// 4. Load ontology independently via OntologyStore
 let ontology = OWLOntology(iri: "http://example.org/onto") {
     Class("ex:Employee", subClassOf: "ex:Person")
     Class("ex:Department")
     ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
 }
 
-let schema = Schema(
-    [Employee.self, Department.self, RDFTriple.self],
-    ontology: ontology
-)
-let container = try await FDBContainer(for: schema)
+let context = container.newContext()
+try await context.ontology.load(ontology)
 ```
 
 **What happens automatically**:
 - `@Ontology` generates `OntologyEntity` conformance with `ontologyClassIRI`
 - `@Ontology` scans `@Property` annotations to build `ontologyPropertyDescriptors`
 - `@Property(to:)` generates a reverse index on `departmentID` for efficient lookups
-- `Schema(ontology:)` loads the ontology into OntologyStore on initialization
+- `context.ontology.load()` persists the ontology to `/_ontology/` via OntologyStore
 - GraphIndex uses the ontology for OWL 2 RL materialization on triple writes
 
 See [GraphIndex README](Sources/GraphIndex/README.md) for SPARQL, OWL reasoning, and graph algorithms.

@@ -277,7 +277,7 @@ Graph/ (20 files)
 │   ├── OWLLiteral (struct)       ← lexicalForm: String + datatype: String（non-optional）
 │   ├── OWLIndividual (enum)      ← Named / Anonymous
 │   ├── OWLDataRange (indirect enum) ← Datatype + Facet 制約
-│   └── OntologyIndex             ← OntologyEntity プロトコル、SchemaOntology
+│   └── OntologyIndex             ← OntologyEntity プロトコル
 │
 ├── Namespace/
 │   └── PrefixMap                 ← IRI プレフィックスマッピング
