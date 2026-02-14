@@ -32,8 +32,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0213.0"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
         .package(
-            url: "https://github.com/1amageek/fdb-swift-bindings.git",
-            branch: "feature/directory-layer"
+            path: "../fdb-swift-bindings"
         ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
