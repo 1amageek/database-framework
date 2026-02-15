@@ -33,6 +33,44 @@ public struct SPARQLQueryExecutor: Sendable {
     private let graphFieldName: String?
     private let storedFieldNames: [String]
 
+    /// Reusable scan signature for substituted triple patterns.
+    ///
+    /// Two patterns can reuse a single index scan only when they produce the same scan range
+    /// and have the same graph constraint semantics.
+    private struct ScanSignature: Hashable {
+        enum GraphConstraint: Hashable {
+            case none
+            case bound(FieldValue)
+            case variable(String)
+            case wildcard
+        }
+
+        let orderingKey: Int64
+        let prefixValues: [FieldValue]
+        let graphConstraint: GraphConstraint
+    }
+
+    /// Hash join key for a set of join variables.
+    ///
+    /// Unbound variables are represented as `.null` to keep arity stable.
+    private struct JoinKey: Hashable {
+        let values: [FieldValue]
+
+        init(binding: VariableBinding, variables: [String]) {
+            self.values = variables.map { binding[$0] ?? .null }
+        }
+    }
+
+    private enum HashJoinEvaluation {
+        case executed(results: [VariableBinding], stats: ExecutionStatistics)
+        case fallback(reason: JoinFallbackReason, precheckStats: ExecutionStatistics)
+    }
+
+    private static let nestedLoopThreshold = 64
+    private static let hashJoinMinStaticBound = 2
+    private static let hashJoinRightSideScanCap = 64
+    private static let hashJoinEnabled = true
+
     // MARK: - Initialization
 
     /// Initialize with pre-resolved index metadata
@@ -87,6 +125,8 @@ public struct SPARQLQueryExecutor: Sendable {
             merged.intermediateResults += other.intermediateResults
             merged.patternsEvaluated += other.patternsEvaluated
             merged.optionalMisses += other.optionalMisses
+            merged.joinStrategies.append(contentsOf: other.joinStrategies)
+            merged.joinFallbackReasons.append(contentsOf: other.joinFallbackReasons)
             return EvaluationResult(bindings: bindings, stats: merged)
         }
     }
@@ -151,6 +191,9 @@ public struct SPARQLQueryExecutor: Sendable {
             stats.indexScans = basicStats.indexScans
             stats.joinOperations = basicStats.joinOperations
             stats.intermediateResults = basicStats.intermediateResults
+            stats.optionalMisses = basicStats.optionalMisses
+            stats.joinStrategies = basicStats.joinStrategies
+            stats.joinFallbackReasons = basicStats.joinFallbackReasons
             return EvaluationResult(bindings: bindings, stats: stats)
 
         case .join(let left, let right):
@@ -402,30 +445,64 @@ public struct SPARQLQueryExecutor: Sendable {
             let canApplyFilter = filterVariables.isSubset(of: boundVariablesAfterPattern)
             let patternFilter = canApplyFilter ? filter : nil
 
-            for binding in currentBindings {
-                // Substitute variables in pattern
-                let substituted = pattern.substitute(binding)
+            var boundVariablesBeforePattern = Set<String>()
+            if index > 0 {
+                for i in 0..<index {
+                    boundVariablesBeforePattern.formUnion(orderedPatterns[i].variables)
+                }
+            }
+            let joinVars = pattern.variables.intersection(boundVariablesBeforePattern)
 
-                // Execute pattern (without filter - filter applied after merge)
-                let (matches, scanStats) = try await executePattern(
-                    substituted,
+            if currentBindings.count <= Self.nestedLoopThreshold || joinVars.isEmpty {
+                let (nestedResults, nestedStats) = try await evaluateNestedLoopJoinStep(
+                    pattern: pattern,
+                    leftBindings: currentBindings,
                     indexSubspace: indexSubspace,
                     strategy: strategy,
                     transaction: transaction,
-                    filter: nil  // Don't push filter into single pattern scan
+                    filter: patternFilter
                 )
-                stats.indexScans += scanStats.indexScans
+                newBindings = nestedResults
+                stats = stats.merged(with: nestedStats)
+            } else if Self.hashJoinEnabled && pattern.boundCount >= Self.hashJoinMinStaticBound {
+                let hashEvaluation = try await evaluateHashJoinWithFallback(
+                    pattern: pattern,
+                    leftBindings: currentBindings,
+                    joinVariables: joinVars,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction,
+                    filter: patternFilter
+                )
 
-                // Merge bindings and apply filter
-                for match in matches {
-                    if let merged = binding.merged(with: match) {
-                        // Apply filter only if all needed variables are now bound
-                        if let f = patternFilter {
-                            guard f.evaluate(merged) else { continue }
-                        }
-                        newBindings.append(merged)
-                    }
+                switch hashEvaluation {
+                case .executed(let results, let hashStats):
+                    newBindings = results
+                    stats = stats.merged(with: hashStats)
+                case .fallback(_, let precheckStats):
+                    stats = stats.merged(with: precheckStats)
+                    let (batchedResults, batchedStats) = try await evaluateBatchedNestedLoopJoinStep(
+                        pattern: pattern,
+                        leftBindings: currentBindings,
+                        indexSubspace: indexSubspace,
+                        strategy: strategy,
+                        transaction: transaction,
+                        filter: patternFilter
+                    )
+                    newBindings = batchedResults
+                    stats = stats.merged(with: batchedStats)
                 }
+            } else {
+                let (batchedResults, batchedStats) = try await evaluateBatchedNestedLoopJoinStep(
+                    pattern: pattern,
+                    leftBindings: currentBindings,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction,
+                    filter: patternFilter
+                )
+                newBindings = batchedResults
+                stats = stats.merged(with: batchedStats)
             }
 
             currentBindings = newBindings
@@ -447,6 +524,147 @@ public struct SPARQLQueryExecutor: Sendable {
         }
 
         return (currentBindings, stats)
+    }
+
+    private func evaluateNestedLoopJoinStep(
+        pattern: ExecutionTriple,
+        leftBindings: [VariableBinding],
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        filter: FilterExpression?
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        var results: [VariableBinding] = []
+        var stats = ExecutionStatistics()
+        stats.joinStrategies.append(.nestedLoop)
+
+        for binding in leftBindings {
+            let substituted = pattern.substitute(binding)
+            let (matches, scanStats) = try await executePattern(
+                substituted,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction,
+                filter: nil
+            )
+            stats.indexScans += scanStats.indexScans
+
+            for match in matches {
+                if let merged = binding.merged(with: match) {
+                    if let f = filter, !f.evaluate(merged) {
+                        continue
+                    }
+                    results.append(merged)
+                }
+            }
+        }
+
+        return (results, stats)
+    }
+
+    private func evaluateBatchedNestedLoopJoinStep(
+        pattern: ExecutionTriple,
+        leftBindings: [VariableBinding],
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        filter: FilterExpression?
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        var results: [VariableBinding] = []
+        var stats = ExecutionStatistics()
+        stats.joinStrategies.append(.batchedNestedLoop)
+
+        var scanCache: [ScanSignature: [VariableBinding]] = [:]
+        scanCache.reserveCapacity(leftBindings.count)
+
+        for binding in leftBindings {
+            let substituted = pattern.substitute(binding)
+            let signature = makeScanSignature(for: substituted, strategy: strategy)
+
+            let matches: [VariableBinding]
+            if let cachedMatches = scanCache[signature] {
+                matches = cachedMatches
+            } else {
+                let (scannedMatches, scanStats) = try await executePattern(
+                    substituted,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction,
+                    filter: nil
+                )
+                stats.indexScans += scanStats.indexScans
+                scanCache[signature] = scannedMatches
+                matches = scannedMatches
+            }
+
+            for match in matches {
+                if let merged = binding.merged(with: match) {
+                    if let f = filter, !f.evaluate(merged) {
+                        continue
+                    }
+                    results.append(merged)
+                }
+            }
+        }
+
+        return (results, stats)
+    }
+
+    private func evaluateHashJoinWithFallback(
+        pattern: ExecutionTriple,
+        leftBindings: [VariableBinding],
+        joinVariables: Set<String>,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol,
+        filter: FilterExpression?
+    ) async throws -> HashJoinEvaluation {
+        let sortedJoinVars = joinVariables.sorted()
+
+        var hashTable: [JoinKey: [VariableBinding]] = [:]
+        hashTable.reserveCapacity(leftBindings.count)
+        for binding in leftBindings {
+            let key = JoinKey(binding: binding, variables: sortedJoinVars)
+            hashTable[key, default: []].append(binding)
+        }
+
+        let (rightMatches, scanStats) = try await executePattern(
+            pattern,
+            indexSubspace: indexSubspace,
+            strategy: strategy,
+            transaction: transaction,
+            filter: nil,
+            resultLimit: Self.hashJoinRightSideScanCap + 1
+        )
+
+        if rightMatches.count > Self.hashJoinRightSideScanCap {
+            var precheckStats = ExecutionStatistics()
+            precheckStats.indexScans += scanStats.indexScans
+            precheckStats.joinFallbackReasons.append(.hashJoinRightSideExceededCap)
+            return .fallback(reason: .hashJoinRightSideExceededCap, precheckStats: precheckStats)
+        }
+
+        var results: [VariableBinding] = []
+        for match in rightMatches {
+            let probeKey = JoinKey(binding: match, variables: sortedJoinVars)
+            guard let leftGroup = hashTable[probeKey] else {
+                continue
+            }
+
+            for leftBinding in leftGroup {
+                if let merged = leftBinding.merged(with: match) {
+                    if let f = filter, !f.evaluate(merged) {
+                        continue
+                    }
+                    results.append(merged)
+                }
+            }
+        }
+
+        var hashStats = ExecutionStatistics()
+        hashStats.indexScans += scanStats.indexScans
+        hashStats.joinStrategies.append(.hashJoin)
+        return .executed(results: results, stats: hashStats)
     }
 
     /// Evaluate a join of left bindings with right pattern
@@ -493,6 +711,16 @@ public struct SPARQLQueryExecutor: Sendable {
         strategy: GraphIndexStrategy,
         transaction: any TransactionProtocol
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        if case .basic(let patterns) = rightPattern, patterns.count == 1, let rightTriple = patterns.first {
+            return try await evaluateOptionalBatchedSingleTriple(
+                leftBindings: leftBindings,
+                rightTriple: rightTriple,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+        }
+
         var results: [VariableBinding] = []
         var combinedStats = ExecutionStatistics()
 
@@ -533,6 +761,92 @@ public struct SPARQLQueryExecutor: Sendable {
         return (results, combinedStats)
     }
 
+    /// Evaluate OPTIONAL for a single-triple RHS using scan signature batching.
+    ///
+    /// Preserves SPARQL left-join semantics:
+    /// - Emit merged rows when compatible right matches exist
+    /// - Emit each left row exactly once when no compatible right exists
+    private func evaluateOptionalBatchedSingleTriple(
+        leftBindings: [VariableBinding],
+        rightTriple: ExecutionTriple,
+        indexSubspace: Subspace,
+        strategy: GraphIndexStrategy,
+        transaction: any TransactionProtocol
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        guard !leftBindings.isEmpty else {
+            return ([], ExecutionStatistics())
+        }
+
+        struct OptionalScanGroup {
+            let substitutedPattern: ExecutionPattern
+            var memberIndices: [Int]
+        }
+
+        var groups: [ScanSignature: OptionalScanGroup] = [:]
+        var groupOrder: [ScanSignature] = []
+        groups.reserveCapacity(leftBindings.count)
+        groupOrder.reserveCapacity(leftBindings.count)
+
+        for (index, leftBinding) in leftBindings.enumerated() {
+            let substitutedTriple = rightTriple.substitute(leftBinding)
+            let signature = makeScanSignature(for: substitutedTriple, strategy: strategy)
+            if var group = groups[signature] {
+                group.memberIndices.append(index)
+                groups[signature] = group
+            } else {
+                groups[signature] = OptionalScanGroup(
+                    substitutedPattern: .basic([substitutedTriple]),
+                    memberIndices: [index]
+                )
+                groupOrder.append(signature)
+            }
+        }
+
+        var combinedStats = ExecutionStatistics()
+        var mergedRowsByLeftIndex = Array(repeating: [VariableBinding](), count: leftBindings.count)
+
+        for signature in groupOrder {
+            guard let group = groups[signature] else {
+                continue
+            }
+
+            let rightResult = try await evaluate(
+                pattern: group.substitutedPattern,
+                indexSubspace: indexSubspace,
+                strategy: strategy,
+                transaction: transaction
+            )
+            combinedStats = combinedStats.merged(with: rightResult.stats)
+
+            guard !rightResult.bindings.isEmpty else {
+                continue
+            }
+
+            for leftIndex in group.memberIndices {
+                let leftBinding = leftBindings[leftIndex]
+                for rightBinding in rightResult.bindings {
+                    if let merged = leftBinding.merged(with: rightBinding) {
+                        mergedRowsByLeftIndex[leftIndex].append(merged)
+                    }
+                }
+            }
+        }
+
+        var results: [VariableBinding] = []
+        results.reserveCapacity(leftBindings.count)
+        for (index, leftBinding) in leftBindings.enumerated() {
+            let mergedRows = mergedRowsByLeftIndex[index]
+            if mergedRows.isEmpty {
+                results.append(leftBinding)
+                combinedStats.optionalMisses += 1
+            } else {
+                results.append(contentsOf: mergedRows)
+            }
+        }
+
+        return (results, combinedStats)
+    }
+
     // MARK: - Pattern Execution
 
     /// Execute a single triple pattern against the index with optional filter pushdown
@@ -541,7 +855,8 @@ public struct SPARQLQueryExecutor: Sendable {
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         transaction: any TransactionProtocol,
-        filter: FilterExpression? = nil
+        filter: FilterExpression? = nil,
+        resultLimit: Int? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         // Use legacy path if no properties stored
         if storedFieldNames.isEmpty {
@@ -550,7 +865,8 @@ public struct SPARQLQueryExecutor: Sendable {
                 indexSubspace: indexSubspace,
                 strategy: strategy,
                 transaction: transaction,
-                filter: filter
+                filter: filter,
+                resultLimit: resultLimit
             )
         }
 
@@ -645,6 +961,9 @@ public struct SPARQLQueryExecutor: Sendable {
             }
 
             results.append(binding)
+            if let limit = resultLimit, results.count >= limit {
+                break
+            }
         }
 
         return (results, stats)
@@ -656,7 +975,8 @@ public struct SPARQLQueryExecutor: Sendable {
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         transaction: any TransactionProtocol,
-        filter: FilterExpression?
+        filter: FilterExpression?,
+        resultLimit: Int? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var stats = ExecutionStatistics()
         stats.indexScans = 1
@@ -681,6 +1001,9 @@ public struct SPARQLQueryExecutor: Sendable {
                     guard filter.evaluate(binding) else { continue }
                 }
                 results.append(binding)
+                if let limit = resultLimit, results.count >= limit {
+                    break
+                }
             }
         }
 
@@ -720,6 +1043,11 @@ public struct SPARQLQueryExecutor: Sendable {
 
     /// Get subspace for a specific index ordering
     private func subspaceForOrdering(_ ordering: GraphIndexOrdering, base: Subspace) -> Subspace {
+        base.subspace(orderingSubspaceKey(for: ordering))
+    }
+
+    /// Stable numeric key for GraphIndexOrdering subspaces.
+    private func orderingSubspaceKey(for ordering: GraphIndexOrdering) -> Int64 {
         let key: Int64
         switch ordering {
         case .out: key = 0
@@ -731,7 +1059,73 @@ public struct SPARQLQueryExecutor: Sendable {
         case .pso: key = 6
         case .ops: key = 7
         }
-        return base.subspace(key)
+        return key
+    }
+
+    /// Build a scan signature used for per-pattern scan reuse in evaluateBasic().
+    ///
+    /// Signature is based on:
+    /// - selected index ordering
+    /// - prefix tuple used for range scan
+    /// - graph constraint semantics (bound value / variable / wildcard / none)
+    ///
+    /// This avoids incorrect cache hits when graph constraints differ.
+    private func makeScanSignature(
+        for pattern: ExecutionTriple,
+        strategy: GraphIndexStrategy
+    ) -> ScanSignature {
+        let ordering = selectOptimalOrdering(pattern: pattern, strategy: strategy)
+        let orderingKey = orderingSubspaceKey(for: ordering)
+
+        let elementOrder = ordering.elementOrder
+        let terms = [pattern.subject, pattern.predicate, pattern.object]
+
+        var prefixValues: [FieldValue] = []
+        var allTripleFieldsBound = true
+        for idx in elementOrder {
+            let term = terms[idx]
+            guard term.isBound, let literal = term.literalValue else {
+                allTripleFieldsBound = false
+                break
+            }
+            prefixValues.append(literal)
+        }
+
+        // GraphPropertyScanner can include graph in prefix only when all triple fields are bound.
+        // Legacy scanner always applies graph as post-filter, never in scan prefix.
+        if !storedFieldNames.isEmpty,
+           allTripleFieldsBound,
+           let graphLiteral = pattern.graph?.literalValue {
+            prefixValues.append(graphLiteral)
+        }
+
+        let graphConstraint: ScanSignature.GraphConstraint
+        if graphFieldName == nil {
+            graphConstraint = .none
+        } else if let graphTerm = pattern.graph {
+            switch graphTerm {
+            case .value(let value):
+                graphConstraint = .bound(value)
+            case .quotedTriple:
+                if let literal = graphTerm.literalValue {
+                    graphConstraint = .bound(literal)
+                } else {
+                    graphConstraint = .wildcard
+                }
+            case .variable(let name):
+                graphConstraint = .variable(name)
+            case .wildcard:
+                graphConstraint = .wildcard
+            }
+        } else {
+            graphConstraint = .none
+        }
+
+        return ScanSignature(
+            orderingKey: orderingKey,
+            prefixValues: prefixValues,
+            graphConstraint: graphConstraint
+        )
     }
 
     /// Build scan range for a pattern
@@ -1712,6 +2106,8 @@ extension ExecutionStatistics {
         result.intermediateResults += other.intermediateResults
         result.patternsEvaluated += other.patternsEvaluated
         result.optionalMisses += other.optionalMisses
+        result.joinStrategies.append(contentsOf: other.joinStrategies)
+        result.joinFallbackReasons.append(contentsOf: other.joinFallbackReasons)
         return result
     }
 }

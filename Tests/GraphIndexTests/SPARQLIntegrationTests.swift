@@ -321,6 +321,70 @@ struct SPARQLIntegrationTests {
         }
     }
 
+    @Test("JOIN strategy: hash join selected when right side is bounded")
+    func testHashJoinStrategySelected() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
+
+            let context = container.newContext()
+
+            var statements: [SPARQLTestStatement] = []
+            for i in 0..<80 {
+                statements.append(makeStatement(subject: "u\(i)", predicate: "type", object: "User"))
+                if i < 10 {
+                    statements.append(makeStatement(subject: "u\(i)", predicate: "knows", object: "Target"))
+                }
+            }
+            try await insertStatements(statements, context: context)
+
+            let results = try await context.sparql(SPARQLTestStatement.self)
+                .defaultIndex()
+                .where("?person", "type", "User")
+                .where("?person", "knows", "Target")
+                .select("?person")
+                .execute()
+
+            #expect(results.count == 10)
+            #expect(results.statistics.joinStrategies.contains(.hashJoin))
+            #expect(results.statistics.joinFallbackReasons.isEmpty)
+
+            try await cleanup(container: container)
+        }
+    }
+
+    @Test("JOIN strategy: hash join falls back with explicit reason")
+    func testHashJoinFallbackReasonRecorded() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
+
+            let context = container.newContext()
+
+            var statements: [SPARQLTestStatement] = []
+            for i in 0..<80 {
+                statements.append(makeStatement(subject: "u\(i)", predicate: "type", object: "User"))
+                statements.append(makeStatement(subject: "u\(i)", predicate: "knows", object: "Target"))
+            }
+            try await insertStatements(statements, context: context)
+
+            let results = try await context.sparql(SPARQLTestStatement.self)
+                .defaultIndex()
+                .where("?person", "type", "User")
+                .where("?person", "knows", "Target")
+                .select("?person")
+                .execute()
+
+            #expect(results.count == 80)
+            #expect(results.statistics.joinFallbackReasons.contains(.hashJoinRightSideExceededCap))
+            #expect(results.statistics.joinStrategies.contains(.batchedNestedLoop))
+
+            try await cleanup(container: container)
+        }
+    }
+
     // MARK: - OPTIONAL Tests
 
     @Test("OPTIONAL: some match, some don't")
@@ -365,6 +429,50 @@ struct SPARQLIntegrationTests {
             // Carol should have email
             #expect(sorted[2]["?person"] == "Carol")
             #expect(sorted[2]["?email"] == "carol@example.com")
+
+            try await cleanup(container: container)
+        }
+    }
+
+    @Test("OPTIONAL: batched evaluation does not duplicate unmatched left rows")
+    func testOptionalBatchedNoDuplicateUnmatchedRows() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let container = try await setupContainer()
+            try await cleanup(container: container)
+            try await setIndexStatesToReadable(container: container)
+
+            let context = container.newContext()
+
+            try await insertStatements([
+                makeStatement(subject: "Alice", predicate: "likes", object: "Tea"),
+                makeStatement(subject: "Alice", predicate: "email", object: "alice@example.com"),
+                makeStatement(subject: "Bob", predicate: "likes", object: "Coffee"),
+                makeStatement(subject: "Bob", predicate: "likes", object: "Cake"),
+                // Bob intentionally has no email
+            ], context: context)
+
+            // Bob yields two left bindings with the same optional lookup key:
+            // {?person=Bob, ?item=Coffee}, {?person=Bob, ?item=Cake}
+            // OPTIONAL must keep each unmatched left row exactly once.
+            let results = try await context.sparql(SPARQLTestStatement.self)
+                .defaultIndex()
+                .where("?person", "likes", "?item")
+                .optional { $0.where("?person", "email", "?email") }
+                .select("?person", "?item", "?email")
+                .execute()
+
+            #expect(results.count == 3)
+
+            let bobRows = results.bindings.filter { $0["?person"]?.stringValue == "Bob" }
+            #expect(bobRows.count == 2)
+            #expect(bobRows.allSatisfy { $0["?email"] == nil })
+
+            let bobItems = Set(bobRows.compactMap { $0["?item"]?.stringValue })
+            #expect(bobItems == Set(["Coffee", "Cake"]))
+
+            let aliceRows = results.bindings.filter { $0["?person"]?.stringValue == "Alice" }
+            #expect(aliceRows.count == 1)
+            #expect(aliceRows[0]["?email"]?.stringValue == "alice@example.com")
 
             try await cleanup(container: container)
         }

@@ -289,6 +289,62 @@ struct NamedGraphSPARQLTests {
         try await cleanup(container: container)
     }
 
+    @Test("Join with graph-bound substitution keeps graph-specific results")
+    func testJoinGraphBoundSubstitutionRespectsGraphConstraint() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+        try await setIndexStatesToReadable(container: container)
+        let context = container.newContext()
+
+        let quads = [
+            makeQuad(subject: "Alice", predicate: "marker", object: "yes", graph: "g1"),
+            makeQuad(subject: "Alice", predicate: "marker", object: "yes", graph: "g2"),
+            makeQuad(subject: "Alice", predicate: "knows", object: "Bob", graph: "g1"),
+            makeQuad(subject: "Alice", predicate: "knows", object: "Carol", graph: "g2"),
+            makeQuad(subject: "Alice", predicate: "knows", object: "Mallory", graph: "g3"),
+        ]
+        for quad in quads {
+            context.insert(quad)
+        }
+        try await context.save()
+
+        // Left pattern binds ?g, right pattern is evaluated with substituted graph.
+        // Different graph values share the same (subject, predicate) prefix and must
+        // not share cached scan results.
+        let pattern = ExecutionPattern.basic([
+            ExecutionTriple(
+                subject: .value(.string("Alice")),
+                predicate: .value(.string("marker")),
+                object: .value(.string("yes")),
+                graph: .variable("?g")
+            ),
+            ExecutionTriple(
+                subject: .value(.string("Alice")),
+                predicate: .value(.string("knows")),
+                object: .variable("?friend"),
+                graph: .variable("?g")
+            )
+        ])
+
+        let results = try await context.executeSPARQLPattern(
+            pattern,
+            on: SPARQLQuadStatement.self,
+            projection: ["?g", "?friend"]
+        )
+
+        #expect(results.count == 2)
+        let pairs: Set<String> = Set(results.bindings.compactMap { binding in
+            guard let graph = binding["?g"]?.stringValue,
+                  let friend = binding["?friend"]?.stringValue else {
+                return nil
+            }
+            return "\(graph)|\(friend)"
+        })
+        #expect(pairs == Set(["g1|Bob", "g2|Carol"]))
+
+        try await cleanup(container: container)
+    }
+
     // MARK: - OPTIONAL Test
 
     @Test("OPTIONAL with graph constraint")

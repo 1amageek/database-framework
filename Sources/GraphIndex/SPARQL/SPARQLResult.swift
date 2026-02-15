@@ -165,6 +165,20 @@ public enum SPARQLLimitReason: Sendable, Equatable {
     case memoryLimit
 }
 
+/// Join strategy selected during BGP evaluation.
+public enum JoinExecutionStrategy: String, Sendable, Equatable {
+    case nestedLoop
+    case batchedNestedLoop
+    case hashJoin
+}
+
+/// Reason why hash join candidate was downgraded to another strategy.
+///
+/// These reasons represent planner/runtime guard decisions, not execution errors.
+public enum JoinFallbackReason: String, Sendable, Equatable {
+    case hashJoinRightSideExceededCap
+}
+
 /// Execution statistics for query analysis
 public struct ExecutionStatistics: Sendable {
     /// Number of index scans performed
@@ -185,13 +199,21 @@ public struct ExecutionStatistics: Sendable {
     /// Number of optional patterns that didn't match
     public var optionalMisses: Int
 
+    /// Join strategies chosen for each BGP step
+    public var joinStrategies: [JoinExecutionStrategy]
+
+    /// Join fallback decisions recorded during planning/execution
+    public var joinFallbackReasons: [JoinFallbackReason]
+
     public init(
         indexScans: Int = 0,
         joinOperations: Int = 0,
         intermediateResults: Int = 0,
         patternsEvaluated: Int = 0,
         durationNs: UInt64 = 0,
-        optionalMisses: Int = 0
+        optionalMisses: Int = 0,
+        joinStrategies: [JoinExecutionStrategy] = [],
+        joinFallbackReasons: [JoinFallbackReason] = []
     ) {
         self.indexScans = indexScans
         self.joinOperations = joinOperations
@@ -199,6 +221,8 @@ public struct ExecutionStatistics: Sendable {
         self.patternsEvaluated = patternsEvaluated
         self.durationNs = durationNs
         self.optionalMisses = optionalMisses
+        self.joinStrategies = joinStrategies
+        self.joinFallbackReasons = joinFallbackReasons
     }
 
     /// Execution time in milliseconds
