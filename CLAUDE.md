@@ -114,8 +114,8 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 | **Core** | 46 | `Persistable`, `IndexKind`, `IndexDescriptor`, `FieldValue`, `Schema`, マクロ定義、Protobuf コーデック |
 | **CoreMacros** | 6 | `@Persistable`, `#Directory`, `#Index` のコンパイラプラグイン |
 | **QueryIR** | 19 | SQL/SPARQL 統一クエリ中間表現 (`SelectQuery`, `Expression`, `DataSource`) |
-| **Graph** | 20 | `GraphIndexKind`, RDF (`RDFTerm`), OWL オントロジー型, SHACL 制約型, `@Property` マクロ, `OntologyPropertyDescriptor` |
-| **GraphMacros** | 1 | `@Property` マクロのコンパイラプラグイン |
+| **Graph** | 20 | `GraphIndexKind`, RDF (`RDFTerm`), OWL オントロジー型, SHACL 制約型, `@OWLClass` / `@OWLDataProperty` / `@OWLObjectProperty` マクロ, `OWLDataPropertyDescriptor`, `OWLObjectPropertyDescriptor` |
+| **GraphMacros** | 3 | `@OWLClass` / `@OWLDataProperty` / `@OWLObjectProperty` マクロのコンパイラプラグイン |
 | **Relationship** | 3 | `RelationshipIndexKind`, `RelationshipDescriptor` |
 | **DatabaseClientProtocol** | 4 | クライアント↔サーバー通信プロトコル |
 | **Vector / FullText / Spatial / Rank / Permuted** | 各1 | IndexKind 定義のみ |
@@ -244,7 +244,7 @@ GraphIndex/ (68 files)
 │   ├── CycleDetector.swift        ← 閉路検出
 │   └── TopologicalSort.swift      ← トポロジカルソート
 │
-├── OntologyStorage/ (6 files)    ← オントロジー FDB 永続化
+├── OntologyStorage/ (7 files)    ← オントロジー FDB 永続化 + IRI バリデーション
 ├── SameAs/ (1 file)              ← owl:sameAs Union-Find
 ├── SQLPGQ/ (2 files)             ← SQL/PGQ GRAPH_TABLE 実行
 ├── Query/ (3 files)              ← グラフクエリビルダー
@@ -262,12 +262,19 @@ Graph/ (20 files)
 │   ├── .literal(OWLLiteral)      ← 型付きリテラル（OWLLiteral でラップ）
 │   └── .blankNode(String)
 │
-├── OntologyPropertyDescriptor    ← @Property メタデータ（Descriptor 準拠）
+├── OWLDataPropertyDescriptor     ← @OWLDataProperty メタデータ（Descriptor 準拠）
 │   ├── iri: String               ← OWL プロパティ IRI
-│   ├── isObjectProperty: Bool    ← to: 指定で true
-│   ├── targetTypeName: String?   ← ObjectProperty の対象型名
-│   └── targetFieldName: String?  ← ObjectProperty の対象フィールド
-├── PropertyMacro                 ← @Property マクロ宣言（GraphMacros に委譲）
+│   ├── fieldName: String         ← Swift フィールド名
+│   └── label: String?            ← 人間可読ラベル
+├── OWLObjectPropertyDescriptor   ← @OWLObjectProperty メタデータ（Descriptor 準拠）
+│   ├── iri: String               ← OWL ObjectProperty IRI
+│   ├── fromFieldName: String     ← from フィールド名
+│   └── toFieldName: String       ← to フィールド名
+├── OWLClassMacro                 ← @OWLClass マクロ宣言（GraphMacros に委譲）
+├── OWLDataPropertyMacro          ← @OWLDataProperty マクロ宣言
+├── OWLObjectPropertyMacro        ← @OWLObjectProperty マクロ宣言
+├── OWLClassEntity                ← @OWLClass が生成するプロトコル
+├── OWLObjectPropertyEntity       ← @OWLObjectProperty が生成するプロトコル
 │
 ├── Schema/ (OWL 2)               ← オントロジー型定義
 │   ├── OWLOntology               ← コンテナ
@@ -277,7 +284,7 @@ Graph/ (20 files)
 │   ├── OWLLiteral (struct)       ← lexicalForm: String + datatype: String（non-optional）
 │   ├── OWLIndividual (enum)      ← Named / Anonymous
 │   ├── OWLDataRange (indirect enum) ← Datatype + Facet 制約
-│   └── OntologyIndex             ← OntologyEntity プロトコル
+│   └── OntologyIndex             ← OWLClassEntity プロトコル
 │
 ├── Namespace/
 │   └── PrefixMap                 ← IRI プレフィックスマッピング
@@ -290,8 +297,11 @@ Graph/ (20 files)
     ├── SHACLPath (indirect enum) ← プロパティパス
     └── SHACLTarget (enum)        ← ターゲット宣言
 
-GraphMacros/ (1 file)
-└── PropertyMacro.swift           ← @Property マクロのコンパイラプラグイン実装
+GraphMacros/ (4 files)
+├── OWLClassMacro.swift           ← @OWLClass マクロのコンパイラプラグイン実装
+├── OWLDataPropertyMacro.swift    ← @OWLDataProperty マクロのコンパイラプラグイン実装
+├── OWLObjectPropertyMacro.swift  ← @OWLObjectProperty マクロのコンパイラプラグイン実装
+└── GraphMacrosPlugin.swift       ← CompilerPlugin エントリポイント
 ```
 
 ### Index Comparison Table
@@ -692,6 +702,18 @@ SQL/SPARQL クエリの解析・変換・シリアライズを提供するモジ
 - SQL/PGQ グラフパターンマッチング対応 (ISO/IEC 9075-16:2023)
 - SPARQL 1.1/1.2 プロパティパス対応
 - クエリ分析（変数参照、集約関数検出）
+
+### Ontology Integration Levels
+
+オントロジー機能は3段階で利用できる。各レベルは前のレベルの上に構築される。
+
+| レベル | コンポーネント | 用途 |
+|--------|--------------|------|
+| **1. OntologyStore** | `OWLOntology`, `context.ontology` API | OWL 推論、クラス/プロパティ階層クエリ |
+| **2. Macros + OntologyStore** | Level 1 + `@OWLClass`, `@OWLObjectProperty`, `@OWLDataProperty` | Persistable 型を OWL 概念にバインド、IRI バリデーション、テーブルに対する SPARQL |
+| **3. Macros + OntologyStore + Triples** | Level 2 + `GraphIndexKind` トリプルストア | テーブルとトリプルの横断 SPARQL フェデレーション |
+
+**設計原則**: マクロはバインディング（束縛）であって定義ではない。クラス階層・プロパティ特性・Axioms は OntologyStore が持つ。マクロは「この Swift 型が OntologyStore のどの概念に対応するか」を宣言する。
 
 ### Extension Pattern for Optional Features
 

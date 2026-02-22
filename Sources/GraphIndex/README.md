@@ -726,69 +726,145 @@ let ancestors = reasoner.reachableIndividuals(
 )
 ```
 
-## Ontology-Aware Persistable Types
+## Ontology Integration
 
-GraphIndex integrates with `@Ontology` and `@Property` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module) to bridge Persistable types and knowledge graphs. `@Persistable` handles pure persistence; `@Ontology` handles OWL class mapping independently.
+GraphIndex provides three incremental levels of ontology integration. Each level builds on the previous one.
 
-### Ontology Registration via OntologyStore
+```
+Level 1: OntologyStore
+  OWLOntology → OntologyStore → Reasoning / Hierarchy queries
 
-```swift
-let schema = Schema([Employee.self, Department.self, RDFTriple.self])
-let container = try await FDBContainer(for: schema)
-let context = container.newContext()
+Level 2: Macros + OntologyStore
+  @OWLClass / @OWLObjectProperty → OntologyStore bindings
+  → IRI validation, SPARQL over Persistable tables
 
-// Load ontology independently via context.ontology API
-let ontology = OWLOntology(iri: "http://example.org/company") {
-    Class("ex:Employee", subClassOf: "ex:Person")
-    Class("ex:Department")
-    ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
-}
-try await context.ontology.load(ontology)
+Level 3: Macros + OntologyStore + Triples
+  Level 2 + GraphIndex triple store
+  → SPARQL federation across tables and triples
 ```
 
-### @Ontology and @Property
+| Level | Components | Use Case |
+|-------|-----------|----------|
+| **1. OntologyStore** | `OWLOntology`, `context.ontology` API | OWL reasoning, class hierarchy, property chain evaluation |
+| **2. Macros + OntologyStore** | Level 1 + `@OWLClass`, `@OWLObjectProperty`, `@OWLDataProperty` | Bind Persistable types to OWL concepts, IRI validation, SPARQL over tables |
+| **3. Macros + OntologyStore + Triples** | Level 2 + `GraphIndexKind` triple store | SPARQL federation across Persistable tables and RDF triples |
+
+### Level 1: OntologyStore
+
+Define and load OWL ontologies for reasoning and hierarchy queries. No macros or Persistable types required.
+
+```swift
+var ontology = OWLOntology(iri: "http://example.org/company")
+ontology.classes = [
+    OWLClass(iri: "ex:Person"),
+    OWLClass(iri: "ex:Employee"),
+    OWLClass(iri: "ex:Department"),
+]
+ontology.objectProperties = [
+    OWLObjectProperty(iri: "ex:worksFor"),
+]
+ontology.axioms = [
+    .subClassOf(sub: .named("ex:Employee"), sup: .named("ex:Person")),
+    .objectPropertyDomain(property: "ex:worksFor", domain: "ex:Employee"),
+    .objectPropertyRange(property: "ex:worksFor", range: "ex:Department"),
+]
+
+// Load to OntologyStore
+try await context.ontology.load(ontology)
+
+// Reasoning
+let reasoner = try await context.ontology.reasoner(for: "http://example.org/company")
+let isSubClass = reasoner.subsumes(
+    superClass: .named("ex:Person"),
+    subClass: .named("ex:Employee")
+)
+
+// Hierarchy queries
+let superClasses = try await context.ontology.getSuperClasses(
+    of: "ex:Employee", in: "http://example.org/company"
+)
+let isTransitive = try await context.ontology.isTransitive(
+    property: "ex:ancestorOf", in: "http://example.org/company"
+)
+```
+
+**What you get**: OWL DL reasoning (Tableaux), class/property hierarchy traversal, property chain evaluation, inverse property lookup, SHACL validation.
+
+### Level 2: Macros + OntologyStore
+
+Bind Persistable types to OntologyStore concepts with macros. **Macros are bindings, not definitions** — class hierarchies, property characteristics, and axioms live in the OntologyStore. Macros declare which OntologyStore concept a Swift type corresponds to.
 
 ```swift
 @Persistable
-@Ontology("ex:Employee")
+@OWLClass("ex:Employee")
 struct Employee {
     #Directory<Employee>("app", "employees")
 
-    @Property("ex:name")
-    var name: String                    // DataProperty (no `to:`)
+    @OWLDataProperty("ex:name")
+    var name: String
 
-    @Property("ex:worksFor", to: \Department.id)
-    var departmentID: String?           // ObjectProperty (has `to:`)
+    @OWLDataProperty("ex:worksFor", to: \Department.id, functional: true)
+    var departmentID: String?
+}
+
+@Persistable
+@OWLObjectProperty("ex:employs", from: "employeeID", to: "projectID")
+struct Assignment {
+    var id: String = UUID().uuidString
+    var employeeID: String = ""
+    var projectID: String = ""
+
+    @OWLDataProperty("ex:since")
+    var startDate: Date = Date()
 }
 ```
 
-**Macro responsibility separation**:
-- `@Persistable` (Core): `id`, `persistableType`, `allFields`, `fieldSchemas`, `indexDescriptors`, `Codable`/`Sendable`
-- `@Ontology` (Graph): `OntologyEntity` conformance, `ontologyClassIRI`, `ontologyPropertyDescriptors`, reverse indexes for `@Property(to:)` fields
+`@OWLObjectProperty` automatically generates a `GraphIndexKind.adjacency` index for the `from`/`to` fields.
 
-### Virtual Triples from Persistable Types
+#### IRI Validation
 
-Each row of an ontology-aware Persistable type can be interpreted as virtual RDF triples:
+`context.ontology.validateSchema()` checks that all `@OWLClass` and `@OWLObjectProperty` IRIs reference valid entries in the OntologyStore, including property type verification (ObjectProperty vs DataProperty):
+
+```swift
+try await context.ontology.validateSchema(schema, ontologyIRI: "http://example.org/company")
+// Throws OntologyValidationError if any IRI is not found or has wrong type
+```
+
+#### Virtual Triples from Persistable Types
+
+Each row of a macro-annotated Persistable type is interpreted as virtual RDF triples:
 
 ```
 Employee(id: "alice", name: "Alice", departmentID: "dept1")
 
 // Virtual triples:
-// (alice, rdf:type, ex:Employee)        ← from @Ontology("ex:Employee")
-// (alice, ex:worksFor, dept1)           ← from @Property("ex:worksFor", to:)
+// (alice, rdf:type, ex:Employee)        ← from @OWLClass("ex:Employee")
+// (alice, ex:name, "Alice")             ← from @OWLDataProperty("ex:name")
+// (alice, ex:worksFor, dept1)           ← from @OWLDataProperty("ex:worksFor", to:)
 ```
 
-The query planner resolves `@Property` definitions to map SPARQL triple patterns to table scans, using auto-generated indexes for efficient execution.
-
-### SPARQL Federation
-
-Query across both GraphIndex triples and Persistable type tables:
+SPARQL can query Persistable tables directly:
 
 ```swift
 let results = try await context.sparql()
-    .from(RDFTriple.self)       // Triple store
-    .from(Employee.self)         // Employee table
-    .from(Department.self)       // Department table
+    .from(Employee.self)
+    .where("?e", "rdf:type", "ex:Employee")
+    .where("?e", "ex:name", "?name")
+    .select("?e", "?name")
+    .execute()
+```
+
+**What you add**: IRI validation, Persistable tables as SPARQL data sources, virtual triple interpretation.
+
+### Level 3: Macros + OntologyStore + Triples
+
+Add a GraphIndex triple store alongside Persistable tables. Knowledge that doesn't fit in structured tables (e.g. ad-hoc relationships, external linked data) goes into the triple store. SPARQL federation resolves each triple pattern to the optimal source:
+
+```swift
+let results = try await context.sparql()
+    .from(RDFTriple.self)        // Triple store
+    .from(Employee.self)          // Persistable table
+    .from(Department.self)        // Persistable table
     .where("?person", "rdf:type", "ex:Employee")
     .where("?person", "ex:worksFor", "?dept")
     .where("?dept", "ex:locatedIn", "?city")  // Only in triple store
@@ -800,9 +876,11 @@ The planner selects the optimal source per pattern:
 
 | Pattern | Source | Reason |
 |---------|--------|--------|
-| `?person rdf:type ex:Employee` | Employee table | Has `@Ontology("ex:Employee")` |
-| `?person ex:worksFor ?dept` | Employee table | Has `@Property("ex:worksFor")` with auto-index |
-| `?dept ex:locatedIn ?city` | RDFTriple GraphIndex | No matching `@Property` in any table |
+| `?person rdf:type ex:Employee` | Employee table | Has `@OWLClass("ex:Employee")` |
+| `?person ex:worksFor ?dept` | Employee table | Has `@OWLDataProperty("ex:worksFor")` with auto-index |
+| `?dept ex:locatedIn ?city` | RDFTriple GraphIndex | No matching macro annotation in any table |
+
+**What you add**: SPARQL federation across tables and triples, storage for unstructured knowledge alongside structured data.
 
 ## OWL DL Reasoning
 

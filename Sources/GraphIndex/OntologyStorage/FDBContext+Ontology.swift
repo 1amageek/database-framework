@@ -8,6 +8,7 @@
 import Foundation
 import FoundationDB
 import Graph
+import Core
 import DatabaseEngine
 
 // MARK: - FDBContext Extension
@@ -350,6 +351,57 @@ public struct OntologyContextAPI: Sendable {
                 ontologyIRI: ontologyIRI,
                 transaction: transaction
             )
+        }
+    }
+
+    // MARK: - Schema Validation
+
+    /// Validate all @OWLClass / @OWLObjectProperty IRIs in a schema
+    /// against the OntologyStore.
+    ///
+    /// Checks that every entity with `ontologyClassIRI` or `objectPropertyIRI`
+    /// references a class or property that exists in the specified ontology.
+    ///
+    /// - Parameters:
+    ///   - schema: The schema to validate
+    ///   - ontologyIRI: The ontology IRI to validate against
+    /// - Throws: OntologyValidationError.validationFailed if any IRI is not found
+    ///
+    /// **Example**:
+    /// ```swift
+    /// let schema = Schema([Employee.self, Assignment.self])
+    /// try await context.ontology.validateSchema(schema, ontologyIRI: "http://example.org/onto")
+    /// ```
+    public func validateSchema(_ schema: Schema, ontologyIRI: String) async throws {
+        let ontologyStore = store()
+        let validator = OntologyIRIValidator(store: ontologyStore)
+
+        let errors: [OntologyValidationError] = try await context.indexQueryContext.withTransaction { transaction in
+            var collected: [OntologyValidationError] = []
+            for entity in schema.entities {
+                // Validate @OWLClass IRI
+                if let classIRI = entity.ontologyClassIRI {
+                    do {
+                        try await validator.validateClass(classIRI, in: ontologyIRI, transaction: transaction)
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
+                    }
+                }
+
+                // Validate @OWLObjectProperty IRI
+                if let propIRI = entity.objectPropertyIRI {
+                    do {
+                        try await validator.validateObjectProperty(propIRI, in: ontologyIRI, transaction: transaction)
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
+                    }
+                }
+            }
+            return collected
+        }
+
+        if !errors.isEmpty {
+            throw OntologyValidationError.validationFailed(errors: errors)
         }
     }
 }
