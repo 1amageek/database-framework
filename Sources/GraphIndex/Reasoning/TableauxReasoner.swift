@@ -364,7 +364,20 @@ public final class TableauxReasoner: @unchecked Sendable {
                 )
             }
 
-            // Phase 3: Apply deterministic rules until saturation
+            // Phase 3a: Expand transitive roles BEFORE deterministic rules.
+            // The ≤-rule (max-cardinality) counts qualified successors, which
+            // must include successors reachable via transitive sub-roles.
+            // Expanding transitive roles first ensures all edges are visible
+            // to the cardinality count.
+            for role in roleHierarchy.allRoles {
+                if roleHierarchy.isTransitive(role) {
+                    if graph.expandTransitiveRole(role) {
+                        stats.ruleApplications += 1
+                    }
+                }
+            }
+
+            // Phase 3b: Apply deterministic rules until saturation
             var deterministicDone = false
             while !deterministicDone {
                 let detResult = applyDeterministicRules(graph: graph, stats: &stats)
@@ -409,7 +422,8 @@ public final class TableauxReasoner: @unchecked Sendable {
                 }
             }
 
-            // Phase 7: Expand transitive roles
+            // Phase 7: Re-expand transitive roles (new edges may have been
+            // created by generating/non-deterministic rules or property chains)
             var transitiveChanged = false
             for role in roleHierarchy.allRoles {
                 if roleHierarchy.isTransitive(role) {

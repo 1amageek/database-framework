@@ -71,12 +71,22 @@ public struct OntologyContext: Sendable {
         roleHierarchy.subRolesPrecomputed(of: propertyIRI)
     }
 
-    /// Get the inverse property (owl:inverseOf)
+    /// Get the inverse property (owl:inverseOf or symmetric self-inverse)
     ///
-    /// For `ex:hasChild` inverse of `ex:hasParent`,
-    /// `^ex:hasChild` should query `ex:hasParent` with swapped from/to.
+    /// OWL semantics:
+    /// - If `owl:inverseOf(P, Q)` is declared, returns Q.
+    /// - If P is symmetric, P is its own inverse (P⁻¹ = P).
+    ///
+    /// Reference: OWL 2 Structural Specification, Section 9.2.1
     public func inverseProperty(of propertyIRI: String) -> String? {
-        roleHierarchy.inverse(of: propertyIRI)
+        if let declared = roleHierarchy.inverse(of: propertyIRI) {
+            return declared
+        }
+        // Symmetric properties are their own inverse: R ≡ R⁻¹
+        if roleHierarchy.isSymmetric(propertyIRI) {
+            return propertyIRI
+        }
+        return nil
     }
 
     /// Check if a property is transitive

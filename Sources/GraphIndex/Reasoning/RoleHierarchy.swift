@@ -488,6 +488,12 @@ public struct RoleHierarchy: Sendable {
     //
     // Reference: Kahn, A.B. (1962). "Topological sorting of large networks"
 
+    /// Compute transitive closures for super-role and sub-role relationships.
+    ///
+    /// Uses Kahn's algorithm (in-degree tracking) for O(V+E) topological sort.
+    /// For cyclic hierarchies, falls back to DFS with visited-set cycle detection.
+    ///
+    /// Reference: Kahn, A.B. (1962). "Topological sorting of large networks"
     private mutating func computeClosuresIfNeeded() {
         guard !closuresComputed else { return }
 
@@ -500,8 +506,19 @@ public struct RoleHierarchy: Sendable {
         }
 
         // --- Super-role closure (process roots first) ---
+        // Build reverse index: superRole → [roles that list it as a super]
+        var dependentsOfSuper: [String: [String]] = [:]
+        var inDegreeSup: [String: Int] = [:]
+        for role in allRoles {
+            let superCount = roles[role]?.superRoles.count ?? 0
+            inDegreeSup[role] = superCount
+            for sup in roles[role]?.superRoles ?? [] {
+                dependentsOfSuper[sup, default: []].append(role)
+            }
+        }
+
+        var queue: [String] = allRoles.filter { inDegreeSup[$0] == 0 }
         var processedSuper = Set<String>()
-        var queue: [String] = allRoles.filter { (roles[$0]?.superRoles ?? []).isEmpty }
 
         while !queue.isEmpty {
             let role = queue.removeFirst()
@@ -515,26 +532,37 @@ public struct RoleHierarchy: Sendable {
             }
             superRoleClosure[role] = closure
 
-            // Enqueue roles whose superRoles include this role
-            for (otherRole, otherInfo) in roles {
-                if processedSuper.contains(otherRole) { continue }
-                if otherInfo.superRoles.contains(role) {
-                    let allDeps = otherInfo.superRoles.allSatisfy { processedSuper.contains($0) }
-                    if allDeps {
-                        queue.append(otherRole)
-                    }
+            // Decrement in-degree for roles that depend on this one
+            for dependent in dependentsOfSuper[role] ?? [] {
+                if processedSuper.contains(dependent) { continue }
+                inDegreeSup[dependent] = (inDegreeSup[dependent] ?? 1) - 1
+                if inDegreeSup[dependent] == 0 {
+                    queue.append(dependent)
                 }
             }
         }
 
-        // Fallback for cycles
+        // Fallback for cycles (roles with non-zero in-degree after Kahn's)
         for role in allRoles where !processedSuper.contains(role) {
-            superRoleClosure[role] = computeSuperClosureFallback(for: role, visited: [])
+            superRoleClosure[role] = computeClosureDFS(
+                for: role, direction: .super, visited: []
+            )
         }
 
         // --- Sub-role closure (process leaves first) ---
+        // Build reverse index: subRole → [roles that list it as a sub]
+        var dependentsOfSub: [String: [String]] = [:]
+        var inDegreeSub: [String: Int] = [:]
+        for role in allRoles {
+            let subCount = roles[role]?.subRoles.count ?? 0
+            inDegreeSub[role] = subCount
+            for sub in roles[role]?.subRoles ?? [] {
+                dependentsOfSub[sub, default: []].append(role)
+            }
+        }
+
+        queue = allRoles.filter { inDegreeSub[$0] == 0 }
         var processedSub = Set<String>()
-        queue = allRoles.filter { (roles[$0]?.subRoles ?? []).isEmpty }
 
         while !queue.isEmpty {
             let role = queue.removeFirst()
@@ -548,26 +576,34 @@ public struct RoleHierarchy: Sendable {
             }
             subRoleClosure[role] = closure
 
-            for (otherRole, otherInfo) in roles {
-                if processedSub.contains(otherRole) { continue }
-                if otherInfo.subRoles.contains(role) {
-                    let allDeps = otherInfo.subRoles.allSatisfy { processedSub.contains($0) }
-                    if allDeps {
-                        queue.append(otherRole)
-                    }
+            for dependent in dependentsOfSub[role] ?? [] {
+                if processedSub.contains(dependent) { continue }
+                inDegreeSub[dependent] = (inDegreeSub[dependent] ?? 1) - 1
+                if inDegreeSub[dependent] == 0 {
+                    queue.append(dependent)
                 }
             }
         }
 
         // Fallback for cycles
         for role in allRoles where !processedSub.contains(role) {
-            subRoleClosure[role] = computeSubClosureFallback(for: role, visited: [])
+            subRoleClosure[role] = computeClosureDFS(
+                for: role, direction: .sub, visited: []
+            )
         }
 
         closuresComputed = true
     }
 
-    private func computeSuperClosureFallback(for role: String, visited: Set<String>) -> Set<String> {
+    private enum ClosureDirection { case `super`, sub }
+
+    /// DFS-based closure computation for cyclic hierarchies.
+    /// Cycle-safe via visited set tracking.
+    private func computeClosureDFS(
+        for role: String,
+        direction: ClosureDirection,
+        visited: Set<String>
+    ) -> Set<String> {
         var result = Set<String>()
         guard let info = roles[role] else { return result }
         guard !visited.contains(role) else { return result }
@@ -575,25 +611,15 @@ public struct RoleHierarchy: Sendable {
         var newVisited = visited
         newVisited.insert(role)
 
-        for superRole in info.superRoles {
-            result.insert(superRole)
-            result.formUnion(computeSuperClosureFallback(for: superRole, visited: newVisited))
+        let neighbors: Set<String>
+        switch direction {
+        case .super: neighbors = info.superRoles
+        case .sub:   neighbors = info.subRoles
         }
 
-        return result
-    }
-
-    private func computeSubClosureFallback(for role: String, visited: Set<String>) -> Set<String> {
-        var result = Set<String>()
-        guard let info = roles[role] else { return result }
-        guard !visited.contains(role) else { return result }
-
-        var newVisited = visited
-        newVisited.insert(role)
-
-        for subRole in info.subRoles {
-            result.insert(subRole)
-            result.formUnion(computeSubClosureFallback(for: subRole, visited: newVisited))
+        for neighbor in neighbors {
+            result.insert(neighbor)
+            result.formUnion(computeClosureDFS(for: neighbor, direction: direction, visited: newVisited))
         }
 
         return result

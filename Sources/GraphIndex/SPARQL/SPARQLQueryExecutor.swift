@@ -1636,16 +1636,31 @@ public struct SPARQLQueryExecutor: Sendable {
                 )
             default:
                 // Simple inverse (iri, negatedPropertySet): swap subject and object
-                // F-2: Also consult owl:inverseOf for additional matches
+                // F-2: Also consult owl:inverseOf for additional matches.
+                // The inverse property is queried as .iri(inverseProp), which triggers
+                // F-1 sub-property expansion automatically. For symmetric properties,
+                // inverseProperty() returns the property itself, so we skip the
+                // duplicate query (swapped already covers it).
                 if case .iri(let predicate) = innerPath, let ctx = ontologyContext,
                    let inverseProp = ctx.inverseProperty(of: predicate) {
                     // 1. Standard SPARQL: ^p = swap subject/object and query p
+                    //    This also expands sub-properties of p via F-1.
                     let swappedResult = try await evaluateExecutionPropertyPath(
                         subject: object, path: innerPath, object: subject,
                         indexSubspace: indexSubspace, strategy: strategy,
                         transaction: transaction, config: config, depth: depth
                     )
-                    // 2. owl:inverseOf: query inverse property with original s/o
+
+                    // 2. owl:inverseOf: query inverse property with original s/o.
+                    //    Passing .iri(inverseProp) triggers F-1 expansion on the
+                    //    inverse, so sub-properties of the inverse are also included.
+                    //    Skip if symmetric (inverseProp == predicate), since swapped
+                    //    query already covers the same edges.
+                    if inverseProp == predicate {
+                        // Symmetric: ^p ≡ p (swap already handles it)
+                        return swappedResult
+                    }
+
                     let inverseResult = try await evaluateExecutionPropertyPath(
                         subject: subject, path: .iri(inverseProp), object: object,
                         indexSubspace: indexSubspace, strategy: strategy,

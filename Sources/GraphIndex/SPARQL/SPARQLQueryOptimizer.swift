@@ -506,13 +506,21 @@ public struct SPARQLQueryOptimizer: Sendable {
 
             // F-4: Adjust multiplier for ontology-known properties
             if let ctx = ontologyContext, case .iri(let predIRI) = path {
-                // Functional property: at most 1 value per subject
-                if ctx.isFunctional(predIRI) {
+                let subPropCount = ctx.subProperties(of: predIRI).count
+
+                // Functional property hint: at most 1 value per subject.
+                // Only apply when there are no sub-properties, because
+                // the union of sub-property results can exceed 1 even if
+                // the parent property is functional.
+                if ctx.isFunctional(predIRI) && subPropCount == 0 {
                     pathMultiplier = max(1, pathMultiplier * 0.1)
                 }
-                // Sub-property count inflates cardinality
-                let subPropCount = ctx.subProperties(of: predIRI).count
-                if subPropCount > 0 {
+
+                // Sub-property count inflates cardinality only for unbound
+                // subjects. When subject is bound, the total results are
+                // bounded by the subject's actual edges, not by the number
+                // of sub-properties in the hierarchy.
+                if subPropCount > 0 && !subjectBound {
                     pathMultiplier *= Double(1 + subPropCount)
                 }
             }

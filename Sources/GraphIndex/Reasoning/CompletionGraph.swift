@@ -711,6 +711,16 @@ public final class CompletionGraph: @unchecked Sendable {
                 node.namedClassIRIs.remove(iri)
             }
 
+            // Remove the concept from ALL processed flag sets.
+            // If C is removed and later re-added, expansion rules (⊓, ⊔, ∃, ∀)
+            // must be re-applied to C. Leaving stale flags causes false negatives
+            // (rules not re-fired → incomplete inference).
+            // Reference: Horrocks & Sattler (2007), Section 4 — completeness
+            node.processedIntersections.remove(concept)
+            node.processedUnions.remove(concept)
+            node.processedExistentials.remove(concept)
+            node.processedUniversals.remove(concept)
+
             // Recompute conceptSignature from remaining concepts.
             // Stale bits from removed concepts cause false NEGATIVES in blocking
             // pre-check (missing valid blockers → potential non-termination).

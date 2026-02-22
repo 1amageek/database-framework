@@ -558,6 +558,12 @@ public struct ExpansionRules {
     }
 
     /// Generate a witness value for a data range
+    ///
+    /// For unrestricted datatypes, returns a canonical value.
+    /// For `datatypeRestriction(base, facets)`, generates a value that
+    /// satisfies all facet constraints (minInclusive, maxExclusive, etc.).
+    ///
+    /// Reference: XSD 1.1 Part 2, Section 4.3 — Constraining Facets
     private static func generateWitnessValue(for dataRange: OWLDataRange) -> OWLLiteral? {
         switch dataRange {
         case .datatype(let iri):
@@ -575,12 +581,84 @@ public struct ExpansionRules {
         case .dataOneOf(let values):
             return values.first
 
-        case .datatypeRestriction(let baseType, _):
-            return generateWitnessValue(for: .datatype(baseType))
+        case .datatypeRestriction(let baseType, let facets):
+            let converted = facets.map { (facet: $0.facet.rawValue, value: $0.value) }
+            return generateFacetAwareWitness(baseType: baseType, facets: converted)
 
         default:
             return nil
         }
+    }
+
+    /// Generate a witness that satisfies the given facet constraints.
+    ///
+    /// For numeric types: finds a value within [min, max] bounds.
+    /// For string types: generates a string satisfying length constraints.
+    private static func generateFacetAwareWitness(
+        baseType: String,
+        facets: [(facet: String, value: OWLLiteral)]
+    ) -> OWLLiteral? {
+        let isNumeric = ["xsd:integer", "xsd:decimal", "xsd:double", "xsd:float"].contains(baseType)
+
+        if isNumeric {
+            var lower: Double = -.infinity
+            var upper: Double = .infinity
+            var lowerInclusive = true
+            var upperInclusive = true
+
+            for (facet, value) in facets {
+                guard let v = value.doubleValue else { continue }
+                switch facet {
+                case "xsd:minInclusive":
+                    if v > lower || (v == lower && lowerInclusive) {
+                        lower = v; lowerInclusive = true
+                    }
+                case "xsd:minExclusive":
+                    if v > lower || (v == lower && !lowerInclusive) {
+                        lower = v; lowerInclusive = false
+                    }
+                case "xsd:maxInclusive":
+                    if v < upper || (v == upper && upperInclusive) {
+                        upper = v; upperInclusive = true
+                    }
+                case "xsd:maxExclusive":
+                    if v < upper || (v == upper && !upperInclusive) {
+                        upper = v; upperInclusive = false
+                    }
+                default:
+                    break
+                }
+            }
+
+            // Pick a value within bounds
+            let witness: Double
+            if lower == -.infinity && upper == .infinity {
+                witness = 0.0
+            } else if lower == -.infinity {
+                witness = upperInclusive ? upper : upper - 1
+            } else if upper == .infinity {
+                witness = lowerInclusive ? lower : lower + 1
+            } else {
+                // Midpoint of the range
+                witness = (lower + upper) / 2.0
+                // For exclusive bounds, ensure we're strictly inside
+                if !lowerInclusive && witness == lower {
+                    return OWLLiteral(lexicalForm: "\(lower + 1)", datatype: baseType)
+                }
+                if !upperInclusive && witness == upper {
+                    return OWLLiteral(lexicalForm: "\(upper - 1)", datatype: baseType)
+                }
+            }
+
+            if baseType == "xsd:integer" {
+                let intWitness = Int(witness.rounded(lowerInclusive ? .up : .up))
+                return OWLLiteral(lexicalForm: "\(intWitness)", datatype: baseType)
+            }
+            return OWLLiteral(lexicalForm: "\(witness)", datatype: baseType)
+        }
+
+        // Non-numeric: fall back to base type witness
+        return generateWitnessValue(for: .datatype(baseType))
     }
 
     // MARK: - oneOf (Nominal) Rule

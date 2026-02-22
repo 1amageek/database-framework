@@ -47,6 +47,11 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     private let base: GraphQueryBuilder<Item>
     private let reasoner: OWLReasoner
 
+    /// Pre-computed ontology context (shared with SPARQL executor).
+    /// Built once from the reasoner's ontology, avoiding repeated
+    /// RoleHierarchy construction on each execute().
+    private let ontologyContext: OntologyContext
+
     /// Whether to include inferred relationships
     private var includeInferred: Bool = true
 
@@ -77,6 +82,14 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     public init(base: GraphQueryBuilder<Item>, reasoner: OWLReasoner) {
         self.base = base
         self.reasoner = reasoner
+        self.ontologyContext = OntologyContext(ontology: reasoner.ontology)
+    }
+
+    /// Internal init that reuses a pre-computed OntologyContext
+    private init(base: GraphQueryBuilder<Item>, reasoner: OWLReasoner, ontologyContext: OntologyContext) {
+        self.base = base
+        self.reasoner = reasoner
+        self.ontologyContext = ontologyContext
     }
 
     // MARK: - Configuration
@@ -114,8 +127,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
     /// Set from/subject pattern
     public func from(_ value: String) -> Self {
-        var copy = self
-        copy = Self(base: base.from(value), reasoner: reasoner)
+        var copy = Self(base: base.from(value), reasoner: reasoner, ontologyContext: ontologyContext)
         copy.copySettings(from: self)
         copy.trackedFrom = value
         copy.trackedEdge = trackedEdge
@@ -125,7 +137,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
     /// Set edge/predicate pattern
     public func edge(_ value: String) -> Self {
-        var copy = Self(base: base.edge(value), reasoner: reasoner)
+        var copy = Self(base: base.edge(value), reasoner: reasoner, ontologyContext: ontologyContext)
         copy.copySettings(from: self)
         copy.trackedFrom = trackedFrom
         copy.trackedEdge = value
@@ -135,7 +147,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
     /// Set to/object pattern
     public func to(_ value: String) -> Self {
-        var copy = Self(base: base.to(value), reasoner: reasoner)
+        var copy = Self(base: base.to(value), reasoner: reasoner, ontologyContext: ontologyContext)
         copy.copySettings(from: self)
         copy.trackedFrom = trackedFrom
         copy.trackedEdge = trackedEdge
@@ -145,7 +157,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
     /// Set result limit
     public func limit(_ count: Int) -> Self {
-        var copy = Self(base: base.limit(count), reasoner: reasoner)
+        var copy = Self(base: base.limit(count), reasoner: reasoner, ontologyContext: ontologyContext)
         copy.copySettings(from: self)
         copy.trackedFrom = trackedFrom
         copy.trackedEdge = trackedEdge
@@ -191,12 +203,9 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
             return allResults
         }
 
-        var roleHierarchy = reasoner.ontology.buildRoleHierarchy()
-        roleHierarchy.ensureClosuresComputed()
-
         // Phase 1: Sub-property expansion
         if includeSubProperties {
-            let subRoles = roleHierarchy.subRolesPrecomputed(of: edgeIRI)
+            let subRoles = ontologyContext.subProperties(of: edgeIRI)
             for subRole in subRoles {
                 var subQuery = base.edge(subRole)
                 if let f = trackedFrom { subQuery = subQuery.from(f) }
@@ -216,7 +225,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
         // Phase 2: Inverse expansion
         if includeInverse {
-            if let inverseRole = roleHierarchy.inverse(of: edgeIRI) {
+            if let inverseRole = ontologyContext.inverseProperty(of: edgeIRI) {
                 // Query the inverse with swapped from/to
                 var invQuery = base.edge(inverseRole)
                 if let f = trackedFrom { invQuery = invQuery.to(f) }
@@ -235,7 +244,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
         }
 
         // Phase 3: Transitive closure
-        if expandTransitive && roleHierarchy.isTransitive(edgeIRI) {
+        if expandTransitive && ontologyContext.isTransitive(edgeIRI) {
             allResults = try await expandTransitiveClosure(
                 baseResults: allResults,
                 edgeIRI: edgeIRI,
@@ -246,10 +255,19 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
         return allResults
     }
 
-    /// BFS-based transitive closure expansion
+    /// Transitive closure expansion via BFS + adjacency-based Warshall
     ///
-    /// For a transitive property R, if R(a,b) and R(b,c) then R(a,c).
-    /// Expands from all known targets until no new edges are discovered.
+    /// Two-phase algorithm:
+    /// 1. **BFS discovery**: Explore outgoing edges from frontier nodes,
+    ///    expanding the explicit edge set depth by depth.
+    /// 2. **Warshall fixed-point**: Compute full transitive closure over
+    ///    the adjacency list until no new pairs are discovered.
+    ///
+    /// Complexity: O(D × F × Q + N³) where D = depth, F = frontier size,
+    /// Q = query cost, N = number of distinct nodes. The Warshall phase
+    /// is O(N³) worst-case but operates on a compact adjacency map.
+    ///
+    /// Reference: Warshall, S. (1962). "A Theorem on Boolean Matrices"
     private func expandTransitiveClosure(
         baseResults: [GraphQueryBuilder<Item>.GraphEdge],
         edgeIRI: String,
@@ -257,23 +275,23 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     ) async throws -> [GraphQueryBuilder<Item>.GraphEdge] {
         var allResults = baseResults
 
-        // Build frontier: all target nodes from current results
+        // Phase 1: BFS to discover all explicit edges reachable from current results
         var frontier = Set<String>()
         for r in allResults where r.edge == edgeIRI {
             frontier.insert(r.to)
         }
 
-        // Track all known source-target pairs for this edge
-        var pairs: [(from: String, to: String)] = allResults
-            .filter { $0.edge == edgeIRI }
-            .map { ($0.from, $0.to) }
+        // Adjacency map: source → set of targets (for Warshall phase)
+        var adjacency: [String: Set<String>] = [:]
+        for r in allResults where r.edge == edgeIRI {
+            adjacency[r.from, default: []].insert(r.to)
+        }
 
         var depth = 0
         while !frontier.isEmpty && depth < maxTransitiveDepth {
             var nextFrontier = Set<String>()
 
             for node in frontier {
-                // Query edges from this node via the transitive property
                 let results = try await base.from(node).edge(edgeIRI).execute()
                 for r in results {
                     let key = [r.from, edgeIRI, r.to]
@@ -281,33 +299,39 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
                         allResults.append(GraphQueryBuilder<Item>.GraphEdge(
                             from: r.from, edge: edgeIRI, to: r.to
                         ))
+                        adjacency[r.from, default: []].insert(r.to)
                         nextFrontier.insert(r.to)
-                        pairs.append((r.from, r.to))
                     }
                 }
-            }
-
-            // Add transitive inferences: for all known a→b, b→c, add a→c
-            // Use index-based loop since pairs grows during iteration
-            var i = 0
-            while i < pairs.count {
-                let (from, to) = pairs[i]
-                for j in 0..<pairs.count {
-                    let (from2, to2) = pairs[j]
-                    guard from2 == to else { continue }
-                    let key = [from, edgeIRI, to2]
-                    if seen.insert(key).inserted {
-                        allResults.append(GraphQueryBuilder<Item>.GraphEdge(
-                            from: from, edge: edgeIRI, to: to2
-                        ))
-                        pairs.append((from, to2))
-                    }
-                }
-                i += 1
             }
 
             frontier = nextFrontier
             depth += 1
+        }
+
+        // Phase 2: Warshall fixed-point on adjacency map
+        // For each intermediate node k, for each pair (i, k) and (k, j), add (i, j).
+        // Repeat until no new edges are added.
+        let nodes = Array(Set(adjacency.keys).union(adjacency.values.flatMap { $0 }))
+        var changed = true
+        while changed {
+            changed = false
+            for k in nodes {
+                guard let kTargets = adjacency[k] else { continue }
+                for i in nodes {
+                    guard let iTargets = adjacency[i], iTargets.contains(k) else { continue }
+                    for j in kTargets {
+                        let key = [i, edgeIRI, j]
+                        if seen.insert(key).inserted {
+                            allResults.append(GraphQueryBuilder<Item>.GraphEdge(
+                                from: i, edge: edgeIRI, to: j
+                            ))
+                            adjacency[i, default: []].insert(j)
+                            changed = true
+                        }
+                    }
+                }
+            }
         }
 
         return allResults

@@ -450,7 +450,11 @@ public struct OWLDatatypeValidator: Sendable {
     /// - Returns: ComparisonResult or nil if incomparable
     public func compare(_ lhs: OWLLiteral, _ rhs: OWLLiteral) -> ComparisonResult? {
         // Numeric comparison
+        // NaN is incomparable with any value (including itself) per IEEE 754.
+        // XSD facet constraints (minInclusive, maxExclusive, etc.) require ordered
+        // comparison, so NaN must return nil (incomparable).
         if let lhsDouble = lhs.doubleValue, let rhsDouble = rhs.doubleValue {
+            if lhsDouble.isNaN || rhsDouble.isNaN { return nil }
             if lhsDouble < rhsDouble { return .orderedAscending }
             if lhsDouble > rhsDouble { return .orderedDescending }
             return .orderedSame
