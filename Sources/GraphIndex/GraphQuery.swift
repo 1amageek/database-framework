@@ -32,9 +32,24 @@ import FoundationDB
 /// ```
 public struct GraphEntryPoint<T: Persistable>: Sendable {
     private let queryContext: IndexQueryContext
+    private let ontologyContext: OntologyContext?
 
-    internal init(queryContext: IndexQueryContext) {
+    internal init(queryContext: IndexQueryContext, ontologyContext: OntologyContext? = nil) {
         self.queryContext = queryContext
+        self.ontologyContext = ontologyContext
+    }
+
+    /// Attach an ontology context for OWL-aware queries
+    ///
+    /// When provided, graph queries will:
+    /// - Expand predicates to include sub-properties
+    /// - Consult owl:inverseOf for inverse paths
+    /// - Use functional property hints for optimization
+    ///
+    /// - Parameter context: The ontology context
+    /// - Returns: Entry point with ontology support
+    public func withOntology(_ context: OntologyContext) -> Self {
+        GraphEntryPoint(queryContext: queryContext, ontologyContext: context)
     }
 
     /// Specify the graph index fields
@@ -56,7 +71,8 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
             queryContext: queryContext,
             fromFieldName: fromField,
             edgeFieldName: edgeField,
-            toFieldName: toField
+            toFieldName: toField,
+            ontologyContext: ontologyContext
         )
     }
 
@@ -85,7 +101,8 @@ public struct GraphEntryPoint<T: Persistable>: Sendable {
             fromFieldName: kind.fromField,
             edgeFieldName: kind.edgeField,
             toFieldName: kind.toField,
-            explicitIndexName: desc.name  // NEW: pass actual index name
+            explicitIndexName: desc.name,
+            ontologyContext: ontologyContext
         )
     }
 }
@@ -447,7 +464,8 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
     private let fromFieldName: String
     private let edgeFieldName: String
     private let toFieldName: String
-    private let explicitIndexName: String?  // NEW: explicit index name from defaultIndex()
+    private let explicitIndexName: String?  // explicit index name from defaultIndex()
+    private let ontologyContext: OntologyContext?  // F-6: ontology context
 
     private var fromPattern: Pattern = .any
     private var edgePattern: Pattern = .any
@@ -462,13 +480,15 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         fromFieldName: String,
         edgeFieldName: String,
         toFieldName: String,
-        explicitIndexName: String? = nil  // NEW
+        explicitIndexName: String? = nil,
+        ontologyContext: OntologyContext? = nil
     ) {
         self.queryContext = queryContext
         self.fromFieldName = fromFieldName
         self.edgeFieldName = edgeFieldName
         self.toFieldName = toFieldName
         self.explicitIndexName = explicitIndexName
+        self.ontologyContext = ontologyContext
     }
 
     // MARK: - Pattern Setters

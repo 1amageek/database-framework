@@ -456,8 +456,15 @@ struct ExpansionRulesCardinalityTests {
             in: graph
         )
 
-        // applyMaxCardinalityRule returns Bool indicating if merge was performed
-        #expect(result == true || result == false)  // Either merged or detected violation
+        // applyMaxCardinalityRule returns RuleApplicationResult
+        switch result {
+        case .applied:
+            break // Merge was performed
+        case .notApplicable:
+            break // No merge needed
+        case .clash:
+            break // Nominal violation detected
+        }
     }
 }
 

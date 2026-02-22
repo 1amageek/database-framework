@@ -140,21 +140,32 @@ public struct SHACLContextAPI: Sendable {
         // Build SPARQLQueryExecutor for the type's graph index
         let executor = try await buildExecutor(for: type)
 
-        // Build OWL reasoner if entailment requires it
+        // Build OWL reasoner and ontology context if entailment requires it
         let reasoner: OWLReasoner?
+        let ontoCtx: OntologyContext?
         if entailment == .owl, let ontIRI = ontologyIRI {
             guard let ontology = try await context.ontology.get(iri: ontIRI) else {
                 throw SHACLError.ontologyNotFound(ontIRI)
             }
             reasoner = OWLReasoner(ontology: ontology)
+            ontoCtx = OntologyContext(ontology: ontology)
         } else {
             reasoner = nil
+            ontoCtx = nil
+        }
+
+        // F-8: Rebuild executor with ontology context for OWL-aware evaluation
+        let validationExecutor: SPARQLQueryExecutor
+        if let ontoCtx {
+            validationExecutor = try await buildExecutor(for: type, ontologyContext: ontoCtx)
+        } else {
+            validationExecutor = executor
         }
 
         // Construct validation components
-        let targetResolver = SHACLTargetResolver(executor: executor)
+        let targetResolver = SHACLTargetResolver(executor: validationExecutor)
         let constraintEvaluator = SHACLConstraintEvaluator(
-            executor: executor,
+            executor: validationExecutor,
             reasoner: reasoner
         )
         let validator = SHACLValidator(
@@ -256,7 +267,8 @@ public struct SHACLContextAPI: Sendable {
 
     /// Build a SPARQLQueryExecutor for the given Persistable type's graph index
     private func buildExecutor<T: Persistable>(
-        for type: T.Type
+        for type: T.Type,
+        ontologyContext: OntologyContext? = nil
     ) async throws -> SPARQLQueryExecutor {
         guard let descriptor = T.indexDescriptors.first(where: {
             $0.kindIdentifier == GraphIndexKind<T>.identifier
@@ -275,7 +287,8 @@ public struct SHACLContextAPI: Sendable {
             edgeFieldName: kind.edgeField,
             toFieldName: kind.toField,
             graphFieldName: kind.graphField,
-            storedFieldNames: descriptor.storedFieldNames
+            storedFieldNames: descriptor.storedFieldNames,
+            ontologyContext: ontologyContext
         )
     }
 }

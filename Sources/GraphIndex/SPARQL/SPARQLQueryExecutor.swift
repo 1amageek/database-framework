@@ -33,6 +33,11 @@ public struct SPARQLQueryExecutor: Sendable {
     private let graphFieldName: String?
     private let storedFieldNames: [String]
 
+    /// Optional ontology context for property hierarchy-aware evaluation.
+    /// When provided, `.iri(predicate)` in property paths expands to include sub-properties,
+    /// `.inverse()` consults owl:inverseOf, and transitive properties use BFS.
+    private let ontologyContext: OntologyContext?
+
     /// Reusable scan signature for substituted triple patterns.
     ///
     /// Two patterns can reuse a single index scan only when they produce the same scan range
@@ -92,7 +97,8 @@ public struct SPARQLQueryExecutor: Sendable {
         edgeFieldName: String,
         toFieldName: String,
         graphFieldName: String? = nil,
-        storedFieldNames: [String] = []
+        storedFieldNames: [String] = [],
+        ontologyContext: OntologyContext? = nil
     ) {
         self.database = database
         self.indexSubspace = indexSubspace
@@ -102,6 +108,7 @@ public struct SPARQLQueryExecutor: Sendable {
         self.toFieldName = toFieldName
         self.graphFieldName = graphFieldName
         self.storedFieldNames = storedFieldNames
+        self.ontologyContext = ontologyContext
     }
 
     // MARK: - Result Type
@@ -1536,14 +1543,49 @@ public struct SPARQLQueryExecutor: Sendable {
 
         case .iri(let predicate):
             // Simple predicate - equivalent to a triple pattern
-            let pattern = ExecutionTriple(subject: subject, predicate: .value(.string(predicate)), object: object)
-            let (results, patternStats) = try await executePattern(
-                pattern,
-                indexSubspace: indexSubspace,
-                strategy: strategy,
-                transaction: transaction
-            )
-            return EvaluationResult(bindings: results, stats: stats).mergedStats(with: patternStats)
+            // F-1: If ontology context is available, expand to include sub-properties
+            let predicatesToQuery: Set<String>
+            if let ctx = ontologyContext {
+                predicatesToQuery = ctx.expandedProperties(of: predicate)
+            } else {
+                predicatesToQuery = [predicate]
+            }
+
+            if predicatesToQuery.count == 1 {
+                // Single predicate — no expansion needed
+                let pattern = ExecutionTriple(subject: subject, predicate: .value(.string(predicate)), object: object)
+                let (results, patternStats) = try await executePattern(
+                    pattern,
+                    indexSubspace: indexSubspace,
+                    strategy: strategy,
+                    transaction: transaction
+                )
+                return EvaluationResult(bindings: results, stats: stats).mergedStats(with: patternStats)
+            } else {
+                // Multiple predicates — union results from predicate and all sub-properties
+                var seen = Set<VariableBinding>()
+                var allBindings: [VariableBinding] = []
+                var mergedStats = stats
+
+                for pred in predicatesToQuery {
+                    let pattern = ExecutionTriple(subject: subject, predicate: .value(.string(pred)), object: object)
+                    let (results, patternStats) = try await executePattern(
+                        pattern,
+                        indexSubspace: indexSubspace,
+                        strategy: strategy,
+                        transaction: transaction
+                    )
+                    mergedStats.indexScans += patternStats.indexScans
+                    mergedStats.patternsEvaluated += patternStats.patternsEvaluated
+
+                    for binding in results {
+                        if seen.insert(binding).inserted {
+                            allBindings.append(binding)
+                        }
+                    }
+                }
+                return EvaluationResult(bindings: allBindings, stats: mergedStats)
+            }
 
         case .inverse(let innerPath):
             // Normalize inverse paths per SPARQL 1.1, Section 18.4
@@ -1594,11 +1636,40 @@ public struct SPARQLQueryExecutor: Sendable {
                 )
             default:
                 // Simple inverse (iri, negatedPropertySet): swap subject and object
-                return try await evaluateExecutionPropertyPath(
-                    subject: object, path: innerPath, object: subject,
-                    indexSubspace: indexSubspace, strategy: strategy,
-                    transaction: transaction, config: config, depth: depth
-                )
+                // F-2: Also consult owl:inverseOf for additional matches
+                if case .iri(let predicate) = innerPath, let ctx = ontologyContext,
+                   let inverseProp = ctx.inverseProperty(of: predicate) {
+                    // 1. Standard SPARQL: ^p = swap subject/object and query p
+                    let swappedResult = try await evaluateExecutionPropertyPath(
+                        subject: object, path: innerPath, object: subject,
+                        indexSubspace: indexSubspace, strategy: strategy,
+                        transaction: transaction, config: config, depth: depth
+                    )
+                    // 2. owl:inverseOf: query inverse property with original s/o
+                    let inverseResult = try await evaluateExecutionPropertyPath(
+                        subject: subject, path: .iri(inverseProp), object: object,
+                        indexSubspace: indexSubspace, strategy: strategy,
+                        transaction: transaction, config: config, depth: depth
+                    )
+                    // Union and deduplicate
+                    var seen = Set<VariableBinding>()
+                    var combined: [VariableBinding] = []
+                    for binding in swappedResult.bindings + inverseResult.bindings {
+                        if seen.insert(binding).inserted {
+                            combined.append(binding)
+                        }
+                    }
+                    return EvaluationResult(bindings: combined, stats: stats)
+                        .mergedStats(with: swappedResult.stats)
+                        .mergedStats(with: inverseResult.stats)
+                } else {
+                    // No ontology context or no inverse declared — standard swap
+                    return try await evaluateExecutionPropertyPath(
+                        subject: object, path: innerPath, object: subject,
+                        indexSubspace: indexSubspace, strategy: strategy,
+                        transaction: transaction, config: config, depth: depth
+                    )
+                }
             }
 
         case .sequence(let path1, let path2):

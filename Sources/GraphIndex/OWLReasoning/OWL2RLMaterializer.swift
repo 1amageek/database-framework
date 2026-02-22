@@ -103,11 +103,47 @@ public struct OWL2RLMaterializer: Sendable {
         ontologyIRI: String,
         transaction: any TransactionProtocol
     ) async throws -> InferenceResult {
+        var visited = Set<TripleKey>()
+        return try await materializeOnWrite(
+            triple: triple,
+            ontologyIRI: ontologyIRI,
+            transaction: transaction,
+            depth: 0,
+            visited: &visited
+        )
+    }
+
+    /// Internal materialization with depth tracking and cycle detection.
+    ///
+    /// - Parameters:
+    ///   - depth: Current recursion depth (0 = initial call)
+    ///   - visited: Set of already-processed triples to prevent redundant inference
+    private func materializeOnWrite(
+        triple: (subject: String, predicate: String, object: String),
+        ontologyIRI: String,
+        transaction: any TransactionProtocol,
+        depth: Int,
+        visited: inout Set<TripleKey>
+    ) async throws -> InferenceResult {
         var result = InferenceResult()
+
+        // Cycle detection: skip already-processed triples
+        let tripleKey = TripleKey(triple.subject, triple.predicate, triple.object)
+        guard !visited.contains(tripleKey) else {
+            return result
+        }
+        visited.insert(tripleKey)
+
+        // Depth limit enforcement
+        guard depth < configuration.maxInferenceDepth else {
+            result.statistics.depthLimitReached = true
+            return result
+        }
+
         let startTime = Date()
 
         // Create antecedent for tracking
-        let baseTriple = TripleKey(triple.subject, triple.predicate, triple.object)
+        let baseTriple = tripleKey
 
         // Apply rules based on predicate
         switch triple.predicate {

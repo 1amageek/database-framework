@@ -195,6 +195,9 @@ public struct InferenceStatistics: Sendable {
     /// Number of triples examined
     public var triplesExamined: Int = 0
 
+    /// Whether the inference depth limit was reached
+    public var depthLimitReached: Bool = false
+
     public init() {}
 }
 

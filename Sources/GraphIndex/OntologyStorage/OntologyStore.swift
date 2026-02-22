@@ -95,7 +95,7 @@ public struct OntologyStore: Sendable {
         transaction: any TransactionProtocol
     ) async throws -> [String] {
         let (beginKey, endKey) = subspace.base.range()
-        var ontologies: [String] = []
+        var seen = Set<String>()
 
         let stream = transaction.getRange(
             beginSelector: .firstGreaterOrEqual(beginKey),
@@ -104,15 +104,13 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.base.unpack(key),
-               let ontologyIRI = tuple[0] as? String {
-                if !ontologies.contains(ontologyIRI) {
-                    ontologies.append(ontologyIRI)
-                }
+            let tuple = try subspace.base.unpack(key)
+            if let ontologyIRI = tuple[0] as? String {
+                seen.insert(ontologyIRI)
             }
         }
 
-        return ontologies
+        return Array(seen)
     }
 
     // MARK: - Class Operations
@@ -332,8 +330,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.classSuperOf(ontologyIRI).subspace(classIRI).unpack(key),
-               let superClass = tuple[0] as? String {
+            let tuple = try subspace.classSuperOf(ontologyIRI).subspace(classIRI).unpack(key)
+            if let superClass = tuple[0] as? String {
                 superClasses.insert(superClass)
             }
         }
@@ -357,8 +355,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.classSubOf(ontologyIRI).subspace(classIRI).unpack(key),
-               let subClass = tuple[0] as? String {
+            let tuple = try subspace.classSubOf(ontologyIRI).subspace(classIRI).unpack(key)
+            if let subClass = tuple[0] as? String {
                 subClasses.insert(subClass)
             }
         }
@@ -398,8 +396,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.propertySuperOf(ontologyIRI).subspace(propertyIRI).unpack(key),
-               let superProp = tuple[0] as? String {
+            let tuple = try subspace.propertySuperOf(ontologyIRI).subspace(propertyIRI).unpack(key)
+            if let superProp = tuple[0] as? String {
                 superProperties.insert(superProp)
             }
         }
@@ -423,8 +421,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.propertySubOf(ontologyIRI).subspace(propertyIRI).unpack(key),
-               let subProp = tuple[0] as? String {
+            let tuple = try subspace.propertySubOf(ontologyIRI).subspace(propertyIRI).unpack(key)
+            if let subProp = tuple[0] as? String {
                 subProperties.insert(subProp)
             }
         }
@@ -499,8 +497,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.transitive(ontologyIRI).unpack(key),
-               let prop = tuple[0] as? String {
+            let tuple = try subspace.transitive(ontologyIRI).unpack(key)
+            if let prop = tuple[0] as? String {
                 properties.insert(prop)
             }
         }
@@ -532,8 +530,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, _) in stream {
-            if let tuple = try? subspace.chains(ontologyIRI).subspace(targetProperty).unpack(key),
-               let chainID = tuple[0] as? Int {
+            let tuple = try subspace.chains(ontologyIRI).subspace(targetProperty).unpack(key)
+            if let chainID = tuple[0] as? Int {
                 maxID = max(maxID, chainID)
             }
         }
@@ -582,8 +580,8 @@ public struct OntologyStore: Sendable {
         )
 
         for try await (key, value) in stream {
-            if let tuple = try? subspace.chains(ontologyIRI).unpack(key),
-               let targetProp = tuple[0] as? String {
+            let tuple = try subspace.chains(ontologyIRI).unpack(key)
+            if let targetProp = tuple[0] as? String {
                 let chain = try JSONDecoder().decode([String].self, from: Data(value))
                 result[targetProp, default: []].append(chain)
             }
@@ -597,10 +595,18 @@ public struct OntologyStore: Sendable {
     /// Load an OWLOntology into the store
     ///
     /// This performs full materialization of class and property hierarchies.
+    /// The operation is **idempotent**: any existing data for this ontology IRI
+    /// is cleared before writing, so calling this method multiple times with the
+    /// same ontology produces the same result.
     public func loadOntology(
         _ ontology: OWLOntology,
         transaction: any TransactionProtocol
     ) async throws {
+        // Clear existing data for this ontology to ensure idempotency.
+        // Without this, sequential-index data (axioms, chains) and additive
+        // hierarchy entries would accumulate stale values on reload.
+        deleteOntology(ontology.iri, transaction: transaction)
+
         // Save metadata
         let metadata = OntologyMetadata(
             iri: ontology.iri,
@@ -710,22 +716,53 @@ public struct OntologyStore: Sendable {
     }
 
     /// Materialize property hierarchy (transitive closure)
+    ///
+    /// Processes both object and data properties from two truth sources:
+    /// 1. Axioms: subObjectPropertyOf, equivalentObjectProperties,
+    ///    subDataPropertyOf, equivalentDataProperties
+    /// 2. Property struct fields: OWLObjectProperty.superProperties,
+    ///    OWLDataProperty.superProperties
+    ///
+    /// Both sources contribute to the adjacency list for transitive closure.
     private func materializePropertyHierarchy(
         from ontology: OWLOntology,
         transaction: any TransactionProtocol
     ) async throws {
         var directSupers: [String: Set<String>] = [:]
 
+        // Source 1: Axioms (both object and data properties)
         for axiom in ontology.axioms {
-            if case .subObjectPropertyOf(let sub, let sup) = axiom {
+            switch axiom {
+            case .subObjectPropertyOf(let sub, let sup):
                 directSupers[sub, default: []].insert(sup)
-            }
-            if case .equivalentObjectProperties(let props) = axiom {
+            case .equivalentObjectProperties(let props):
                 for i in 0..<props.count {
                     for j in 0..<props.count where i != j {
                         directSupers[props[i], default: []].insert(props[j])
                     }
                 }
+            case .subDataPropertyOf(let sub, let sup):
+                directSupers[sub, default: []].insert(sup)
+            case .equivalentDataProperties(let props):
+                for i in 0..<props.count {
+                    for j in 0..<props.count where i != j {
+                        directSupers[props[i], default: []].insert(props[j])
+                    }
+                }
+            default:
+                break
+            }
+        }
+
+        // Source 2: Property struct declarations (ensure consistency with axioms)
+        for prop in ontology.objectProperties {
+            for superProp in prop.superProperties {
+                directSupers[prop.iri, default: []].insert(superProp)
+            }
+        }
+        for prop in ontology.dataProperties {
+            for superProp in prop.superProperties {
+                directSupers[prop.iri, default: []].insert(superProp)
             }
         }
 
@@ -744,20 +781,25 @@ public struct OntologyStore: Sendable {
 
     /// Compute transitive closure using BFS
     ///
-    /// Note: The result may include self-references when equivalentClass
-    /// relationships create cycles (A ≡ B implies A ⊑ B and B ⊑ A).
-    /// This is semantically correct but may produce redundant entries.
+    /// Returns the set of all nodes reachable from `start` via the adjacency
+    /// relation, **excluding** `start` itself. Cyclic equivalences (A ≡ B)
+    /// produce edges A→B and B→A; the BFS naturally terminates because
+    /// `start` is placed in the `visited` set upfront, preventing it from
+    /// being enqueued.
     private func computeTransitiveClosure(
         from start: String,
         adjacency: [String: Set<String>]
     ) -> Set<String> {
-        var visited: Set<String> = []
+        // Exclude start from reachable results by marking it visited upfront
+        var visited: Set<String> = [start]
+        var reachable: Set<String> = []
         var queue: [String] = Array(adjacency[start] ?? [])
 
         while !queue.isEmpty {
             let current = queue.removeFirst()
             if visited.contains(current) { continue }
             visited.insert(current)
+            reachable.insert(current)
 
             if let nexts = adjacency[current] {
                 for next in nexts where !visited.contains(next) {
@@ -766,10 +808,7 @@ public struct OntologyStore: Sendable {
             }
         }
 
-        // Remove self-reference if present (start class should not be its own superclass)
-        visited.remove(start)
-
-        return visited
+        return reachable
     }
 
     /// Delete entire ontology

@@ -68,14 +68,23 @@ public struct SPARQLQueryOptimizer: Sendable {
     private let configuration: Configuration
     private let statistics: QueryStatistics?
 
+    /// Optional ontology context for property-aware cardinality estimation.
+    /// When provided:
+    /// - Functional properties reduce cardinality estimates (at most 1 value per subject)
+    /// - Sub-property expansion inflates `.iri()` estimates proportionally
+    /// - Transitive properties increase oneOrMore/zeroOrMore estimates
+    private let ontologyContext: OntologyContext?
+
     // MARK: - Initialization
 
     public init(
         configuration: Configuration = .default,
-        statistics: QueryStatistics? = nil
+        statistics: QueryStatistics? = nil,
+        ontologyContext: OntologyContext? = nil
     ) {
         self.configuration = configuration
         self.statistics = statistics
+        self.ontologyContext = ontologyContext
     }
 
     // MARK: - Main Optimization Entry Point
@@ -482,12 +491,31 @@ public struct SPARQLQueryOptimizer: Sendable {
 
         case .propertyPath(let subject, let path, let object):
             // Property paths vary widely based on the path type
-            let baseCardinality: Double = 10000
+            // F-4: Use statistics-based base cardinality when available
+            let baseCardinality: Double
+            if let stats = statistics {
+                baseCardinality = Double(stats.totalTriples)
+            } else {
+                baseCardinality = 10000
+            }
             let subjectBound = subject.isBound
             let objectBound = object.isBound
 
             // Higher complexity paths have higher cardinality
-            let pathMultiplier = Double(path.complexityEstimate)
+            var pathMultiplier = Double(path.complexityEstimate)
+
+            // F-4: Adjust multiplier for ontology-known properties
+            if let ctx = ontologyContext, case .iri(let predIRI) = path {
+                // Functional property: at most 1 value per subject
+                if ctx.isFunctional(predIRI) {
+                    pathMultiplier = max(1, pathMultiplier * 0.1)
+                }
+                // Sub-property count inflates cardinality
+                let subPropCount = ctx.subProperties(of: predIRI).count
+                if subPropCount > 0 {
+                    pathMultiplier *= Double(1 + subPropCount)
+                }
+            }
 
             switch (subjectBound, objectBound) {
             case (true, true):
@@ -507,6 +535,10 @@ public struct SPARQLQueryOptimizer: Sendable {
     }
 
     /// Estimate cardinality for a single triple pattern
+    ///
+    /// Uses statistics when available, then falls back to heuristics.
+    /// F-4: When ontologyContext is available, functional property hints
+    /// reduce estimates (at most 1 value per subject).
     private func estimatePatternCardinality(_ pattern: ExecutionTriple) -> Double {
         // If statistics available, use them
         if let stats = statistics {
@@ -516,24 +548,39 @@ public struct SPARQLQueryOptimizer: Sendable {
         // Fall back to heuristic based on bound positions
         let baseCardinality: Double = 10000 // Assume 10k triples
 
+        var estimate: Double
         switch (pattern.subject.isBound, pattern.predicate.isBound, pattern.object.isBound) {
         case (true, true, true):
-            return 1 // Point lookup
+            estimate = 1 // Point lookup
         case (true, true, false):
-            return 10 // Subject + predicate bound
+            estimate = 10 // Subject + predicate bound
         case (true, false, true):
-            return 100 // Subject + object bound (rare)
+            estimate = 100 // Subject + object bound (rare)
         case (false, true, true):
-            return 10 // Predicate + object bound
+            estimate = 10 // Predicate + object bound
         case (true, false, false):
-            return 100 // Only subject bound
+            estimate = 100 // Only subject bound
         case (false, true, false):
-            return baseCardinality * configuration.defaultSelectivity // Only predicate
+            estimate = baseCardinality * configuration.defaultSelectivity // Only predicate
         case (false, false, true):
-            return 100 // Only object bound
+            estimate = 100 // Only object bound
         case (false, false, false):
-            return baseCardinality // Full scan
+            estimate = baseCardinality // Full scan
         }
+
+        // F-4: Functional property hint — at most 1 value per subject
+        if let ctx = ontologyContext, pattern.predicate.isBound,
+           case .value(let pred) = pattern.predicate, case .string(let predStr) = pred {
+            if ctx.isFunctional(predStr) && pattern.subject.isBound {
+                // Functional property with bound subject → at most 1 result
+                estimate = min(estimate, 1)
+            } else if ctx.isFunctional(predStr) {
+                // Functional property without bound subject → one per subject
+                estimate = min(estimate, baseCardinality * 0.01)
+            }
+        }
+
+        return estimate
     }
 
     /// Create effective pattern with bound variables substituted

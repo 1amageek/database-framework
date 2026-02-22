@@ -88,6 +88,41 @@ public struct OntologyIRIValidator: Sendable {
             )
         }
     }
+
+    /// Validate that a data property IRI exists in the OntologyStore
+    /// and is actually an owl:DatatypeProperty (not an ObjectProperty).
+    ///
+    /// - Parameters:
+    ///   - propertyIRI: The OWL property IRI (from @OWLDataProperty macro)
+    ///   - ontologyIRI: The ontology to check against
+    ///   - transaction: The FDB transaction
+    /// - Throws: OntologyValidationError.propertyNotFound if the IRI is not defined,
+    ///           OntologyValidationError.propertyTypeMismatch if the IRI is not a DataProperty
+    public func validateDataProperty(
+        _ propertyIRI: String,
+        in ontologyIRI: String,
+        transaction: any TransactionProtocol
+    ) async throws {
+        let propDef = try await store.getProperty(
+            propertyIRI,
+            ontologyIRI: ontologyIRI,
+            transaction: transaction
+        )
+        guard let propDef else {
+            throw OntologyValidationError.propertyNotFound(
+                iri: propertyIRI,
+                ontologyIRI: ontologyIRI
+            )
+        }
+        guard propDef.type == .dataProperty else {
+            throw OntologyValidationError.propertyTypeMismatch(
+                iri: propertyIRI,
+                expected: .dataProperty,
+                actual: propDef.type,
+                ontologyIRI: ontologyIRI
+            )
+        }
+    }
 }
 
 /// Errors from ontology IRI validation
@@ -111,10 +146,11 @@ public enum OntologyValidationError: Error, Sendable, CustomStringConvertible {
                    "Ensure the class is defined in the OntologyStore before referencing it with @OWLClass."
         case .propertyNotFound(let iri, let ontologyIRI):
             return "OWL property '\(iri)' not found in ontology '\(ontologyIRI)'. " +
-                   "Ensure the property is defined in the OntologyStore before referencing it with @OWLObjectProperty."
+                   "Ensure the property is defined in the OntologyStore before referencing it with @OWLDataProperty or @OWLObjectProperty."
         case .propertyTypeMismatch(let iri, let expected, let actual, let ontologyIRI):
+            let macroName = expected == .objectProperty ? "@OWLObjectProperty" : "@OWLDataProperty"
             return "OWL property '\(iri)' in ontology '\(ontologyIRI)' is \(actual.rawValue), " +
-                   "but @OWLObjectProperty requires \(expected.rawValue)."
+                   "but \(macroName) requires \(expected.rawValue)."
         case .validationFailed(let errors):
             return "Ontology validation failed with \(errors.count) error(s):\n" +
                    errors.map { "  - \($0.description)" }.joined(separator: "\n")

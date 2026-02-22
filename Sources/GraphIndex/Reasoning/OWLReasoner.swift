@@ -134,7 +134,8 @@ public final class OWLReasoner: Sendable {
 
     // MARK: - Properties
 
-    private let ontology: OWLOntology
+    /// The ontology being reasoned over (internal for ReasoningGraphQueryBuilder)
+    let ontology: OWLOntology
     private let ontologyIndex: OntologyIndex
     private let configuration: Configuration
     private let state: Mutex<State>
@@ -682,6 +683,40 @@ extension OWLReasoner {
                     }
                     frontier = newFrontier
                 }
+            }
+
+            // Handle property chain axioms
+            // e.g., hasUncle ← chain(hasParent, hasBrother)
+            let chains = state.withLock { s in
+                s.roleHierarchy.propertyChains(for: property)
+            }
+            for chain in chains where !chain.isEmpty {
+                // Follow each step of the chain starting from 'individual'
+                var currentIndividuals: Set<String> = [individual]
+
+                for chainStep in chain {
+                    var nextIndividuals = Set<String>()
+                    for ind in currentIndividuals {
+                        // Direct assertions for this chain step
+                        for (prop, obj) in ontologyIndex.objectPropertyAssertionsBySubject[ind] ?? [] {
+                            if prop == chainStep {
+                                nextIndividuals.insert(obj)
+                            }
+                        }
+                        // Also include sub-properties of chain step
+                        for subProp in subProperties(of: chainStep) {
+                            for (prop, obj) in ontologyIndex.objectPropertyAssertionsBySubject[ind] ?? [] {
+                                if prop == subProp {
+                                    nextIndividuals.insert(obj)
+                                }
+                            }
+                        }
+                    }
+                    currentIndividuals = nextIndividuals
+                    if currentIndividuals.isEmpty { break }
+                }
+
+                result.formUnion(currentIndividuals)
             }
         }
 

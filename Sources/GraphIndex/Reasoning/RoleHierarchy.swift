@@ -349,6 +349,15 @@ public struct RoleHierarchy: Sendable {
         roles[role]?.subRoles ?? []
     }
 
+    /// Eagerly compute transitive closures
+    ///
+    /// Call this once to pre-compute all super/sub-role closures.
+    /// After this call, `superRoles(of:)` and `subRoles(of:)` become
+    /// safe to call on an immutable (non-mutating) context.
+    public mutating func ensureClosuresComputed() {
+        computeClosuresIfNeeded()
+    }
+
     /// Get all super-roles (transitive closure)
     public mutating func superRoles(of role: String) -> Set<String> {
         computeClosuresIfNeeded()
@@ -359,6 +368,14 @@ public struct RoleHierarchy: Sendable {
     public mutating func subRoles(of role: String) -> Set<String> {
         computeClosuresIfNeeded()
         return subRoleClosure[role] ?? []
+    }
+
+    /// Get all sub-roles (non-mutating, requires prior `ensureClosuresComputed()`)
+    ///
+    /// Precondition: `ensureClosuresComputed()` must have been called.
+    /// Returns empty set if closures have not been computed.
+    public func subRolesPrecomputed(of role: String) -> Set<String> {
+        subRoleClosure[role] ?? []
     }
 
     /// Get inverse role (if exists)
@@ -438,21 +455,15 @@ public struct RoleHierarchy: Sendable {
     /// 1. It is not transitive
     /// 2. It does not have any transitive sub-roles
     /// 3. It is not the target of a property chain
+    ///
+    /// Reference: OWL 2 Structural Specification, Section 11.2
     public mutating func isSimple(_ role: String) -> Bool {
         // Check if transitive
         if isTransitive(role) {
             return false
         }
 
-        // Check if it's the target of a property chain
-        for (_, info) in roles {
-            for chain in info.propertyChains {
-                if chain.count > 1 {
-                    // Property chains make the target non-simple
-                    // (The role itself being the target is handled by having propertyChains)
-                }
-            }
-        }
+        // Check if this role is the target of a property chain
         if !(roles[role]?.propertyChains.isEmpty ?? true) {
             return false
         }

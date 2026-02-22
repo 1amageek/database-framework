@@ -365,10 +365,24 @@ public final class TableauxReasoner: @unchecked Sendable {
             }
 
             // Phase 3: Apply deterministic rules until saturation
-            var deterministicChanged = true
-            while deterministicChanged {
-                deterministicChanged = false
-                deterministicChanged = applyDeterministicRules(graph: graph, stats: &stats) || deterministicChanged
+            var deterministicDone = false
+            while !deterministicDone {
+                let detResult = applyDeterministicRules(graph: graph, stats: &stats)
+                switch detResult {
+                case .changed:
+                    continue // Keep applying deterministic rules
+                case .unchanged:
+                    deterministicDone = true
+                case .clash(let clash):
+                    // Clash from ≤-rule nominal violation — handle like any other clash
+                    if let (nodeID, choice) = graph.backtrack() {
+                        stats.backtrackCount += 1
+                        graph.addConcept(choice, to: nodeID)
+                        deterministicDone = true // Break inner loop, continue outer
+                    } else {
+                        return SatisfiabilityResult(isSatisfiable: false, clash: clash, statistics: stats)
+                    }
+                }
             }
 
             // Check for clashes after deterministic rules
@@ -427,8 +441,15 @@ public final class TableauxReasoner: @unchecked Sendable {
         return SatisfiabilityResult(status: .unknown, clash: nil, statistics: stats)
     }
 
+    /// Result of deterministic rule application
+    private enum DeterministicRuleResult {
+        case changed
+        case unchanged
+        case clash(ClashInfo)
+    }
+
     /// Apply all deterministic rules
-    private func applyDeterministicRules(graph: CompletionGraph, stats: inout Statistics) -> Bool {
+    private func applyDeterministicRules(graph: CompletionGraph, stats: inout Statistics) -> DeterministicRuleResult {
         var changed = false
 
         for nodeID in graph.nodes.keys {
@@ -464,10 +485,16 @@ public final class TableauxReasoner: @unchecked Sendable {
                 stats.ruleApplications += 1
             }
 
-            // ≤-rule (merging)
-            if ExpansionRules.applyMaxCardinalityRule(at: nodeID, in: graph) {
+            // ≤-rule (merging) — may return clash for nominal violations
+            let maxCardResult = ExpansionRules.applyMaxCardinalityRule(at: nodeID, in: graph)
+            switch maxCardResult {
+            case .applied:
                 changed = true
                 stats.ruleApplications += 1
+            case .clash(let clashInfo):
+                return .clash(clashInfo)
+            case .notApplicable:
+                break
             }
 
             // Data existential
@@ -477,7 +504,7 @@ public final class TableauxReasoner: @unchecked Sendable {
             }
         }
 
-        return changed
+        return changed ? .changed : .unchanged
     }
 
     /// Apply generating rules (∃, ≥)
@@ -534,9 +561,17 @@ public final class TableauxReasoner: @unchecked Sendable {
                     alternatives: nominalExprs
                 )
 
-                // Merge with first nominal
+                // Merge with first nominal (generated node into nominal — always safe)
                 let firstNominalID = graph.getOrCreateNominal(individuals[0])
-                graph.mergeNodes(survivor: firstNominalID, merged: nodeID)
+                let mergeResult = graph.mergeNodes(survivor: firstNominalID, merged: nodeID)
+                if case .nominalClash(let s, let m) = mergeResult {
+                    let clash = ClashInfo(
+                        type: .nominal,
+                        nodeID: nodeID,
+                        details: "Cannot merge distinct nominals \(s) and \(m) — UNA violation (oneOf rule)"
+                    )
+                    return (false, clash)
+                }
                 stats.ruleApplications += 1
                 return (true, nil)
             }

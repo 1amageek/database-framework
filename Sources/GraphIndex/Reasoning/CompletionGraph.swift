@@ -140,6 +140,19 @@ final class CompletionNode: @unchecked Sendable {
         self.id = id
     }
 
+    /// Recompute Bloom filter signature from current concepts.
+    /// Called after backtracking to ensure signature accuracy.
+    ///
+    /// Cost: O(|concepts|), acceptable because backtracking occurs only
+    /// on non-deterministic rule failures (⊔-rule branches).
+    func recomputeSignature() {
+        var sig: UInt64 = 0
+        for concept in concepts {
+            sig |= 1 << UInt64(concept.hashValue & 0x3F)
+        }
+        conceptSignature = sig
+    }
+
     /// Deep copy for state snapshot
     func copy() -> CompletionNode {
         let node = CompletionNode(id: id)
@@ -160,6 +173,17 @@ final class CompletionNode: @unchecked Sendable {
         node.conceptSignature = conceptSignature
         return node
     }
+}
+
+// MARK: - Merge Result
+
+/// Result of a node merge operation
+public enum MergeResult: Sendable {
+    /// Merge completed successfully
+    case success
+    /// Merge rejected: distinct nominals cannot be merged (Unique Name Assumption)
+    /// Reference: Horrocks & Sattler (2007), Section 5.1
+    case nominalClash(survivor: NodeID, merged: NodeID)
 }
 
 // MARK: - Completion Graph
@@ -395,10 +419,19 @@ public final class CompletionGraph: @unchecked Sendable {
     // MARK: - Node Merging (for ≤ rule and nominals)
 
     /// Merge two nodes (for max cardinality and nominal equality)
-    /// The survivor keeps both nodes' content
-    func mergeNodes(survivor: NodeID, merged: NodeID) {
+    /// The survivor keeps both nodes' content.
+    ///
+    /// Returns `.nominalClash` if both nodes are distinct nominals (UNA violation).
+    /// Reference: Horrocks & Sattler (2007), Section 5.1 — Nominals and the ≤-rule
+    @discardableResult
+    func mergeNodes(survivor: NodeID, merged: NodeID) -> MergeResult {
+        // UNA: distinct nominals cannot be merged
+        if survivor.isNominalNode && merged.isNominalNode && survivor != merged {
+            return .nominalClash(survivor: survivor, merged: merged)
+        }
+
         guard let survivorNode = nodes[survivor],
-              let mergedNode = nodes[merged] else { return }
+              let mergedNode = nodes[merged] else { return .success }
 
         // Save merged node state for undo
         let mergedConcepts = mergedNode.concepts
@@ -497,24 +530,33 @@ public final class CompletionGraph: @unchecked Sendable {
         // Remove merged node
         nodes.removeValue(forKey: merged)
         nominals.remove(merged)
+
+        return .success
     }
 
     // MARK: - Blocking
 
     /// Check and apply blocking for all nodes
+    ///
+    /// Uses differential trail recording: only state changes (blocked→unblocked
+    /// or unblocked→blocked) are recorded, avoiding O(steps × nodes) trail bloat.
     func updateBlocking() {
-        // First, unblock all nodes (blocking is recomputed each time)
-        for (id, node) in nodes {
-            if node.isBlocked {
-                node.isBlocked = false
-                node.blockedBy = nil
-                trail.append(.unblocked(node: id))
-            }
+        // Snapshot current blocking state for differential comparison
+        var previouslyBlocked = Set<NodeID>()
+        for (id, node) in nodes where node.isBlocked {
+            previouslyBlocked.insert(id)
+        }
+
+        // Reset all blocking state (without trail — trail is differential)
+        for (_, node) in nodes {
+            node.isBlocked = false
+            node.blockedBy = nil
         }
 
         // Sort nodes by depth (deeper nodes first for checking)
         let sortedNodes = nodes.values.sorted { $0.depth > $1.depth }
 
+        var nowBlocked = Set<NodeID>()
         for node in sortedNodes {
             // Nominals cannot be blocked
             if nominals.contains(node.id) { continue }
@@ -523,8 +565,18 @@ public final class CompletionGraph: @unchecked Sendable {
             if let blocker = findBlocker(for: node) {
                 node.isBlocked = true
                 node.blockedBy = blocker
-                trail.append(.blocked(node: node.id))
+                nowBlocked.insert(node.id)
             }
+        }
+
+        // Record only differential trail actions
+        // Nodes that were blocked but are no longer → unblocked
+        for id in previouslyBlocked.subtracting(nowBlocked) {
+            trail.append(.unblocked(node: id))
+        }
+        // Nodes that are newly blocked → blocked
+        for id in nowBlocked.subtracting(previouslyBlocked) {
+            trail.append(.blocked(node: id))
         }
     }
 
@@ -625,7 +677,15 @@ public final class CompletionGraph: @unchecked Sendable {
         return nil
     }
 
+    /// Current trail position (for save/restore in tests and choice points)
+    var trailPosition: Int { trail.count }
+
     /// Undo trail actions back to a position
+    func undoToPosition(_ position: Int) {
+        undoToTrailPosition(position)
+    }
+
+    /// Undo trail actions back to a position (internal)
     private func undoToTrailPosition(_ position: Int) {
         while trail.count > position {
             let action = trail.removeLast()
@@ -651,9 +711,11 @@ public final class CompletionGraph: @unchecked Sendable {
                 node.namedClassIRIs.remove(iri)
             }
 
-            // Note: conceptSignature is not reverted (Bloom filter does not support removal)
-            // This is safe because false positives only cause unnecessary subset checks,
-            // never false negatives.
+            // Recompute conceptSignature from remaining concepts.
+            // Stale bits from removed concepts cause false NEGATIVES in blocking
+            // pre-check (missing valid blockers → potential non-termination).
+            // Cost: O(|concepts|) per undo, acceptable for backtracking frequency.
+            node.recomputeSignature()
 
         case .addedEdge(let edge):
             edges.remove(edge)
@@ -703,6 +765,10 @@ public final class CompletionGraph: @unchecked Sendable {
             if merged.isNominalNode {
                 nominals.insert(merged)
             }
+
+            // Recompute signatures for both restored nodes
+            nodes[survivor]?.recomputeSignature()
+            mergedNode.recomputeSignature()
 
         case .blocked(let nodeID):
             nodes[nodeID]?.isBlocked = false

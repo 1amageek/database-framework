@@ -34,6 +34,7 @@ public struct ClashInfo: Sendable, CustomStringConvertible {
         case irreflexive        // R(x,x) for irreflexive R
         case asymmetric         // R(x,y) and R(y,x) for asymmetric R
         case datatype           // Datatype constraint violation
+        case nominal            // Attempted merge of distinct nominals (UNA violation)
     }
 
     public let type: ClashType
@@ -465,13 +466,17 @@ public struct ExpansionRules {
     }
 
     /// ≤-rule: If ≤n R.C ∈ L(x) and there are more than n R-successors y with C ∈ L(y),
-    /// then merge some successors
+    /// then merge some successors.
+    ///
+    /// Returns `.clash` if merging would violate the Unique Name Assumption
+    /// (i.e., two distinct nominals must be merged).
+    /// Reference: Horrocks & Sattler (2007), Section 5.1
     static func applyMaxCardinalityRule(
         at nodeID: NodeID,
         in graph: CompletionGraph
-    ) -> Bool {
-        guard let node = graph.node(nodeID) else { return false }
-        if graph.isBlocked(nodeID) { return false }
+    ) -> RuleApplicationResult {
+        guard let node = graph.node(nodeID) else { return .notApplicable }
+        if graph.isBlocked(nodeID) { return .notApplicable }
 
         var changed = false
 
@@ -488,24 +493,31 @@ public struct ExpansionRules {
 
                 // Merge if too many
                 if qualified.count > n {
-                    // Choose nodes to merge (prefer non-nominals)
+                    // Choose nodes to merge (nominals survive, non-nominals are merge targets)
                     let sortedByPriority = qualified.sorted { a, b in
-                        // Nominals have lower priority for being merged away
-                        (a.isNominalNode ? 1 : 0) < (b.isNominalNode ? 1 : 0)
+                        // Nominals first (survive); non-nominals last (get merged)
+                        a.isNominalNode && !b.isNominalNode
                     }
 
                     let survivor = sortedByPriority[0]
                     let toMerge = Array(sortedByPriority.dropFirst(n))
 
                     for mergeID in toMerge {
-                        graph.mergeNodes(survivor: survivor, merged: mergeID)
+                        let mergeResult = graph.mergeNodes(survivor: survivor, merged: mergeID)
+                        if case .nominalClash(let s, let m) = mergeResult {
+                            return .clash(ClashInfo(
+                                type: .nominal,
+                                nodeID: nodeID,
+                                details: "Cannot merge distinct nominals \(s) and \(m) — Unique Name Assumption violation (≤\(n) \(role))"
+                            ))
+                        }
                         changed = true
                     }
                 }
             }
         }
 
-        return changed
+        return changed ? .applied : .notApplicable
     }
 
     // MARK: - Data Property Rules

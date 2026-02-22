@@ -481,10 +481,22 @@ public struct OWLDatatypeValidator: Sendable {
         return formatter.date(from: value) != nil
     }
 
+    /// Validate XSD date format: YYYY-MM-DD with optional timezone
+    ///
+    /// XSD `xsd:date` allows: `2024-01-15`, `2024-01-15Z`, `2024-01-15+02:00`, `2024-01-15-05:00`
+    /// `ISO8601DateFormatter` with `.withFullDate` alone doesn't handle timezone suffixes.
+    ///
+    /// Reference: W3C XML Schema Part 2, Section 3.3.9
     private func isValidDate(_ value: String) -> Bool {
+        let pattern = #"^(-?\d{4}-\d{2}-\d{2})(Z|[+-]\d{2}:\d{2})?$"#
+        guard value.range(of: pattern, options: .regularExpression) != nil else {
+            return false
+        }
+        // Extract date portion (first 10 or 11 chars for negative years) for component validation
+        let datePortion = String(value.prefix(value.hasPrefix("-") ? 11 : 10))
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withFullDate]
-        return formatter.date(from: value) != nil
+        return formatter.date(from: datePortion) != nil
     }
 
     private func isValidTime(_ value: String) -> Bool {

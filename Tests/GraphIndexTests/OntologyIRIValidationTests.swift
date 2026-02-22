@@ -66,6 +66,30 @@ struct ValDataPropAsObjectProp {
     var dstID: String = ""
 }
 
+/// Has @OWLDataProperty with an IRI not defined in OntologyStore
+@Persistable
+@OWLClass("http://test.org/onto#Employee")
+struct ValBadDataProperty {
+    #Directory<ValBadDataProperty>("test", "validation", "baddataprop")
+
+    var id: String = ULID().ulidString
+
+    @OWLDataProperty("http://test.org/onto#nonExistentDataProp")
+    var nickname: String = ""
+}
+
+/// Has @OWLDataProperty that uses an ObjectProperty IRI — should fail type check
+@Persistable
+@OWLClass("http://test.org/onto#Employee")
+struct ValObjPropAsDataProp {
+    #Directory<ValObjPropAsDataProp>("test", "validation", "objasdata")
+
+    var id: String = ULID().ulidString
+
+    @OWLDataProperty("http://test.org/onto#worksOn")
+    var dept: String = ""
+}
+
 // MARK: - Tests
 
 @Suite("Ontology IRI Validation", .serialized)
@@ -80,7 +104,8 @@ struct OntologyIRIValidationTests {
         let database = try FDBClient.openDatabase()
         let schema = Schema(
             [ValEmployee.self, ValAssignment.self, ValBadClass.self,
-             ValBadRelation.self, ValDataPropAsObjectProp.self],
+             ValBadRelation.self, ValDataPropAsObjectProp.self,
+             ValBadDataProperty.self, ValObjPropAsDataProp.self],
             version: Schema.Version(1, 0, 0)
         )
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
@@ -400,15 +425,115 @@ struct OntologyIRIValidationTests {
         } catch let error as OntologyValidationError {
             switch error {
             case .validationFailed(let errors):
-                #expect(errors.count == 1)
-                if case .classNotFound(_, let ontologyIRI) = errors.first {
+                // ValEmployee has @OWLClass + @OWLDataProperty, both fail against non-existent ontology
+                #expect(errors.count == 2)
+                let classErrors = errors.filter {
+                    if case .classNotFound = $0 { return true }
+                    return false
+                }
+                let propErrors = errors.filter {
+                    if case .propertyNotFound = $0 { return true }
+                    return false
+                }
+                #expect(classErrors.count == 1)
+                #expect(propErrors.count == 1)
+                if case .classNotFound(_, let ontologyIRI) = classErrors.first {
                     #expect(ontologyIRI == "http://does.not/exist")
-                } else {
-                    Issue.record("Expected classNotFound, got \(errors)")
                 }
             default:
                 Issue.record("Expected validationFailed, got \(error)")
             }
         }
+    }
+
+    // MARK: - Data Property Validation
+
+    @Test("Valid data property IRI passes schema validation")
+    func validDataPropertyPasses() async throws {
+        let context = try await setupContext()
+        try await loadTestOntology(context: context)
+
+        // ValEmployee has @OWLDataProperty("http://test.org/onto#name") which exists
+        let schema = Schema(
+            [ValEmployee.self],
+            version: Schema.Version(1, 0, 0)
+        )
+
+        try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
+    }
+
+    @Test("Invalid data property IRI fails schema validation")
+    func invalidDataPropertyFails() async throws {
+        let context = try await setupContext()
+        try await loadTestOntology(context: context)
+
+        let schema = Schema(
+            [ValBadDataProperty.self],
+            version: Schema.Version(1, 0, 0)
+        )
+
+        do {
+            try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
+            Issue.record("Expected validation failure")
+        } catch let error as OntologyValidationError {
+            switch error {
+            case .validationFailed(let errors):
+                // classIRI is valid (Employee), but data property IRI is not found
+                #expect(errors.count == 1)
+                if case .propertyNotFound(let iri, _) = errors.first {
+                    #expect(iri == "http://test.org/onto#nonExistentDataProp")
+                } else {
+                    Issue.record("Expected propertyNotFound, got \(errors)")
+                }
+            default:
+                Issue.record("Expected validationFailed, got \(error)")
+            }
+        }
+    }
+
+    @Test("ObjectProperty IRI used as @OWLDataProperty throws propertyTypeMismatch")
+    func objectPropertyAsDataPropertyThrows() async throws {
+        let context = try await setupContext()
+        try await loadTestOntology(context: context)
+
+        let schema = Schema(
+            [ValObjPropAsDataProp.self],
+            version: Schema.Version(1, 0, 0)
+        )
+
+        do {
+            try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
+            Issue.record("Expected validation failure")
+        } catch let error as OntologyValidationError {
+            switch error {
+            case .validationFailed(let errors):
+                // classIRI is valid (Employee), but worksOn is ObjectProperty not DataProperty
+                #expect(errors.count == 1)
+                if case .propertyTypeMismatch(let iri, let expected, let actual, _) = errors.first {
+                    #expect(iri == "http://test.org/onto#worksOn")
+                    #expect(expected == .dataProperty)
+                    #expect(actual == .objectProperty)
+                } else {
+                    Issue.record("Expected propertyTypeMismatch, got \(errors)")
+                }
+            default:
+                Issue.record("Expected validationFailed, got \(error)")
+            }
+        }
+    }
+
+    @Test("Valid schema with both class and data property IRIs passes")
+    func schemaWithClassAndDataPropertyPasses() async throws {
+        let context = try await setupContext()
+        try await loadTestOntology(context: context)
+
+        // ValEmployee: @OWLClass("...#Employee") + @OWLDataProperty("...#name")
+        // ValAssignment: @OWLObjectProperty("...#worksOn")
+        let schema = Schema(
+            [ValEmployee.self, ValAssignment.self],
+            version: Schema.Version(1, 0, 0)
+        )
+
+        try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
     }
 }

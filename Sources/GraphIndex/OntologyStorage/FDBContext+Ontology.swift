@@ -99,9 +99,7 @@ public struct OntologyContextAPI: Sendable {
     public func load(_ ontology: OWLOntology) async throws {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
-            // Delete existing if present
-            store.deleteOntology(ontology.iri, transaction: transaction)
-            // Load new ontology
+            // loadOntology is idempotent — it clears existing data internally
             try await store.loadOntology(ontology, transaction: transaction)
         }
     }
@@ -114,7 +112,6 @@ public struct OntologyContextAPI: Sendable {
         let store = store()
         try await context.indexQueryContext.withTransaction { transaction in
             for ontology in ontologies {
-                store.deleteOntology(ontology.iri, transaction: transaction)
                 try await store.loadOntology(ontology, transaction: transaction)
             }
         }
@@ -356,11 +353,11 @@ public struct OntologyContextAPI: Sendable {
 
     // MARK: - Schema Validation
 
-    /// Validate all @OWLClass / @OWLObjectProperty IRIs in a schema
+    /// Validate all @OWLClass / @OWLObjectProperty / @OWLDataProperty IRIs in a schema
     /// against the OntologyStore.
     ///
-    /// Checks that every entity with `ontologyClassIRI` or `objectPropertyIRI`
-    /// references a class or property that exists in the specified ontology.
+    /// Checks that every macro-bound IRI references a class or property
+    /// that exists in the specified ontology with the correct type.
     ///
     /// - Parameters:
     ///   - schema: The schema to validate
@@ -386,6 +383,7 @@ public struct OntologyContextAPI: Sendable {
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
+                    // Non-validation errors (FDB connection, etc.) propagate immediately
                 }
 
                 // Validate @OWLObjectProperty IRI
@@ -395,6 +393,34 @@ public struct OntologyContextAPI: Sendable {
                     } catch let error as OntologyValidationError {
                         collected.append(error)
                     }
+                    // Non-validation errors propagate immediately
+                }
+
+                // Validate @OWLDataProperty IRIs
+                // Source 1: Runtime type (when Persistable type is linked)
+                // Source 2: Schema.Entity.dataPropertyIRIs (when deserialized from wire format)
+                let dataPropertyIRIs: [String]
+                if let type = entity.persistableType {
+                    if let owlClass = type as? any OWLClassEntity.Type {
+                        dataPropertyIRIs = owlClass.ontologyPropertyDescriptors.map(\.iri)
+                    } else if let owlObjProp = type as? any OWLObjectPropertyEntity.Type {
+                        dataPropertyIRIs = owlObjProp.ontologyPropertyDescriptors.map(\.iri)
+                    } else {
+                        dataPropertyIRIs = []
+                    }
+                } else if let wireIRIs = entity.dataPropertyIRIs {
+                    // E-1 fallback: use wire-format IRIs when persistableType is nil
+                    dataPropertyIRIs = wireIRIs
+                } else {
+                    dataPropertyIRIs = []
+                }
+                for iri in dataPropertyIRIs {
+                    do {
+                        try await validator.validateDataProperty(iri, in: ontologyIRI, transaction: transaction)
+                    } catch let error as OntologyValidationError {
+                        collected.append(error)
+                    }
+                    // Non-validation errors propagate immediately
                 }
             }
             return collected

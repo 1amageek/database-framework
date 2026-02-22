@@ -161,6 +161,23 @@ public indirect enum ExecutionPropertyPath: Sendable, Hashable {
         }
     }
 
+    /// All IRIs expanded with ontology sub-property knowledge
+    ///
+    /// Like `allIRIs`, but for each IRI, also includes all sub-property IRIs
+    /// from the ontology context. Used for query planning and optimization.
+    ///
+    /// F-7: Extends literal-only extraction with ontology-based expansion.
+    ///
+    /// - Parameter context: The ontology context for sub-property resolution
+    /// - Returns: Set of all IRIs including sub-property expansions
+    public func expandedIRIs(using context: OntologyContext) -> Set<String> {
+        var result = Set<String>()
+        for iri in allIRIs {
+            result.formUnion(context.expandedProperties(of: iri))
+        }
+        return result
+    }
+
     /// Estimated complexity for query planning (higher = more expensive)
     public var complexityEstimate: Int {
         switch self {

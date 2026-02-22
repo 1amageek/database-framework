@@ -5,6 +5,13 @@
 //
 // Following CLAUDE.md extension pattern: new methods via extension,
 // not modifying core FDBContext or GraphQueryBuilder.
+//
+// Inference strategies:
+//   1. Sub-property expansion: query all sub-roles of the bound edge
+//   2. Inverse expansion: query owl:inverseOf with swapped from/to
+//   3. Transitive closure: BFS from results until fixpoint
+//
+// Reference: Horrocks & Sattler (2007), Section 3 — role hierarchy semantics
 
 import Foundation
 import Core
@@ -25,13 +32,9 @@ import FoundationDB
 /// **Example**:
 /// ```swift
 /// let reasoner = OWLReasoner(ontology: ontology)
-/// let builder = ReasoningGraphQueryBuilder(
-///     base: graphQueryBuilder,
-///     reasoner: reasoner
-/// )
-///
-/// // Query with inference
-/// let results = try await builder
+/// let results = try await context.graph(Statement.self)
+///     .defaultIndex()
+///     .withReasoning(reasoner)
 ///     .from("ex:Alice")
 ///     .edge("ex:knows")  // Will also follow subproperties
 ///     .withTransitiveClosure()
@@ -58,6 +61,11 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
 
     /// Maximum depth for transitive closure
     private var maxTransitiveDepth: Int = 10
+
+    /// Tracked pattern values for inference expansion
+    private var trackedFrom: String?
+    private var trackedEdge: String?
+    private var trackedTo: String?
 
     // MARK: - Initialization
 
@@ -107,49 +115,51 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     /// Set from/subject pattern
     public func from(_ value: String) -> Self {
         var copy = self
-        copy = ReasoningGraphQueryBuilder(base: base.from(value), reasoner: reasoner)
-        copy.includeInferred = includeInferred
-        copy.expandTransitive = expandTransitive
-        copy.includeInverse = includeInverse
-        copy.includeSubProperties = includeSubProperties
-        copy.maxTransitiveDepth = maxTransitiveDepth
+        copy = Self(base: base.from(value), reasoner: reasoner)
+        copy.copySettings(from: self)
+        copy.trackedFrom = value
+        copy.trackedEdge = trackedEdge
+        copy.trackedTo = trackedTo
         return copy
     }
 
     /// Set edge/predicate pattern
     public func edge(_ value: String) -> Self {
-        var copy = self
-        copy = ReasoningGraphQueryBuilder(base: base.edge(value), reasoner: reasoner)
-        copy.includeInferred = includeInferred
-        copy.expandTransitive = expandTransitive
-        copy.includeInverse = includeInverse
-        copy.includeSubProperties = includeSubProperties
-        copy.maxTransitiveDepth = maxTransitiveDepth
+        var copy = Self(base: base.edge(value), reasoner: reasoner)
+        copy.copySettings(from: self)
+        copy.trackedFrom = trackedFrom
+        copy.trackedEdge = value
+        copy.trackedTo = trackedTo
         return copy
     }
 
     /// Set to/object pattern
     public func to(_ value: String) -> Self {
-        var copy = self
-        copy = ReasoningGraphQueryBuilder(base: base.to(value), reasoner: reasoner)
-        copy.includeInferred = includeInferred
-        copy.expandTransitive = expandTransitive
-        copy.includeInverse = includeInverse
-        copy.includeSubProperties = includeSubProperties
-        copy.maxTransitiveDepth = maxTransitiveDepth
+        var copy = Self(base: base.to(value), reasoner: reasoner)
+        copy.copySettings(from: self)
+        copy.trackedFrom = trackedFrom
+        copy.trackedEdge = trackedEdge
+        copy.trackedTo = value
         return copy
     }
 
     /// Set result limit
     public func limit(_ count: Int) -> Self {
-        var copy = self
-        copy = ReasoningGraphQueryBuilder(base: base.limit(count), reasoner: reasoner)
-        copy.includeInferred = includeInferred
-        copy.expandTransitive = expandTransitive
-        copy.includeInverse = includeInverse
-        copy.includeSubProperties = includeSubProperties
-        copy.maxTransitiveDepth = maxTransitiveDepth
+        var copy = Self(base: base.limit(count), reasoner: reasoner)
+        copy.copySettings(from: self)
+        copy.trackedFrom = trackedFrom
+        copy.trackedEdge = trackedEdge
+        copy.trackedTo = trackedTo
         return copy
+    }
+
+    /// Copy inference settings from another builder
+    private mutating func copySettings(from other: Self) {
+        includeInferred = other.includeInferred
+        expandTransitive = other.expandTransitive
+        includeInverse = other.includeInverse
+        includeSubProperties = other.includeSubProperties
+        maxTransitiveDepth = other.maxTransitiveDepth
     }
 
     // MARK: - Execution
@@ -157,19 +167,150 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     /// Execute query with reasoning
     ///
     /// Returns edges including both explicit and inferred relationships.
+    /// Inference is applied in three phases:
+    /// 1. Sub-property expansion: query all sub-roles of the bound edge
+    /// 2. Inverse expansion: query owl:inverseOf with swapped from/to
+    /// 3. Transitive closure: BFS from results until fixpoint
     public func execute() async throws -> [GraphQueryBuilder<Item>.GraphEdge] {
         // Get base results
-        let results = try await base.execute()
+        let baseResults = try await base.execute()
 
         if !includeInferred {
-            return results
+            return baseResults
         }
 
-        // Apply inference expansions
-        // Note: Full inference requires access to the ontology's ABox
-        // This is a simplified version that works with the base query results
+        // Deduplication set: [from, edge, to]
+        var seen = Set<[String]>()
+        var allResults = baseResults
+        for r in baseResults {
+            seen.insert([r.from, r.edge, r.to])
+        }
 
-        return results
+        guard let edgeIRI = trackedEdge else {
+            // No edge bound — cannot infer without knowing the property
+            return allResults
+        }
+
+        var roleHierarchy = reasoner.ontology.buildRoleHierarchy()
+        roleHierarchy.ensureClosuresComputed()
+
+        // Phase 1: Sub-property expansion
+        if includeSubProperties {
+            let subRoles = roleHierarchy.subRolesPrecomputed(of: edgeIRI)
+            for subRole in subRoles {
+                var subQuery = base.edge(subRole)
+                if let f = trackedFrom { subQuery = subQuery.from(f) }
+                if let t = trackedTo { subQuery = subQuery.to(t) }
+                let subResults = try await subQuery.execute()
+                for r in subResults {
+                    // Report the edge using the queried predicate (original edgeIRI)
+                    let key = [r.from, edgeIRI, r.to]
+                    if seen.insert(key).inserted {
+                        allResults.append(GraphQueryBuilder<Item>.GraphEdge(
+                            from: r.from, edge: edgeIRI, to: r.to
+                        ))
+                    }
+                }
+            }
+        }
+
+        // Phase 2: Inverse expansion
+        if includeInverse {
+            if let inverseRole = roleHierarchy.inverse(of: edgeIRI) {
+                // Query the inverse with swapped from/to
+                var invQuery = base.edge(inverseRole)
+                if let f = trackedFrom { invQuery = invQuery.to(f) }
+                if let t = trackedTo { invQuery = invQuery.from(t) }
+                let invResults = try await invQuery.execute()
+                for r in invResults {
+                    // Map back: inverse means swap from/to
+                    let key = [r.to, edgeIRI, r.from]
+                    if seen.insert(key).inserted {
+                        allResults.append(GraphQueryBuilder<Item>.GraphEdge(
+                            from: r.to, edge: edgeIRI, to: r.from
+                        ))
+                    }
+                }
+            }
+        }
+
+        // Phase 3: Transitive closure
+        if expandTransitive && roleHierarchy.isTransitive(edgeIRI) {
+            allResults = try await expandTransitiveClosure(
+                baseResults: allResults,
+                edgeIRI: edgeIRI,
+                seen: &seen
+            )
+        }
+
+        return allResults
+    }
+
+    /// BFS-based transitive closure expansion
+    ///
+    /// For a transitive property R, if R(a,b) and R(b,c) then R(a,c).
+    /// Expands from all known targets until no new edges are discovered.
+    private func expandTransitiveClosure(
+        baseResults: [GraphQueryBuilder<Item>.GraphEdge],
+        edgeIRI: String,
+        seen: inout Set<[String]>
+    ) async throws -> [GraphQueryBuilder<Item>.GraphEdge] {
+        var allResults = baseResults
+
+        // Build frontier: all target nodes from current results
+        var frontier = Set<String>()
+        for r in allResults where r.edge == edgeIRI {
+            frontier.insert(r.to)
+        }
+
+        // Track all known source-target pairs for this edge
+        var pairs: [(from: String, to: String)] = allResults
+            .filter { $0.edge == edgeIRI }
+            .map { ($0.from, $0.to) }
+
+        var depth = 0
+        while !frontier.isEmpty && depth < maxTransitiveDepth {
+            var nextFrontier = Set<String>()
+
+            for node in frontier {
+                // Query edges from this node via the transitive property
+                let results = try await base.from(node).edge(edgeIRI).execute()
+                for r in results {
+                    let key = [r.from, edgeIRI, r.to]
+                    if seen.insert(key).inserted {
+                        allResults.append(GraphQueryBuilder<Item>.GraphEdge(
+                            from: r.from, edge: edgeIRI, to: r.to
+                        ))
+                        nextFrontier.insert(r.to)
+                        pairs.append((r.from, r.to))
+                    }
+                }
+            }
+
+            // Add transitive inferences: for all known a→b, b→c, add a→c
+            // Use index-based loop since pairs grows during iteration
+            var i = 0
+            while i < pairs.count {
+                let (from, to) = pairs[i]
+                for j in 0..<pairs.count {
+                    let (from2, to2) = pairs[j]
+                    guard from2 == to else { continue }
+                    let key = [from, edgeIRI, to2]
+                    if seen.insert(key).inserted {
+                        allResults.append(GraphQueryBuilder<Item>.GraphEdge(
+                            from: from, edge: edgeIRI, to: to2
+                        ))
+                        pairs.append((from, to2))
+                    }
+                }
+                i += 1
+            }
+
+            frontier = nextFrontier
+            depth += 1
+        }
+
+        return allResults
     }
 
     // MARK: - Reasoning-Specific Queries
