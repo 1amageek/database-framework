@@ -46,7 +46,7 @@ brew services start foundationdb
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0213.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0223.0")
 ]
 ```
 
@@ -232,7 +232,7 @@ let migration = Migration(
 
 ### Ontology Integration
 
-Link Persistable types to OWL ontology classes with `@Ontology` and `@Property` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module). `@Persistable` handles pure persistence; `@Ontology` handles OWL class mapping independently.
+Link Persistable types to OWL ontology classes with `@OWLClass` and `@OWLDataProperty` / `@OWLObjectProperty` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module). `@Persistable` handles pure persistence; `@OWLClass` handles OWL class mapping independently.
 
 ```swift
 import Database
@@ -241,19 +241,19 @@ import Graph
 
 // 1. Define ontology-aware types
 @Persistable
-@Ontology("http://example.org/onto#Employee")
+@OWLClass("http://example.org/onto#Employee")
 struct Employee {
     #Directory<Employee>("app", "employees")
 
-    @Property("http://example.org/onto#name")
+    @OWLDataProperty("http://example.org/onto#name")
     var name: String
 
-    @Property("http://example.org/onto#worksFor", to: \Department.id)
+    @OWLDataProperty("http://example.org/onto#worksFor", to: \Department.id)
     var departmentID: String?
 }
 
 @Persistable
-@Ontology("http://example.org/onto#Department")
+@OWLClass("http://example.org/onto#Department")
 struct Department {
     #Directory<Department>("app", "departments")
     var name: String
@@ -289,9 +289,9 @@ try await context.ontology.load(ontology)
 ```
 
 **What happens automatically**:
-- `@Ontology` generates `OntologyEntity` conformance with `ontologyClassIRI`
-- `@Ontology` scans `@Property` annotations to build `ontologyPropertyDescriptors`
-- `@Property(to:)` generates a reverse index on `departmentID` for efficient lookups
+- `@OWLClass` generates `OWLClassEntity` conformance with `ontologyClassIRI`
+- `@OWLClass` scans `@OWLDataProperty` annotations to build `ontologyPropertyDescriptors`
+- `@OWLDataProperty(to:)` generates a reverse index on `departmentID` for efficient lookups
 - `context.ontology.load()` persists the ontology to `/_ontology/` via OntologyStore
 - GraphIndex uses the ontology for OWL 2 RL materialization on triple writes
 
