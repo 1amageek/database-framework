@@ -159,7 +159,8 @@ public final class OWLReasoner: Sendable {
         self.ontologyIndex = index
 
         let classHierarchy = ClassHierarchy(ontology: ontology, index: index)
-        let roleHierarchy = RoleHierarchy(ontology: ontology, index: index)
+        var roleHierarchy = RoleHierarchy(ontology: ontology, index: index)
+        roleHierarchy.ensureClosuresComputed()
 
         self.state = Mutex(State(
             classHierarchy: classHierarchy,

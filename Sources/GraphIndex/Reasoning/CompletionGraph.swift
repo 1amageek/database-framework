@@ -390,7 +390,7 @@ public final class CompletionGraph: @unchecked Sendable {
     /// Get all successors via any sub-role
     func successorsViaSubRoles(of nodeID: NodeID, via role: String) -> Set<NodeID> {
         var result = successors(of: nodeID, via: role)
-        for subRole in roleHierarchy.directSubRoles(of: role) {
+        for subRole in roleHierarchy.subRolesPrecomputed(of: role) {
             result.formUnion(successors(of: nodeID, via: subRole))
         }
         return result

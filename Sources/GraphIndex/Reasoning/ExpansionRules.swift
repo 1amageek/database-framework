@@ -252,7 +252,7 @@ public struct ExpansionRules {
             if case .allValuesFrom(let role, let filler) = concept {
                 // Get all successors via R and its sub-roles
                 var allSuccessors = graph.successors(of: nodeID, via: role)
-                for subRole in roleHierarchy.directSubRoles(of: role) {
+                for subRole in roleHierarchy.subRolesPrecomputed(of: role) {
                     allSuccessors.formUnion(graph.successors(of: nodeID, via: subRole))
                 }
 

@@ -600,6 +600,25 @@ public struct RoleHierarchy: Sendable {
             )
         }
 
+        // OWL 2 spec: inheritable characteristics propagate from super-roles to sub-roles
+        // Reference: OWL 2 Web Ontology Language Structural Specification, Section 9
+        // Inheritable: functional, inverseFunctional, irreflexive, asymmetric
+        // NOT inheritable: transitive, symmetric, reflexive
+        let inheritableCharacteristics: Set<PropertyCharacteristic> = [
+            .functional, .inverseFunctional, .irreflexive, .asymmetric
+        ]
+        for role in allRoles {
+            let superRoles = superRoleClosure[role] ?? []
+            for superRole in superRoles {
+                if let superInfo = roles[superRole] {
+                    let inherited = superInfo.characteristics.intersection(inheritableCharacteristics)
+                    if !inherited.isEmpty {
+                        roles[role, default: RoleInfo(iri: role)].characteristics.formUnion(inherited)
+                    }
+                }
+            }
+        }
+
         closuresComputed = true
     }
 
@@ -665,6 +684,10 @@ public struct RoleHierarchy: Sendable {
     ///   - characteristic: The property characteristic
     ///   - role: The role IRI
     ///   - value: Whether to set or unset the characteristic
+    ///
+    /// Note: Invalidates cached closures because inheritable characteristics
+    /// (functional, inverseFunctional, irreflexive, asymmetric) propagate
+    /// through the role hierarchy and must be recomputed.
     public mutating func setCharacteristic(_ characteristic: PropertyCharacteristic, for role: String, value: Bool) {
         if roles[role] == nil {
             roles[role] = RoleInfo(iri: role)
@@ -675,6 +698,11 @@ public struct RoleHierarchy: Sendable {
         } else {
             roles[role]?.characteristics.remove(characteristic)
         }
+
+        // Invalidate closures — inherited characteristics must be recomputed
+        closuresComputed = false
+        superRoleClosure = [:]
+        subRoleClosure = [:]
     }
 
     /// Set inverse relationship between two roles

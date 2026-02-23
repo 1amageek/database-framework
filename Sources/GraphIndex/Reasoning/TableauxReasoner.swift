@@ -187,7 +187,9 @@ public final class TableauxReasoner: @unchecked Sendable {
     public init(ontology: OWLOntology, index: OntologyIndex, configuration: Configuration = Configuration()) {
         self.ontology = ontology
         self.ontologyIndex = index
-        self.roleHierarchy = RoleHierarchy(ontology: ontology, index: index)
+        var rh = RoleHierarchy(ontology: ontology, index: index)
+        rh.ensureClosuresComputed()
+        self.roleHierarchy = rh
         self.classHierarchy = ClassHierarchy(ontology: ontology, index: index)
         self.configuration = configuration
 

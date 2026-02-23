@@ -607,4 +607,511 @@ struct TransitiveClosureCorrectnessTests {
         // processedUnions should NOT contain the concept (was cleared by undo)
         #expect(graph.node(nodeID)?.processedUnions.contains(concept) != true)
     }
+
+    // MARK: - Category A: 特性継承テスト
+
+    @Test("A1: functional inherited from super-role to sub-role")
+    func functionalInheritedFromSuperRole() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.functional, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isFunctional("ex:hasRelative"), "Super-role should be functional")
+        #expect(rh.isFunctional("ex:hasChild"), "Sub-role should inherit functional from super-role")
+    }
+
+    @Test("A2: inverseFunctional inherited from super-role to sub-role")
+    func inverseFunctionalInheritedFromSuperRole() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.inverseFunctional, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isInverseFunctional("ex:hasRelative"))
+        #expect(rh.isInverseFunctional("ex:hasChild"), "Sub-role should inherit inverseFunctional")
+    }
+
+    @Test("A3: irreflexive inherited from super-role to sub-role")
+    func irreflexiveInheritedFromSuperRole() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.irreflexive, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isIrreflexive("ex:hasRelative"))
+        #expect(rh.isIrreflexive("ex:hasChild"), "Sub-role should inherit irreflexive")
+    }
+
+    @Test("A4: asymmetric inherited from super-role to sub-role")
+    func asymmetricInheritedFromSuperRole() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.asymmetric, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isAsymmetric("ex:hasRelative"))
+        #expect(rh.isAsymmetric("ex:hasChild"), "Sub-role should inherit asymmetric")
+    }
+
+    @Test("A5: transitive NOT inherited from super-role (OWL 2 spec)")
+    func transitiveNotInherited() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.transitive, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isTransitive("ex:hasRelative"), "Super-role should be transitive")
+        #expect(!rh.isTransitive("ex:hasChild"), "Sub-role must NOT inherit transitive")
+    }
+
+    @Test("A6: symmetric NOT inherited from super-role (OWL 2 spec)")
+    func symmetricNotInherited() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.symmetric, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isSymmetric("ex:hasRelative"))
+        #expect(!rh.isSymmetric("ex:hasChild"), "Sub-role must NOT inherit symmetric")
+    }
+
+    @Test("A7: reflexive NOT inherited from super-role (OWL 2 spec)")
+    func reflexiveNotInherited() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.reflexive, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isReflexive("ex:hasRelative"))
+        #expect(!rh.isReflexive("ex:hasChild"), "Sub-role must NOT inherit reflexive")
+    }
+
+    @Test("A8: functional inherited through deep hierarchy (r1 ⊑ r2 ⊑ r3)")
+    func functionalInheritedDeepHierarchy() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:r1", super: "ex:r2")
+        rh.addSubRole(sub: "ex:r2", super: "ex:r3")
+        rh.setCharacteristic(.functional, for: "ex:r3", value: true)
+        rh.ensureClosuresComputed()
+
+        #expect(rh.isFunctional("ex:r3"), "Top role should be functional")
+        #expect(rh.isFunctional("ex:r2"), "Middle role should inherit functional")
+        #expect(rh.isFunctional("ex:r1"), "Leaf role should inherit functional through 2 levels")
+    }
+
+    // MARK: - Category B: Tableaux clash detection + inherited characteristics
+
+    @Test("B1: inherited functional causes clash with 2 fillers")
+    func inheritedFunctionalCausesClash() {
+        // hasChild ⊑ hasRelative, hasRelative is functional
+        // hasChild with 2 fillers → functional clash
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.functional, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeA = graph.createNode()
+        let nodeB = graph.createNode()
+        let nodeC = graph.createNode()
+
+        graph.addEdge(from: nodeA, role: "ex:hasChild", to: nodeB)
+        graph.addEdge(from: nodeA, role: "ex:hasChild", to: nodeC)
+
+        let clash = ExpansionRules.detectClash(
+            at: nodeA, in: graph,
+            classHierarchy: ch, roleHierarchy: rh
+        )
+        #expect(clash != nil, "Should detect functional clash via inherited characteristic")
+        #expect(clash?.type == .functional)
+    }
+
+    @Test("B2: inherited irreflexive causes clash on self-loop")
+    func inheritedIrreflexiveCausesClash() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.irreflexive, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeA = graph.createNode()
+        graph.addEdge(from: nodeA, role: "ex:hasChild", to: nodeA)
+
+        let clash = ExpansionRules.detectClash(
+            at: nodeA, in: graph,
+            classHierarchy: ch, roleHierarchy: rh
+        )
+        #expect(clash != nil, "Should detect irreflexive clash via inherited characteristic")
+        #expect(clash?.type == .irreflexive)
+    }
+
+    @Test("B3: inherited asymmetric causes clash on bidirectional edge")
+    func inheritedAsymmetricCausesClash() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:hasChild", super: "ex:hasRelative")
+        rh.setCharacteristic(.asymmetric, for: "ex:hasRelative", value: true)
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeA = graph.createNode()
+        let nodeB = graph.createNode()
+        graph.addEdge(from: nodeA, role: "ex:hasChild", to: nodeB)
+        graph.addEdge(from: nodeB, role: "ex:hasChild", to: nodeA)
+
+        let clash = ExpansionRules.detectClash(
+            at: nodeA, in: graph,
+            classHierarchy: ch, roleHierarchy: rh
+        )
+        #expect(clash != nil, "Should detect asymmetric clash via inherited characteristic")
+        #expect(clash?.type == .asymmetric)
+    }
+
+    // MARK: - Category C: Universal rule + deep hierarchy
+
+    @Test("C1: ∀R.C propagates to all sub-role successors in deep hierarchy")
+    func universalRulePropagatesViaDeepSubRoles() {
+        // r1 ⊑ r2 ⊑ r3, node x has ∀r3.C, successors via r1 should get C
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:r1", super: "ex:r2")
+        rh.addSubRole(sub: "ex:r2", super: "ex:r3")
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        let nodeY = graph.createNode()
+        let nodeZ = graph.createNode()
+
+        // x has ∀r3.A (universal on super-role)
+        graph.addConcept(.allValuesFrom(property: "ex:r3", filler: .named("ex:A")), to: nodeX)
+
+        // y is a r1-successor of x (r1 is sub-sub-role of r3)
+        graph.addEdge(from: nodeX, role: "ex:r1", to: nodeY)
+        // z is a r2-successor of x
+        graph.addEdge(from: nodeX, role: "ex:r2", to: nodeZ)
+
+        let changed = ExpansionRules.applyUniversalRule(
+            at: nodeX, in: graph, roleHierarchy: rh
+        )
+
+        #expect(changed, "Universal rule should have applied")
+        #expect(graph.hasConcept(.named("ex:A"), at: nodeY), "r1-successor should get A (r1 ⊑ r2 ⊑ r3)")
+        #expect(graph.hasConcept(.named("ex:A"), at: nodeZ), "r2-successor should get A (r2 ⊑ r3)")
+    }
+
+    @Test("C2: successorsViaSubRoles returns all sub-role successors in deep hierarchy")
+    func successorsViaSubRolesDeepHierarchy() {
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:r1", super: "ex:r2")
+        rh.addSubRole(sub: "ex:r2", super: "ex:r3")
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        let nodeA = graph.createNode()
+        let nodeB = graph.createNode()
+        let nodeC = graph.createNode()
+
+        graph.addEdge(from: nodeX, role: "ex:r3", to: nodeA)
+        graph.addEdge(from: nodeX, role: "ex:r2", to: nodeB)
+        graph.addEdge(from: nodeX, role: "ex:r1", to: nodeC)
+
+        let allSuccessors = graph.successorsViaSubRoles(of: nodeX, via: "ex:r3")
+
+        #expect(allSuccessors.contains(nodeA), "Direct r3-successor")
+        #expect(allSuccessors.contains(nodeB), "r2-successor (r2 ⊑ r3)")
+        #expect(allSuccessors.contains(nodeC), "r1-successor (r1 ⊑ r2 ⊑ r3)")
+    }
+
+    // MARK: - Category D: Qualified cardinality
+
+    @Test("D1: ≤1 R.C with 2 qualified fillers triggers merge")
+    func maxCardinalityMergeQualified() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        let nodeA = graph.createNode()
+        let nodeB = graph.createNode()
+
+        // ≤1 ex:R.ex:C
+        graph.addConcept(.maxCardinality(property: "ex:R", n: 1, filler: .named("ex:C")), to: nodeX)
+        graph.addConcept(.named("ex:C"), to: nodeA)
+        graph.addConcept(.named("ex:C"), to: nodeB)
+        graph.addEdge(from: nodeX, role: "ex:R", to: nodeA)
+        graph.addEdge(from: nodeX, role: "ex:R", to: nodeB)
+
+        let result = ExpansionRules.applyMaxCardinalityRule(at: nodeX, in: graph)
+        if case .applied = result {
+            // Expected: merge to satisfy ≤1 R.C
+        } else {
+            Issue.record("Expected .applied for max cardinality merge but got \(result)")
+        }
+    }
+
+    @Test("D2: ≥2 R.C ⊓ ≤1 R.C is immediately unsatisfiable")
+    func conflictingCardinalitiesClash() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        graph.addConcept(.minCardinality(property: "ex:R", n: 2, filler: .named("ex:C")), to: nodeX)
+        graph.addConcept(.maxCardinality(property: "ex:R", n: 1, filler: .named("ex:C")), to: nodeX)
+
+        let clash = ExpansionRules.detectClash(
+            at: nodeX, in: graph,
+            classHierarchy: ch, roleHierarchy: rh
+        )
+        #expect(clash != nil, "≥2 ⊓ ≤1 should produce a clash")
+        #expect(clash?.type == .maxCardinality)
+    }
+
+    @Test("D3: ≤1 R.C does NOT merge unqualified successors")
+    func maxCardinalityQualifiedVsUnqualified() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        let nodeA = graph.createNode()
+        let nodeB = graph.createNode()
+
+        // ≤1 ex:R.ex:C (qualified)
+        graph.addConcept(.maxCardinality(property: "ex:R", n: 1, filler: .named("ex:C")), to: nodeX)
+        // Only nodeA has C, nodeB does not
+        graph.addConcept(.named("ex:C"), to: nodeA)
+        graph.addEdge(from: nodeX, role: "ex:R", to: nodeA)
+        graph.addEdge(from: nodeX, role: "ex:R", to: nodeB)
+
+        let result = ExpansionRules.applyMaxCardinalityRule(at: nodeX, in: graph)
+        // Only 1 qualified filler (nodeA), so no merge needed
+        if case .notApplicable = result {
+            // Expected: only 1 qualified successor, no merge needed
+        } else {
+            Issue.record("Expected .notApplicable but got \(result)")
+        }
+    }
+
+    // MARK: - Category E: Blocking + edge labels
+
+    @Test("E1: basic blocking — L(x) ⊆ L(y) with matching edge labels")
+    func basicBlockingSubsetConcepts() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        // Create root → ancestor → node chain
+        let root = graph.createNode()
+        let ancestor = graph.createNode(parent: root)
+        let node = graph.createNode(parent: ancestor)
+
+        // ancestor has {A, B}, node has {A}
+        graph.addConcept(.named("ex:A"), to: ancestor)
+        graph.addConcept(.named("ex:B"), to: ancestor)
+        graph.addConcept(.named("ex:A"), to: node)
+
+        // Both need matching edge labels
+        let child1 = graph.createNode(parent: ancestor)
+        graph.addEdge(from: ancestor, role: "ex:R", to: child1)
+        let child2 = graph.createNode(parent: node)
+        graph.addEdge(from: node, role: "ex:R", to: child2)
+
+        graph.updateBlocking()
+
+        #expect(graph.isBlocked(node.self), "Node should be blocked by ancestor (L(node) ⊆ L(ancestor))")
+    }
+
+    @Test("E2: blocking fails when edge labels don't match")
+    func blockingFailsEdgeLabelMismatch() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let root = graph.createNode()
+        let ancestor = graph.createNode(parent: root)
+        let node = graph.createNode(parent: ancestor)
+
+        // Same concepts
+        graph.addConcept(.named("ex:A"), to: ancestor)
+        graph.addConcept(.named("ex:A"), to: node)
+
+        // Different edge labels
+        let child1 = graph.createNode(parent: ancestor)
+        graph.addEdge(from: ancestor, role: "ex:R", to: child1)
+        let child2 = graph.createNode(parent: node)
+        graph.addEdge(from: node, role: "ex:S", to: child2)
+
+        graph.updateBlocking()
+
+        #expect(!graph.isBlocked(node.self), "Node should NOT be blocked (different edge labels)")
+    }
+
+    @Test("E3: nominal nodes are never blocked")
+    func nominalNeverBlocked() {
+        let rh = RoleHierarchy()
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let root = graph.createNode()
+        let ancestor = graph.createNode(parent: root)
+
+        // Create nominal as child of ancestor
+        let nominal = graph.getOrCreateNominal("ex:alice")
+
+        // Give ancestor a superset of nominal's concepts
+        graph.addConcept(.named("ex:A"), to: ancestor)
+        graph.addConcept(.named("ex:A"), to: nominal)
+
+        graph.updateBlocking()
+
+        #expect(!graph.isBlocked(nominal), "Nominal nodes must never be blocked")
+    }
+
+    // MARK: - Category F: Integration scenarios
+
+    @Test("F1: inherited functional causes unsatisfiability via Tableaux")
+    func inheritedFunctionalCausesUnsatisfiabilityViaTableaux() {
+        // If hasChild ⊑ hasRelative and hasRelative is functional,
+        // then hasChild also becomes functional via inheritance.
+        // ∃hasChild.A ⊓ ∃hasChild.B creates 2 fillers → functional clash detected.
+        // This proves the inheritance propagates correctly through the Tableaux reasoner.
+        let ontology = OWLOntology(
+            iri: "http://test.org/f1",
+            objectProperties: [
+                OWLObjectProperty(iri: "ex:hasChild", superProperties: ["ex:hasRelative"]),
+                OWLObjectProperty(iri: "ex:hasRelative", characteristics: [.functional]),
+            ],
+            axioms: [
+                .subObjectPropertyOf(sub: "ex:hasChild", sup: "ex:hasRelative"),
+                .functionalObjectProperty("ex:hasRelative"),
+            ]
+        )
+
+        let reasoner = TableauxReasoner(ontology: ontology)
+
+        // ∃hasChild.A ⊓ ∃hasChild.B — generates 2 fillers for inherited-functional role
+        let expr = OWLClassExpression.intersection([
+            .someValuesFrom(property: "ex:hasChild", filler: .named("ex:A")),
+            .someValuesFrom(property: "ex:hasChild", filler: .named("ex:B")),
+        ])
+
+        let result = reasoner.checkSatisfiability(expr)
+        // Functional clash is detected before ≤-rule merging, proving inheritance works
+        #expect(result.isUnsatisfiable, "Functional clash via inherited characteristic should make this unsatisfiable")
+        #expect(result.clash?.type == .functional, "Clash should be functional type")
+    }
+
+    @Test("F2: universal rule + max cardinality in deep hierarchy")
+    func universalRuleWithMaxCardinalityDeepHierarchy() {
+        // r1 ⊑ r2, ∀r2.C ⊓ ≤1 r2.⊤
+        // All r1-successors should get C, and at most 1 successor allowed
+        var rh = RoleHierarchy()
+        rh.addSubRole(sub: "ex:r1", super: "ex:r2")
+        rh.ensureClosuresComputed()
+
+        let ch = ClassHierarchy()
+        let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+
+        let nodeX = graph.createNode()
+        let nodeY = graph.createNode()
+
+        graph.addConcept(.allValuesFrom(property: "ex:r2", filler: .named("ex:C")), to: nodeX)
+        graph.addConcept(.maxCardinality(property: "ex:r2", n: 1, filler: nil), to: nodeX)
+        graph.addEdge(from: nodeX, role: "ex:r1", to: nodeY)
+
+        // Apply universal rule — should propagate C to nodeY via r1 ⊑ r2
+        let changed = ExpansionRules.applyUniversalRule(at: nodeX, in: graph, roleHierarchy: rh)
+
+        #expect(changed, "Universal rule should propagate C to r1-successor")
+        #expect(graph.hasConcept(.named("ex:C"), at: nodeY), "r1-successor should have C")
+    }
+
+    @Test("F3: detectClash covers all clash types directly")
+    func detectClashAllTypes() {
+        // Test each clash type independently
+
+        // 1. Complement clash: A ⊓ ¬A
+        do {
+            let rh = RoleHierarchy()
+            let ch = ClassHierarchy()
+            let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+            let node = graph.createNode()
+            graph.addConcept(.named("ex:A"), to: node)
+            graph.addConcept(.complement(.named("ex:A")), to: node)
+
+            let clash = ExpansionRules.detectClash(at: node, in: graph, classHierarchy: ch, roleHierarchy: rh)
+            #expect(clash?.type == .complement, "Should detect complement clash")
+        }
+
+        // 2. Bottom clash: owl:Nothing
+        do {
+            let rh = RoleHierarchy()
+            let ch = ClassHierarchy()
+            let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+            let node = graph.createNode()
+            graph.addConcept(.nothing, to: node)
+
+            let clash = ExpansionRules.detectClash(at: node, in: graph, classHierarchy: ch, roleHierarchy: rh)
+            #expect(clash?.type == .bottom, "Should detect bottom clash")
+        }
+
+        // 3. Functional clash: R(x,a), R(x,b) with functional R
+        do {
+            var rh = RoleHierarchy()
+            rh.setCharacteristic(.functional, for: "ex:R", value: true)
+            rh.ensureClosuresComputed()
+            let ch = ClassHierarchy()
+            let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+            let nodeX = graph.createNode()
+            let nodeA = graph.createNode()
+            let nodeB = graph.createNode()
+            graph.addEdge(from: nodeX, role: "ex:R", to: nodeA)
+            graph.addEdge(from: nodeX, role: "ex:R", to: nodeB)
+
+            let clash = ExpansionRules.detectClash(at: nodeX, in: graph, classHierarchy: ch, roleHierarchy: rh)
+            #expect(clash?.type == .functional, "Should detect functional clash")
+        }
+
+        // 4. Irreflexive clash: R(x,x) with irreflexive R
+        do {
+            var rh = RoleHierarchy()
+            rh.setCharacteristic(.irreflexive, for: "ex:R", value: true)
+            rh.ensureClosuresComputed()
+            let ch = ClassHierarchy()
+            let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+            let nodeX = graph.createNode()
+            graph.addEdge(from: nodeX, role: "ex:R", to: nodeX)
+
+            let clash = ExpansionRules.detectClash(at: nodeX, in: graph, classHierarchy: ch, roleHierarchy: rh)
+            #expect(clash?.type == .irreflexive, "Should detect irreflexive clash")
+        }
+
+        // 5. Asymmetric clash: R(x,y) ∧ R(y,x) with asymmetric R
+        do {
+            var rh = RoleHierarchy()
+            rh.setCharacteristic(.asymmetric, for: "ex:R", value: true)
+            rh.ensureClosuresComputed()
+            let ch = ClassHierarchy()
+            let graph = CompletionGraph(roleHierarchy: rh, classHierarchy: ch)
+            let nodeX = graph.createNode()
+            let nodeY = graph.createNode()
+            graph.addEdge(from: nodeX, role: "ex:R", to: nodeY)
+            graph.addEdge(from: nodeY, role: "ex:R", to: nodeX)
+
+            let clash = ExpansionRules.detectClash(at: nodeX, in: graph, classHierarchy: ch, roleHierarchy: rh)
+            #expect(clash?.type == .asymmetric, "Should detect asymmetric clash")
+        }
+    }
 }
