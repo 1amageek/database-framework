@@ -733,6 +733,15 @@ public final class CompletionGraph: @unchecked Sendable {
             nodes[edge.to]?.incomingEdges[edge.role]?.remove(edge.from)
 
         case .createdNode(let id):
+            // Defensive: remove any edges referencing this node to prevent dangling references.
+            // Normally edges added after node creation are undone first (LIFO trail),
+            // but mergeNodes may create edge references outside the trail.
+            let relatedEdges = edges.filter { $0.from == id || $0.to == id }
+            for edge in relatedEdges {
+                edges.remove(edge)
+                nodes[edge.from]?.outgoingEdges[edge.role]?.remove(edge.to)
+                nodes[edge.to]?.incomingEdges[edge.role]?.remove(edge.from)
+            }
             nodes.removeValue(forKey: id)
             nominals.remove(id)
 
@@ -791,6 +800,9 @@ public final class CompletionGraph: @unchecked Sendable {
 
         case .addedDataValue(let nodeID, let property, let value):
             nodes[nodeID]?.dataValues[property]?.remove(value)
+            if nodes[nodeID]?.dataValues[property]?.isEmpty == true {
+                nodes[nodeID]?.dataValues.removeValue(forKey: property)
+            }
 
         case .choicePoint:
             // Choice point marker - no undo action

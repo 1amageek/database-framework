@@ -19,6 +19,16 @@ import Graph
 import DatabaseEngine
 import FoundationDB
 
+// MARK: - EdgeKey (efficient deduplication)
+
+/// Struct for efficient edge deduplication (replaces Set<[String]>).
+/// Three fixed fields hash more efficiently than Array<String>.
+private struct EdgeKey: Hashable {
+    let from: String
+    let edge: String
+    let to: String
+}
+
 // MARK: - ReasoningGraphQueryBuilder
 
 /// Graph query builder with OWL DL reasoning support
@@ -191,11 +201,11 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
             return baseResults
         }
 
-        // Deduplication set: [from, edge, to]
-        var seen = Set<[String]>()
+        // Deduplication set using struct for efficient hashing
+        var seen = Set<EdgeKey>()
         var allResults = baseResults
         for r in baseResults {
-            seen.insert([r.from, r.edge, r.to])
+            seen.insert(EdgeKey(from: r.from, edge: r.edge, to: r.to))
         }
 
         guard let edgeIRI = trackedEdge else {
@@ -213,7 +223,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
                 let subResults = try await subQuery.execute()
                 for r in subResults {
                     // Report the edge using the queried predicate (original edgeIRI)
-                    let key = [r.from, edgeIRI, r.to]
+                    let key = EdgeKey(from: r.from, edge: edgeIRI, to: r.to)
                     if seen.insert(key).inserted {
                         allResults.append(GraphQueryBuilder<Item>.GraphEdge(
                             from: r.from, edge: edgeIRI, to: r.to
@@ -233,7 +243,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
                 let invResults = try await invQuery.execute()
                 for r in invResults {
                     // Map back: inverse means swap from/to
-                    let key = [r.to, edgeIRI, r.from]
+                    let key = EdgeKey(from: r.to, edge: edgeIRI, to: r.from)
                     if seen.insert(key).inserted {
                         allResults.append(GraphQueryBuilder<Item>.GraphEdge(
                             from: r.to, edge: edgeIRI, to: r.from
@@ -271,7 +281,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
     private func expandTransitiveClosure(
         baseResults: [GraphQueryBuilder<Item>.GraphEdge],
         edgeIRI: String,
-        seen: inout Set<[String]>
+        seen: inout Set<EdgeKey>
     ) async throws -> [GraphQueryBuilder<Item>.GraphEdge] {
         var allResults = baseResults
 
@@ -294,7 +304,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
             for node in frontier {
                 let results = try await base.from(node).edge(edgeIRI).execute()
                 for r in results {
-                    let key = [r.from, edgeIRI, r.to]
+                    let key = EdgeKey(from: r.from, edge: edgeIRI, to: r.to)
                     if seen.insert(key).inserted {
                         allResults.append(GraphQueryBuilder<Item>.GraphEdge(
                             from: r.from, edge: edgeIRI, to: r.to
@@ -312,6 +322,8 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
         // Phase 2: Warshall fixed-point on adjacency map
         // For each intermediate node k, for each pair (i, k) and (k, j), add (i, j).
         // Repeat until no new edges are added.
+        // nodes is fixed: Warshall adds only new edges between existing nodes,
+        // no new nodes are introduced, so recomputation is unnecessary.
         let nodes = Array(Set(adjacency.keys).union(adjacency.values.flatMap { $0 }))
         var changed = true
         while changed {
@@ -321,7 +333,7 @@ public struct ReasoningGraphQueryBuilder<Item: Persistable> {
                 for i in nodes {
                     guard let iTargets = adjacency[i], iTargets.contains(k) else { continue }
                     for j in kTargets {
-                        let key = [i, edgeIRI, j]
+                        let key = EdgeKey(from: i, edge: edgeIRI, to: j)
                         if seen.insert(key).inserted {
                             allResults.append(GraphQueryBuilder<Item>.GraphEdge(
                                 from: i, edge: edgeIRI, to: j

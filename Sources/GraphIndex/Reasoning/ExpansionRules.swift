@@ -51,6 +51,21 @@ public struct ClashInfo: Sendable, CustomStringConvertible {
 /// Container for all Tableaux expansion rules
 public struct ExpansionRules {
 
+    // MARK: - Witness Result
+
+    /// Result of witness generation for a data range.
+    ///
+    /// Eliminates the ambiguity of `OWLLiteral?` where `nil` conflated
+    /// "provably unsatisfiable" with "not yet implemented".
+    private enum WitnessResult {
+        /// A concrete witness value was generated
+        case witness(OWLLiteral)
+        /// The data range is provably empty (e.g., contradictory facets)
+        case unsatisfiable
+        /// Cannot determine satisfiability — sound but incomplete
+        case unsupported
+    }
+
     // MARK: - Rule Application Context
 
     /// Context for rule application
@@ -523,26 +538,36 @@ public struct ExpansionRules {
     // MARK: - Data Property Rules
 
     /// Data existential: If ∃P.D ∈ L(x), ensure x has a data value in D
+    ///
+    /// Returns `.clash(.datatype, ...)` when the data range is provably unsatisfiable
+    /// (e.g., contradictory facets like minInclusive=10, maxExclusive=5).
     static func applyDataExistentialRule(
         at nodeID: NodeID,
         in graph: CompletionGraph
-    ) -> Bool {
-        guard let node = graph.node(nodeID) else { return false }
-        if graph.isBlocked(nodeID) { return false }
+    ) -> RuleApplicationResult {
+        guard let node = graph.node(nodeID) else { return .notApplicable }
+        if graph.isBlocked(nodeID) { return .notApplicable }
 
         var changed = false
 
         for concept in node.concepts {
             if case .dataSomeValuesFrom(let property, let dataRange) = concept {
-                // Check if we already have a value
                 let hasValue = !(node.dataValues[property]?.isEmpty ?? true)
 
                 if !hasValue {
-                    // Generate a witness value
-                    if let value = generateWitnessValue(for: dataRange) {
+                    switch generateWitnessValue(for: dataRange) {
+                    case .witness(let value):
                         if graph.addDataValue(value, property: property, to: nodeID) {
                             changed = true
                         }
+                    case .unsatisfiable:
+                        return .clash(ClashInfo(
+                            type: .datatype,
+                            nodeID: nodeID,
+                            details: "Unsatisfiable data range for property \(property): \(dataRange)"
+                        ))
+                    case .unsupported:
+                        break  // Sound but incomplete
                     }
                 }
             }
@@ -554,50 +579,137 @@ public struct ExpansionRules {
             }
         }
 
-        return changed
+        return changed ? .applied : .notApplicable
     }
 
-    /// Generate a witness value for a data range
-    ///
-    /// For unrestricted datatypes, returns a canonical value.
-    /// For `datatypeRestriction(base, facets)`, generates a value that
-    /// satisfies all facet constraints (minInclusive, maxExclusive, etc.).
-    ///
-    /// Reference: XSD 1.1 Part 2, Section 4.3 — Constraining Facets
-    private static func generateWitnessValue(for dataRange: OWLDataRange) -> OWLLiteral? {
-        switch dataRange {
-        case .datatype(let iri):
-            switch iri {
-            case "xsd:string": return OWLLiteral(lexicalForm: "witness", datatype: iri)
-            case "xsd:integer": return OWLLiteral(lexicalForm: "0", datatype: iri)
-            case "xsd:decimal": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
-            case "xsd:double": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
-            case "xsd:float": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
-            case "xsd:boolean": return OWLLiteral(lexicalForm: "true", datatype: iri)
-            case "xsd:dateTime": return OWLLiteral(lexicalForm: "2000-01-01T00:00:00", datatype: iri)
-            default: return OWLLiteral(lexicalForm: "", datatype: iri)
-            }
+    // MARK: - Witness Generation
 
-        case .dataOneOf(let values):
-            return values.first
-
-        case .datatypeRestriction(let baseType, let facets):
-            let converted = facets.map { (facet: $0.facet.rawValue, value: $0.value) }
-            return generateFacetAwareWitness(baseType: baseType, facets: converted)
-
-        default:
-            return nil
+    /// Canonical witness values for unrestricted XSD datatypes
+    private static func canonicalWitness(for iri: String) -> OWLLiteral {
+        switch iri {
+        case "xsd:string": return OWLLiteral(lexicalForm: "witness", datatype: iri)
+        case "xsd:integer": return OWLLiteral(lexicalForm: "0", datatype: iri)
+        case "xsd:decimal": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
+        case "xsd:double": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
+        case "xsd:float": return OWLLiteral(lexicalForm: "0.0", datatype: iri)
+        case "xsd:boolean": return OWLLiteral(lexicalForm: "true", datatype: iri)
+        case "xsd:dateTime": return OWLLiteral(lexicalForm: "2000-01-01T00:00:00", datatype: iri)
+        default: return OWLLiteral(lexicalForm: "", datatype: iri)
         }
     }
 
-    /// Generate a witness that satisfies the given facet constraints.
+    /// Generate a witness value for a data range.
+    ///
+    /// Handles all 6 `OWLDataRange` cases:
+    /// - `.datatype`: canonical value
+    /// - `.dataOneOf`: first enumerated value
+    /// - `.datatypeRestriction`: facet-aware generation
+    /// - `.dataUnionOf`: try each sub-range, return first success
+    /// - `.dataIntersectionOf`: generate candidate, validate against full intersection
+    /// - `.dataComplementOf`: try canonical values, validate against complement
+    ///
+    /// Reference: XSD 1.1 Part 2, Section 4.3 — Constraining Facets
+    private static func generateWitnessValue(for dataRange: OWLDataRange) -> WitnessResult {
+        switch dataRange {
+        case .datatype(let iri):
+            return .witness(canonicalWitness(for: iri))
+
+        case .dataOneOf(let values):
+            if values.isEmpty {
+                return .unsatisfiable
+            }
+            return .witness(values[0])
+
+        case .datatypeRestriction(let baseType, let facets):
+            return generateFacetAwareWitness(baseType: baseType, facets: facets)
+
+        case .dataUnionOf(let ranges):
+            return generateUnionWitness(ranges: ranges)
+
+        case .dataIntersectionOf(let ranges):
+            return generateIntersectionWitness(ranges: ranges, fullRange: dataRange)
+
+        case .dataComplementOf(let inner):
+            return generateComplementWitness(inner: inner)
+        }
+    }
+
+    /// Witness for union: try each sub-range, return first success.
+    ///
+    /// If all sub-ranges are unsatisfiable, the union is unsatisfiable.
+    /// If any sub-range is unsupported and none succeeded, result is unsupported.
+    private static func generateUnionWitness(ranges: [OWLDataRange]) -> WitnessResult {
+        if ranges.isEmpty { return .unsatisfiable }
+        var hasUnsupported = false
+        for range in ranges {
+            switch generateWitnessValue(for: range) {
+            case .witness(let value):
+                return .witness(value)
+            case .unsatisfiable:
+                continue
+            case .unsupported:
+                hasUnsupported = true
+            }
+        }
+        return hasUnsupported ? .unsupported : .unsatisfiable
+    }
+
+    /// Witness for intersection: generate candidates from sub-ranges,
+    /// validate each against the full intersection using `OWLDatatypeValidator`.
+    private static func generateIntersectionWitness(
+        ranges: [OWLDataRange],
+        fullRange: OWLDataRange
+    ) -> WitnessResult {
+        // Empty intersection = universal set (vacuously true)
+        if ranges.isEmpty { return .witness(canonicalWitness(for: "xsd:string")) }
+        let validator = OWLDatatypeValidator()
+
+        for range in ranges {
+            switch generateWitnessValue(for: range) {
+            case .witness(let candidate):
+                if validator.validate(candidate, against: fullRange) == nil {
+                    return .witness(candidate)
+                }
+            case .unsatisfiable:
+                // If any sub-range is unsatisfiable, the intersection is unsatisfiable
+                return .unsatisfiable
+            case .unsupported:
+                continue
+            }
+        }
+        // All candidates failed validation against the full intersection.
+        // We cannot prove the intersection is empty, so remain sound.
+        return .unsupported
+    }
+
+    /// Witness for complement: try diverse canonical values,
+    /// return the first that does NOT belong to the inner range.
+    private static func generateComplementWitness(inner: OWLDataRange) -> WitnessResult {
+        let validator = OWLDatatypeValidator()
+        let candidates: [OWLLiteral] = [
+            OWLLiteral(lexicalForm: "witness", datatype: "xsd:string"),
+            OWLLiteral(lexicalForm: "0", datatype: "xsd:integer"),
+            OWLLiteral(lexicalForm: "true", datatype: "xsd:boolean"),
+            OWLLiteral(lexicalForm: "0.0", datatype: "xsd:double"),
+        ]
+        for candidate in candidates {
+            // If validation against inner range FAILS, the candidate is in the complement
+            if validator.validate(candidate, against: inner) != nil {
+                return .witness(candidate)
+            }
+        }
+        return .unsupported
+    }
+
+    /// Generate a witness that satisfies facet constraints.
     ///
     /// For numeric types: finds a value within [min, max] bounds.
     /// For string types: generates a string satisfying length constraints.
+    /// Post-validates with `OWLDatatypeValidator` for pattern facets.
     private static func generateFacetAwareWitness(
         baseType: String,
-        facets: [(facet: String, value: OWLLiteral)]
-    ) -> OWLLiteral? {
+        facets: [FacetRestriction]
+    ) -> WitnessResult {
         let isNumeric = ["xsd:integer", "xsd:decimal", "xsd:double", "xsd:float"].contains(baseType)
 
         if isNumeric {
@@ -606,23 +718,23 @@ public struct ExpansionRules {
             var lowerInclusive = true
             var upperInclusive = true
 
-            for (facet, value) in facets {
-                guard let v = value.doubleValue else { continue }
-                switch facet {
-                case "xsd:minInclusive":
-                    if v > lower || (v == lower && lowerInclusive) {
+            for restriction in facets {
+                guard let v = restriction.value.doubleValue else { continue }
+                switch restriction.facet {
+                case .minInclusive:
+                    if v > lower {
                         lower = v; lowerInclusive = true
                     }
-                case "xsd:minExclusive":
-                    if v > lower || (v == lower && !lowerInclusive) {
+                case .minExclusive:
+                    if v > lower || (v == lower && lowerInclusive) {
                         lower = v; lowerInclusive = false
                     }
-                case "xsd:maxInclusive":
-                    if v < upper || (v == upper && upperInclusive) {
+                case .maxInclusive:
+                    if v < upper {
                         upper = v; upperInclusive = true
                     }
-                case "xsd:maxExclusive":
-                    if v < upper || (v == upper && !upperInclusive) {
+                case .maxExclusive:
+                    if v < upper || (v == upper && upperInclusive) {
                         upper = v; upperInclusive = false
                     }
                 default:
@@ -630,35 +742,195 @@ public struct ExpansionRules {
                 }
             }
 
-            // Pick a value within bounds
-            let witness: Double
+            // Check for contradictory facets (empty range)
+            if lower > upper { return .unsatisfiable }
+            if lower == upper && (!lowerInclusive || !upperInclusive) { return .unsatisfiable }
+
+            // Integer types: use direct integer arithmetic
+            if baseType == "xsd:integer" {
+                let intResult = generateIntegerWitness(
+                    lower: lower, upper: upper,
+                    lowerInclusive: lowerInclusive, upperInclusive: upperInclusive
+                )
+                // Post-validate against non-numeric facets (pattern, totalDigits, etc.)
+                if case .witness(let intLiteral) = intResult {
+                    let hasNonNumericFacets = facets.contains { restriction in
+                        switch restriction.facet {
+                        case .minInclusive, .maxInclusive, .minExclusive, .maxExclusive:
+                            return false
+                        default:
+                            return true
+                        }
+                    }
+                    if hasNonNumericFacets {
+                        let validator = OWLDatatypeValidator()
+                        if validator.validateFacets(intLiteral, facets: facets) != nil {
+                            return .unsupported
+                        }
+                    }
+                }
+                return intResult
+            }
+
+            // Floating-point types
+            var witness: Double
             if lower == -.infinity && upper == .infinity {
                 witness = 0.0
             } else if lower == -.infinity {
-                witness = upperInclusive ? upper : upper - 1
+                witness = upperInclusive ? upper : upper.nextDown
             } else if upper == .infinity {
-                witness = lowerInclusive ? lower : lower + 1
+                witness = lowerInclusive ? lower : lower.nextUp
             } else {
-                // Midpoint of the range
                 witness = (lower + upper) / 2.0
-                // For exclusive bounds, ensure we're strictly inside
-                if !lowerInclusive && witness == lower {
-                    return OWLLiteral(lexicalForm: "\(lower + 1)", datatype: baseType)
+            }
+
+            // IEEE 754 adjacent-value adjustment for exclusive bounds
+            if !lowerInclusive && witness <= lower {
+                witness = lower.nextUp
+            }
+            if !upperInclusive && witness >= upper {
+                witness = upper.nextDown
+            }
+            // Final validation: NaN or out-of-bounds means unsatisfiable
+            if witness.isNaN || witness < lower || witness > upper {
+                return .unsatisfiable
+            }
+            if !lowerInclusive && witness == lower { return .unsatisfiable }
+            if !upperInclusive && witness == upper { return .unsatisfiable }
+
+            let numericLiteral = OWLLiteral(lexicalForm: "\(witness)", datatype: baseType)
+
+            // Post-validate against non-numeric facets (pattern, totalDigits, etc.)
+            let hasNonNumericFacets = facets.contains { restriction in
+                switch restriction.facet {
+                case .minInclusive, .maxInclusive, .minExclusive, .maxExclusive:
+                    return false
+                default:
+                    return true
                 }
-                if !upperInclusive && witness == upper {
-                    return OWLLiteral(lexicalForm: "\(upper - 1)", datatype: baseType)
+            }
+            if hasNonNumericFacets {
+                let validator = OWLDatatypeValidator()
+                if validator.validateFacets(numericLiteral, facets: facets) != nil {
+                    return .unsupported
                 }
             }
 
-            if baseType == "xsd:integer" {
-                let intWitness = Int(witness.rounded(lowerInclusive ? .up : .up))
-                return OWLLiteral(lexicalForm: "\(intWitness)", datatype: baseType)
-            }
-            return OWLLiteral(lexicalForm: "\(witness)", datatype: baseType)
+            return .witness(numericLiteral)
         }
 
-        // Non-numeric: fall back to base type witness
-        return generateWitnessValue(for: .datatype(baseType))
+        // String/URI facet support (length + pattern constraints)
+        if baseType == "xsd:string" || baseType == "xsd:anyURI" {
+            var minLen = 0
+            var maxLen = Int.max
+            for restriction in facets {
+                guard let v = restriction.value.intValue else { continue }
+                switch restriction.facet {
+                case .minLength: minLen = max(minLen, v)
+                case .maxLength: maxLen = min(maxLen, v)
+                case .length:    minLen = v; maxLen = v
+                default: break
+                }
+            }
+            if minLen > maxLen { return .unsatisfiable }
+
+            let candidateLiteral = OWLLiteral(
+                lexicalForm: String(repeating: "a", count: minLen),
+                datatype: baseType
+            )
+
+            // Post-validate against pattern facets
+            let validator = OWLDatatypeValidator()
+            if validator.validateFacets(candidateLiteral, facets: facets) != nil {
+                // Pattern or other facets rejected our candidate.
+                // We cannot prove the range is empty, so return unsupported.
+                return .unsupported
+            }
+
+            return .witness(candidateLiteral)
+        }
+
+        // Non-numeric, non-string: fall back to base type canonical witness
+        return .witness(canonicalWitness(for: baseType))
+    }
+
+    /// Generate witness for integer ranges using direct integer arithmetic.
+    ///
+    /// Avoids Double precision loss (correct for values near Int64 boundaries).
+    /// Returns the smallest valid integer (deterministic).
+    ///
+    /// Note: Double can only represent integers exactly up to 2^53.
+    /// For values beyond that range, we safely clamp to Int.min/Int.max.
+    ///
+    /// Reference: XSD 1.1 Part 2, Section 3.4.13 (integer)
+    private static func generateIntegerWitness(
+        lower: Double, upper: Double,
+        lowerInclusive: Bool, upperInclusive: Bool
+    ) -> WitnessResult {
+        let intMaxAsDouble = Double(Int.max)  // Rounded up in Double representation
+        let intMinAsDouble = Double(Int.min)
+
+        // Compute effective lower bound (smallest valid integer)
+        let effectiveLower: Int
+        if lower == -.infinity || lower < intMinAsDouble {
+            effectiveLower = Int.min
+        } else if lower > intMaxAsDouble {
+            return .unsatisfiable  // No representable integer
+        } else if lower >= intMaxAsDouble {
+            // lower == Double(Int.max), which is actually Int.max+1 due to rounding.
+            // Best approximation: clamp to Int.max (sound for lowerInclusive).
+            // For exclusive, this is technically one-off, but unavoidable with Double input.
+            effectiveLower = Int.max
+        } else {
+            // Safe to convert: lower is within (Int.min, ~Int.max)
+            let ceiled = lower.rounded(.up)
+            let lowerInt = Int(ceiled)
+            if lowerInclusive {
+                effectiveLower = lowerInt
+            } else {
+                if lower == ceiled {
+                    if lowerInt == Int.max { return .unsatisfiable }
+                    effectiveLower = lowerInt + 1
+                } else {
+                    effectiveLower = lowerInt
+                }
+            }
+        }
+
+        // Compute effective upper bound (largest valid integer)
+        let effectiveUpper: Int
+        if upper == .infinity || upper > intMaxAsDouble {
+            effectiveUpper = Int.max
+        } else if upper < intMinAsDouble {
+            return .unsatisfiable  // No representable integer
+        } else if upper <= intMinAsDouble {
+            effectiveUpper = Int.min
+        } else {
+            let floored = upper.rounded(.down)
+            // Guard against overflow: if floored >= intMaxAsDouble, clamp
+            let upperInt: Int
+            if floored >= intMaxAsDouble {
+                upperInt = Int.max
+            } else {
+                upperInt = Int(floored)
+            }
+            if upperInclusive {
+                effectiveUpper = upperInt
+            } else {
+                if upper == floored {
+                    if upperInt == Int.min { return .unsatisfiable }
+                    effectiveUpper = upperInt - 1
+                } else {
+                    effectiveUpper = upperInt
+                }
+            }
+        }
+
+        if effectiveLower > effectiveUpper {
+            return .unsatisfiable
+        }
+
+        return .witness(OWLLiteral(lexicalForm: "\(effectiveLower)", datatype: "xsd:integer"))
     }
 
     // MARK: - oneOf (Nominal) Rule

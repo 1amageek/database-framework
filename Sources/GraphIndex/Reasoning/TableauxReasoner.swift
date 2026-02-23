@@ -511,10 +511,16 @@ public final class TableauxReasoner: @unchecked Sendable {
                 break
             }
 
-            // Data existential
-            if ExpansionRules.applyDataExistentialRule(at: nodeID, in: graph) {
+            // Data existential — may return clash for unsatisfiable data ranges
+            let dataExResult = ExpansionRules.applyDataExistentialRule(at: nodeID, in: graph)
+            switch dataExResult {
+            case .applied:
                 changed = true
                 stats.ruleApplications += 1
+            case .clash(let clashInfo):
+                return .clash(clashInfo)
+            case .notApplicable:
+                break
             }
         }
 

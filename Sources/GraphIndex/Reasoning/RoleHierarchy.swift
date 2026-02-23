@@ -518,10 +518,12 @@ public struct RoleHierarchy: Sendable {
         }
 
         var queue: [String] = allRoles.filter { inDegreeSup[$0] == 0 }
+        var queueIndex = 0
         var processedSuper = Set<String>()
 
-        while !queue.isEmpty {
-            let role = queue.removeFirst()
+        while queueIndex < queue.count {
+            let role = queue[queueIndex]
+            queueIndex += 1
             if processedSuper.contains(role) { continue }
             processedSuper.insert(role)
 
@@ -535,7 +537,7 @@ public struct RoleHierarchy: Sendable {
             // Decrement in-degree for roles that depend on this one
             for dependent in dependentsOfSuper[role] ?? [] {
                 if processedSuper.contains(dependent) { continue }
-                inDegreeSup[dependent] = (inDegreeSup[dependent] ?? 1) - 1
+                inDegreeSup[dependent, default: 0] -= 1
                 if inDegreeSup[dependent] == 0 {
                     queue.append(dependent)
                 }
@@ -543,9 +545,12 @@ public struct RoleHierarchy: Sendable {
         }
 
         // Fallback for cycles (roles with non-zero in-degree after Kahn's)
+        // Each cyclic role needs its own DFS traversal (visited is per-call,
+        // but inout within the recursion to avoid O(B^D) set copies).
         for role in allRoles where !processedSuper.contains(role) {
+            var visited = Set<String>()
             superRoleClosure[role] = computeClosureDFS(
-                for: role, direction: .super, visited: []
+                for: role, direction: .super, visited: &visited
             )
         }
 
@@ -562,10 +567,12 @@ public struct RoleHierarchy: Sendable {
         }
 
         queue = allRoles.filter { inDegreeSub[$0] == 0 }
+        queueIndex = 0
         var processedSub = Set<String>()
 
-        while !queue.isEmpty {
-            let role = queue.removeFirst()
+        while queueIndex < queue.count {
+            let role = queue[queueIndex]
+            queueIndex += 1
             if processedSub.contains(role) { continue }
             processedSub.insert(role)
 
@@ -578,7 +585,7 @@ public struct RoleHierarchy: Sendable {
 
             for dependent in dependentsOfSub[role] ?? [] {
                 if processedSub.contains(dependent) { continue }
-                inDegreeSub[dependent] = (inDegreeSub[dependent] ?? 1) - 1
+                inDegreeSub[dependent, default: 0] -= 1
                 if inDegreeSub[dependent] == 0 {
                     queue.append(dependent)
                 }
@@ -587,8 +594,9 @@ public struct RoleHierarchy: Sendable {
 
         // Fallback for cycles
         for role in allRoles where !processedSub.contains(role) {
+            var visited = Set<String>()
             subRoleClosure[role] = computeClosureDFS(
-                for: role, direction: .sub, visited: []
+                for: role, direction: .sub, visited: &visited
             )
         }
 
@@ -598,18 +606,15 @@ public struct RoleHierarchy: Sendable {
     private enum ClosureDirection { case `super`, sub }
 
     /// DFS-based closure computation for cyclic hierarchies.
-    /// Cycle-safe via visited set tracking.
+    /// Cycle-safe via visited set tracking (inout to avoid O(B^D) set copies).
     private func computeClosureDFS(
         for role: String,
         direction: ClosureDirection,
-        visited: Set<String>
+        visited: inout Set<String>
     ) -> Set<String> {
         var result = Set<String>()
         guard let info = roles[role] else { return result }
-        guard !visited.contains(role) else { return result }
-
-        var newVisited = visited
-        newVisited.insert(role)
+        guard visited.insert(role).inserted else { return result }
 
         let neighbors: Set<String>
         switch direction {
@@ -619,9 +624,10 @@ public struct RoleHierarchy: Sendable {
 
         for neighbor in neighbors {
             result.insert(neighbor)
-            result.formUnion(computeClosureDFS(for: neighbor, direction: direction, visited: newVisited))
+            result.formUnion(computeClosureDFS(for: neighbor, direction: direction, visited: &visited))
         }
 
+        // Do not remove role from visited — full exploration, not path-based
         return result
     }
 
