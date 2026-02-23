@@ -259,7 +259,19 @@ struct Department {
     var name: String
 }
 
-// 2. Define RDF triple store
+// 2. Define object property (edge type) with @OWLObjectProperty
+@Persistable
+@OWLObjectProperty("http://example.org/onto#worksFor", from: "employeeID", to: "departmentID")
+struct WorksFor {
+    #Directory<WorksFor>("app", "assignments")
+    var employeeID: String = ""
+    var departmentID: String = ""
+
+    @OWLDataProperty("http://example.org/onto#since")
+    var startDate: Date = Date()
+}
+
+// 3. Define RDF triple store
 @Persistable
 struct RDFTriple {
     #Directory<RDFTriple>("app", "knowledge")
@@ -273,11 +285,11 @@ struct RDFTriple {
     ))
 }
 
-// 3. Create container
-let schema = Schema([Employee.self, Department.self, RDFTriple.self])
+// 4. Create container
+let schema = Schema([Employee.self, Department.self, WorksFor.self, RDFTriple.self])
 let container = try await FDBContainer(for: schema)
 
-// 4. Load ontology independently via OntologyStore
+// 5. Load ontology independently via OntologyStore
 let ontology = OWLOntology(iri: "http://example.org/onto") {
     Class("ex:Employee", subClassOf: "ex:Person")
     Class("ex:Department")
@@ -291,6 +303,7 @@ try await context.ontology.load(ontology)
 **What happens automatically**:
 - `@OWLClass` generates `OWLClassEntity` conformance with `ontologyClassIRI`
 - `@OWLClass` scans `@OWLDataProperty` annotations to build `ontologyPropertyDescriptors`
+- `@OWLObjectProperty` generates `OWLObjectPropertyEntity` conformance with `objectPropertyIRI`, `fromFieldName`, `toFieldName`, and auto-generates a `GraphIndexKind` for the edge type
 - `@OWLDataProperty(to:)` generates a reverse index on `departmentID` for efficient lookups
 - `context.ontology.load()` persists the ontology to `/_ontology/` via OntologyStore
 - GraphIndex uses the ontology for OWL 2 RL materialization on triple writes
