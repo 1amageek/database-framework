@@ -124,7 +124,9 @@ internal final class FDBDataStore: DataStore, Sendable {
             orderBy: nil
         )
 
-        return try await fetchAllInternal(type)
+        let results = try await fetchAllInternal(type)
+        guard let delegate = securityDelegate else { return results }
+        return delegate.filterByGetAccess(results)
     }
 
     /// Internal fetchAll without security evaluation (for internal use after security is already evaluated)
@@ -204,8 +206,9 @@ internal final class FDBDataStore: DataStore, Sendable {
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
 
-        // Delegate to internal implementation
-        return try await fetchInternal(query)
+        let results = try await fetchInternal(query)
+        guard let delegate = securityDelegate else { return results }
+        return delegate.filterByGetAccess(results)
     }
 
     // MARK: - Index-Optimized Fetch
@@ -331,7 +334,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Fetch models by IDs
-        let models = try await fetchByIds(T.self, ids: ids)
+        var models = try await fetchByIds(T.self, ids: ids)
+
+        // Apply GET security filter
+        if let delegate = securityDelegate {
+            models = delegate.filterByGetAccess(models)
+        }
 
         // Determine if post-filtering is needed
         // (needed if predicate has additional conditions beyond the indexed field)
@@ -705,7 +713,9 @@ internal final class FDBDataStore: DataStore, Sendable {
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
 
-        return try await fetchInternalWithTransaction(query, transaction: transaction)
+        let results = try await fetchInternalWithTransaction(query, transaction: transaction)
+        guard let delegate = securityDelegate else { return results }
+        return delegate.filterByGetAccess(results)
     }
 
     /// Internal fetch within an existing transaction
@@ -910,7 +920,12 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Fetch models by IDs with provided transaction
-        let models = try await fetchByIdsWithTransaction(T.self, ids: ids, transaction: transaction)
+        var models = try await fetchByIdsWithTransaction(T.self, ids: ids, transaction: transaction)
+
+        // Apply GET security filter
+        if let delegate = securityDelegate {
+            models = delegate.filterByGetAccess(models)
+        }
 
         // Determine if post-filtering is needed
         let needsPostFiltering = !isSimpleFieldPredicate(predicate, fieldName: condition.fieldName)

@@ -1208,6 +1208,22 @@ Run with: `swift test --filter GraphIndexPerformanceTests`
 
 *Benchmarks run on M1 Mac with local FoundationDB cluster.*
 
+## Security Limitations
+
+GraphIndex operates at the triple/edge level, which is below the Persistable-level SecurityPolicy abstraction. The following security constraints apply:
+
+**SPARQL queries**: Return `RDFTerm`-based results (not Persistable instances), so `SecurityPolicy.allowGet()` cannot be evaluated per-result. SPARQL results are **not filtered** by SecurityPolicy.
+
+**GraphTraverser**: Scans edge/triple indexes directly and returns node IDs (strings), not Persistable instances. SecurityPolicy is **not applied** during traversal.
+
+**Graph algorithms** (PageRank, shortest path, community detection, etc.): Operate on the raw graph structure without SecurityPolicy evaluation.
+
+**When SecurityPolicy IS applied**:
+- `IndexQueryContext.batchFetchItems()`: Evaluates both LIST and GET security when fetching Persistable items by IDs obtained from graph queries.
+- `FDBDataStore.fetch()` / `fetchAll()`: All standard fetch operations apply LIST + GET filtering.
+
+**Future direction**: Triple-level access control (e.g., Named Graph-based authorization) may be added in a future release to provide fine-grained security for SPARQL and graph traversal operations.
+
 ## References
 
 ### Storage & Query

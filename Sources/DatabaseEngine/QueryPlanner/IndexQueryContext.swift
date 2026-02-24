@@ -170,9 +170,18 @@ public struct IndexQueryContext: Sendable {
         ids: [Tuple],
         type: T.Type
     ) async throws -> [T] {
+        // Security: Evaluate LIST before fetching
+        try context.container.securityDelegate?.evaluateList(
+            type: type,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
+
         var results: [T] = []
 
         // Use partition binding if available
+        // Note: context.model() internally evaluates GET per item via FDBDataStore.fetchByIdInTransaction
         if let binding = partitionBinding(for: type) {
             for id in ids {
                 if let idElement = id[0] {

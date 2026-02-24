@@ -34,14 +34,36 @@ public struct SecurityError: Error, Sendable, CustomStringConvertible {
     /// Human-readable reason for the denial
     public let reason: String
 
-    public init(operation: Operation, targetType: String, reason: String) {
+    /// The ID of the resource that was denied (if available)
+    public let resourceID: String?
+
+    /// The user ID that attempted the operation (if available)
+    public let userID: String?
+
+    public init(
+        operation: Operation,
+        targetType: String,
+        reason: String,
+        resourceID: String? = nil,
+        userID: String? = nil
+    ) {
         self.operation = operation
         self.targetType = targetType
         self.reason = reason
+        self.resourceID = resourceID
+        self.userID = userID
     }
 
     public var description: String {
-        "SecurityError: \(operation.rawValue) on \(targetType) - \(reason)"
+        var desc = "SecurityError: \(operation.rawValue) on \(targetType)"
+        if let resourceID {
+            desc += " (resource: \(resourceID))"
+        }
+        if let userID {
+            desc += " by user \(userID)"
+        }
+        desc += " - \(reason)"
+        return desc
     }
 }
 

@@ -76,6 +76,31 @@ public protocol DataStoreSecurityDelegate: Sendable {
     ///   - targetType: The target type name (for error message)
     /// - Throws: SecurityError if not admin
     func requireAdmin(operation: String, targetType: String) throws
+
+    /// Filter items by GET access
+    ///
+    /// Called after LIST operations to filter out items the user cannot read.
+    /// Unlike `evaluateGet()` which throws on denial, this method silently
+    /// excludes denied items from the result set.
+    ///
+    /// - Parameter items: The items to filter
+    /// - Returns: Only the items the user is allowed to GET
+    func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T]
+}
+
+// MARK: - Default filterByGetAccess Implementation
+
+extension DataStoreSecurityDelegate {
+    public func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T] {
+        items.filter { item in
+            do {
+                try evaluateGet(item)
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
 }
 
 // MARK: - TaskLocal Auth Context
@@ -142,12 +167,12 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
         guard shouldEvaluate else { return }
 
         guard let secureType = T.self as? any SecurityPolicy.Type else {
-            // strict モードでは SecurityPolicy 未実装を拒否
             if configuration.strict {
                 throw SecurityError(
                     operation: .list,
                     targetType: T.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
+                    userID: auth?.userID
                 )
             }
             return
@@ -164,7 +189,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .list,
                 targetType: T.persistableType,
-                reason: "Access denied: list operation not allowed"
+                reason: "Access denied: list operation not allowed",
+                userID: auth?.userID
             )
         }
     }
@@ -178,7 +204,9 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
                 throw SecurityError(
                     operation: .get,
                     targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
+                    resourceID: "\(resource.id)",
+                    userID: auth?.userID
                 )
             }
             return
@@ -190,7 +218,9 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .get,
                 targetType: modelType.persistableType,
-                reason: "Access denied: get operation not allowed"
+                reason: "Access denied: get operation not allowed",
+                resourceID: "\(resource.id)",
+                userID: auth?.userID
             )
         }
     }
@@ -204,7 +234,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
                 throw SecurityError(
                     operation: .create,
                     targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
+                    userID: auth?.userID
                 )
             }
             return
@@ -216,7 +247,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .create,
                 targetType: modelType.persistableType,
-                reason: "Access denied: create operation not allowed"
+                reason: "Access denied: create operation not allowed",
+                userID: auth?.userID
             )
         }
     }
@@ -230,7 +262,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
                 throw SecurityError(
                     operation: .update,
                     targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
+                    userID: auth?.userID
                 )
             }
             return
@@ -246,7 +279,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .update,
                 targetType: modelType.persistableType,
-                reason: "Access denied: update operation not allowed"
+                reason: "Access denied: update operation not allowed",
+                userID: auth?.userID
             )
         }
     }
@@ -260,7 +294,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
                 throw SecurityError(
                     operation: .delete,
                     targetType: modelType.persistableType,
-                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false."
+                    reason: "Type does not implement SecurityPolicy. Implement SecurityPolicy or use strict: false.",
+                    userID: auth?.userID
                 )
             }
             return
@@ -272,7 +307,9 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .delete,
                 targetType: modelType.persistableType,
-                reason: "Access denied: delete operation not allowed"
+                reason: "Access denied: delete operation not allowed",
+                resourceID: "\(resource.id)",
+                userID: auth?.userID
             )
         }
     }
@@ -282,7 +319,8 @@ public final class DefaultSecurityDelegate: DataStoreSecurityDelegate, Sendable 
             throw SecurityError(
                 operation: .admin,
                 targetType: targetType,
-                reason: "\(operation) requires admin privileges"
+                reason: "\(operation) requires admin privileges",
+                userID: auth?.userID
             )
         }
     }
@@ -303,4 +341,5 @@ public final class DisabledSecurityDelegate: DataStoreSecurityDelegate, Sendable
     public func evaluateUpdate(_ resource: any Persistable, newResource: any Persistable) throws {}
     public func evaluateDelete(_ resource: any Persistable) throws {}
     public func requireAdmin(operation: String, targetType: String) throws {}
+    public func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T] { items }
 }
