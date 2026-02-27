@@ -4,7 +4,7 @@
 // Reference: FDB Record Layer continuation serialization
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - ContinuationState
 
@@ -139,7 +139,14 @@ internal struct ContinuationState: Sendable {
             throw ContinuationError.invalidTokenFormat
         }
 
-        let tuple = try Tuple.unpack(from: token.data)
+        let elements: [any TupleElement]
+        do {
+            elements = try Tuple.unpack(from: token.data)
+        } catch {
+            throw ContinuationError.corruptedToken
+        }
+
+        let tuple = Tuple(elements)
 
         guard tuple.count >= 7 else {
             throw ContinuationError.corruptedToken

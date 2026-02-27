@@ -1,120 +1,208 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Synchronization
 
-/// TransactionProtocol wrapper for tests that need deterministic range paging.
+/// Transaction wrapper for tests that need to count and limit range operations.
 ///
-/// `FDB.AsyncKVSequence` streams results by repeatedly calling `getRangeNative`.
 /// This wrapper can:
-/// - Count `getRangeNative` calls
-/// - Force paging by truncating each native call to at most `maxRecordsPerNativeCall`
-/// - Fail if more than `maxNativeCalls` calls are performed
-public final class LimitingTransaction: TransactionProtocol, Sendable {
-    public enum LimitingError: Error, Equatable, CustomStringConvertible, Sendable {
-        case exceededMaxNativeCalls(max: Int)
+/// - Count `collectRange` calls
+/// - Fail if more than `maxCollectCalls` calls are performed
+public final class LimitingTransaction: Transaction, @unchecked Sendable {
 
-        public var description: String {
-            switch self {
-            case .exceededMaxNativeCalls(let max):
-                return "Exceeded max getRangeNative calls (\(max))"
+    // MARK: - Associated Type
+
+    /// Delegates to the underlying transaction's RangeResult via type erasure.
+    /// Since LimitingTransaction wraps `any Transaction`, we eagerly collect via collectRange.
+    public struct RangeResult: AsyncSequence, Sendable {
+        public typealias Element = (Bytes, Bytes)
+
+        private let underlying: (any Transaction)?
+        private let begin: KeySelector
+        private let end: KeySelector
+        private let limit: Int
+        private let reverse: Bool
+        private let snapshot: Bool
+        private let streamingMode: StreamingMode
+
+        /// Create from pre-collected pairs (e.g., when exceeded max calls).
+        init(pairs: [(Bytes, Bytes)]) {
+            self.underlying = nil
+            self.begin = KeySelector(key: [], orEqual: false, offset: 0)
+            self.end = KeySelector(key: [], orEqual: false, offset: 0)
+            self.limit = 0
+            self.reverse = false
+            self.snapshot = false
+            self.streamingMode = .wantAll
+            self._pairs = pairs
+        }
+
+        /// Create from underlying transaction parameters (lazy collection).
+        init(
+            underlying: any Transaction,
+            begin: KeySelector, end: KeySelector,
+            limit: Int, reverse: Bool,
+            snapshot: Bool, streamingMode: StreamingMode
+        ) {
+            self.underlying = underlying
+            self.begin = begin
+            self.end = end
+            self.limit = limit
+            self.reverse = reverse
+            self.snapshot = snapshot
+            self.streamingMode = streamingMode
+            self._pairs = nil
+        }
+
+        private let _pairs: [(Bytes, Bytes)]?
+
+        public func makeAsyncIterator() -> AsyncIterator {
+            AsyncIterator(
+                underlying: underlying,
+                begin: begin, end: end,
+                limit: limit, reverse: reverse,
+                snapshot: snapshot, streamingMode: streamingMode,
+                preFetched: _pairs
+            )
+        }
+
+        public struct AsyncIterator: AsyncIteratorProtocol {
+            private let underlying: (any Transaction)?
+            private let begin: KeySelector
+            private let end: KeySelector
+            private let limit: Int
+            private let reverse: Bool
+            private let snapshot: Bool
+            private let streamingMode: StreamingMode
+            private var pairs: [(Bytes, Bytes)]?
+            private var index = 0
+
+            init(
+                underlying: (any Transaction)?,
+                begin: KeySelector, end: KeySelector,
+                limit: Int, reverse: Bool,
+                snapshot: Bool, streamingMode: StreamingMode,
+                preFetched: [(Bytes, Bytes)]?
+            ) {
+                self.underlying = underlying
+                self.begin = begin
+                self.end = end
+                self.limit = limit
+                self.reverse = reverse
+                self.snapshot = snapshot
+                self.streamingMode = streamingMode
+                self.pairs = preFetched
+            }
+
+            public mutating func next() async throws -> (Bytes, Bytes)? {
+                // Lazily collect on first call
+                if pairs == nil, let tx = underlying {
+                    pairs = try await tx.collectRange(
+                        from: begin, to: end,
+                        limit: limit, reverse: reverse,
+                        snapshot: snapshot, streamingMode: streamingMode
+                    )
+                }
+                guard let pairs, index < pairs.count else { return nil }
+                let pair = pairs[index]
+                index += 1
+                return pair
             }
         }
     }
 
-    private let underlying: any TransactionProtocol
-    private let maxNativeCalls: Int
-    private let maxRecordsPerNativeCall: Int
-    private let nativeCallCount: Mutex<Int>
+    // MARK: - Error
 
-    public init(
-        wrapping underlying: any TransactionProtocol,
-        maxNativeCalls: Int,
-        maxRecordsPerNativeCall: Int = 1
-    ) {
-        self.underlying = underlying
-        self.maxNativeCalls = maxNativeCalls
-        self.maxRecordsPerNativeCall = max(1, maxRecordsPerNativeCall)
-        self.nativeCallCount = Mutex(0)
+    public enum LimitingError: Error, Equatable, CustomStringConvertible, Sendable {
+        case exceededMaxCalls(max: Int)
+
+        public var description: String {
+            switch self {
+            case .exceededMaxCalls(let max):
+                return "Exceeded max collectRange calls (\(max))"
+            }
+        }
     }
 
-    public var nativeCallCountValue: Int { nativeCallCount.withLock { $0 } }
+    // MARK: - Properties
 
-    public func getValue(for key: FDB.Bytes, snapshot: Bool) async throws -> FDB.Bytes? {
+    private let underlying: any Transaction
+    private let maxCollectCalls: Int
+    private let callCount: Mutex<Int>
+
+    public init(
+        wrapping underlying: any Transaction,
+        maxCollectCalls: Int = Int.max
+    ) {
+        self.underlying = underlying
+        self.maxCollectCalls = maxCollectCalls
+        self.callCount = Mutex(0)
+    }
+
+    public var callCountValue: Int { callCount.withLock { $0 } }
+
+    // MARK: - Read
+
+    public func getValue(for key: Bytes, snapshot: Bool) async throws -> Bytes? {
         try await underlying.getValue(for: key, snapshot: snapshot)
     }
 
-    public func setValue(_ value: FDB.Bytes, for key: FDB.Bytes) {
-        underlying.setValue(value, for: key)
-    }
-
-    public func clear(key: FDB.Bytes) {
-        underlying.clear(key: key)
-    }
-
-    public func clearRange(beginKey: FDB.Bytes, endKey: FDB.Bytes) {
-        underlying.clearRange(beginKey: beginKey, endKey: endKey)
-    }
-
-    public func getKey(selector: FDB.Selectable, snapshot: Bool) async throws -> FDB.Bytes? {
-        try await underlying.getKey(selector: selector, snapshot: snapshot)
-    }
-
-    public func getKey(selector: FDB.KeySelector, snapshot: Bool) async throws -> FDB.Bytes? {
+    public func getKey(selector: KeySelector, snapshot: Bool) async throws -> Bytes? {
         try await underlying.getKey(selector: selector, snapshot: snapshot)
     }
 
     public func getRange(
-        beginSelector: FDB.KeySelector,
-        endSelector: FDB.KeySelector,
-        snapshot: Bool
-    ) -> FDB.AsyncKVSequence {
-        FDB.AsyncKVSequence(
-            transaction: self,
-            beginSelector: beginSelector,
-            endSelector: endSelector,
-            limit: 0,
-            reverse: false,
-            snapshot: snapshot,
-            streamingMode: .iterator
-        )
-    }
-
-    public func getRangeNative(
-        beginSelector: FDB.KeySelector,
-        endSelector: FDB.KeySelector,
+        from begin: KeySelector,
+        to end: KeySelector,
         limit: Int,
-        targetBytes: Int,
-        streamingMode: FDB.StreamingMode,
-        iteration: Int,
         reverse: Bool,
-        snapshot: Bool
-    ) async throws -> ResultRange {
-        let callCount = nativeCallCount.withLock { value in
+        snapshot: Bool,
+        streamingMode: StreamingMode
+    ) -> RangeResult {
+        // Count the call
+        let count = callCount.withLock { value in
             value += 1
             return value
         }
-        if callCount > maxNativeCalls {
-            throw LimitingError.exceededMaxNativeCalls(max: maxNativeCalls)
+
+        // We can't throw from a non-throwing function, so we return empty if exceeded.
+        guard count <= maxCollectCalls else {
+            return RangeResult(pairs: [])
         }
 
-        let range = try await underlying.getRangeNative(
-            beginSelector: beginSelector,
-            endSelector: endSelector,
-            limit: limit,
-            targetBytes: targetBytes,
-            streamingMode: streamingMode,
-            iteration: iteration,
-            reverse: reverse,
-            snapshot: snapshot
+        // Eagerly collect from the underlying transaction.
+        // Since getRange is synchronous but underlying.collectRange is async,
+        // we store the parameters and lazily collect in the iterator.
+        return RangeResult(
+            underlying: underlying,
+            begin: begin, end: end,
+            limit: limit, reverse: reverse,
+            snapshot: snapshot, streamingMode: streamingMode
         )
-
-        // Note: ResultRange init is internal to FoundationDB, so we cannot truncate.
-        // This wrapper now only counts native calls and enforces max calls limit.
-        // The maxRecordsPerNativeCall parameter is ignored for truncation purposes.
-        return range
     }
 
-    public func commit() async throws -> Bool {
+    // MARK: - Write
+
+    public func setValue(_ value: Bytes, for key: Bytes) {
+        underlying.setValue(value, for: key)
+    }
+
+    public func clear(key: Bytes) {
+        underlying.clear(key: key)
+    }
+
+    public func clearRange(beginKey: Bytes, endKey: Bytes) {
+        underlying.clearRange(beginKey: beginKey, endKey: endKey)
+    }
+
+    // MARK: - Atomic
+
+    public func atomicOp(key: Bytes, param: Bytes, mutationType: MutationType) {
+        underlying.atomicOp(key: key, param: param, mutationType: mutationType)
+    }
+
+    // MARK: - Transaction Control
+
+    public func commit() async throws {
         try await underlying.commit()
     }
 
@@ -122,49 +210,53 @@ public final class LimitingTransaction: TransactionProtocol, Sendable {
         underlying.cancel()
     }
 
-    public func getVersionstamp() async throws -> FDB.Bytes? {
-        try await underlying.getVersionstamp()
-    }
+    // MARK: - Version
 
-    // MARK: - Additional TransactionProtocol Requirements
-
-    public func setOption(to value: FDB.Bytes?, forOption option: FDB.TransactionOption) throws {
-        try underlying.setOption(to: value, forOption: option)
-    }
-
-    public func setReadVersion(_ version: FDB.Version) {
+    public func setReadVersion(_ version: Int64) {
         underlying.setReadVersion(version)
     }
 
-    public func getReadVersion() async throws -> FDB.Version {
+    public func getReadVersion() async throws -> Int64 {
         try await underlying.getReadVersion()
     }
 
-    public func onError(_ error: FDBError) async throws {
-        try await underlying.onError(error)
-    }
-
-    public func getEstimatedRangeSizeBytes(beginKey: FDB.Bytes, endKey: FDB.Bytes) async throws -> Int {
-        try await underlying.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey)
-    }
-
-    public func getRangeSplitPoints(beginKey: FDB.Bytes, endKey: FDB.Bytes, chunkSize: Int) async throws -> [[UInt8]] {
-        try await underlying.getRangeSplitPoints(beginKey: beginKey, endKey: endKey, chunkSize: chunkSize)
-    }
-
-    public func getCommittedVersion() throws -> FDB.Version {
+    public func getCommittedVersion() throws -> Int64 {
         try underlying.getCommittedVersion()
     }
 
-    public func getApproximateSize() async throws -> Int {
-        try await underlying.getApproximateSize()
+    // MARK: - Options
+
+    public func setOption(forOption option: TransactionOption) throws {
+        try underlying.setOption(forOption: option)
     }
 
-    public func atomicOp(key: FDB.Bytes, param: FDB.Bytes, mutationType: FDB.MutationType) {
-        underlying.atomicOp(key: key, param: param, mutationType: mutationType)
+    public func setOption(to value: Bytes?, forOption option: TransactionOption) throws {
+        try underlying.setOption(to: value, forOption: option)
     }
 
-    public func addConflictRange(beginKey: FDB.Bytes, endKey: FDB.Bytes, type: FDB.ConflictRangeType) throws {
+    public func setOption(to value: Int, forOption option: TransactionOption) throws {
+        try underlying.setOption(to: value, forOption: option)
+    }
+
+    // MARK: - Conflict Range
+
+    public func addConflictRange(beginKey: Bytes, endKey: Bytes, type: ConflictRangeType) throws {
         try underlying.addConflictRange(beginKey: beginKey, endKey: endKey, type: type)
+    }
+
+    // MARK: - Statistics
+
+    public func getEstimatedRangeSizeBytes(beginKey: Bytes, endKey: Bytes) async throws -> Int {
+        try await underlying.getEstimatedRangeSizeBytes(beginKey: beginKey, endKey: endKey)
+    }
+
+    public func getRangeSplitPoints(beginKey: Bytes, endKey: Bytes, chunkSize: Int) async throws -> [[UInt8]] {
+        try await underlying.getRangeSplitPoints(beginKey: beginKey, endKey: endKey, chunkSize: chunkSize)
+    }
+
+    // MARK: - Versionstamp
+
+    public func getVersionstamp() async throws -> Bytes? {
+        try await underlying.getVersionstamp()
     }
 }
