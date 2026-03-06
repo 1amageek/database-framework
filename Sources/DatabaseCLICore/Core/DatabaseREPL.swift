@@ -16,9 +16,9 @@
 /// try await repl.run()
 /// ```
 ///
-/// **Embedded mode** (with FDBContainer for backward compatibility):
+/// **Embedded mode** (with DBContainer for backward compatibility):
 /// ```swift
-/// let container = try await FDBContainer(for: schema)
+/// let container = try await DBContainer(for: schema)
 /// let repl = try await DatabaseREPL(container: container)
 /// try await repl.run()
 /// ```
@@ -39,13 +39,13 @@ public final class DatabaseREPL: Sendable {
         self.dataAccess = CatalogDataAccess(database: database, entities: entities)
     }
 
-    /// Initialize from FDBContainer (embedded mode)
+    /// Initialize from DBContainer (embedded mode)
     ///
-    /// Loads entities from the SchemaRegistry persisted by FDBContainer.
-    public init(container: FDBContainer) async throws {
-        let registry = SchemaRegistry(database: container.database)
+    /// Loads entities from the SchemaRegistry persisted by DBContainer.
+    public init(container: DBContainer) async throws {
+        let registry = SchemaRegistry(database: container.engine)
         self.entities = try await registry.loadAll()
-        self.dataAccess = CatalogDataAccess(database: container.database, entities: self.entities)
+        self.dataAccess = CatalogDataAccess(database: container.engine, entities: self.entities)
     }
 
     /// Start the interactive REPL loop

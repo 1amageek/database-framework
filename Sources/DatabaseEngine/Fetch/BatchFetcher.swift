@@ -412,7 +412,7 @@ extension BatchFetcher {
 /// Prefetches the next batch while the current batch is being processed.
 public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendable {
     private let baseFetcher: BatchFetcher<Item>
-    private let container: FDBContainer
+    private let container: DBContainer
 
     private struct State: Sendable {
         var prefetchTask: Task<[Item], Error>?
@@ -422,7 +422,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
     private let state: Mutex<State>
 
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         itemSubspace: Subspace,
         blobsSubspace: Subspace,
         itemType: String,
@@ -451,7 +451,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
             // Start new prefetch
             state.prefetchKeys = primaryKeys
             state.prefetchTask = Task {
-                try await self.container.database.withTransaction(configuration: .batch) { transaction in
+                try await self.container.engine.withTransaction(configuration: .batch) { transaction in
                     return try await self.baseFetcher.fetch(
                         primaryKeys: primaryKeys,
                         transaction: transaction

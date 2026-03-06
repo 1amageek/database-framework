@@ -49,7 +49,7 @@ public final class RelationshipMaintainer: Sendable {
     // MARK: - Properties
 
     /// FDB Container for resolving type directories
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Schema containing type definitions
     private let schema: Schema
@@ -62,7 +62,7 @@ public final class RelationshipMaintainer: Sendable {
     ///   - container: FDB Container for resolving type directories
     ///   - schema: Schema containing type definitions and relationships
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         schema: Schema
     ) {
         self.container = container

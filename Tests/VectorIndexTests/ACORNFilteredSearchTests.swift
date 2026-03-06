@@ -96,7 +96,7 @@ private struct ACORNTestContext {
     let blobsSubspace: Subspace
 
     init(dimensions: Int = 4, indexName: String = "ACORNTestProduct_embedding") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "acorn", String(testId)).pack())

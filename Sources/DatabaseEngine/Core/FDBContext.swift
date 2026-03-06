@@ -13,14 +13,14 @@ import Logging
 ///
 /// **Architecture** (Context-Centric Design):
 /// - FDBContext provides high-level API for persistence
-/// - **FDBContext owns transactions and ReadVersionCache** (not FDBContainer)
+/// - **FDBContext owns transactions and ReadVersionCache** (not DBContainer)
 /// - Container resolves directories from Persistable type's `#Directory` declaration
 /// - FDBDataStore performs low-level FDB operations in the resolved directory
 ///
 /// **Transaction Management**:
 /// - Use `context.withTransaction()` for explicit transaction control
 /// - ReadVersionCache is per-context for proper scoping per unit of work
-/// - System operations (DirectoryLayer, Migration) use `container.database.withTransaction()`
+/// - System operations (DirectoryLayer, Migration) use `container.engine.withTransaction()`
 ///
 /// **Usage**:
 /// ```swift
@@ -59,7 +59,7 @@ public final class FDBContext: Sendable {
     // MARK: - Properties
 
     /// The container that owns this context
-    public let container: FDBContainer
+    public let container: DBContainer
 
     /// Read version cache for CachePolicy
     ///
@@ -126,9 +126,9 @@ public final class FDBContext: Sendable {
     /// Initialize FDBContext
     ///
     /// - Parameters:
-    ///   - container: The FDBContainer to use for storage
+    ///   - container: The DBContainer to use for storage
     ///   - autosaveEnabled: Whether to automatically save after insert/delete (default: false)
-    public init(container: FDBContainer, autosaveEnabled: Bool = false) {
+    public init(container: DBContainer, autosaveEnabled: Bool = false) {
         self.container = container
         self.readVersionCache = ReadVersionCache()
         self.stateLock = Mutex(ContextState(autosaveEnabled: autosaveEnabled))
@@ -1175,7 +1175,7 @@ extension FDBContext {
         _ operation: @Sendable @escaping (TransactionContext) async throws -> T
     ) async throws -> T {
         // Use TransactionRunner with context's own ReadVersionCache
-        let runner = TransactionRunner(database: container.database)
+        let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
             readVersionCache: readVersionCache
@@ -1198,7 +1198,7 @@ extension FDBContext {
     ///
     /// **For public API users**:
     /// - Use `withTransaction(_:)` for high-level TransactionContext API
-    /// - Use `container.database.withTransaction(_:)` if raw access is truly needed (no cache)
+    /// - Use `container.engine.withTransaction(_:)` if raw access is truly needed (no cache)
     ///
     /// - Parameters:
     ///   - configuration: Transaction configuration (timeout, retry, priority)
@@ -1209,7 +1209,7 @@ extension FDBContext {
         configuration: TransactionConfiguration = .default,
         _ operation: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
-        let runner = TransactionRunner(database: container.database)
+        let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
             readVersionCache: readVersionCache,

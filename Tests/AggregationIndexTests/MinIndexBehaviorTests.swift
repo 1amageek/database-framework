@@ -81,7 +81,7 @@ private struct TestContext {
     let maintainer: MinIndexMaintainer<MinTestProduct, Int64>
 
     init(indexName: String = "MinTestProduct_category_price") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "min", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

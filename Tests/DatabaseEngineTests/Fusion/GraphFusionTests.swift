@@ -171,7 +171,7 @@ private struct GraphTestContext {
     let strategy: GraphIndexStrategy
 
     init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphTestFollow_graph") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.strategy = strategy
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph_fusion", String(testId)).pack())

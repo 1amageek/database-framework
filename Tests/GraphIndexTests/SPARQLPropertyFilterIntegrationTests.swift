@@ -85,10 +85,10 @@ struct SPARQLPropertyFilterIntegrationTests {
         )
     }
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
         
         try? await database.directoryService.remove(path: ["test", "sparql_property"])
@@ -99,7 +99,7 @@ struct SPARQLPropertyFilterIntegrationTests {
         return container
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: SocialConnection.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
@@ -327,9 +327,9 @@ struct SPARQLPropertyFilterIntegrationTests {
 
     @Test("Backward compatibility - no stored fields")
     func testBackwardCompatibilityNoStoredFields() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([BasicEdge.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
         
         try? await database.directoryService.remove(path: ["test", "basic_edge"])

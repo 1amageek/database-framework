@@ -9,7 +9,7 @@ import DatabaseEngine
 /// Shared FDB initialization and test serialization singleton
 ///
 /// This actor ensures:
-/// 1. FDBStorageEngine.initialize() is called only once across all test suites
+/// 1. FDB client is initialized exactly once (via FDBStorageEngine.init)
 /// 2. FDB tests run serially to prevent version conflicts
 ///
 /// **Usage**:
@@ -63,7 +63,8 @@ public actor FDBTestSetup {
             initState = .initializing([])
 
             do {
-                try await FDBStorageEngine.initialize()
+                // FDBStorageEngine.init(configuration:) handles FDBClient.initialize() internally
+                _ = try await FDBStorageEngine(configuration: .init())
                 await cleanupTestDirectoriesBestEffort()
                 if case .initializing(let continuations) = initState {
                     initState = .initialized
@@ -93,7 +94,7 @@ public actor FDBTestSetup {
         didCleanupTestDirectories = true
 
         do {
-            let engine = try await FDBStorageEngine.open()
+            let engine = try await FDBStorageEngine(configuration: .init())
             try await engine.directoryService.remove(path: ["test"])
         } catch {
             // Ignore cleanup failures; tests will surface real issues.

@@ -80,7 +80,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMins returns all groups")
     func testGetAllMinsReturnsAllGroups() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch", testId).pack())
 
@@ -141,7 +141,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMaxs returns all groups")
     func testGetAllMaxsReturnsAllGroups() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch", testId).pack())
 
@@ -202,7 +202,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMins performance with large dataset")
     func testGetAllMinsPerformance() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_perf", testId).pack())
 

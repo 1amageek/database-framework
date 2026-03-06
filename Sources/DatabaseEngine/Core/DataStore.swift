@@ -33,11 +33,11 @@ import Core
 /// **Usage**:
 /// ```swift
 /// // Default: FDBDataStore is created automatically
-/// let container = try FDBContainer(for: schema)
+/// let container = try DBContainer(for: schema)
 ///
 /// // Custom: Inject a different DataStore (e.g., for testing)
 /// let customStore = CustomDataStore(...)
-/// let container = try FDBContainer(
+/// let container = try DBContainer(
 ///     for: schema,
 ///     dataStore: customStore
 /// )

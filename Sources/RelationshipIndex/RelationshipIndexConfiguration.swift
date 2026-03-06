@@ -32,15 +32,15 @@ public typealias RelatedItemLoader = @Sendable (
 ///
 /// ## Automatic Configuration (Recommended)
 ///
-/// `FDBContainer` automatically generates `RelationshipIndexConfiguration` for all
+/// `DBContainer` automatically generates `RelationshipIndexConfiguration` for all
 /// relationship indexes during initialization. This is achieved through the
 /// `AutoConfigurableIndexKind` protocol that `RelationshipIndexKind` conforms to.
 ///
 /// ```swift
 /// // No manual configuration needed!
-/// // FDBContainer auto-generates configurations for RelationshipIndexKind indexes
+/// // DBContainer auto-generates configurations for RelationshipIndexKind indexes
 /// let schema = Schema([Customer.self, Order.self])
-/// let container = try FDBContainer(for: schema)
+/// let container = try DBContainer(for: schema)
 ///
 /// // RelationshipIndex can now load related items automatically
 /// ```
@@ -50,7 +50,7 @@ public typealias RelatedItemLoader = @Sendable (
 /// For custom scenarios, you can provide your own configuration:
 ///
 /// ```swift
-/// let config = FDBConfiguration(
+/// let config = DBConfiguration(
 ///     indexConfigurations: [
 ///         RelationshipIndexConfiguration(
 ///             indexName: "Order_customer_name",
@@ -62,14 +62,14 @@ public typealias RelatedItemLoader = @Sendable (
 ///         )
 ///     ]
 /// )
-/// let container = try FDBContainer(for: schema, configuration: config)
+/// let container = try DBContainer(for: schema, configuration: config)
 /// ```
 ///
 /// ## How It Works
 ///
-/// 1. `FDBContainer.init()` scans schema for `RelationshipIndexKind` indexes
+/// 1. `DBContainer.init()` scans schema for `RelationshipIndexKind` indexes
 /// 2. For each index, it calls `RelationshipIndexKind.createConfiguration()`
-/// 3. The configuration includes an `itemLoader` closure that uses `FDBContainer.loadItemByTypeName()`
+/// 3. The configuration includes an `itemLoader` closure that uses `DBContainer.loadItemByTypeName()`
 /// 4. When `RelationshipIndexMaintainer.updateIndex()` is called, it uses this loader
 ///    to fetch related items and extract field values for index keys
 public struct RelationshipIndexConfiguration: IndexConfiguration, @unchecked Sendable {

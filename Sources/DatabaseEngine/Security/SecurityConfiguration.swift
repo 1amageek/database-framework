@@ -1,33 +1,33 @@
 // SecurityConfiguration.swift
-// DatabaseEngine - Security configuration for FDBContainer
+// DatabaseEngine - Security configuration for DBContainer
 
 import Foundation
 import Core
 
 /// Security configuration
 ///
-/// Configures security behavior for the FDBContainer.
+/// Configures security behavior for the DBContainer.
 /// Security is enabled by default (secure by default).
 ///
 /// **Usage**:
 /// ```swift
 /// // Security enabled with strict mode (default - secure by default)
-/// let container = try FDBContainer(for: schema)
+/// let container = try DBContainer(for: schema)
 ///
 /// // Security enabled with custom admin roles
-/// let container = try FDBContainer(
+/// let container = try DBContainer(
 ///     for: schema,
 ///     security: .enabled(adminRoles: ["admin", "superuser"])
 /// )
 ///
 /// // Non-strict mode (allows models without SecurityPolicy - for migration)
-/// let container = try FDBContainer(
+/// let container = try DBContainer(
 ///     for: schema,
 ///     security: .enabled(strict: false)
 /// )
 ///
 /// // Security disabled (ONLY for testing)
-/// let testContainer = try FDBContainer(
+/// let testContainer = try DBContainer(
 ///     for: schema,
 ///     security: .disabled
 /// )

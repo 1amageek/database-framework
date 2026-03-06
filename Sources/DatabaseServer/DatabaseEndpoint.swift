@@ -10,7 +10,7 @@ import DatabaseClientProtocol
 ///
 /// **Embedded mode** (integrate into existing server):
 /// ```swift
-/// let container = try await FDBContainer(for: schema)
+/// let container = try await DBContainer(for: schema)
 /// let endpoint = DatabaseEndpoint(container: container)
 ///
 /// // Vapor example
@@ -34,13 +34,13 @@ public final class DatabaseEndpoint: Sendable {
     private let router: OperationRouter
     private let middlewares: [any ServerMiddleware]
 
-    /// Create an endpoint backed by an FDBContainer
+    /// Create an endpoint backed by an DBContainer
     ///
     /// Automatically registers handlers for all entity types in the schema.
     /// Creates a new FDBContext per request for stateless processing.
     ///
-    /// - Parameter container: The FDBContainer managing database resources
-    public init(container: FDBContainer) {
+    /// - Parameter container: The DBContainer managing database resources
+    public init(container: DBContainer) {
         self.router = OperationRouter(container: container)
         self.middlewares = []
     }

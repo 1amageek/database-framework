@@ -1,18 +1,19 @@
 import Foundation
 import StorageKit
+import FDBStorage
 import Core
 import Synchronization
 import Logging
 
-/// FDBContainer - Application resource manager for FoundationDB persistence
+/// DBContainer - Application resource manager for database persistence
 ///
 /// **Design Philosophy**:
-/// FDBContainer is a **resource manager** that connects:
+/// DBContainer is a **resource manager** that connects:
 /// - **Schema**: Defines entities and indexes
-/// - **Database**: Provides DirectoryLayer access for system operations
+/// - **StorageEngine**: Provides transaction and directory capabilities
 /// - **Persistable types**: Define their own directory paths via `#Directory` macro
 ///
-/// FDBContainer does NOT manage:
+/// DBContainer does NOT manage:
 /// - `subspace`: Each Persistable type defines its own directory via `#Directory`
 /// - `directoryLayer`: Used only for system-level operations
 /// - `dataStore`: Created dynamically based on resolved directory
@@ -21,22 +22,22 @@ import Logging
 ///
 /// **Responsibilities**:
 /// - Schema management
-/// - Database connection for system operations (DirectoryLayer, Migration)
+/// - StorageEngine lifecycle (creates engine from configuration)
 /// - Directory resolution from Persistable type metadata
 /// - DataStore factory
 ///
 /// **Architecture**:
 /// ```
-/// FDBContainer (Resource Manager)
-///     ├── database: StorageEngine (for system operations only)
+/// DBContainer (Resource Manager)
+///     ├── engine: StorageEngine (for system operations only)
 ///     ├── schema: Schema
 ///     └── newContext() → FDBContext (owns transactions + cache)
 /// ```
 ///
 /// **Context-Centric Design**:
-/// - FDBContainer does NOT create application transactions
+/// - DBContainer does NOT create application transactions
 /// - FDBContext owns ReadVersionCache and creates transactions via TransactionRunner
-/// - System operations (DirectoryLayer, Migration) use `database.withTransaction()` directly
+/// - System operations (DirectoryLayer, Migration) use `engine.withTransaction()` directly
 ///
 /// **Usage**:
 /// ```swift
@@ -50,28 +51,28 @@ import Logging
 ///
 /// // 2. Create container (async - connects to DB and initializes indexes)
 /// let schema = Schema([User.self])
-/// let container = try await FDBContainer(for: schema)
+/// let container = try await DBContainer(for: schema)
 ///
 /// // 3. Use context
 /// let context = container.newContext()
 /// context.insert(user)
 /// try await context.save()
 /// ```
-public final class FDBContainer: Sendable {
+public final class DBContainer: Sendable {
     // MARK: - Properties
 
-    /// The underlying FDB database connection
+    /// The underlying storage engine
     ///
-    /// Thread-safe: FDB client handles thread safety internally.
+    /// Thread-safe: storage engines handle thread safety internally.
     /// Used for system operations (DirectoryLayer, Migration).
     /// Application transactions should use FDBContext.withTransaction().
-    nonisolated(unsafe) public let database: any StorageEngine
+    nonisolated(unsafe) public let engine: any StorageEngine
 
     /// Schema (version, entities, indexes)
     public let schema: Schema
 
     /// Configuration
-    public let configuration: FDBConfiguration?
+    public let configuration: DBConfiguration
 
     /// Security configuration
     public let securityConfiguration: SecurityConfiguration
@@ -95,44 +96,57 @@ public final class FDBContainer: Sendable {
 
     // MARK: - Initialization
 
-    /// Initialize FDBContainer with schema
+    /// Initialize DBContainer with schema and configuration
     ///
-    /// Connects to FoundationDB and initializes all indexes to `readable` state.
-    /// This ensures indexes are ready for both writes and queries immediately.
+    /// Creates the storage engine based on the configuration's backend,
+    /// then initializes all indexes to `readable` state.
     ///
     /// **Example**:
     /// ```swift
-    /// let schema = Schema([User.self, Order.self])
-    /// let container = try await FDBContainer(for: schema)
+    /// // Default FDB backend
+    /// let container = try await DBContainer(for: schema)
     ///
-    /// // With security enabled
-    /// let secureContainer = try await FDBContainer(
+    /// // With security
+    /// let container = try await DBContainer(
     ///     for: schema,
     ///     security: .enabled(adminRoles: ["admin"])
+    /// )
+    ///
+    /// // Custom backend
+    /// let engine = try SQLiteStorageEngine(configuration: .inMemory)
+    /// let container = try await DBContainer(
+    ///     for: schema,
+    ///     configuration: .init(backend: .custom(engine))
     /// )
     /// ```
     ///
     /// - Parameters:
     ///   - schema: The schema defining all entities
-    ///   - configuration: Optional FDBConfiguration
+    ///   - configuration: Database configuration (default: FDB backend)
     ///   - security: Security configuration (default: enabled)
-    /// - Throws: Error if database connection or index initialization fails
+    /// - Throws: Error if engine creation or index initialization fails
     ///
-    /// - Note: This initializer performs two side effects on FDB:
+    /// - Note: This initializer performs two side effects:
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,
-        engine: any StorageEngine,
-        configuration: FDBConfiguration? = nil,
+        configuration: DBConfiguration = DBConfiguration(),
         security: SecurityConfiguration = .enabled()
     ) async throws {
         guard !schema.entities.isEmpty else {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        self.database = engine
+        // Create engine based on backend configuration
+        switch configuration.backend {
+        case .fdb(let fdbConfig):
+            self.engine = try await FDBStorageEngine(configuration: fdbConfig)
+        case .custom(let engine):
+            self.engine = engine
+        }
+
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -141,12 +155,12 @@ public final class FDBContainer: Sendable {
             : nil
 
         // Merge user-provided configurations with auto-generated ones
-        let userConfigs = configuration?.indexConfigurations ?? []
-        let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: database)
+        let userConfigs = configuration.indexConfigurations
+        let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: engine)
         self.indexConfigurations = Self.aggregateIndexConfigurations(userConfigs + autoConfigs)
 
         self._migrationPlan = nil
-        self.logger = Logger(label: "com.fdb.runtime.container")
+        self.logger = Logger(label: "com.db.runtime.container")
         self.directoryCache = Mutex([:])
 
         // Initialize all indexes to readable state
@@ -155,44 +169,6 @@ public final class FDBContainer: Sendable {
         // Persist schema catalog (entities + ontology) for CLI and dynamic tools
         let registry = SchemaRegistry(database: engine)
         try await registry.persist(schema)
-    }
-
-    /// Initialize FDBContainer with a pre-created database connection.
-    ///
-    /// - Parameters:
-    ///   - database: The raw FDB database connection
-    ///   - schema: Schema defining entities and indexes
-    ///   - configuration: Optional configuration
-    ///   - security: Security configuration (default: enabled)
-    ///   - indexConfigurations: Index configurations
-    ///
-    /// - Note: This initializer does **NOT** call `ensureIndexesReady()` or `SchemaRegistry.persist()`.
-    ///   Index states and catalog entries must be managed externally. Intended for testing and
-    ///   advanced use cases where the caller controls initialization.
-    public init(
-        database: any StorageEngine,
-        schema: Schema,
-        configuration: FDBConfiguration? = nil,
-        security: SecurityConfiguration = .enabled(),
-        indexConfigurations: [any IndexConfiguration] = []
-    ) {
-        precondition(!schema.entities.isEmpty, "Schema must contain at least one entity")
-
-        self.database = database
-        self.schema = schema
-        self.configuration = configuration
-        self.securityConfiguration = security
-        self.securityDelegate = security.isEnabled
-            ? DefaultSecurityDelegate(configuration: security)
-            : nil
-
-        // Merge user-provided configurations with auto-generated ones
-        let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: database)
-        self.indexConfigurations = Self.aggregateIndexConfigurations(indexConfigurations + autoConfigs)
-
-        self._migrationPlan = nil
-        self.logger = Logger(label: "com.fdb.runtime.container")
-        self.directoryCache = Mutex([:])
     }
 
     // MARK: - Index Initialization
@@ -204,12 +180,8 @@ public final class FDBContainer: Sendable {
     /// - `writeOnly` → `readable`
     /// - `readable` → no-op
     ///
-    /// Index state is persisted in FoundationDB. Once indexes are `readable`,
+    /// Index state is persisted in the storage engine. Once indexes are `readable`,
     /// subsequent calls are no-ops.
-    ///
-    /// - Note: The async `init(for:)` calls this automatically. When using the
-    ///   synchronous `init(database:schema:)`, call this method manually before
-    ///   performing index operations.
     public func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
@@ -313,7 +285,7 @@ public final class FDBContainer: Sendable {
             return cached
         }
 
-        let subspace = try await database.directoryService.createOrOpen(path: pathComponents)
+        let subspace = try await engine.directoryService.createOrOpen(path: pathComponents)
 
         directoryCache.withLock { $0[cacheKey] = subspace }
         return subspace
@@ -406,7 +378,7 @@ public final class FDBContainer: Sendable {
         }
 
         // Create or open the directory
-        let subspace = try await database.directoryService.createOrOpen(path: path)
+        let subspace = try await engine.directoryService.createOrOpen(path: path)
 
         // Cache the result
         directoryCache.withLock { $0[cacheKey] = subspace }
@@ -446,7 +418,7 @@ public final class FDBContainer: Sendable {
         }
 
         // Create or open the directory
-        let subspace = try await database.directoryService.createOrOpen(path: path)
+        let subspace = try await engine.directoryService.createOrOpen(path: path)
 
         // Cache the result
         directoryCache.withLock { $0[cacheKey] = subspace }
@@ -513,7 +485,7 @@ public final class FDBContainer: Sendable {
                 }
 
                 // Create the item loader closure
-                // Captures database (nonisolated unsafe - FDB handles thread safety internally)
+                // Captures database (nonisolated unsafe - storage engines handle thread safety internally)
                 // and schema (value type)
                 nonisolated(unsafe) let capturedDatabase = database
                 let itemLoader: GenericItemLoader = { typeName, id, transaction in
@@ -547,7 +519,7 @@ public final class FDBContainer: Sendable {
     ///   - typeName: Name of the Persistable type
     ///   - id: ID value of the item
     ///   - schema: Schema containing the type
-    ///   - database: Database for directory resolution
+    ///   - database: StorageEngine for directory resolution
     ///   - transaction: Transaction to use for reading
     /// - Returns: The loaded item, or nil if not found
     internal static func loadItemByTypeName(
@@ -623,20 +595,20 @@ public final class FDBContainer: Sendable {
 
 // MARK: - Migration Support
 
-extension FDBContainer {
+extension DBContainer {
     /// Get metadata directory for schema versioning
     private func getMetadataSubspace() async throws -> Subspace {
-        try await database.directoryService.createOrOpen(path: ["_metadata"])
+        try await engine.directoryService.createOrOpen(path: ["_metadata"])
     }
 
-    /// Get the current schema version from FDB
+    /// Get the current schema version from storage
     public func getCurrentSchemaVersion() async throws -> Schema.Version? {
         let metadataSubspace = try await getMetadataSubspace()
         let versionKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
 
-        return try await database.withTransaction(configuration: .default) { transaction -> Schema.Version? in
+        return try await engine.withTransaction(configuration: .default) { transaction -> Schema.Version? in
             guard let versionBytes = try await transaction.getValue(for: versionKey, snapshot: true) else {
                 return nil
             }
@@ -663,14 +635,14 @@ extension FDBContainer {
         }
     }
 
-    /// Set the current schema version in FDB
+    /// Set the current schema version in storage
     public func setCurrentSchemaVersion(_ version: Schema.Version) async throws {
         let metadataSubspace = try await getMetadataSubspace()
         let versionKey = metadataSubspace
             .subspace("schema")
             .pack(Tuple("version"))
 
-        try await database.withTransaction(configuration: .batch) { transaction in
+        try await engine.withTransaction(configuration: .batch) { transaction in
             try transaction.setOption(forOption: .accessSystemKeys)
             let versionTuple = Tuple(version.major, version.minor, version.patch)
             transaction.setValue(versionTuple.pack(), for: versionKey)
@@ -680,23 +652,16 @@ extension FDBContainer {
 
 // MARK: - VersionedSchema Support
 
-extension FDBContainer {
+extension DBContainer {
     /// Initialize with VersionedSchema and MigrationPlan
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
-        engine: any StorageEngine,
         migrationPlan: P.Type,
-        configuration: FDBConfiguration? = nil
-    ) throws {
+        configuration: DBConfiguration = DBConfiguration()
+    ) async throws {
         try P.validate()
         let schemaInstance = S.makeSchema()
-
-        self.init(
-            database: engine,
-            schema: schemaInstance,
-            configuration: configuration,
-            indexConfigurations: configuration?.indexConfigurations ?? []
-        )
+        try await self.init(for: schemaInstance, configuration: configuration)
         self._migrationPlan = migrationPlan
     }
 
@@ -789,7 +754,7 @@ extension FDBContainer {
 
 // MARK: - Admin Context
 
-extension FDBContainer {
+extension DBContainer {
     /// Create a new admin context for management operations
     ///
     /// **Usage**:
@@ -811,19 +776,5 @@ extension FDBContainer {
     /// - Returns: New AdminContext instance
     public func newAdminContext() -> AdminContextProtocol {
         AdminContext(container: self)
-    }
-}
-
-// MARK: - Lifecycle
-
-extension FDBContainer {
-    /// ストレージエンジンをシャットダウンする
-    ///
-    /// 全ての FDBContainer / FDBContext の使用完了後に呼ぶ。
-    /// FDB バックエンドの場合、ネットワークスレッドの終了を待つ。
-    /// バックエンド固有のシャットダウンはアプリ側で行うこと。
-    @available(*, deprecated, message: "Use backend-specific shutdown instead (e.g., FDBStorageEngine)")
-    public static func shutdown() {
-        // No-op: backend-specific shutdown should be handled at the app level
     }
 }

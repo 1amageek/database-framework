@@ -43,7 +43,7 @@ struct RTestOrder {
 
 /// Enable all indexes for a Persistable type to readable state
 /// Handles race conditions from parallel test suite execution
-private func enableAllIndexes<T: Persistable>(container: FDBContainer, for type: T.Type) async throws {
+private func enableAllIndexes<T: Persistable>(container: DBContainer, for type: T.Type) async throws {
     let store = try await container.store(for: type) as! FDBDataStore
     for descriptor in T.indexDescriptors {
         // Retry loop to handle race conditions between parallel test suites
@@ -221,17 +221,17 @@ struct RelationshipIndexUpdateTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         // Enable all indexes for testing
         try await enableAllIndexes(container: container, for: RTestOrder.self)
@@ -378,7 +378,7 @@ struct RelationshipIndexUpdateTests {
 
     /// Verify if a relationship index entry exists
     private func verifyRelationshipIndexEntry<T: Persistable>(
-        container: FDBContainer,
+        container: DBContainer,
         orderType: T.Type,
         indexName: String,
         customerID: String,
@@ -386,7 +386,7 @@ struct RelationshipIndexUpdateTests {
     ) async throws -> Bool {
         var exists = false
 
-        try await container.database.withTransaction { tx in
+        try await container.engine.withTransaction { tx in
             let subspace = try await container.resolveDirectory(for: orderType)
             let indexSubspace = subspace.subspace(SubspaceKey.indexes)
             let relationshipIndexSubspace = indexSubspace.subspace(indexName)
@@ -411,17 +411,17 @@ struct RelationshipQueryTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         // Enable all indexes for testing
         try await enableAllIndexes(container: container, for: RTestOrder.self)
@@ -500,17 +500,17 @@ struct SnapshotTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         // Enable all indexes for testing
         try await enableAllIndexes(container: container, for: RTestOrder.self)
@@ -904,17 +904,17 @@ struct ToManyRelationshipIndexUpdateTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         // Enable all indexes for testing
         try await enableAllIndexes(container: container, for: RTestOrder.self)
@@ -1089,14 +1089,14 @@ struct ToManyRelationshipIndexUpdateTests {
     // MARK: - Helper Functions
 
     private func verifyToManyIndexEntry(
-        container: FDBContainer,
+        container: DBContainer,
         indexName: String,
         orderID: String,
         customerID: String
     ) async throws -> Bool {
         var exists = false
 
-        try await container.database.withTransaction { tx in
+        try await container.engine.withTransaction { tx in
             let subspace = try await container.resolveDirectory(for: RTestCustomer.self)
             let indexSubspace = subspace.subspace(SubspaceKey.indexes)
             let relationshipIndexSubspace = indexSubspace.subspace(indexName)
@@ -1121,17 +1121,17 @@ struct RelationshipEdgeCasesTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         try await enableAllIndexes(container: container, for: RTestOrder.self)
         try await enableAllIndexes(container: container, for: RTestCustomer.self)
@@ -1356,17 +1356,17 @@ struct RelationshipEdgeCasesTests {
 @Suite("Relationship Consistency Tests", .serialized)
 struct RelationshipConsistencyTests {
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         try await enableAllIndexes(container: container, for: RTestOrder.self)
         try await enableAllIndexes(container: container, for: RTestCustomer.self)

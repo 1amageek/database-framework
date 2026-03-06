@@ -43,12 +43,12 @@ public struct GraphTableRow: Sendable {
 ///
 /// Converts SQL/PGQ match patterns to GraphPropertyScanner calls with property filtering.
 public struct GraphTableExecutor<T: Persistable>: Sendable {
-    private let container: FDBContainer
+    private let container: DBContainer
     private let schema: Schema
     private let graphTableSource: GraphTableSource
 
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         schema: Schema,
         graphTableSource: GraphTableSource
     ) {
@@ -88,7 +88,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         )
 
         // Execute scan
-        return try await container.database.withTransaction { transaction in
+        return try await container.engine.withTransaction { transaction in
             let stream = scanner.scanEdges(
                 from: fromPattern,
                 edge: edgeLabel,

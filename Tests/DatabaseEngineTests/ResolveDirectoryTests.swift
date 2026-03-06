@@ -6,7 +6,7 @@ import Core
 import TestSupport
 @testable import DatabaseEngine
 
-/// Tests for FDBContainer.resolveDirectory functionality
+/// Tests for DBContainer.resolveDirectory functionality
 ///
 /// **Coverage**:
 /// - resolveDirectory<T: Persistable>(for type:) - Static path resolution
@@ -46,9 +46,9 @@ struct ResolveDirectoryTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([
@@ -57,15 +57,15 @@ struct ResolveDirectoryTests {
             NestedDirectoryItem.self
         ], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        try? await container.database.directoryService.remove(path: ["test", "resolve"])
+    private func cleanup(container: DBContainer) async throws {
+        try? await container.engine.directoryService.remove(path: ["test", "resolve"])
     }
 
     // MARK: - Basic Resolution Tests
@@ -196,19 +196,19 @@ struct ResolveDirectoryTests {
             let testKey = subspace.pack(Tuple("test", "key"))
             let testValue: [UInt8] = [1, 2, 3, 4, 5]
 
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 transaction.setValue(testValue, for: testKey)
             }
 
             // Read back in a new transaction
-            let readValue: Bytes? = try await container.database.withTransaction { transaction in
+            let readValue: Bytes? = try await container.engine.withTransaction { transaction in
                 try await transaction.getValue(for: testKey, snapshot: false)
             }
 
             #expect(readValue == testValue)
 
             // Cleanup
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 transaction.clear(key: testKey)
             }
         }
@@ -218,7 +218,7 @@ struct ResolveDirectoryTests {
     func multipleContainersShareDirectory() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
-            let database = try await FDBStorageEngine.open()
+            let database = try await FDBStorageEngine(configuration: .init())
 
             // Clean up first
             
@@ -226,8 +226,8 @@ struct ResolveDirectoryTests {
 
             let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
-            let container1 = FDBContainer(database: database, schema: schema, security: .disabled)
-            let container2 = FDBContainer(database: database, schema: schema, security: .disabled)
+            let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            let container2 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
             let subspace1 = try await container1.resolveDirectory(for: DirectoryUser.self)
             let subspace2 = try await container2.resolveDirectory(for: DirectoryUser.self)

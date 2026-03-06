@@ -119,7 +119,7 @@ struct CommitCheckTests {
 
         // Execute to verify closure works
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         try await database.withTransaction { tx in
             try await registry.executeAll(transaction: tx)
         }
@@ -131,7 +131,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll runs all passing checks")
     func executeAllRunsPassingChecks() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -157,7 +157,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll throws on first failure")
     func executeAllThrowsOnFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -189,7 +189,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=true stops on first failure")
     func compositeFailFastStopsOnFirstFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let executed = AtomicArray<Int>()
 
@@ -212,7 +212,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=false collects all failures")
     func compositeNoFailFastCollectsAllFailures() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let executed = AtomicArray<Int>()
 
@@ -245,7 +245,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck executes when condition is true")
     func conditionalExecutesWhenTrue() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)
@@ -261,7 +261,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck skips when condition is false")
     func conditionalSkipsWhenFalse() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)

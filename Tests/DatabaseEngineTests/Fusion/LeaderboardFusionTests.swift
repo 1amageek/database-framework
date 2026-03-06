@@ -206,15 +206,15 @@ struct LeaderboardEdgeCaseTests {
 @Suite("Leaderboard - Integration Tests", .tags(.fdb), .serialized)
 struct LeaderboardIntegrationTests {
 
-    private func createContainer() async throws -> FDBContainer {
+    private func createContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([LeaderboardTestScore.self])
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        try? await container.database.directoryService.remove(path: ["test", "leaderboard"])
+    private func cleanup(container: DBContainer) async throws {
+        try? await container.engine.directoryService.remove(path: ["test", "leaderboard"])
     }
 
     @Test("Insert and retrieve scores via FDBContext")

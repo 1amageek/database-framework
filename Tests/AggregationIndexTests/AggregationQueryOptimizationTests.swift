@@ -103,7 +103,7 @@ private struct OptTestContext {
     let avgMaintainer: AverageIndexMaintainer<AggQueryTestOrder, Int64>
 
     init() async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "aggquery", testId).pack())
         self.indexSubspace = subspace.subspace("I")
@@ -289,7 +289,7 @@ struct AggregationQueryOptimizationTests {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "min", testId).pack())
 
@@ -310,7 +310,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query with MIN aggregation
@@ -345,7 +345,7 @@ struct AggregationQueryOptimizationTests {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "max", testId).pack())
 
@@ -366,7 +366,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query with MAX aggregation
@@ -400,7 +400,7 @@ struct AggregationQueryOptimizationTests {
     func testCountAggregationMatchesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "count_match", testId).pack())
 
@@ -421,7 +421,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query with COUNT aggregation matching the index
@@ -454,7 +454,7 @@ struct AggregationQueryOptimizationTests {
     func testSumAggregationMatchesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "sum_match", testId).pack())
 
@@ -475,7 +475,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query with SUM aggregation matching the index
@@ -510,7 +510,7 @@ struct AggregationQueryOptimizationTests {
     func testMixedAggregationsWithCountAndMinUseIndexes() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "mixed", testId).pack())
 
@@ -536,7 +536,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query with both COUNT and MIN (both have indexes)
@@ -575,7 +575,7 @@ struct AggregationQueryOptimizationTests {
     func testAggregationWithoutMatchingGroupByUsesInMemory() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "no_match", testId).pack())
 
@@ -596,7 +596,7 @@ struct AggregationQueryOptimizationTests {
             ]
         )
 
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
         // Build query grouping by DIFFERENT field (amount instead of region)

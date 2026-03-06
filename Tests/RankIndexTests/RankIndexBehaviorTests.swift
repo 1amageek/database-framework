@@ -78,7 +78,7 @@ private struct TestContext {
     let kind: RankIndexKind<TestPlayer, Int64>
 
     init(indexName: String = "TestPlayer_score") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

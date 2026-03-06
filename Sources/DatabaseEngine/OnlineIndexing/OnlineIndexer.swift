@@ -49,7 +49,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for transaction execution
-    let container: FDBContainer
+    let container: DBContainer
 
     /// Store root subspace (parent of R/I/B/M)
     private let storeSubspace: Subspace
@@ -105,7 +105,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Initialize online indexer
     ///
     /// - Parameters:
-    ///   - container: FDBContainer for transaction execution
+    ///   - container: DBContainer for transaction execution
     ///   - storeSubspace: Store root subspace (parent of items/indexes/blobs/metadata)
     ///   - itemType: Type name of items to index
     ///   - index: Index definition
@@ -114,7 +114,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in milliseconds (default: 0)
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         itemType: String,
         index: Index,
@@ -283,7 +283,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
                 // Process batch in transaction with batch priority
                 // Progress is saved atomically in the same transaction
-                let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
 
                     var itemsInBatch = 0
                     var lastProcessedKey: Bytes? = nil
@@ -379,7 +379,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// - Returns: RangeSet if progress exists, nil otherwise
     private func loadProgress() async throws -> RangeSet? {
         let progressKey = self.progressKey
-        return try await container.database.withTransaction(configuration: .batch) { transaction in
+        return try await container.engine.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -408,7 +408,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Called after successful completion
     private func clearProgress() async throws {
         let progressKey = self.progressKey
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -421,7 +421,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// Used when `clearFirst: true` is specified.
     private func clearIndexData() async throws {
         let indexRange = self.indexSubspace.subspace(self.index.name).range()
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(
                 beginKey: indexRange.begin,
                 endKey: indexRange.end
@@ -482,7 +482,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         let (begin, end) = itemTypeSubspace.range()
 
         // Get split points from FDB
-        let splitPoints = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let splitPoints = try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getRangeSplitPoints(
                 beginKey: begin,
                 endKey: end,
@@ -649,7 +649,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
             // Capture current begin for Sendable closure
             let rangeBegin = currentBegin
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.database.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -743,7 +743,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
         while true {
             let currentLastKey = lastKey
 
-            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.database.withTransaction(configuration: .batch) { transaction in
+            let (batchCount, newLastKey): (Int, [UInt8]?) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                 var count = 0
                 var processedKey: [UInt8]? = nil
 
@@ -846,15 +846,15 @@ internal final class ParallelBuildProgress: Sendable {
     private let progressSubspace: Subspace
 
     /// FDB Container for transaction execution
-    let container: FDBContainer
+    let container: DBContainer
 
     /// Initialize progress tracker
     ///
     /// - Parameters:
     ///   - indexSubspace: Index subspace (progress stored under _build/)
     ///   - indexName: Name of the index being built
-    ///   - container: FDBContainer for transaction execution
-    init(indexSubspace: Subspace, indexName: String, container: FDBContainer) {
+    ///   - container: DBContainer for transaction execution
+    init(indexSubspace: Subspace, indexName: String, container: DBContainer) {
         self.progressSubspace = indexSubspace.subspace("_build").subspace(indexName)
         self.container = container
     }
@@ -866,7 +866,7 @@ internal final class ParallelBuildProgress: Sendable {
     func loadProgress(chunkCount: Int) async throws -> [Int: ChunkProgress] {
         let (begin, end) = progressSubspace.range()
 
-        return try await container.database.withTransaction(configuration: .batch) { transaction in
+        return try await container.engine.withTransaction(configuration: .batch) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
             let sequence = try await transaction.collectRange(
@@ -900,7 +900,7 @@ internal final class ParallelBuildProgress: Sendable {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
 
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.setValue(value, for: key)
         }
     }
@@ -929,7 +929,7 @@ internal final class ParallelBuildProgress: Sendable {
     func clearProgress() async throws {
         let (begin, end) = progressSubspace.range()
 
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: begin, endKey: end)
         }
     }

@@ -261,7 +261,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
         )
 
         let finder = ShortestPathFinder<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: config
         )
@@ -300,7 +300,7 @@ public struct ShortestPathQueryBuilder<T: Persistable>: Sendable {
         )
 
         let finder = ShortestPathFinder<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: config
         )

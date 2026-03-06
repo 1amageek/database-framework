@@ -84,7 +84,7 @@ private struct TestContext {
 
     /// Creates a test context with a permutation that reorders (country, city, name) to (city, country, name)
     init(permutation: Permutation? = nil, indexName: String = "TestLocation_compound") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

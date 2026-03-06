@@ -74,20 +74,20 @@ struct ArrayFieldUniquenessTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema(
             [TaggedDocument.self, UniqueEmail.self, UUIDTaggedDocument.self, Int64TaggedDocument.self],
             version: Schema.Version(1, 0, 0)
         )
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         // Make indexes readable via store
         let tagStore = try await container.store(for: TaggedDocument.self)

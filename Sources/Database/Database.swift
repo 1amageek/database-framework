@@ -9,6 +9,10 @@
 @_exported import Graph
 @_exported import Relationship
 
+// storage-kit (storage engine abstraction)
+@_exported import StorageKit
+@_exported import FDBStorage
+
 // database-framework (server-side execution layer)
 @_exported import DatabaseEngine
 @_exported import ScalarIndex

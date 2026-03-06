@@ -46,7 +46,7 @@ struct UserV3 {
 /// - VersionedSchema protocol
 /// - SchemaMigrationPlan protocol
 /// - MigrationStage enum
-/// - FDBContainer.migrateIfNeeded()
+/// - DBContainer.migrateIfNeeded()
 @Suite("Migration Plan Tests")
 struct MigrationPlanTests {
 

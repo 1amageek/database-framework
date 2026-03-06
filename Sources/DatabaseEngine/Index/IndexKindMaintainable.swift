@@ -81,7 +81,7 @@ public protocol IndexKindMaintainable: IndexKind {
     ///   - index: Index definition (name, rootExpression, etc.)
     ///   - subspace: FDB subspace for storing index data
     ///   - idExpression: KeyExpression for extracting item's unique identifier
-    ///   - configurations: Index configurations from FDBContainer (may contain runtime parameters)
+    ///   - configurations: Index configurations from DBContainer (may contain runtime parameters)
     /// - Returns: IndexMaintainer instance for maintaining this index
     /// - Throws: IndexError if required configuration is missing
     func makeIndexMaintainer<Item: Persistable>(

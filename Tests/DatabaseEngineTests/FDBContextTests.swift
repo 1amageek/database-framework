@@ -39,25 +39,25 @@ struct FDBContextTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
     /// Clean up test data - call at START of each test that modifies data
     /// Uses DirectoryLayer.remove() to handle old format data
-    private func cleanup(container: FDBContainer) async throws {
-        try? await container.database.directoryService.remove(path: ["test", "fdbcontext", "users"])
-        try? await container.database.directoryService.remove(path: ["test", "fdbcontext", "products"])
+    private func cleanup(container: DBContainer) async throws {
+        try? await container.engine.directoryService.remove(path: ["test", "fdbcontext", "users"])
+        try? await container.engine.directoryService.remove(path: ["test", "fdbcontext", "products"])
     }
 
     // MARK: - Autosave Tests

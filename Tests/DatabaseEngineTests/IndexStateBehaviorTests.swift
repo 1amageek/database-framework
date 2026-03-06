@@ -83,10 +83,10 @@ struct IndexedUser: Persistable {
 private struct TestContext {
     nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
-    let container: FDBContainer
+    let container: DBContainer
 
     init() async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
 
@@ -95,11 +95,11 @@ private struct TestContext {
             entities: [Schema.Entity(from: IndexedUser.self)],
             version: Schema.Version(1, 0, 0)
         )
-        self.container = FDBContainer(
-            database: database,
-            schema: schema,
+        self.container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
     /// Clean up test data

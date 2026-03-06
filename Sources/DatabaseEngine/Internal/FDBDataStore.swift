@@ -18,7 +18,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - DataStore Protocol
 
     /// Configuration type for FDBDataStore
-    typealias Configuration = FDBConfiguration
+    typealias Configuration = DBConfiguration
 
     /// Security delegate for access control evaluation
     let securityDelegate: (any DataStoreSecurityDelegate)?
@@ -26,7 +26,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Properties
 
     /// FDB Container reference for transaction execution
-    let container: FDBContainer
+    let container: DBContainer
 
     let subspace: Subspace
     let schema: Schema
@@ -62,7 +62,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Initialization
 
     init(
-        container: FDBContainer,
+        container: DBContainer,
         subspace: Subspace,
         logger: Logger? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
@@ -100,7 +100,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     // MARK: - Fetch Operations
     //
     // **Design Intent - No ReadVersionCache**:
-    // Fetch operations use `container.database.withTransaction()` directly without
+    // Fetch operations use `container.engine.withTransaction()` directly without
     // ReadVersionCache. This is a deliberate simplification:
     //
     // 1. FDBDataStore is a low-level storage component that doesn't own a cache
@@ -136,7 +136,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            let results: [T] = try await container.database.withTransaction(configuration: .default) { transaction in
+            let results: [T] = try await container.engine.withTransaction(configuration: .default) { transaction in
                 // Use ItemStorage for proper handling of large values
                 let storage = ItemStorage(
                     transaction: transaction,
@@ -169,7 +169,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let keyTuple = (id as? Tuple) ?? Tuple([id])
         let key = typeSubspace.pack(keyTuple)
 
-        let result: T? = try await container.database.withTransaction(configuration: .default) { transaction in
+        let result: T? = try await container.engine.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -289,7 +289,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Select optimal StreamingMode based on limit
         let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
 
-        let ids: [Tuple] = try await container.database.withTransaction(configuration: .default) { transaction in
+        let ids: [Tuple] = try await container.engine.withTransaction(configuration: .default) { transaction in
             var ids: [Tuple] = []
             if let limit = limit {
                 ids.reserveCapacity(limit)
@@ -559,7 +559,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Pre-compute keys outside transaction
         let keys = ids.map { typeSubspace.pack($0) }
 
-        return try await container.database.withTransaction(configuration: .default) { transaction in
+        return try await container.engine.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -1169,7 +1169,7 @@ internal final class FDBDataStore: DataStore, Sendable {
             return 0  // Not index-optimizable
         }
 
-        return try await container.database.withTransaction(configuration: .default) { transaction in
+        return try await container.engine.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await transaction.collectRange(
@@ -1192,7 +1192,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        return try await container.database.withTransaction(configuration: .default) { transaction in
+        return try await container.engine.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
             let sequence = try await transaction.collectRange(
@@ -1229,7 +1229,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
-        let sizeBytes = try await container.database.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.engine.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1253,7 +1253,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let (begin, end) = indexSubspaceForIndex.range()
 
-        let sizeBytes = try await container.database.withTransaction(configuration: .default) { transaction in
+        let sizeBytes = try await container.engine.withTransaction(configuration: .default) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -1273,7 +1273,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await container.database.withTransaction(configuration: .default) { transaction in
+            try await container.engine.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.saveModel(model, transaction: transaction)
                 }
@@ -1339,7 +1339,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            try await container.database.withTransaction(configuration: .default) { transaction in
+            try await container.engine.withTransaction(configuration: .default) { transaction in
                 for model in models {
                     try await self.deleteModel(model, transaction: transaction)
                 }
@@ -1386,7 +1386,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        try await container.database.withTransaction(configuration: .default) { transaction in
+        try await container.engine.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
@@ -1416,7 +1416,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            _ = try await container.database.withTransaction(configuration: .default) { transaction in
+            _ = try await container.engine.withTransaction(configuration: .default) { transaction in
                 try await self.executeBatchInTransaction(
                     inserts: inserts,
                     deletes: deletes,
@@ -1489,7 +1489,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// across multiple DataStores in a single atomic transaction.
     ///
     /// **Design Intent - No ReadVersionCache**:
-    /// This method uses `container.database.withTransaction()` directly, bypassing
+    /// This method uses `container.engine.withTransaction()` directly, bypassing
     /// any ReadVersionCache. This is intentional because:
     ///
     /// 1. **Write operations need latest data**: FDBDataStore primarily handles writes
@@ -1506,7 +1506,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
-        return try await container.database.withTransaction(configuration: .default, body)
+        return try await container.engine.withTransaction(configuration: .default, body)
     }
 
     /// Save model with security evaluation, returning serialized data for dual-write
@@ -1621,7 +1621,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Admin-only operation
         try securityDelegate?.requireAdmin(operation: "clearAll", targetType: T.persistableType)
 
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             let typeSubspace = self.itemSubspace.subspace(T.persistableType)
             let (begin, end) = typeSubspace.range()
             transaction.clearRange(beginKey: begin, endKey: end)
@@ -1644,7 +1644,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         configuration: TransactionConfiguration,
         _ operation: @Sendable @escaping (any TransactionContextProtocol) async throws -> T
     ) async throws -> T {
-        return try await container.database.withTransaction(configuration: configuration) { transaction in
+        return try await container.engine.withTransaction(configuration: configuration) { transaction in
             // Create a secure transaction context
             let context = SecureTransactionContext(
                 transaction: transaction,

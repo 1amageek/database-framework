@@ -449,7 +449,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = typeSubspace.subspace(indexName)
 
         let executor = SPARQLQueryExecutor(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             indexSubspace: indexSubspace,
             strategy: kind.strategy,
             fromFieldName: fromFieldName,

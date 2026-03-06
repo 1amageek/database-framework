@@ -32,8 +32,8 @@ import Core
 ///     )
 /// }
 ///
-/// // Use with FDBContainer
-/// let container = try await FDBContainer(
+/// // Use with DBContainer
+/// let container = try await DBContainer(
 ///     for: AppSchemaV3.self,
 ///     migrationPlan: AppMigrationPlan.self
 /// )

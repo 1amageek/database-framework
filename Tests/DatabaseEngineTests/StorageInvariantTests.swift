@@ -11,7 +11,7 @@ struct StorageInvariantTests {
 
     private func openDB() async throws -> any StorageEngine {
         try await FDBTestSetup.shared.initialize()
-        return try await FDBStorageEngine.open()
+        return try await FDBStorageEngine(configuration: .init())
     }
 
     @Test("OnlineIndexer.clearFirst clears uniqueness violations stored under metadata subspace")
@@ -26,7 +26,7 @@ struct StorageInvariantTests {
 
             // Create container for components that need it
             let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-            let container = FDBContainer(database: database, schema: schema, security: .disabled)
+            let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
             let tracker = UniquenessViolationTracker(container: container, metadataSubspace: metadataSubspace)
             let indexName = "unique_clearFirst_idx"

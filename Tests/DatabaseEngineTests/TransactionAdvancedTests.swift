@@ -15,7 +15,7 @@ struct TransactionAdvancedTests {
     @Test("Empty getRange returns no items")
     func emptyGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         let count = try await runner.run(configuration: .default) { tx in
@@ -39,7 +39,7 @@ struct TransactionAdvancedTests {
     @Test("Multiple empty getRange calls")
     func multipleEmptyGetRangeCalls() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         let totalCount = try await runner.run(configuration: .default) { tx in
@@ -67,7 +67,7 @@ struct TransactionAdvancedTests {
     @Test("Very large number of getRange calls (500)")
     func fiveHundredGetRangeCalls() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: 500 keys
@@ -110,7 +110,7 @@ struct TransactionAdvancedTests {
     // @Test("Tracker with no iterators")
     // func trackerWithNoIterators() async throws {
     //     try await FDBTestSetup.shared.initialize()
-    //     let database = try await FDBStorageEngine.open()
+    //     let database = try await FDBStorageEngine(configuration: .init())
     //     let rawTx = try database.createTransaction()
     //     let instrumented = InstrumentedTransaction(wrapping: rawTx)
     //
@@ -130,7 +130,7 @@ struct TransactionAdvancedTests {
     // @Test("Tracker registers and unregisters iterators")
     // func trackerRegistersIterators() async throws {
     //     try await FDBTestSetup.shared.initialize()
-    //     let database = try await FDBStorageEngine.open()
+    //     let database = try await FDBStorageEngine(configuration: .init())
     //     let runner = TransactionRunner(database: database)
     //
     //     // Setup data
@@ -175,7 +175,7 @@ struct TransactionAdvancedTests {
     @Test("Interleaved read and write operations")
     func interleavedReadWrite() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -210,7 +210,7 @@ struct TransactionAdvancedTests {
     @Test("Commit succeeds after mixed operations")
     func commitSucceedsAfterMixedOperations() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: Clear the test key range first
@@ -251,7 +251,7 @@ struct TransactionAdvancedTests {
     @Test("Skip List insertion pattern simulation")
     func skipListInsertionPattern() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Simulate Skip List: 6 levels, insert 1 item
@@ -288,7 +288,7 @@ struct TransactionAdvancedTests {
     @Test("Skip List multiple insertions pattern")
     func skipListMultipleInsertionsPattern() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Simulate inserting 20 items with Skip List pattern
@@ -341,7 +341,7 @@ struct TransactionAdvancedTests {
     @Test("1000 getRange calls with 1000 items")
     func thousandGetRangeWithThousandItems() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: 1000 items
@@ -380,7 +380,7 @@ struct TransactionAdvancedTests {
     @Test("Deeply nested getRange loops")
     func deeplyNestedGetRangeLoops() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: 3 dimensions × 5 items each = 45 total items
@@ -423,7 +423,7 @@ struct TransactionAdvancedTests {
     @Test("Snapshot read sees consistent view")
     func snapshotReadConsistentView() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup initial state
@@ -474,7 +474,7 @@ struct TransactionAdvancedTests {
     @Test("Read your own writes")
     func readYourOwnWrites() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         let result = try await runner.run(configuration: .default) { tx in
@@ -506,7 +506,7 @@ struct TransactionAdvancedTests {
     @Test("Large scan does not timeout")
     func largeScanDoesNotTimeout() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: 5000 items

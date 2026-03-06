@@ -9,7 +9,7 @@ struct TransactionBasicTests {
 
     @Test func simpleReadWrite() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
         
         // Simple write
@@ -27,7 +27,7 @@ struct TransactionBasicTests {
     
     @Test func simpleGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
         
         // Write multiple keys

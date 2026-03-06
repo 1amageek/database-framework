@@ -84,28 +84,28 @@ struct IndexRebuildConsistencyTests {
 
     // MARK: - Setup
 
-    private func setupContainer(_ types: [any Persistable.Type]) async throws -> FDBContainer {
+    private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema(types, version: Schema.Version(1, 0, 0))
         for type in types {
             IndexBuilderRegistry.shared.register(type)
         }
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer, path: [String]) async throws {
+    private func cleanup(container: DBContainer, path: [String]) async throws {
         
-        try? await container.database.directoryService.remove(path: path)
+        try? await container.engine.directoryService.remove(path: path)
     }
 
     private func setIndexStatesToReadable<T: Persistable>(
         for type: T.Type,
-        container: FDBContainer
+        container: DBContainer
     ) async throws {
         let subspace = try await container.resolveDirectory(for: type)
         let stateManager = IndexStateManager(container: container, subspace: subspace)
@@ -146,7 +146,7 @@ struct IndexRebuildConsistencyTests {
     /// FDB range scan: [I]/[indexName] 以下の全キーを取得
     private func getIndexKeys<T: Persistable>(
         for type: T.Type,
-        container: FDBContainer
+        container: DBContainer
     ) async throws -> Set<[UInt8]> {
         let typeSubspace = try await container.resolveDirectory(for: type)
         let indexSubspace = typeSubspace.subspace(SubspaceKey.indexes)
@@ -154,7 +154,7 @@ struct IndexRebuildConsistencyTests {
             return []
         }
         let namedSubspace = indexSubspace.subspace(indexName)
-        return try await container.database.withTransaction { tx -> Set<[UInt8]> in
+        return try await container.engine.withTransaction { tx -> Set<[UInt8]> in
             let (begin, end) = namedSubspace.range()
             var keys = Set<[UInt8]>()
             for (key, _) in try await tx.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {

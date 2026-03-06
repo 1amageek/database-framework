@@ -2,7 +2,7 @@
 ///
 /// Version history queries require compiled @Persistable types.
 /// In catalog-only mode, these commands are not available.
-/// Use the embedded mode (with FDBContainer) for version history.
+/// Use the embedded mode (with DBContainer) for version history.
 
 import Foundation
 
@@ -17,7 +17,7 @@ public struct HistoryCommands {
     /// Usage: history <TypeName> <id> [--limit N]
     public func execute(_ args: [String]) async throws {
         output.info("History commands require embedded mode (with compiled @Persistable types).")
-        output.info("Start the CLI via DatabaseREPL with an FDBContainer for version history.")
+        output.info("Start the CLI via DatabaseREPL with an DBContainer for version history.")
     }
 }
 
@@ -30,7 +30,7 @@ extension HistoryCommands {
           (Not available in standalone mode)
 
           Version history queries require compiled @Persistable types.
-          Use embedded mode with FDBContainer for version history.
+          Use embedded mode with DBContainer for version history.
         """
     }
 }

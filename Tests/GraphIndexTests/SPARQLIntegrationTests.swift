@@ -41,18 +41,18 @@ struct SPARQLIntegrationTests {
 
     // MARK: - Setup Helpers
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SPARQLTestStatement.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         
-        try? await container.database.directoryService.remove(path: ["test", "sparql", "statements"])
+        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 

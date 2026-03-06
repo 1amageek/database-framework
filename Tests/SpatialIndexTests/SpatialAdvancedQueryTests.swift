@@ -100,7 +100,7 @@ private struct AdvancedTestContext {
     let testId: String
 
     init() async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "spatial_advanced", testId).pack())
         let indexName = "TestStore_spatial_geoPoint"

@@ -50,24 +50,24 @@ struct SHACLValidationTests {
 
     // MARK: - Setup Helpers
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SHACLTestStatement.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         
         do {
-            try await container.database.directoryService.remove(path: ["test", "shacl", "statements"])
+            try await container.engine.directoryService.remove(path: ["test", "shacl", "statements"])
         } catch {
             // Directory may not exist on first run
         }
         try await container.newContext().shacl.deleteAllShapesGraphs()
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: SHACLTestStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 

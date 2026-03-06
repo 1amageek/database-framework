@@ -70,7 +70,7 @@ This is the **server-side execution layer** for FoundationDB persistence. It imp
 ```
 database-kit (client-safe)          database-framework (server-only)
 ├── Core/                           ├── DatabaseEngine/
-│   ├── Persistable (protocol)      │   ├── FDBContainer
+│   ├── Persistable (protocol)      │   ├── DBContainer
 │   ├── IndexKind (protocol)        │   ├── FDBContext
 │   ├── IndexDescriptor             │   ├── IndexMaintainer (protocol)
 │   ├── FieldSchema                 │   ├── IndexKindMaintainable (protocol)
@@ -148,7 +148,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 ```
 DatabaseEngine/ (163 files)
 ├── Core/                    ← 中核（7 files）
-│   ├── FDBContainer.swift   ← リソース管理（DB接続、Schema、Directory）
+│   ├── DBContainer.swift    ← リソース管理（DB接続、Schema、Directory）
 │   ├── FDBContext.swift      ← トランザクション管理 + ユーザー API
 │   ├── DataAccess.swift      ← データアクセス抽象
 │   ├── FieldReader.swift     ← dynamicMember ベースフィールド読み取り
@@ -353,7 +353,7 @@ PlanExecutor（インデックススキャン + フィルタ + ソート）
 
 | Type | Role |
 |------|------|
-| `FDBContainer` | Application resource manager: database connection, schema, securityDelegate, directory resolution. Does NOT create transactions |
+| `DBContainer` | Application resource manager: engine (StorageEngine), schema, securityDelegate, directory resolution. Does NOT create transactions |
 | `FDBContext` | Transaction manager + User-facing API: owns ReadVersionCache, creates transactions via TransactionRunner, change tracking |
 | `FDBDataStore` | Data operations within transactions: receives transaction as parameter, does NOT create transactions |
 | `IndexMaintainer<Item>` | Protocol for index update logic (`updateIndex`, `scanItem`) |
@@ -387,7 +387,7 @@ pg_namespace (名前空間)        → Schema.Entity.directoryComponents
 | `DynamicProtobufDecoder` | Schema.Entity を使った Protobuf 動的デコード | `Sources/DatabaseEngine/Registry/DynamicProtobufDecoder.swift` |
 | `DynamicProtobufEncoder` | Schema.Entity を使った Protobuf 動的エンコード | `Sources/DatabaseEngine/Registry/DynamicProtobufEncoder.swift` |
 
-**ライフサイクル**: `FDBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にスキーマが FDB に書き込まれる。
+**ライフサイクル**: `DBContainer.init(for:)` → `ensureIndexesReady()` → `SchemaRegistry.persist(schema)` で自動的にスキーマが FDB に書き込まれる。
 
 ### AnyIndexDescriptor
 
@@ -467,8 +467,8 @@ let entities = try await registry.loadAll()
 let repl = DatabaseREPL(database: database, entities: entities)
 try await repl.run()
 
-// 埋め込みモード（FDBContainer と連携）
-let container = try await FDBContainer(for: schema)
+// 埋め込みモード（DBContainer と連携）
+let container = try await DBContainer(for: schema)
 let repl = try await DatabaseREPL(container: container)
 try await repl.run()
 ```
@@ -498,12 +498,12 @@ find Order --limit 10 --partition tenantId=tenant_123
 
 | コンポーネント | 責務 | トランザクション |
 |--------------|------|-----------------|
-| `FDBContainer` | リソース管理（DB接続、Schema、Directory） | **作成しない** |
+| `DBContainer` | リソース管理（engine、Schema、Directory） | **作成しない** |
 | `FDBContext` | データ操作、トランザクション管理、キャッシュ | **作成する** |
 | `FDBDataStore` | 低レベル操作（トランザクション内） | **受け取る** |
 
 **禁止事項**:
-- ❌ `FDBContainer` にトランザクション作成メソッドを追加しない
+- ❌ `DBContainer` にトランザクション作成メソッドを追加しない
 - ❌ `FDBDataStore` が独自にトランザクションを作成しない
 - ✅ トランザクション作成は `FDBContext` に集約
 
@@ -658,7 +658,7 @@ try await context.save()
 
 **ItemEnvelope Format**: All items are wrapped in `ItemEnvelope` with magic number `ITEM` (0x49 0x54 0x45 0x4D). Reading raw data without `ItemStorage.read()` will fail.
 
-**Schema Layout**: `/_schema/` stores `Schema.Entity` entries as JSON, analogous to PostgreSQL's `pg_catalog`. Written by `SchemaRegistry.persist()` during `FDBContainer.init`.
+**Schema Layout**: `/_schema/` stores `Schema.Entity` entries as JSON, analogous to PostgreSQL's `pg_catalog`. Written by `SchemaRegistry.persist()` during `DBContainer.init`.
 
 ## Implemented Features
 

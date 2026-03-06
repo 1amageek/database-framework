@@ -621,7 +621,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         let toValue = toPattern.exactValue
 
         // Execute scan with property filters
-        return try await queryContext.context.container.database.withTransaction { transaction in
+        return try await queryContext.context.container.engine.withTransaction { transaction in
             let stream = scanner.scanEdges(
                 from: fromValue,
                 edge: edgeValue,

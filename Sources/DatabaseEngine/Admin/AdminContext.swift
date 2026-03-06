@@ -30,12 +30,12 @@ public typealias PublicIndexBuildState = Core.IndexBuildState
 public final class AdminContext: AdminContextProtocol, Sendable {
     // MARK: - Properties
 
-    private let container: FDBContainer
+    private let container: DBContainer
     private let watchManager: WatchManager
 
     // MARK: - Initialization
 
-    public init(container: FDBContainer) {
+    public init(container: DBContainer) {
         self.container = container
         self.watchManager = WatchManager(container: container)
     }
@@ -45,7 +45,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     /// Get index build state from IndexStateManager
     ///
     /// Uses the entity's directory subspace for index state storage,
-    /// consistent with FDBDataStore and FDBContainer.ensureIndexesReady().
+    /// consistent with FDBDataStore and DBContainer.ensureIndexesReady().
     ///
     /// - Parameters:
     ///   - indexName: Name of the index
@@ -72,7 +72,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = itemSubspace.range()
 
         // Use server-side estimation for size and count
-        let (documentCount, storageSize) = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let (documentCount, storageSize) = try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Get estimated range size
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
@@ -126,7 +126,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let (begin, end) = indexSubspace.range()
 
         // Get index statistics
-        let (entryCount, storageSize) = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let (entryCount, storageSize) = try await container.engine.withTransaction(configuration: .batch) { transaction in
             let sizeBytes = try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end
@@ -278,7 +278,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let indexDataSubspace = indexSubspace.subspace(indexName)
         let indexRange = indexDataSubspace.range()
 
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             // Disable index (from any state)
             try await indexStateManager.disable(indexName, transaction: transaction)
 
@@ -321,7 +321,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             throw AdminError.operationFailed(
                 "Cannot rebuild index '\(indexName)' for entity '\(entity.name)': " +
                 "Entity not registered in IndexBuilderRegistry. " +
-                "Ensure FDBContainer is created with Schema([YourType.self, ...])"
+                "Ensure DBContainer is created with Schema([YourType.self, ...])"
             )
         } catch EntityIndexBuilderError.typeNotBuildable(_, let reason) {
             throw AdminError.operationFailed("Cannot rebuild index '\(indexName)': \(reason)")
@@ -435,7 +435,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        return try await container.database.directoryService.createOrOpen(path: ["_metadata", "statistics"])
+        return try await container.engine.directoryService.createOrOpen(path: ["_metadata", "statistics"])
     }
 
     // MARK: - FDB-Specific Features
@@ -445,7 +445,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     public func currentReadVersion() async throws -> UInt64 {
-        let version: Int64 = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let version: Int64 = try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getReadVersion()
         }
         return UInt64(version)
@@ -456,7 +456,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(T.persistableType)
         let (begin, end) = itemSubspace.range()
 
-        let sizeBytes = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let sizeBytes = try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getEstimatedRangeSizeBytes(
                 beginKey: begin,
                 endKey: end

@@ -44,13 +44,13 @@ struct PropertyPathTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EdgeForPropertyPath.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: EdgeForPropertyPath.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 

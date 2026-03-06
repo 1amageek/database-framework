@@ -27,7 +27,7 @@ struct IncrementalReasoningTests {
     }
 
     private func setupDatabase() async throws -> any StorageEngine {
-        try await FDBStorageEngine.open()
+        try await FDBStorageEngine(configuration: .init())
     }
 
     // MARK: - InferenceChanges Tests

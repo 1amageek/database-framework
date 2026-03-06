@@ -81,7 +81,7 @@ private struct TestContext {
     let maintainer: ScalarIndexMaintainer<ScalarTestUser>
 
     init(indexName: String = "ScalarTestUser_email") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "scalar", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -393,7 +393,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Composite index with multiple fields")
     func testCompositeIndex() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "scalar", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("ScalarTestUser_city_age")

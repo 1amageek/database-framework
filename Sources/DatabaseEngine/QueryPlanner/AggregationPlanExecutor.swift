@@ -136,7 +136,7 @@ public final class AggregationPlanExecutor<T: Persistable & Codable>: @unchecked
         // The value key is typically at the root of the index subspace
         let valueKey = indexSubspace.pack(Tuple("_value"))
 
-        let valueData = try await context.container.database.withTransaction(configuration: .batch) { transaction in
+        let valueData = try await context.container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getValue(for: valueKey)
         }
 
@@ -192,7 +192,7 @@ public final class AggregationPlanExecutor<T: Persistable & Codable>: @unchecked
         // HyperLogLog data is stored in a special key
         let hllKey = indexSubspace.pack(Tuple("_hll"))
 
-        let hllData = try await context.container.database.withTransaction(configuration: .batch) { transaction in
+        let hllData = try await context.container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getValue(for: hllKey)
         }
 
@@ -217,7 +217,7 @@ public final class AggregationPlanExecutor<T: Persistable & Codable>: @unchecked
         // Percentile data is stored in a T-Digest structure
         let digestKey = indexSubspace.pack(Tuple("_digest"))
 
-        let digestData = try await context.container.database.withTransaction(configuration: .batch) { transaction in
+        let digestData = try await context.container.engine.withTransaction(configuration: .batch) { transaction in
             try await transaction.getValue(for: digestKey)
         }
 

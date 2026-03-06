@@ -31,16 +31,16 @@ struct EfficiencyTestProduct {
 @Suite("Index Maintenance Efficiency Tests", .serialized)
 struct IndexMaintenanceEfficiencyTests {
 
-    private func createContainer() async throws -> FDBContainer {
+    private func createContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EfficiencyTestProduct.self])
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         
-        try? await container.database.directoryService.remove(path: ["test", "efficiency"])
+        try? await container.engine.directoryService.remove(path: ["test", "efficiency"])
     }
 
     private func uniqueID(_ prefix: String) -> String {

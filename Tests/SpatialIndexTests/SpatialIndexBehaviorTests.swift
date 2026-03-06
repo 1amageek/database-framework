@@ -88,7 +88,7 @@ private struct TestContext {
     ///   - encoding: Spatial encoding (default: .s2)
     ///   - level: S2/Morton level (default: 10 for coarse cells, faster tests)
     init(encoding: SpatialEncoding = .s2, level: Int = 10, indexName: String = "TestLocation_location") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

@@ -78,7 +78,7 @@ private struct TestContext {
     let dimensions: Int
 
     init(dimensions: Int = 4, metric: VectorMetric = .cosine, indexName: String = "TestDocument_embedding") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "vector", String(testId)).pack())

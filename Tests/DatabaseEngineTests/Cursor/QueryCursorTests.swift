@@ -31,17 +31,17 @@ struct QueryCursorTests {
 
     // MARK: - Setup
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([PaginatedUser.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         // Use DirectoryLayer to remove the whole directory (handles old format data too)
-        try? await container.database.directoryService.remove(path: ["test", "cursor", "users"])
+        try? await container.engine.directoryService.remove(path: ["test", "cursor", "users"])
     }
 
     private func seedUsers(context: FDBContext, count: Int) async throws -> [PaginatedUser] {

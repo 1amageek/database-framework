@@ -81,7 +81,7 @@ private struct TestContext {
     let maintainer: SumIndexMaintainer<SumTestSale, Double>
 
     init(indexName: String = "SumTestSale_category_amount") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "sum", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -460,7 +460,7 @@ struct SumIndexBehaviorTests {
     @Test("Composite grouping with region and category")
     func testCompositeGrouping() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "sum", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("SumTestSale_region_category_amount")

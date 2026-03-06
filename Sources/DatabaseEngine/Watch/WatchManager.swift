@@ -17,9 +17,9 @@ import StorageKit
 /// }
 /// ```
 public final class WatchManager: Sendable {
-    private let container: FDBContainer
+    private let container: DBContainer
 
-    public init(container: FDBContainer) {
+    public init(container: DBContainer) {
         self.container = container
     }
 

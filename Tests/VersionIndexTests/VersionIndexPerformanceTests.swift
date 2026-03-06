@@ -117,7 +117,7 @@ private struct TestContext {
     let kind: VersionIndexKind<PerfTestDocument>
 
     init(strategy: VersionHistoryStrategy = .keepAll, testId: String? = nil) async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let id = testId ?? String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "version", "perf", id).pack())
         let indexName = "PerfTestDocument_version"

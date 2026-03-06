@@ -81,7 +81,7 @@ private struct PerfTestContext {
     let indexName: String
 
     init(testName: String, window: LeaderboardWindowType = .daily, windowCount: Int = 7) async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.indexName = "PerfGameScore_leaderboard_score"
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard_perf", String(testId), testName).pack())

@@ -38,25 +38,25 @@ struct TransactionContextTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema(
             [TransactionTestUser.self, TransactionTestProduct.self],
             version: Schema.Version(1, 0, 0)
         )
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        try? await container.database.directoryService.remove(path: ["test", "txcontext", "users"])
-        try? await container.database.directoryService.remove(path: ["test", "txcontext", "products"])
+    private func cleanup(container: DBContainer) async throws {
+        try? await container.engine.directoryService.remove(path: ["test", "txcontext", "users"])
+        try? await container.engine.directoryService.remove(path: ["test", "txcontext", "products"])
     }
 
     // MARK: - TransactionConfiguration Tests

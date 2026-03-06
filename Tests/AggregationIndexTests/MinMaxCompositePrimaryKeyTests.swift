@@ -85,7 +85,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MIN with composite primary key")
     func testMinWithCompositePrimaryKey() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_pk", testId).pack())
 
@@ -168,7 +168,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MAX with composite primary key")
     func testMaxWithCompositePrimaryKey() async throws {
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_pk", testId).pack())
 

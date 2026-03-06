@@ -27,7 +27,7 @@ public struct SchemaRegistry: Sendable {
 
     /// Persist all entities and ontology from a Schema
     ///
-    /// Called during `FDBContainer.init` after `ensureIndexesReady()`.
+    /// Called during `DBContainer.init` after `ensureIndexesReady()`.
     /// Overwrites existing entries. Entity and ontology are written atomically.
     public func persist(_ schema: Schema) async throws {
         let entities = schema.entities

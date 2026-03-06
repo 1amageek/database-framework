@@ -43,19 +43,19 @@ struct NamedGraphSPARQLTests {
 
     // MARK: - Setup Helpers
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SPARQLQuadStatement.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         
-        try? await container.database.directoryService.remove(path: ["test", "sparql", "quads"])
+        try? await container.engine.directoryService.remove(path: ["test", "sparql", "quads"])
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: SPARQLQuadStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
@@ -398,19 +398,19 @@ struct NamedGraphSPARQLTests {
 
     @Test("Triple model without graph field still works")
     func testTripleModelWithoutGraphStillWorks() async throws {
-        let container: FDBContainer
+        let container: DBContainer
         do {
             try await FDBTestSetup.shared.initialize()
-            let database = try await FDBStorageEngine.open()
+            let database = try await FDBStorageEngine(configuration: .init())
             let schema = Schema(
                 [SPARQLTestStatement.self],
                 version: Schema.Version(1, 0, 0)
             )
-            container = FDBContainer(database: database, schema: schema, security: .disabled)
+            container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         }
 
         
-        try? await container.database.directoryService.remove(path: ["test", "sparql", "statements"])
+        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
 
         let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
@@ -441,6 +441,6 @@ struct NamedGraphSPARQLTests {
         #expect(results.count == 1)
         #expect(results.bindings[0]["?friend"]?.stringValue == "Bob")
 
-        try? await container.database.directoryService.remove(path: ["test", "sparql", "statements"])
+        try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
     }
 }

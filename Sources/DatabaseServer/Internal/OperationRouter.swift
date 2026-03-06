@@ -10,10 +10,10 @@ import DatabaseClientProtocol
 /// Handlers are registered per entity type during initialization.
 final class OperationRouter: Sendable {
 
-    private let container: FDBContainer
+    private let container: DBContainer
     private let handlers: [String: EntityHandler]
 
-    init(container: FDBContainer) {
+    init(container: DBContainer) {
         self.container = container
 
         // Build handlers for each entity type in the schema

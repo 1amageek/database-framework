@@ -176,7 +176,7 @@ extension FDBContext {
         let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         let executor = SPARQLQueryExecutor(
-            database: container.database,
+            database: container.engine,
             indexSubspace: indexSubspace,
             strategy: kind.strategy,
             fromFieldName: kind.fromField,

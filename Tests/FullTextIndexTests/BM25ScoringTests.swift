@@ -78,7 +78,7 @@ private struct BM25TestContext {
     let kind: FullTextIndexKind<BM25TestArticle>
 
     init(indexName: String = "BM25TestArticle_content") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bm25", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

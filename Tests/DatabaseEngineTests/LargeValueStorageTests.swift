@@ -68,11 +68,11 @@ struct LargeDataModel: Persistable {
 @Suite("Large Value Storage Tests", .serialized)
 struct LargeValueStorageTests {
 
-    private func createContainer() async throws -> FDBContainer {
+    private func createContainer() async throws -> DBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([LargeDataModel.self])
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
     private func uniqueID(_ prefix: String) -> String {
@@ -298,7 +298,7 @@ struct LargeValueStorageTests {
     @Test("Scan returns mixed inline and split items correctly")
     func testScanMixedInlineAndSplit() async throws {
         let container = try await createContainer()
-        let database = container.database
+        let database = container.engine
 
         // Use unique subspace to isolate from other tests
         let testId = UUID().uuidString.prefix(8)
@@ -376,7 +376,7 @@ struct LargeValueStorageTests {
     @Test("Scan with limit works correctly with split items")
     func testScanWithLimitAndSplitItems() async throws {
         let container = try await createContainer()
-        let database = container.database
+        let database = container.engine
 
         // Use unique subspace to isolate from other tests
         let testId = UUID().uuidString.prefix(8)
@@ -427,7 +427,7 @@ struct LargeValueStorageTests {
     @Test("Scan snapshot mode reads consistently with split items")
     func testScanSnapshotWithSplitItems() async throws {
         let container = try await createContainer()
-        let database = container.database
+        let database = container.engine
 
         // Use unique subspace to isolate from other tests
         let testId = UUID().uuidString.prefix(8)
@@ -480,7 +480,7 @@ struct LargeValueStorageTests {
     @Test("Scan empty range returns no items")
     func testScanEmptyRange() async throws {
         let container = try await createContainer()
-        let database = container.database
+        let database = container.engine
         let subspace = try await container.resolveDirectory(for: LargeDataModel.self)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
@@ -504,7 +504,7 @@ struct LargeValueStorageTests {
     @Test("Blobs subspace isolation - chunks don't appear in items scan")
     func testBlobsSubspaceIsolation() async throws {
         let container = try await createContainer()
-        let database = container.database
+        let database = container.engine
 
         // Use unique subspace to isolate from other tests
         let testId = UUID().uuidString.prefix(8)

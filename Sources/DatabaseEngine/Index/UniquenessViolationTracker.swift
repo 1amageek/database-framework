@@ -56,7 +56,7 @@ public final class UniquenessViolationTracker: Sendable {
     // MARK: - Properties
 
     /// FDB Container for transaction execution
-    let container: FDBContainer
+    let container: DBContainer
 
     /// Metadata subspace containing violation records
     private let metadataSubspace: Subspace
@@ -69,10 +69,10 @@ public final class UniquenessViolationTracker: Sendable {
     /// Create a violation tracker
     ///
     /// - Parameters:
-    ///   - container: FDBContainer for transaction execution
+    ///   - container: DBContainer for transaction execution
     ///   - metadataSubspace: Subspace for metadata storage (usually `[store]/M/`)
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         metadataSubspace: Subspace
     ) {
         self.container = container
@@ -252,7 +252,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         limit: Int? = nil
     ) async throws -> [UniquenessViolation] {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.scanViolations(
                 indexName: indexName,
                 limit: limit,
@@ -304,7 +304,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func scanAllViolations(
         limit: Int? = nil
     ) async throws -> [String: [UniquenessViolation]] {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.scanAllViolations(limit: limit, transaction: transaction)
         }
     }
@@ -344,7 +344,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index to check
     /// - Returns: True if violations exist
     public func hasViolations(indexName: String) async throws -> Bool {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.hasViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -371,7 +371,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// - Parameter indexName: Name of the index
     /// - Returns: Number of distinct value violations (not total conflicting records)
     public func countViolations(indexName: String) async throws -> Int {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.countViolations(indexName: indexName, transaction: transaction)
         }
     }
@@ -410,7 +410,7 @@ public final class UniquenessViolationTracker: Sendable {
         valueKey: [UInt8],
         indexSubspace: Subspace
     ) async throws -> ViolationResolution {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.verifyResolution(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -480,7 +480,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         valueKey: [UInt8]
     ) async throws {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.clearViolation(
                 indexName: indexName,
                 valueKey: valueKey,
@@ -511,7 +511,7 @@ public final class UniquenessViolationTracker: Sendable {
     ///
     /// - Parameter indexName: Name of the index
     public func clearAllViolations(indexName: String) async throws {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             try await self.clearAllViolations(indexName: indexName, transaction: transaction)
         }
     }

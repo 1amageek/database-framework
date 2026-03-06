@@ -54,7 +54,7 @@ public protocol _VectorIndexConfiguration: IndexConfiguration {
 ///     algorithm: .hnsw(.default)
 /// )
 ///
-/// let container = try FDBContainer(
+/// let container = try DBContainer(
 ///     for: schema,
 ///     indexConfigurations: [config]
 /// )

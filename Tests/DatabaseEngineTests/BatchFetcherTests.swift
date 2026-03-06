@@ -248,7 +248,7 @@ struct BatchFetcherIntegrationTests {
 
     private func setupDatabase() async throws -> any StorageEngine {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        return try await FDBStorageEngine.open()
+        return try await FDBStorageEngine(configuration: .init())
     }
 
     private func testSubspace() -> Subspace {

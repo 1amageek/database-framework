@@ -78,7 +78,7 @@ private struct TestContext {
     let kind: FullTextIndexKind<TestArticle>
 
     init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "TestArticle_content") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

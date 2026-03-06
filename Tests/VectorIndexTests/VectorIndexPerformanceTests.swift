@@ -78,7 +78,7 @@ private struct BenchmarkContext {
     let dimensions: Int
 
     init(dimensions: Int = 128, metric: VectorMetric = .cosine, indexName: String = "BenchmarkDocument_embedding") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "vector", String(testId)).pack())

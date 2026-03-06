@@ -34,7 +34,7 @@ import Logging
 /// **Not Responsible For**:
 /// - Record serialization/deserialization (DataAccess)
 /// - Transaction management (Database)
-/// - Directory resolution (FDBContainer)
+/// - Directory resolution (DBContainer)
 /// - Index state persistence (IndexStateManager)
 internal final class IndexMaintenanceService: Sendable {
 

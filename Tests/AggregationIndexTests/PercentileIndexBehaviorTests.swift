@@ -81,7 +81,7 @@ private struct TestContext {
     let maintainer: PercentileIndexMaintainer<PercentileTestRequest>
 
     init(indexName: String = "PercentileTestRequest_endpoint_latencyMs") async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "percentile", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

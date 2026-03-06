@@ -43,23 +43,23 @@ struct UniquenessEnforcementTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema(
             [UniqueTestUser.self, NonUniqueTestProduct.self],
             version: Schema.Version(1, 0, 0)
         )
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
+    private func cleanup(container: DBContainer) async throws {
         let context = container.newContext()
         try await context.deleteAll(UniqueTestUser.self)
         try await context.deleteAll(NonUniqueTestProduct.self)
@@ -294,7 +294,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_violation_idx"
 
             // Record a violation
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -335,7 +335,7 @@ struct UniquenessEnforcementTests {
             #expect(hasBefore == false)
 
             // Add a violation
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -371,7 +371,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_count_idx"
 
             // Add multiple violations
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 for i in 0..<5 {
                     try await tracker.recordViolation(
                         indexName: indexName,
@@ -409,7 +409,7 @@ struct UniquenessEnforcementTests {
             let valueKey = Tuple("clearme").pack()
 
             // Add violation
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await tracker.recordViolation(
                     indexName: indexName,
                     persistableType: "TestType",
@@ -449,7 +449,7 @@ struct UniquenessEnforcementTests {
             let indexName = "test_summary_idx"
 
             // Add violations with different conflict counts
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 // Violation 1: 2 conflicts
                 try await tracker.recordViolation(
                     indexName: indexName,
@@ -500,7 +500,7 @@ struct UniquenessEnforcementTests {
                 return
             }
 
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniqueTestUser",
@@ -549,7 +549,7 @@ struct UniquenessEnforcementTests {
                 return
             }
 
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniqueTestUser",
@@ -591,7 +591,7 @@ struct UniquenessEnforcementTests {
                 return
             }
 
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 try await fdbStore.violationTracker.recordViolation(
                     indexName: indexName,
                     persistableType: "UniqueTestUser",

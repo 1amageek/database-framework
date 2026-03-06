@@ -44,10 +44,10 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EdgeCaseConnection.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
         
         try? await database.directoryService.remove(path: ["test", "edge_case"])

@@ -54,6 +54,7 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -259,6 +260,7 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit"),
                 .product(name: "Yams", package: "Yams"),
             ],
             exclude: ["README.md"]
@@ -281,7 +283,6 @@ let package = Package(
                 "DatabaseCLICore",
                 "DatabaseEngine",
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["README.md"],

@@ -508,7 +508,7 @@ extension FDBContext {
         let typeSubspace = try await indexQueryContext.indexSubspace(for: type)
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
-        return SCCFinder(database: container.database, scanner: scanner, configuration: configuration)
+        return SCCFinder(database: container.engine, scanner: scanner, configuration: configuration)
     }
 }
 

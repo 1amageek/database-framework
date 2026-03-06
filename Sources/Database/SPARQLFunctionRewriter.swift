@@ -345,7 +345,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
 
     // MARK: - Directory Resolution
 
-    /// Resolve type directory using FDBContainer
+    /// Resolve type directory using DBContainer
     ///
     /// - Parameter persistableType: The Persistable type to resolve
     /// - Returns: Subspace for the type
@@ -363,7 +363,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
             )
         }
 
-        // Use FDBContainer's directory resolution (handles caching)
+        // Use DBContainer's directory resolution (handles caching)
         return try await context.container.resolveDirectory(for: persistableType)
     }
 
@@ -385,10 +385,10 @@ internal struct SPARQLFunctionRewriter: Sendable {
         storedFieldNames: [String]
     ) async throws -> SPARQLResult {
         // Execute using database transaction (shares snapshot with parent SQL transaction)
-        return try await context.container.database.withTransaction { transaction in
+        return try await context.container.engine.withTransaction { transaction in
             try await executeSPARQLString(
                 sparqlQuery,
-                database: context.container.database,
+                database: context.container.engine,
                 indexSubspace: indexSubspace,
                 strategy: graphKind.strategy,
                 fromFieldName: graphKind.fromFieldName,

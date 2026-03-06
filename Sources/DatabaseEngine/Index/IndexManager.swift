@@ -67,7 +67,7 @@ public final class IndexManager: Sendable {
     // MARK: - Properties
 
     /// FDB Container for transaction execution
-    let container: FDBContainer
+    let container: DBContainer
     private let subspace: Subspace
 
     /// IndexStateManager for managing index states
@@ -83,10 +83,10 @@ public final class IndexManager: Sendable {
     /// Initialize IndexManager
     ///
     /// - Parameters:
-    ///   - container: FDBContainer for transaction execution
+    ///   - container: DBContainer for transaction execution
     ///   - subspace: Subspace for storing index data and state
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         subspace: Subspace
     ) {
         self.container = container

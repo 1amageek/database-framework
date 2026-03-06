@@ -19,9 +19,9 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-// MARK: - Dummy Entity (required by FDBContainer)
+// MARK: - Dummy Entity (required by DBContainer)
 
-/// Minimal @Persistable entity to satisfy FDBContainer's Schema requirement.
+/// Minimal @Persistable entity to satisfy DBContainer's Schema requirement.
 /// Ontology tests do not use this entity — they operate on the ontology subspace (O/).
 @Persistable
 struct OntologyTestDummy {
@@ -51,9 +51,9 @@ struct OntologyPersistenceTests {
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([OntologyTestDummy.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         return container.newContext()
     }
 

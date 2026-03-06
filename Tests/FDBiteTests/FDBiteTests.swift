@@ -30,7 +30,7 @@ struct FDBiteTests {
     @Test("Container creation with in-memory SQLite")
     func containerCreation() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -43,7 +43,7 @@ struct FDBiteTests {
         let dbPath = tmpDir.appendingPathComponent("fdbite-test-\(UUID().uuidString).sqlite").path
 
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.sqlite(
+        let container = try await DBContainer.sqlite(
             for: schema,
             path: dbPath,
             security: .disabled
@@ -72,7 +72,7 @@ struct FDBiteTests {
             [FDBiteItem.self, FDBiteNote.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -107,7 +107,7 @@ struct FDBiteTests {
     @Test("Insert and fetch round-trip")
     func insertAndFetch() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -135,7 +135,7 @@ struct FDBiteTests {
     @Test("Update via re-insert (upsert)")
     func updateViaReInsert() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -169,7 +169,7 @@ struct FDBiteTests {
     @Test("Multiple inserts in single transaction")
     func batchInsert() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -192,7 +192,7 @@ struct FDBiteTests {
     @Test("Delete item")
     func deleteItem() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -221,7 +221,7 @@ struct FDBiteTests {
     @Test("Fetch with where clause")
     func fetchWithWhere() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -251,7 +251,7 @@ struct FDBiteTests {
     @Test("Fetch with orderBy")
     func fetchWithOrderBy() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -279,7 +279,7 @@ struct FDBiteTests {
     @Test("Fetch with limit")
     func fetchWithLimit() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )
@@ -306,7 +306,7 @@ struct FDBiteTests {
     @Test("Fetch from empty store returns empty array")
     func emptyFetch() async throws {
         let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
-        let container = try await FDBContainer.inMemory(
+        let container = try await DBContainer.inMemory(
             for: schema,
             security: .disabled
         )

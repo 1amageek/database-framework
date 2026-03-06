@@ -232,7 +232,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = try await getIndexSubspace()
 
         let computer = PageRankComputer<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: configuration
         )
@@ -252,7 +252,7 @@ public struct PageRankQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = try await getIndexSubspace()
 
         let computer = PageRankComputer<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: configuration
         )
@@ -377,7 +377,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = try await getIndexSubspace()
 
         let detector = CommunityDetector<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: configuration
         )
@@ -399,7 +399,7 @@ public struct CommunityDetectionQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = try await getIndexSubspace()
 
         let detector = CommunityDetector<T>(
-            database: queryContext.context.container.database,
+            database: queryContext.context.container.engine,
             subspace: indexSubspace,
             configuration: configuration
         )

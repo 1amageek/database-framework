@@ -15,7 +15,7 @@ struct TransactionComprehensiveTests {
     @Test("Multiple getRange() calls in single transaction")
     func multipleGetRangeInSingleTransaction() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 50 keys
@@ -58,7 +58,7 @@ struct TransactionComprehensiveTests {
     @Test("100 getRange() calls in single transaction")
     func hundredGetRangeCalls() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 100 keys
@@ -95,7 +95,7 @@ struct TransactionComprehensiveTests {
     @Test("Iterator fully consumed")
     func iteratorFullyConsumed() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -119,7 +119,7 @@ struct TransactionComprehensiveTests {
     @Test("Iterator partially consumed")
     func iteratorPartiallyConsumed() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -144,7 +144,7 @@ struct TransactionComprehensiveTests {
     @Test("Multiple concurrent iterators")
     func multipleConcurrentIterators() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -183,7 +183,7 @@ struct TransactionComprehensiveTests {
     @Test("Snapshot read does not conflict")
     func snapshotReadDoesNotConflict() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
@@ -208,7 +208,7 @@ struct TransactionComprehensiveTests {
     @Test("Non-snapshot read adds to conflict range")
     func nonSnapshotReadAddsToConflictRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
@@ -235,7 +235,7 @@ struct TransactionComprehensiveTests {
     @Test("Scan 1000 items with getRange")
     func scanThousandItems() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 1000 items
@@ -270,7 +270,7 @@ struct TransactionComprehensiveTests {
     @Test("Nested getRange iteration")
     func nestedGetRangeIteration() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Setup: 5 groups × 10 items
@@ -315,7 +315,7 @@ struct TransactionComprehensiveTests {
     @Test("Transaction commit succeeds after multiple getRange")
     func commitSucceedsAfterMultipleGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let runner = TransactionRunner(database: database)
 
         // Write initial data

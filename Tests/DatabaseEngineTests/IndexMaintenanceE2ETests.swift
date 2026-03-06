@@ -89,22 +89,22 @@ struct IndexMaintenanceE2ETests {
 
     // MARK: - Setup
 
-    private func setupContainer<T: Persistable>(_ types: [T.Type]) async throws -> FDBContainer {
+    private func setupContainer<T: Persistable>(_ types: [T.Type]) async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer, paths: [[String]]) async throws {
+    private func cleanup(container: DBContainer, paths: [[String]]) async throws {
         for path in paths {
-            try? await container.database.directoryService.remove(path: path)
+            try? await container.engine.directoryService.remove(path: path)
         }
     }
 
@@ -113,7 +113,7 @@ struct IndexMaintenanceE2ETests {
     /// For E2E tests, we need to set them to READABLE.
     private func setIndexStatesToReadable<T: Persistable>(
         for type: T.Type,
-        container: FDBContainer
+        container: DBContainer
     ) async throws {
         let subspace = try await container.resolveDirectory(for: type)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
@@ -222,7 +222,7 @@ struct IndexMaintenanceE2ETests {
         if let indexName = scalarIndexName {
             let scalarIndexSubspace = indexSubspace.subspace(indexName)
             let entryCount = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: scalarIndexSubspace
             )
 
@@ -278,7 +278,7 @@ struct IndexMaintenanceE2ETests {
 
             // Count index should have entries (2 groups: electronics and books)
             let entryCount = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: countIndexSubspace
             )
 
@@ -328,13 +328,13 @@ struct IndexMaintenanceE2ETests {
 
             // Debug: dump keys
             try await dumpSubspaceKeys(
-                database: container.database,
+                database: container.engine,
                 subspace: fullTextIndexSubspace,
                 label: "FullText Index Subspace"
             )
 
             let entryCount = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: fullTextIndexSubspace
             )
 
@@ -391,13 +391,13 @@ struct IndexMaintenanceE2ETests {
 
             // Debug: dump keys
             try await dumpSubspaceKeys(
-                database: container.database,
+                database: container.engine,
                 subspace: graphIndexSubspace,
                 label: "Graph Index Subspace"
             )
 
             let entryCount = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: graphIndexSubspace
             )
 
@@ -444,7 +444,7 @@ struct IndexMaintenanceE2ETests {
         if let indexName = graphIndexName {
             let graphIndexSubspace = indexSubspace.subspace(indexName)
             countBeforeDelete = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: graphIndexSubspace
             )
         }
@@ -461,7 +461,7 @@ struct IndexMaintenanceE2ETests {
         if let indexName = graphIndexName {
             let graphIndexSubspace = indexSubspace.subspace(indexName)
             let countAfterDelete = try await countEntriesInSubspace(
-                database: container.database,
+                database: container.engine,
                 subspace: graphIndexSubspace
             )
 
@@ -519,7 +519,7 @@ struct IndexMaintenanceE2ETests {
         directEdge.target = "DirectBob"
         directEdge.relation = "follows"
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: nil,
                 newItem: directEdge,
@@ -528,7 +528,7 @@ struct IndexMaintenanceE2ETests {
         }
 
         let directMaintainerCount = try await countEntriesInSubspace(
-            database: container.database,
+            database: container.engine,
             subspace: graphIndexSubspace
         )
 
@@ -538,7 +538,7 @@ struct IndexMaintenanceE2ETests {
         )
 
         // Clean up direct test
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             try await maintainer.updateIndex(
                 oldItem: directEdge,
                 newItem: nil,
@@ -561,7 +561,7 @@ struct IndexMaintenanceE2ETests {
         try await context.save()
 
         let contextSaveCount = try await countEntriesInSubspace(
-            database: container.database,
+            database: container.engine,
             subspace: graphIndexSubspace
         )
 

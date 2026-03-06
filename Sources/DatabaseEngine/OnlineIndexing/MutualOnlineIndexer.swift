@@ -45,7 +45,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -108,7 +108,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -252,7 +252,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
                     var lastProcessedKey: Bytes? = nil
@@ -357,7 +357,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         let forwardSubspace = indexSubspace.subspace(forwardIndex.name)
         let reverseSubspace = indexSubspace.subspace(reverseIndex.name)
 
-        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let inconsistencies: [(forward: Tuple, reverse: Tuple)] = try await container.engine.withTransaction(configuration: .batch) { transaction in
             var inconsistencies: [(forward: Tuple, reverse: Tuple)] = []
 
             let forwardRange = forwardSubspace.range()
@@ -406,7 +406,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     private func loadProgress(key: Bytes) async throws -> RangeSet? {
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
             }
@@ -422,7 +422,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private func clearProgress() async throws {
         let forwardKey = self.forwardProgressKey
         let reverseKey = self.reverseProgressKey
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: forwardKey)
             transaction.clear(key: reverseKey)
         }
@@ -432,7 +432,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }
@@ -484,7 +484,7 @@ public struct MutualIndexConfiguration: Sendable {
 /// implementation requires a full scan for reverse lookups.
 public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     /// FDB Container for database access
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Index subspace
     private let indexSubspace: Subspace
@@ -493,7 +493,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     private let config: MutualIndexConfiguration
 
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         indexSubspace: Subspace,
         config: MutualIndexConfiguration
     ) {

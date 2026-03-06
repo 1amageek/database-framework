@@ -21,15 +21,15 @@ struct DemoItem: Equatable {
 @Suite("Round Trip Demo", .serialized)
 struct RoundTripDemoTests {
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([DemoItem.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
     @Test("Create -> Read -> Update -> Delete round-trip")

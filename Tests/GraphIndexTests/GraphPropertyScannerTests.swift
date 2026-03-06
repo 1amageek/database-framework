@@ -63,10 +63,10 @@ struct GraphPropertyScannerTests {
         return edge
     }
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
         
         try? await database.directoryService.remove(path: ["test", "social_edges"])
@@ -77,7 +77,7 @@ struct GraphPropertyScannerTests {
         return container
     }
 
-    private func setIndexStatesToReadable(container: FDBContainer) async throws {
+    private func setIndexStatesToReadable(container: DBContainer) async throws {
         let subspace = try await container.resolveDirectory(for: SocialEdge.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
@@ -113,7 +113,7 @@ struct GraphPropertyScannerTests {
         context.insert(edge2)
         try await context.save()
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             let subspace = try await container.resolveDirectory(for: SocialEdge.self)
             let indexSubspace = subspace.subspace("I")
             let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
@@ -159,7 +159,7 @@ struct GraphPropertyScannerTests {
         context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2021, status: "active", score: 0.7))
         try await context.save()
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             let subspace = try await container.resolveDirectory(for: SocialEdge.self)
             let indexSubspace = subspace.subspace("I")
             let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
@@ -194,7 +194,7 @@ struct GraphPropertyScannerTests {
         }
         try await context.save()
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             let subspace = try await container.resolveDirectory(for: SocialEdge.self)
             let indexSubspace = subspace.subspace("I")
             let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
@@ -232,7 +232,7 @@ struct GraphPropertyScannerTests {
         context.insert(makeEdge(from: alice, target: uniqueID("dave"), label: "KNOWS", since: 2020, status: "active", score: 0.7))
         try await context.save()
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             let subspace = try await container.resolveDirectory(for: SocialEdge.self)
             let indexSubspace = subspace.subspace("I")
             let graphIndexSubspace = indexSubspace.subspace("social_graph_index")
@@ -291,7 +291,7 @@ struct GraphPropertyScannerTests {
         context.insert(edge2)
         try await context.save()
 
-        try await container.database.withTransaction { transaction in
+        try await container.engine.withTransaction { transaction in
             let subspace = try await container.resolveDirectory(for: SocialEdge.self)
             let indexSubspace = subspace.subspace("I")
             let graphIndexSubspace = indexSubspace.subspace("adjacency_graph_index")

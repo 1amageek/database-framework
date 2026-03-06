@@ -113,7 +113,7 @@ public struct SessionConfiguration: Sendable, Equatable {
 public final class SynchronizedSession: Sendable {
     // MARK: - Properties
 
-    private let container: FDBContainer
+    private let container: DBContainer
     private let lockSubspace: Subspace
     public let configuration: SessionConfiguration
 
@@ -141,7 +141,7 @@ public final class SynchronizedSession: Sendable {
     // MARK: - Initialization
 
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         lockSubspace: Subspace,
         configuration: SessionConfiguration
     ) {
@@ -165,7 +165,7 @@ public final class SynchronizedSession: Sendable {
     public func acquire() async throws -> Bool {
         let now = Date()
 
-        let acquired = try await container.database.withTransaction(configuration: .interactive) { transaction in
+        let acquired = try await container.engine.withTransaction(configuration: .interactive) { transaction in
             // Read current lock holder
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 
@@ -234,7 +234,7 @@ public final class SynchronizedSession: Sendable {
             state.renewalTask = nil
         }
 
-        try await container.database.withTransaction(configuration: .interactive) { transaction in
+        try await container.engine.withTransaction(configuration: .interactive) { transaction in
             // Verify we hold the lock
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 
@@ -259,7 +259,7 @@ public final class SynchronizedSession: Sendable {
 
     /// Get lock status
     public func getLockStatus() async throws -> LockStatus {
-        let holder = try await container.database.withTransaction(configuration: .interactive) { transaction in
+        let holder = try await container.engine.withTransaction(configuration: .interactive) { transaction in
             try await self.readLockHolder(transaction: transaction)
         }
 
@@ -339,7 +339,7 @@ public final class SynchronizedSession: Sendable {
     private func renewLock() async throws {
         let now = Date()
 
-        try await container.database.withTransaction(configuration: .interactive) { transaction in
+        try await container.engine.withTransaction(configuration: .interactive) { transaction in
             // Verify we still hold the lock
             let currentHolder = try await self.readLockHolder(transaction: transaction)
 
@@ -487,7 +487,7 @@ public final class SessionLeaderElection: Sendable {
     private let session: SynchronizedSession
 
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         lockSubspace: Subspace,
         electionName: String,
         configuration: SessionConfiguration? = nil

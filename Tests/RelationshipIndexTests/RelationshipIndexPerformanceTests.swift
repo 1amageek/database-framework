@@ -36,7 +36,7 @@ struct PerfOrder {
 
 // MARK: - Test Helpers
 
-private func enableAllIndexes<T: Persistable>(container: FDBContainer, for type: T.Type) async throws {
+private func enableAllIndexes<T: Persistable>(container: DBContainer, for type: T.Type) async throws {
     let store = try await container.store(for: type) as! FDBDataStore
     for descriptor in T.indexDescriptors {
         var attempts = 0
@@ -116,17 +116,17 @@ private func benchmark<T>(
 @Suite("Relationship Index Performance Tests", .serialized)
 struct RelationshipIndexPerformanceTests {
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([PerfCustomer.self, PerfOrder.self], version: Schema.Version(1, 0, 0))
 
-        let container = FDBContainer(
-            database: database,
-            schema: schema,
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
 
         try await enableAllIndexes(container: container, for: PerfCustomer.self)
         try await enableAllIndexes(container: container, for: PerfOrder.self)

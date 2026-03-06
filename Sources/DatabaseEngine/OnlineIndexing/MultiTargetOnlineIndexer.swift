@@ -45,7 +45,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Subspace where items are stored ([R]/)
     private let itemSubspace: Subspace
@@ -94,7 +94,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     ///   - batchSize: Number of items per batch (default: 100)
     ///   - throttleDelayMs: Delay between batches in ms (default: 0)
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -221,7 +221,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 let currentRangeSet = rangeSet
 
                 // Process batch and save progress atomically in same transaction
-                let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
+                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var lastProcessedKey: Bytes? = nil
 
@@ -308,7 +308,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func loadProgress() async throws -> RangeSet? {
         let progressKey = self.progressKey
-        return try await container.database.withTransaction(configuration: .batch) { transaction in
+        return try await container.engine.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: progressKey, snapshot: false) else {
                 return nil
             }
@@ -323,7 +323,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearProgress() async throws {
         let progressKey = self.progressKey
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clear(key: progressKey)
         }
     }
@@ -332,7 +332,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
     private func clearIndexData(for index: Index) async throws {
         let indexRange = self.indexSubspace.subspace(index.name).range()
-        try await container.database.withTransaction(configuration: .batch) { transaction in
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
             transaction.clearRange(beginKey: indexRange.begin, endKey: indexRange.end)
         }
     }

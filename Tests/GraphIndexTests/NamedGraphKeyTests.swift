@@ -101,7 +101,7 @@ private struct QuadTestContext {
         graphField: String? = "graph",
         indexName: String = "TestQuad_graph"
     ) async throws {
-        self.database = try await FDBStorageEngine.open()
+        self.database = try await FDBStorageEngine(configuration: .init())
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "namedgraph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

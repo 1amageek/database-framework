@@ -280,7 +280,7 @@ public struct SHACLContextAPI: Sendable {
         let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         return SPARQLQueryExecutor(
-            database: context.container.database,
+            database: context.container.engine,
             indexSubspace: indexSubspace,
             strategy: kind.strategy,
             fromFieldName: kind.fromField,

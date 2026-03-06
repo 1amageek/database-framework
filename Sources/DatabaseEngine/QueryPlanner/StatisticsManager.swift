@@ -33,7 +33,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
     // MARK: - Properties
 
     /// FDB Container for database access
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Persistent storage
     private let storage: StatisticsStorage
@@ -125,11 +125,11 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
     /// Create a statistics manager
     ///
     /// - Parameters:
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - subspace: Root subspace for storage
     ///   - configuration: Optional configuration
     public init(
-        container: FDBContainer,
+        container: DBContainer,
         subspace: Subspace,
         configuration: Configuration = .default
     ) {
@@ -487,7 +487,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
         indexSubspace: Subspace
     ) async throws {
 
-        let (entryCount, distinctKeyCount) = try await container.database.withTransaction(configuration: .batch) { transaction in
+        let (entryCount, distinctKeyCount) = try await container.engine.withTransaction(configuration: .batch) { transaction in
             var entryCount: Int64 = 0
             var hll = HyperLogLog()
 

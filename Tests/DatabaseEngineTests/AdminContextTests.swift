@@ -37,9 +37,9 @@ struct AdminContextTests {
 
     // MARK: - Helper Methods
 
-    private func setupContainer() async throws -> FDBContainer {
+    private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
 
         let schema = Schema([
             AdminTestEntity.self,
@@ -50,19 +50,19 @@ struct AdminContextTests {
         IndexBuilderRegistry.shared.register(AdminTestEntity.self)
         IndexBuilderRegistry.shared.register(AdminTestEntityNoIndex.self)
 
-        return FDBContainer(
-            database: database,
-            schema: schema,
+        return try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
             security: .disabled
-        )
+            )
     }
 
-    private func cleanup(container: FDBContainer) async throws {
-        try? await container.database.directoryService.remove(path: ["test", "admin"])
+    private func cleanup(container: DBContainer) async throws {
+        try? await container.engine.directoryService.remove(path: ["test", "admin"])
     }
 
     /// Get the first index name for AdminTestEntity from schema
-    private func getTestIndexName(from container: FDBContainer) -> String? {
+    private func getTestIndexName(from container: DBContainer) -> String? {
         guard let entity = container.schema.entity(for: AdminTestEntity.self),
               let firstIndex = entity.indexDescriptors.first else {
             return nil
@@ -198,13 +198,13 @@ struct AdminContextTests {
 
     // MARK: - Consistency Tests
 
-    @Test("AdminContext and FDBContainer resolve to same directory")
+    @Test("AdminContext and DBContainer resolve to same directory")
     func adminContextAndContainerResolveToSameDirectory() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
 
-            // Resolve directory via FDBContainer
+            // Resolve directory via DBContainer
             let containerSubspace = try await container.resolveDirectory(for: AdminTestEntity.self)
 
             // Insert data and verify it's accessible

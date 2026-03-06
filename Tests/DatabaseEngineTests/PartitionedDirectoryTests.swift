@@ -17,10 +17,10 @@ struct PartitionedDirectoryTests {
         "\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func setupContainer() async throws -> FDBContainer {
-        let database = try await FDBStorageEngine.open()
+    private func setupContainer() async throws -> DBContainer {
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return FDBContainer(database: database, schema: schema, security: .disabled)
+        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
 
     // MARK: - hasDynamicDirectory Tests
@@ -426,7 +426,7 @@ struct PartitionedDirectoryTests {
             let orderID = uniqueID("order")
 
             // Use withTransaction to perform operations
-            try await container.database.withTransaction { transaction in
+            try await container.engine.withTransaction { transaction in
                 let txContext = TransactionContext(transaction: transaction, container: container)
 
                 var order = TenantOrder(tenantID: tenantID, status: "tx-test", total: 500.0)
@@ -452,7 +452,7 @@ struct PartitionedDirectoryTests {
             let container = try await setupContainer()
 
             await #expect(throws: DirectoryPathError.self) {
-                try await container.database.withTransaction { transaction in
+                try await container.engine.withTransaction { transaction in
                     let txContext = TransactionContext(transaction: transaction, container: container)
                     _ = try await txContext.get(TenantOrder.self, id: "any-id")
                 }

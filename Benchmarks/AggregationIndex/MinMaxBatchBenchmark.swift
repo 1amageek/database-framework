@@ -24,14 +24,14 @@ struct Sale {
 @Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized)
 struct MinMaxBatchBenchmark {
     nonisolated(unsafe) private let database: any StorageEngine
-    nonisolated(unsafe) private let container: FDBContainer
+    nonisolated(unsafe) private let container: DBContainer
     nonisolated(unsafe) private let context: FDBContext
 
     init() async throws {
         try await FDBTestSetup.shared.initialize()
-        let db = try await FDBStorageEngine.open()
+        let db = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = FDBContainer(database: db, schema: schema, security: .disabled)
+        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(db)), security: .disabled)
 
         self.database = db
         self.container = cont
@@ -45,7 +45,7 @@ struct MinMaxBatchBenchmark {
 
         // Re-create context after directory cleanup
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         try await cont.ensureIndexesReady()
         let ctx = FDBContext(container: cont)
 
@@ -129,7 +129,7 @@ struct MinMaxBatchBenchmark {
 
         // Re-create context and insert test data
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         try await cont.ensureIndexesReady()
         let ctx = FDBContext(container: cont)
 
@@ -182,7 +182,7 @@ struct MinMaxBatchBenchmark {
 
         // Re-create context after directory cleanup
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = FDBContainer(database: database, schema: schema, security: .disabled)
+        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         try await cont.ensureIndexesReady()
         let ctx = FDBContext(container: cont)
 

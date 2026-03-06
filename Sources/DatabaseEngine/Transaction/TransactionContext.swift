@@ -47,7 +47,7 @@ public final class TransactionContext: @unchecked Sendable {
     private let transaction: any Transaction
 
     /// The container for directory resolution
-    private let container: FDBContainer
+    private let container: DBContainer
 
     /// Cache of resolved subspaces per cache key (type + partition path)
     private var subspaceCache: [String: ResolvedSubspaces] = [:]
@@ -65,10 +65,10 @@ public final class TransactionContext: @unchecked Sendable {
     ///
     /// - Parameters:
     ///   - transaction: The underlying FDB transaction
-    ///   - container: The FDBContainer for directory resolution
+    ///   - container: The DBContainer for directory resolution
     init(
         transaction: any Transaction,
-        container: FDBContainer
+        container: DBContainer
     ) {
         self.transaction = transaction
         self.container = container

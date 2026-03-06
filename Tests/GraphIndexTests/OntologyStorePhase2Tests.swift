@@ -26,9 +26,9 @@ struct OntologyStorePhase2Tests {
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine.open()
+        let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([OntologyTestDummy.self], version: Schema.Version(1, 0, 0))
-        let container = FDBContainer(database: database, schema: schema, security: .disabled)
+        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         return container.newContext()
     }
 

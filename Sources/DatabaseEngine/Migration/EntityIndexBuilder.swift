@@ -22,7 +22,7 @@ public protocol IndexBuildableEntity: Persistable {
     /// This method creates an OnlineIndexer with the concrete type and builds the index.
     ///
     /// - Parameters:
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
@@ -30,7 +30,7 @@ public protocol IndexBuildableEntity: Persistable {
     ///   - configurations: Index configurations for runtime parameters (HNSW, full-text, etc.)
     /// - Throws: Error if index building fails
     static func buildEntityIndex(
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -46,7 +46,7 @@ extension Persistable where Self: Codable {
     ///
     /// This implementation creates an OnlineIndexer with the concrete type.
     public static func buildEntityIndex(
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -143,7 +143,7 @@ public final class IndexBuilderRegistry: Sendable {
 
     /// Type alias for index builder closure
     public typealias IndexBuilder = @Sendable (
-        _ container: FDBContainer,
+        _ container: DBContainer,
         _ storeSubspace: Subspace,
         _ index: Index,
         _ indexStateManager: IndexStateManager,
@@ -188,7 +188,7 @@ public final class IndexBuilderRegistry: Sendable {
     ///
     /// - Parameters:
     ///   - entityName: The entity type name
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
@@ -197,7 +197,7 @@ public final class IndexBuilderRegistry: Sendable {
     /// - Throws: Error if entity not registered or build fails
     public func buildIndex(
         entityName: String,
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -244,7 +244,7 @@ public struct EntityIndexBuilder {
     ///
     /// - Parameters:
     ///   - entityName: The entity type name
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
@@ -253,7 +253,7 @@ public struct EntityIndexBuilder {
     /// - Throws: Error if entity not registered or build fails
     public static func buildIndex(
         entityName: String,
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -275,7 +275,7 @@ public struct EntityIndexBuilder {
     ///
     /// - Parameters:
     ///   - type: The concrete Persistable type
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
@@ -284,7 +284,7 @@ public struct EntityIndexBuilder {
     /// - Throws: Error if build fails
     public static func buildIndex<T: Persistable & Codable>(
         for type: T.Type,
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -315,7 +315,7 @@ public struct EntityIndexBuilder {
     ///
     /// - Parameters:
     ///   - persistableType: The Persistable metatype (from Schema.Entity.persistableType)
-    ///   - container: FDBContainer for database access
+    ///   - container: DBContainer for database access
     ///   - storeSubspace: Store root subspace (parent of R/I/B/M)
     ///   - index: Index definition
     ///   - indexStateManager: Index state manager
@@ -324,7 +324,7 @@ public struct EntityIndexBuilder {
     /// - Throws: `EntityIndexBuilderError.typeNotBuildable` if the type doesn't support index building
     public static func buildIndex(
         forPersistableType persistableType: any Persistable.Type,
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -392,7 +392,7 @@ public protocol _EntityIndexBuildable: Persistable {
     ///
     /// This is the existential-callable version of `buildEntityIndex`.
     static func _buildIndex(
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
@@ -407,7 +407,7 @@ public protocol _EntityIndexBuildable: Persistable {
 /// `_EntityIndexBuildable`, enabling existential type dispatch for index building.
 extension Persistable where Self: Codable {
     public static func _buildIndex(
-        container: FDBContainer,
+        container: DBContainer,
         storeSubspace: Subspace,
         index: Index,
         indexStateManager: IndexStateManager,
