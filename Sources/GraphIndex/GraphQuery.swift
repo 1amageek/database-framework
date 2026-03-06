@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Graph Entry Point
 
@@ -158,7 +158,7 @@ public struct GraphQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let fromFieldName: String
@@ -182,7 +182,7 @@ public struct GraphQueryExecutor: Sendable {
     ///   - edgeFieldName: Name of the edge/predicate field
     ///   - toFieldName: Name of the to/object field
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         fromFieldName: String,
@@ -297,19 +297,19 @@ public struct GraphQueryExecutor: Sendable {
     private func scanIndex(
         ordering: GraphIndexOrdering,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [GraphEdge] {
         var results: [GraphEdge] = []
         let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)
         let (beginKey, endKey) = buildScanRange(ordering: ordering, subspace: orderingSubspace)
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let edge = try parseKey(key, ordering: ordering, subspace: orderingSubspace) {
                 if matchesPatterns(edge) {
                     results.append(edge)
@@ -338,7 +338,7 @@ public struct GraphQueryExecutor: Sendable {
         return base.subspace(key)
     }
 
-    private func buildScanRange(ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: FDB.Bytes, end: FDB.Bytes) {
+    private func buildScanRange(ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: Bytes, end: Bytes) {
         var prefixElements: [any TupleElement] = []
         let elementOrder = ordering.elementOrder
         let patterns = [fromPattern, edgePattern, toPattern]
@@ -378,7 +378,7 @@ public struct GraphQueryExecutor: Sendable {
         return result
     }
 
-    private func parseKey(_ key: FDB.Bytes, ordering: GraphIndexOrdering, subspace: Subspace) throws -> GraphEdge? {
+    private func parseKey(_ key: Bytes, ordering: GraphIndexOrdering, subspace: Subspace) throws -> GraphEdge? {
         let tuple = try subspace.unpack(key)
 
         guard tuple.count >= 3 else {

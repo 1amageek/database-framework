@@ -6,7 +6,7 @@
 // Reference: W3C OWL 2 Profiles https://www.w3.org/TR/owl2-profiles/
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 /// Subspace key definitions for ontology storage
 ///
@@ -198,67 +198,67 @@ public struct OntologySubspace: Sendable {
     // MARK: - Key Builders
 
     /// Build key for class definition
-    public func classKey(_ ontologyIRI: String, classIRI: String) -> FDB.Bytes {
+    public func classKey(_ ontologyIRI: String, classIRI: String) -> Bytes {
         classes(ontologyIRI).pack(Tuple(classIRI))
     }
 
     /// Build key for property definition
-    public func propertyKey(_ ontologyIRI: String, propertyIRI: String) -> FDB.Bytes {
+    public func propertyKey(_ ontologyIRI: String, propertyIRI: String) -> Bytes {
         properties(ontologyIRI).pack(Tuple(propertyIRI))
     }
 
     /// Build key for axiom
-    public func axiomKey(_ ontologyIRI: String, axiomID: String) -> FDB.Bytes {
+    public func axiomKey(_ ontologyIRI: String, axiomID: String) -> Bytes {
         axioms(ontologyIRI).pack(Tuple(axiomID))
     }
 
     /// Build key for class hierarchy entry (superclass lookup)
-    public func classSuperOfKey(_ ontologyIRI: String, subClass: String, superClass: String) -> FDB.Bytes {
+    public func classSuperOfKey(_ ontologyIRI: String, subClass: String, superClass: String) -> Bytes {
         classSuperOf(ontologyIRI).pack(Tuple(subClass, superClass))
     }
 
     /// Build key for class hierarchy entry (subclass lookup)
-    public func classSubOfKey(_ ontologyIRI: String, superClass: String, subClass: String) -> FDB.Bytes {
+    public func classSubOfKey(_ ontologyIRI: String, superClass: String, subClass: String) -> Bytes {
         classSubOf(ontologyIRI).pack(Tuple(superClass, subClass))
     }
 
     /// Build key for property hierarchy entry (superproperty lookup)
-    public func propertySuperOfKey(_ ontologyIRI: String, subProp: String, superProp: String) -> FDB.Bytes {
+    public func propertySuperOfKey(_ ontologyIRI: String, subProp: String, superProp: String) -> Bytes {
         propertySuperOf(ontologyIRI).pack(Tuple(subProp, superProp))
     }
 
     /// Build key for property hierarchy entry (subproperty lookup)
-    public func propertySubOfKey(_ ontologyIRI: String, superProp: String, subProp: String) -> FDB.Bytes {
+    public func propertySubOfKey(_ ontologyIRI: String, superProp: String, subProp: String) -> Bytes {
         propertySubOf(ontologyIRI).pack(Tuple(superProp, subProp))
     }
 
     /// Build key for inverse property mapping
-    public func inverseKey(_ ontologyIRI: String, property: String) -> FDB.Bytes {
+    public func inverseKey(_ ontologyIRI: String, property: String) -> Bytes {
         inverse(ontologyIRI).pack(Tuple(property))
     }
 
     /// Build key for transitive property marker
-    public func transitiveKey(_ ontologyIRI: String, property: String) -> FDB.Bytes {
+    public func transitiveKey(_ ontologyIRI: String, property: String) -> Bytes {
         transitive(ontologyIRI).pack(Tuple(property))
     }
 
     /// Build key for property chain
-    public func chainKey(_ ontologyIRI: String, targetProperty: String, chainID: Int) -> FDB.Bytes {
+    public func chainKey(_ ontologyIRI: String, targetProperty: String, chainID: Int) -> Bytes {
         chains(ontologyIRI).pack(Tuple(targetProperty, chainID))
     }
 
     /// Build key for Union-Find parent pointer
-    public func sameAsParentKey(_ ontologyIRI: String, individual: String) -> FDB.Bytes {
+    public func sameAsParentKey(_ ontologyIRI: String, individual: String) -> Bytes {
         sameAsParent(ontologyIRI).pack(Tuple(individual))
     }
 
     /// Build key for Union-Find rank
-    public func sameAsRankKey(_ ontologyIRI: String, individual: String) -> FDB.Bytes {
+    public func sameAsRankKey(_ ontologyIRI: String, individual: String) -> Bytes {
         sameAsRank(ontologyIRI).pack(Tuple(individual))
     }
 
     /// Build key for Union-Find member entry
-    public func sameAsMemberKey(_ ontologyIRI: String, representative: String, member: String) -> FDB.Bytes {
+    public func sameAsMemberKey(_ ontologyIRI: String, representative: String, member: String) -> Bytes {
         sameAsMembers(ontologyIRI).pack(Tuple(representative, member))
     }
 }

@@ -9,7 +9,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Numeric Value Extraction
 
@@ -86,9 +86,9 @@ extension AtomicSumSupport {
     ///   - value: The Int64 value to add (can be negative for subtraction)
     ///   - transaction: The FDB transaction
     public func atomicAddInt64(
-        key: FDB.Bytes,
+        key: Bytes,
         value: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         let bytes = ByteConversion.int64ToBytes(value)
         transaction.atomicOp(key: key, param: bytes, mutationType: .add)
@@ -105,9 +105,9 @@ extension AtomicSumSupport {
     ///   - value: The Double value to add (can be negative for subtraction)
     ///   - transaction: The FDB transaction
     public func atomicAddDouble(
-        key: FDB.Bytes,
+        key: Bytes,
         value: Double,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         let bytes = ByteConversion.doubleToScaledBytes(value)
         transaction.atomicOp(key: key, param: bytes, mutationType: .add)
@@ -121,10 +121,10 @@ extension AtomicSumSupport {
     ///   - doubleValue: Double value (used if isFloatingPointValue is true)
     ///   - transaction: The FDB transaction
     public func atomicAdd(
-        key: FDB.Bytes,
+        key: Bytes,
         int64Value: Int64? = nil,
         doubleValue: Double? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         if isFloatingPointValue, let value = doubleValue {
             atomicAddDouble(key: key, value: value, transaction: transaction)
@@ -139,8 +139,8 @@ extension AtomicSumSupport {
     ///   - key: The count key
     ///   - transaction: The FDB transaction
     public func atomicIncrementCount(
-        key: FDB.Bytes,
-        transaction: any TransactionProtocol
+        key: Bytes,
+        transaction: any Transaction
     ) {
         atomicAddInt64(key: key, value: 1, transaction: transaction)
     }
@@ -151,8 +151,8 @@ extension AtomicSumSupport {
     ///   - key: The count key
     ///   - transaction: The FDB transaction
     public func atomicDecrementCount(
-        key: FDB.Bytes,
-        transaction: any TransactionProtocol
+        key: Bytes,
+        transaction: any Transaction
     ) {
         atomicAddInt64(key: key, value: -1, transaction: transaction)
     }
@@ -175,7 +175,7 @@ extension GroupingKeySupport {
     /// - Throws: If packing fails
     public func buildGroupingKey(
         _ values: [any TupleElement]
-    ) throws -> FDB.Bytes {
+    ) throws -> Bytes {
         try packAndValidate(Tuple(values))
     }
 }
@@ -194,7 +194,7 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: The Int64 value
-    public func readInt64Value(_ bytes: FDB.Bytes) -> Int64 {
+    public func readInt64Value(_ bytes: Bytes) -> Int64 {
         ByteConversion.bytesToInt64(bytes)
     }
 
@@ -202,7 +202,7 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: The Double value
-    public func readDoubleValue(_ bytes: FDB.Bytes) -> Double {
+    public func readDoubleValue(_ bytes: Bytes) -> Double {
         ByteConversion.scaledBytesToDouble(bytes)
     }
 
@@ -210,7 +210,7 @@ extension AggregationQuerySupport {
     ///
     /// - Parameter bytes: The stored bytes
     /// - Returns: Double representation of the value
-    public func readNumericValue(_ bytes: FDB.Bytes) -> Double {
+    public func readNumericValue(_ bytes: Bytes) -> Double {
         if isFloatingPointValue {
             return readDoubleValue(bytes)
         } else {
@@ -221,14 +221,14 @@ extension AggregationQuerySupport {
     /// Scan all entries in the index subspace
     ///
     /// - Parameter transaction: The transaction to use
-    /// - Returns: AsyncSequence of (key, value) pairs
+    /// - Returns: Array of (key, value) pairs
     public func scanAllEntries(
-        transaction: any TransactionProtocol
-    ) -> any AsyncSequence<(FDB.Bytes, FDB.Bytes), Error> {
+        transaction: any Transaction
+    ) async throws -> [(Bytes, Bytes)] {
         let range = subspace.range()
-        return transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        return try await transaction.collectRange(
+            from: KeySelector.firstGreaterOrEqual(range.begin),
+            to: KeySelector.firstGreaterOrEqual(range.end),
             snapshot: true
         )
     }
@@ -254,8 +254,8 @@ extension CountAggregationMaintainer {
 
     /// Increment count for a grouping key
     public func incrementCount(
-        key: FDB.Bytes,
-        transaction: any TransactionProtocol
+        key: Bytes,
+        transaction: any Transaction
     ) {
         let increment = ByteConversion.int64ToBytes(1)
         transaction.atomicOp(key: key, param: increment, mutationType: .add)
@@ -263,22 +263,22 @@ extension CountAggregationMaintainer {
 
     /// Decrement count for a grouping key
     public func decrementCount(
-        key: FDB.Bytes,
-        transaction: any TransactionProtocol
+        key: Bytes,
+        transaction: any Transaction
     ) {
         let decrement = ByteConversion.int64ToBytes(-1)
         transaction.atomicOp(key: key, param: decrement, mutationType: .add)
     }
 
     /// Read count value from bytes
-    public func readCount(_ bytes: FDB.Bytes) -> Int64 {
+    public func readCount(_ bytes: Bytes) -> Int64 {
         ByteConversion.bytesToInt64(bytes)
     }
 
     /// Get count for a specific grouping
     public func getCountValue(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         let key = try buildGroupingKey(groupingValues)
         guard let bytes = try await transaction.getValue(for: key) else {
@@ -294,19 +294,19 @@ extension CountAggregationMaintainer {
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func scanAllCounts(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         let range = subspace.range()
         var results: [(grouping: [any TupleElement], count: Int64)] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
         var scannedKeys = 0
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard subspace.contains(key) else { break }
 
             // Resource limit

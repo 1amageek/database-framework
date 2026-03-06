@@ -5,7 +5,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Protocol for IndexMaintainers that store index data in an FDB subspace
 ///
@@ -34,7 +34,7 @@ import FoundationDB
 ///     public let subspace: Subspace
 ///     public let idExpression: KeyExpression
 ///
-///     func buildKey(for item: Item, id: Tuple?) throws -> FDB.Bytes {
+///     func buildKey(for item: Item, id: Tuple?) throws -> Bytes {
 ///         let itemId = try resolveItemId(for: item, providedId: id)
 ///         // ... build key elements ...
 ///         return try packAndValidate(Tuple(elements))
@@ -104,7 +104,7 @@ extension SubspaceIndexMaintainer {
     /// - Returns: Packed and validated key bytes
     /// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
     @inlinable
-    public func packAndValidate(_ tuple: Tuple, in targetSubspace: Subspace? = nil) throws -> FDB.Bytes {
+    public func packAndValidate(_ tuple: Tuple, in targetSubspace: Subspace? = nil) throws -> Bytes {
         let key = (targetSubspace ?? subspace).pack(tuple)
         try validateKeySize(key)
         return key

@@ -15,7 +15,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -51,15 +52,15 @@ struct SHACLValidationTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([SHACLTestStatement.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
+        
         do {
-            try await directoryLayer.remove(path: ["test", "shacl", "statements"])
+            try await container.database.directoryService.remove(path: ["test", "shacl", "statements"])
         } catch {
             // Directory may not exist on first run
         }

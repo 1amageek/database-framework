@@ -8,7 +8,7 @@
 import Testing
 import Foundation
 import Graph
-import FoundationDB
+import StorageKit
 @testable import GraphIndex
 
 // MARK: - B-1: Nominal Merge Tests

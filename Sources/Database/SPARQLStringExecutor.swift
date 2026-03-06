@@ -10,7 +10,7 @@ import GraphIndex
 import DatabaseEngine
 import Core
 import Graph
-import FoundationDB
+import StorageKit
 
 // MARK: - FDBContext Extension
 
@@ -221,7 +221,7 @@ extension FDBContext {
 ///           `SPARQLQueryError` for execution errors
 public func executeSPARQLString(
     _ sparql: String,
-    database: any DatabaseProtocol,
+    database: any StorageEngine,
     indexSubspace: Subspace,
     strategy: GraphIndexStrategy,
     fromFieldName: String,

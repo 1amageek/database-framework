@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct ScalarTestUser: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: ScalarIndexMaintainer<ScalarTestUser>
 
-    init(indexName: String = "ScalarTestUser_email") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "ScalarTestUser_email") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "scalar", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -122,7 +123,11 @@ private struct TestContext {
         try await database.withTransaction { transaction -> [[UInt8]] in
             let (begin, end) = indexSubspace.range()
             var keys: [[UInt8]] = []
-            for try await (key, _) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, _) in try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
+                snapshot: true
+            ) {
                 keys.append(key)
             }
             return keys
@@ -140,7 +145,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Insert creates index entry")
     func testInsertCreatesIndexEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
@@ -161,7 +166,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Insert multiple creates multiple entries")
     func testInsertMultipleCreatesMultipleEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let users = [
             ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo"),
@@ -190,7 +195,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Update with same value does not change entry count")
     func testUpdateSameValueNoChange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
@@ -222,7 +227,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Update with different value replaces entry")
     func testUpdateDifferentValueReplacesEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
@@ -260,7 +265,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Delete removes index entry")
     func testDeleteRemovesIndexEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
@@ -294,7 +299,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Delete specific user among multiple")
     func testDeleteSpecificUser() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user1 = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
         let user2 = ScalarTestUser(id: "user2", email: "bob@example.com", age: 30, city: "Osaka")
@@ -328,7 +333,7 @@ struct ScalarIndexBehaviorTests {
     @Test("ScanItem creates index entry")
     func testScanItemCreatesEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = ScalarTestUser(id: "user1", email: "alice@example.com", age: 25, city: "Tokyo")
 
@@ -351,7 +356,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Index entries are ordered by field value")
     func testIndexEntriesOrdered() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert in random order
         let users = [
@@ -388,7 +393,7 @@ struct ScalarIndexBehaviorTests {
     @Test("Composite index with multiple fields")
     func testCompositeIndex() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "scalar", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("ScalarTestUser_city_age")

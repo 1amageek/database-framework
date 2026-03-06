@@ -8,7 +8,8 @@ import Relationship
 @testable import DatabaseEngine
 @testable import ScalarIndex
 @testable import RelationshipIndex
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 // MARK: - Test Models
@@ -117,7 +118,7 @@ struct RelationshipIndexPerformanceTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema([PerfCustomer.self, PerfOrder.self], version: Schema.Version(1, 0, 0))
 

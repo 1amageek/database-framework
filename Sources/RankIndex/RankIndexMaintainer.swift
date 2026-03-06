@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for RANK indexes with compile-time type safety
 ///
@@ -81,7 +81,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old score entry
         if let oldItem = oldItem {
@@ -109,7 +109,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         if let scoreKey = try buildScoreKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
@@ -124,7 +124,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         if let key = try buildScoreKey(for: item, id: id) {
             return [key]
         }
@@ -153,7 +153,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// - Returns: Array of (score, primaryKey) tuples, sorted by score descending
     public func getTopK(
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
@@ -166,14 +166,14 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
             comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
         )
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
         var scannedKeys = 0
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
 
             // Resource limit: prevent DoS on large indexes
@@ -226,7 +226,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// - Returns: Rank (0-based, 0 = highest)
     public func getRank(
         score: Score,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         // Count entries with score strictly greater than target.
         // Key structure: [scoresSubspace][score][pk]
@@ -243,14 +243,14 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         // Build prefix for this score, then append 0xFF to get past all entries with this score
         let scorePrefixEnd = scoresSubspace.pack(Tuple(scoreElement)) + [0xFF]
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(scorePrefixEnd),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(scorePrefixEnd),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         var count: Int64 = 0
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
             count += 1
         }
@@ -267,7 +267,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// - Parameter transaction: FDB transaction
     /// - Returns: Total number of entries
     public func getCount(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         guard let bytes = try await transaction.getValue(for: countKey, snapshot: true) else {
             return 0
@@ -290,7 +290,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     /// - Returns: Score at the given percentile, or nil if empty
     public func getPercentile(
         _ percentile: Double,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Score? {
         guard percentile >= 0.0 && percentile <= 1.0 else {
             throw RankIndexError.invalidScore("Percentile must be between 0.0 and 1.0")

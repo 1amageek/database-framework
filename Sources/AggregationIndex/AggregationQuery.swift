@@ -4,7 +4,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 
 // MARK: - Aggregation Query Builder
 
@@ -672,7 +672,7 @@ public struct AggregationQueryBuilder<T: Persistable>: Sendable {
     private func queryFromMaintainer(
         maintainer: any IndexMaintainer<T>,
         aggregation: AggregationSpec,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], value: FieldValue?)] {
 
         switch aggregation.type {

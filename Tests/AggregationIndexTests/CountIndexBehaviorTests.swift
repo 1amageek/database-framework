@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct CountTestUser: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: CountIndexMaintainer<CountTestUser>
 
-    init(indexName: String = "CountTestUser_city") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "CountTestUser_city") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "count", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -133,7 +134,7 @@ struct CountIndexBehaviorTests {
     @Test("Insert increments count")
     func testInsertIncrementsCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
 
@@ -154,7 +155,7 @@ struct CountIndexBehaviorTests {
     @Test("Multiple inserts to same group increment count")
     func testMultipleInsertsIncrement() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let users = [
             CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
@@ -181,7 +182,7 @@ struct CountIndexBehaviorTests {
     @Test("Inserts to different groups are independent")
     func testDifferentGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let users = [
             CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
@@ -216,7 +217,7 @@ struct CountIndexBehaviorTests {
     @Test("Delete decrements count")
     func testDeleteDecrementsCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
 
@@ -250,7 +251,7 @@ struct CountIndexBehaviorTests {
     @Test("Delete one from multiple decrements correctly")
     func testDeleteOneFromMultiple() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user1 = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
         let user2 = CountTestUser(id: "user2", city: "Tokyo", department: "Sales")
@@ -286,7 +287,7 @@ struct CountIndexBehaviorTests {
     @Test("Update same group does not change count")
     func testUpdateSameGroupNoChange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
 
@@ -318,7 +319,7 @@ struct CountIndexBehaviorTests {
     @Test("Update different group moves count")
     func testUpdateDifferentGroupMovesCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let user = CountTestUser(id: "user1", city: "Tokyo", department: "Engineering")
 
@@ -359,7 +360,7 @@ struct CountIndexBehaviorTests {
     @Test("ScanItem increments count")
     func testScanItemIncrementsCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let users = [
             CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
@@ -391,7 +392,7 @@ struct CountIndexBehaviorTests {
     @Test("GetAllCounts returns all groups")
     func testGetAllCountsReturnsAllGroups() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let users = [
             CountTestUser(id: "user1", city: "Tokyo", department: "Engineering"),
@@ -423,7 +424,7 @@ struct CountIndexBehaviorTests {
     @Test("GetCount for non-existent group returns zero")
     func testGetCountNonExistentGroupReturnsZero() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let count = try await ctx.getCount(for: "NonExistentCity")
         #expect(count == 0, "Count for non-existent group should be 0")
@@ -436,7 +437,7 @@ struct CountIndexBehaviorTests {
     @Test("Composite grouping with multiple fields")
     func testCompositeGrouping() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "count", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("CountTestUser_city_department")

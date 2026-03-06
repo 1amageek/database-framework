@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Protocol for index-specific planning logic
 public protocol IndexPlanningStrategy: Sendable {

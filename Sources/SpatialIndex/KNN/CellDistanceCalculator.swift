@@ -6,7 +6,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 import Spatial
 
 /// Calculator for cell-to-point distances

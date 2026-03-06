@@ -7,7 +7,7 @@
 // - Specialized constraint types for text/spatial/vector
 
 import Core
-import FoundationDB
+import StorageKit
 
 // MARK: - ScalarConstraintType
 

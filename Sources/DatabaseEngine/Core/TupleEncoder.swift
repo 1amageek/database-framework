@@ -4,7 +4,7 @@
 // Single responsibility: Convert Swift types to TupleElement for index operations.
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - TupleEncoder
 

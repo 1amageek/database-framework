@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -161,7 +162,7 @@ struct GraphTestFollow: Persistable {
 // MARK: - Test Context
 
 private struct GraphTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace
@@ -169,8 +170,8 @@ private struct GraphTestContext {
     let maintainer: GraphIndexMaintainer<GraphTestFollow>
     let strategy: GraphIndexStrategy
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphTestFollow_graph") throws {
-        self.database = try FDBClient.openDatabase()
+    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphTestFollow_graph") async throws {
+        self.database = try await FDBStorageEngine.open()
         self.strategy = strategy
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph_fusion", String(testId)).pack())
@@ -553,7 +554,7 @@ struct GraphFusionIntegrationTests {
     @Test("Graph index maintainer initialization")
     func testGraphIndexMaintainerInitialization() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try GraphTestContext()
+            let context = try await GraphTestContext()
             defer { Task { try? await context.cleanup() } }
 
             // Verify maintainer is properly configured with the expected strategy
@@ -564,7 +565,7 @@ struct GraphFusionIntegrationTests {
     @Test("Insert and index follow relationship")
     func testInsertAndIndexFollow() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try GraphTestContext()
+            let context = try await GraphTestContext()
             defer { Task { try? await context.cleanup() } }
 
             let followId = uniqueID("follow")
@@ -590,7 +591,7 @@ struct GraphFusionIntegrationTests {
     @Test("Multiple follow relationships")
     func testMultipleFollowRelationships() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try GraphTestContext()
+            let context = try await GraphTestContext()
             defer { Task { try? await context.cleanup() } }
 
             let follows = [
@@ -617,7 +618,7 @@ struct GraphFusionIntegrationTests {
     @Test("Different edge types")
     func testDifferentEdgeTypes() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try GraphTestContext()
+            let context = try await GraphTestContext()
             defer { Task { try? await context.cleanup() } }
 
             let follows = [

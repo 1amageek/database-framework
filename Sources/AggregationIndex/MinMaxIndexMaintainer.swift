@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Subspace Layers
 
@@ -78,7 +78,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // 1. Layer 1: Update individual values
         if let oldItem = oldItem {
@@ -123,7 +123,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if value field is nil, skip indexing
         do {
@@ -153,7 +153,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         do {
             return [try buildIndividualKey(for: item, id: id)]
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -168,7 +168,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMin(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -201,19 +201,19 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// - `min`: Minimum value for the group
     /// - `itemId`: Primary key of the item with minimum value
     public func getAllMins(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], min: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], min: Value, itemId: Tuple)] = []
 
         // Layer 2: Scan only aggregated values (O(G))
         let range = layers.aggregated.range()
-        let kvs = transaction.getRange(
-            begin: range.begin,
-            end: range.end,
+        let kvs = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, value) in kvs {
+        for (key, value) in kvs {
             // Extract grouping values from key
             let groupingTuple = try layers.aggregated.unpack(key)
             let groupingElements = (0..<groupingTuple.count).compactMap { groupingTuple[$0] }
@@ -244,7 +244,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     // MARK: - Private Methods
 
     /// Build Layer 1 key (individual value storage)
-    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> FDB.Bytes {
+    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
         let indexedValues = try evaluateIndexFields(from: item)
         let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
 
@@ -276,7 +276,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// 3. If not found (group is empty), clear Layer 2 entry
     private func updateAggregateForGroup(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let groupingTuple = Tuple(groupingValues)
         let groupingBytes = groupingTuple.pack()
@@ -286,7 +286,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             prefix: layers.individual.prefix + groupingBytes
         )
         let range = individualGroupSpace.range()
-        let selector = FDB.KeySelector.firstGreaterOrEqual(range.begin)
+        let selector = KeySelector.firstGreaterOrEqual(range.begin)
 
         guard let minKey = try await transaction.getKey(selector: selector, snapshot: true),
               individualGroupSpace.contains(minKey) else {
@@ -378,7 +378,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // 1. Layer 1: Update individual values
         if let oldItem = oldItem {
@@ -423,7 +423,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if value field is nil, skip indexing
         do {
@@ -453,7 +453,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         do {
             return [try buildIndividualKey(for: item, id: id)]
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -468,7 +468,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// **Performance**: O(1) - Direct read from Layer 2
     public func getMax(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Value {
         let expectedGroupingCount = index.rootExpression.columnCount - 1
         guard groupingValues.count == expectedGroupingCount else {
@@ -501,19 +501,19 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// - `max`: Maximum value for the group
     /// - `itemId`: Primary key of the item with maximum value
     public func getAllMaxs(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], max: Value, itemId: Tuple)] {
         var results: [(grouping: [any TupleElement], max: Value, itemId: Tuple)] = []
 
         // Layer 2: Scan only aggregated values (O(G))
         let range = layers.aggregated.range()
-        let kvs = try await transaction.getRange(
-            begin: range.begin,
-            end: range.end,
+        let kvs = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, value) in kvs {
+        for (key, value) in kvs {
             // Extract grouping values from key
             let groupingTuple = try layers.aggregated.unpack(key)
             let groupingElements = (0..<groupingTuple.count).compactMap { groupingTuple[$0] }
@@ -544,7 +544,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     // MARK: - Private Methods
 
     /// Build Layer 1 key (individual value storage)
-    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> FDB.Bytes {
+    private func buildIndividualKey(for item: Item, id: Tuple? = nil) throws -> Bytes {
         let indexedValues = try evaluateIndexFields(from: item)
         let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
 
@@ -576,7 +576,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
     /// 3. If not found (group is empty), clear Layer 2 entry
     private func updateAggregateForGroup(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let groupingTuple = Tuple(groupingValues)
         let groupingBytes = groupingTuple.pack()
@@ -586,7 +586,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             prefix: layers.individual.prefix + groupingBytes
         )
         let range = individualGroupSpace.range()
-        let selector = FDB.KeySelector.lastLessThan(range.end)
+        let selector = KeySelector.lastLessThan(range.end)
 
         guard let maxKey = try await transaction.getKey(selector: selector, snapshot: true),
               individualGroupSpace.contains(maxKey) else {

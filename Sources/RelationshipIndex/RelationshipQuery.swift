@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Relationship
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - FDBContext Get Methods
 
@@ -301,7 +301,7 @@ extension FDBContext {
     /// Internal implementation of delete with relationship rules
     private func deleteEnforcingRelationshipRulesInternal(
         _ model: any Persistable,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         handler: ModelPersistenceHandler
     ) async throws {
         // Create relationship maintainer with container for dynamic directory resolution
@@ -313,7 +313,7 @@ extension FDBContext {
         )
 
         // Recursive deleter for cascade
-        let recursiveDeleter: @Sendable (any Persistable, any TransactionProtocol) async throws -> Void = { [self] item, tx in
+        let recursiveDeleter: @Sendable (any Persistable, any Transaction) async throws -> Void = { [self] item, tx in
             try await self.deleteEnforcingRelationshipRulesInternal(item, transaction: tx, handler: handler)
         }
 

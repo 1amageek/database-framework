@@ -5,7 +5,7 @@ import Foundation
 import Core
 import Relationship
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Enforces delete rules for relationships
 ///
@@ -84,9 +84,9 @@ public final class RelationshipMaintainer: Sendable {
     ///   - recursiveDeleter: Optional closure for recursive deletes (cascade)
     public func enforceDeleteRules(
         for item: any Persistable,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         handler: ModelPersistenceHandler,
-        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)? = nil
+        recursiveDeleter: (@Sendable (any Persistable, any Transaction) async throws -> Void)? = nil
     ) async throws {
         // Start with empty visited set for cycle detection
         var visited = Set<String>()
@@ -118,9 +118,9 @@ public final class RelationshipMaintainer: Sendable {
     ///   - visited: Set of visited item keys (type:id) for cycle detection
     public func enforceDeleteRules(
         for item: any Persistable,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         handler: ModelPersistenceHandler,
-        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)?,
+        recursiveDeleter: (@Sendable (any Persistable, any Transaction) async throws -> Void)?,
         visited: inout Set<String>
     ) async throws {
         let itemType = type(of: item)
@@ -186,9 +186,9 @@ public final class RelationshipMaintainer: Sendable {
         owningTypeName: String,
         owningType: any Persistable.Type,
         relatedItemId: Tuple,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         handler: ModelPersistenceHandler,
-        recursiveDeleter: (@Sendable (any Persistable, any TransactionProtocol) async throws -> Void)?,
+        recursiveDeleter: (@Sendable (any Persistable, any Transaction) async throws -> Void)?,
         visited: inout Set<String>
     ) async throws {
         // Resolve the owning type's directory (not the deleted item's directory)
@@ -200,10 +200,10 @@ public final class RelationshipMaintainer: Sendable {
         let prefixSubspace = relIndexSubspace.subspace(relatedItemId)
 
         let (begin, end) = prefixSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: false)
 
         var affectedItemIds: [Tuple] = []
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             if let ownerId = extractOwnerIdFromRelationshipKey(key, prefixSubspace: prefixSubspace) {
                 affectedItemIds.append(ownerId)
             }
@@ -294,7 +294,7 @@ public final class RelationshipMaintainer: Sendable {
         targetId: Tuple,
         owningType: any Persistable.Type,
         descriptor: RelationshipDescriptor,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         // Resolve the owning type's directory
         let owningSubspace = try await container.resolveDirectory(for: owningType)
@@ -305,10 +305,10 @@ public final class RelationshipMaintainer: Sendable {
         let prefixSubspace = relIndexSubspace.subspace(targetId)
 
         let (begin, end) = prefixSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: false)
 
         var itemIds: [Tuple] = []
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             if let ownerId = extractOwnerIdFromRelationshipKey(key, prefixSubspace: prefixSubspace) {
                 itemIds.append(ownerId)
             }

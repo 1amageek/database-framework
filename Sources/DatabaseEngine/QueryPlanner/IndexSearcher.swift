@@ -2,7 +2,7 @@
 // QueryPlanner - Index search abstraction
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Accelerate
 

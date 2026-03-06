@@ -5,7 +5,7 @@
 // Efficiently fetches multiple records by batching primary key lookups.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 
@@ -149,7 +149,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// - Returns: The fetched items (preserves order where found)
     public func fetch(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
@@ -205,7 +205,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// - Returns: AsyncStream of fetched items
     public func stream<S: AsyncSequence>(
         primaryKeys: S,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncStream<Item> where S.Element == Tuple, S: Sendable {
         AsyncStream { continuation in
             Task {
@@ -264,8 +264,8 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     public func streamFromIndex<S: AsyncSequence>(
         indexEntries: S,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
-    ) -> AsyncStream<Item> where S.Element == (key: FDB.Bytes, value: FDB.Bytes), S: Sendable {
+        transaction: any Transaction
+    ) -> AsyncStream<Item> where S.Element == (key: Bytes, value: Bytes), S: Sendable {
         AsyncStream { continuation in
             Task {
                 var batch: [Tuple] = []
@@ -319,7 +319,7 @@ public struct BatchFetcher<Item: Persistable>: Sendable {
     /// Extract primary key from an index key
     ///
     /// Assumes the primary key is the last element of the index key tuple.
-    private func extractPrimaryKey(from key: FDB.Bytes, indexSubspace: Subspace) throws -> Tuple? {
+    private func extractPrimaryKey(from key: Bytes, indexSubspace: Subspace) throws -> Tuple? {
         let tuple = try indexSubspace.unpack(key)
         guard tuple.count > 0 else { return nil }
 
@@ -368,7 +368,7 @@ extension BatchFetcher {
     /// - Returns: Detailed fetch results
     public func fetchWithResults(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async -> BatchFetchResult<Item> {
         guard !primaryKeys.isEmpty else {
             return BatchFetchResult(items: [], notFound: [], failed: [])
@@ -469,7 +469,7 @@ public final class PrefetchingBatchFetcher<Item: Persistable>: @unchecked Sendab
     /// - Returns: The fetched items
     public func fetchOrUsePrefetched(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Item] {
         // Check if we have a matching prefetch
         let (task, keys) = state.withLock { state in

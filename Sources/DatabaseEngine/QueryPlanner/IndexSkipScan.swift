@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Index Skip Scan optimization
 ///

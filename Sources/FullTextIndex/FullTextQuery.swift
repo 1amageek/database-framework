@@ -4,7 +4,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 import FullText
 
 // MARK: - Full-Text Query Builder
@@ -299,7 +299,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchPhrase(
         indexName: String,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
               let kind = indexDescriptor.kind as? FullTextIndexKind<T> else {
@@ -333,7 +333,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         terms: [String],
         matchMode: TextMatchMode,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
 
@@ -372,7 +372,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTermsAND(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -414,7 +414,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTermsOR(
         _ terms: [String],
         termsSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
@@ -440,20 +440,20 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchTerm(
         _ term: String,
         termsSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
         let termSubspace = termsSubspace.subspace(term)
         let (begin, end) = termSubspace.range()
 
         var results: [[any TupleElement]] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
             guard let keyTuple = try? termSubspace.unpack(key) else {

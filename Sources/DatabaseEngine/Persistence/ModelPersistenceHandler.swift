@@ -1,7 +1,7 @@
 // ModelPersistenceHandler.swift
 // DatabaseEngine - Protocol for model persistence operations within transactions
 
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for handling model persistence operations within a transaction
@@ -20,7 +20,7 @@ import Core
 /// // In RelationshipIndex module
 /// public func enforceDeleteRules(
 ///     for model: any Persistable,
-///     transaction: any TransactionProtocol,
+///     transaction: any Transaction,
 ///     handler: ModelPersistenceHandler
 /// ) async throws {
 ///     try await handler.delete(relatedModel, transaction: transaction)
@@ -34,7 +34,7 @@ public protocol ModelPersistenceHandler: Sendable {
     ///   - transaction: The existing transaction context
     func save(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws
 
     /// Delete a model with full index cleanup within an existing transaction
@@ -44,7 +44,7 @@ public protocol ModelPersistenceHandler: Sendable {
     ///   - transaction: The existing transaction context
     func delete(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws
 
     /// Load a model by type name and ID within an existing transaction
@@ -57,6 +57,6 @@ public protocol ModelPersistenceHandler: Sendable {
     func load(
         _ typeName: String,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (any Persistable)?
 }

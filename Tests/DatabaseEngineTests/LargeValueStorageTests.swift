@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -69,7 +70,7 @@ struct LargeValueStorageTests {
 
     private func createContainer() async throws -> FDBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([LargeDataModel.self])
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }

@@ -5,7 +5,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import QueryIR
 
 // MARK: - GraphTableRow

@@ -5,7 +5,7 @@
 // Provides comprehensive metrics for transaction operations.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Synchronization
 
 // MARK: - Transaction Metrics
@@ -111,7 +111,7 @@ public struct TransactionMetrics: Sendable, CustomStringConvertible {
 
 /// Transaction wrapper that collects detailed metrics
 ///
-/// Wraps a `TransactionProtocol` and intercepts all operations to track:
+/// Wraps a `Transaction` and intercepts all operations to track:
 /// - Read/write counts and bytes
 /// - Range scan statistics
 /// - Commit/rollback status
@@ -133,7 +133,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Properties
 
     /// The underlying transaction
-    private let transaction: any TransactionProtocol
+    private let transaction: any Transaction
 
     /// Collected metrics (thread-safe access)
     private let state: Mutex<TransactionMetrics>
@@ -155,7 +155,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     /// - Parameters:
     ///   - transaction: The underlying transaction to wrap
     ///   - timer: Optional StoreTimer to export metrics on commit
-    public init(wrapping transaction: any TransactionProtocol, timer: StoreTimer? = nil) {
+    public init(wrapping transaction: any Transaction, timer: StoreTimer? = nil) {
         self.transaction = transaction
         self.timer = timer
         self.state = Mutex(TransactionMetrics())
@@ -170,7 +170,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Read Operations
 
     /// Get a value and record metrics
-    public func getValue(for key: FDB.Bytes, snapshot: Bool = false) async throws -> FDB.Bytes? {
+    public func getValue(for key: Bytes, snapshot: Bool = false) async throws -> Bytes? {
         let startTime = DispatchTime.now()
         let result = try await transaction.getValue(for: key, snapshot: snapshot)
         let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -186,25 +186,38 @@ public final class InstrumentedTransaction: @unchecked Sendable {
         return result
     }
 
-    /// Get a range of values and record metrics
+    /// Collect a range of values and record metrics
     ///
-    /// Uses the underlying transaction's getRange method.
-    /// Call `recordRangeScanResults` after consuming the sequence to record metrics.
-    public func getRange(
-        beginSelector: FDB.KeySelector,
-        endSelector: FDB.KeySelector,
-        snapshot: Bool = false
-    ) -> FDB.AsyncKVSequence {
+    /// Uses the underlying transaction's collectRange method.
+    public func collectRange(
+        from begin: KeySelector,
+        to end: KeySelector,
+        limit: Int = 0,
+        reverse: Bool = false,
+        snapshot: Bool = false,
+        streamingMode: StreamingMode = .wantAll
+    ) async throws -> [(Bytes, Bytes)] {
         state.withLock { state in
             state.rangeScanCount += 1
         }
 
-        // Return wrapped sequence that tracks results
-        return transaction.getRange(
-            beginSelector: beginSelector,
-            endSelector: endSelector,
-            snapshot: snapshot
+        let results = try await transaction.collectRange(
+            from: begin, to: end,
+            limit: limit, reverse: reverse,
+            snapshot: snapshot, streamingMode: streamingMode
         )
+
+        // Record metrics
+        let totalBytes = results.reduce(0) { $0 + $1.0.count + $1.1.count }
+        state.withLock { state in
+            state.scannedKeyValueCount += results.count
+            state.bytesRead += totalBytes
+            if results.isEmpty {
+                state.emptyScanCount += 1
+            }
+        }
+
+        return results
     }
 
     /// Record range scan results
@@ -221,7 +234,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Write Operations
 
     /// Set a value (metrics recorded as pending until commit)
-    public func setValue(_ value: FDB.Bytes, for key: FDB.Bytes) {
+    public func setValue(_ value: Bytes, for key: Bytes) {
         transaction.setValue(value, for: key)
 
         // Record as pending (only finalized on commit)
@@ -232,7 +245,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Clear a key (metrics recorded as pending until commit)
-    public func clear(key: FDB.Bytes) {
+    public func clear(key: Bytes) {
         transaction.clear(key: key)
 
         pendingWrites.withLock { pending in
@@ -242,7 +255,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Clear a range (metrics recorded as pending until commit)
-    public func clearRange(beginKey: FDB.Bytes, endKey: FDB.Bytes) {
+    public func clearRange(beginKey: Bytes, endKey: Bytes) {
         transaction.clearRange(beginKey: beginKey, endKey: endKey)
 
         pendingWrites.withLock { pending in
@@ -252,7 +265,7 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     }
 
     /// Perform an atomic operation
-    public func atomicOp(key: FDB.Bytes, param: FDB.Bytes, mutationType: FDB.MutationType) {
+    public func atomicOp(key: Bytes, param: Bytes, mutationType: MutationType) {
         transaction.atomicOp(key: key, param: param, mutationType: mutationType)
 
         pendingWrites.withLock { pending in
@@ -264,35 +277,28 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Transaction Control
 
     /// Commit the transaction and finalize metrics
-    @discardableResult
-    public func commit() async throws -> Bool {
+    public func commit() async throws {
         let startTime = DispatchTime.now()
 
         do {
-            let result = try await transaction.commit()
+            try await transaction.commit()
             let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
 
             // Finalize metrics on successful commit
             let pending = pendingWrites.withLock { $0 }
 
             state.withLock { state in
-                state.committed = result
+                state.committed = true
                 state.endTime = Date()
                 state.commitNanos = elapsed
-
-                // Only count writes on successful commit
-                if result {
-                    state.writeCount += pending.count
-                    state.bytesWritten += pending.bytes
-                }
+                state.writeCount += pending.count
+                state.bytesWritten += pending.bytes
             }
 
             // Export to timer
             if let timer = timer {
                 metrics.export(to: timer)
             }
-
-            return result
         } catch {
             state.withLock { state in
                 state.rolledBack = true
@@ -349,31 +355,31 @@ public final class InstrumentedTransaction: @unchecked Sendable {
     // MARK: - Options
 
     /// Set transaction option
-    public func setOption(forOption option: FDB.TransactionOption) throws {
+    public func setOption(forOption option: TransactionOption) throws {
         try transaction.setOption(forOption: option)
     }
 
     /// Set transaction option with integer value
-    public func setOption(to value: Int, forOption option: FDB.TransactionOption) throws {
+    public func setOption(to value: Int, forOption option: TransactionOption) throws {
         try transaction.setOption(to: value, forOption: option)
     }
 
     /// Set transaction option with string value
-    public func setOption(to value: String, forOption option: FDB.TransactionOption) throws {
+    public func setOption(to value: String, forOption option: TransactionOption) throws {
         try transaction.setOption(to: value, forOption: option)
     }
 
     // MARK: - Access to Underlying Transaction
 
     /// Get the underlying transaction for operations not yet wrapped
-    public var underlying: any TransactionProtocol {
+    public var underlying: any Transaction {
         transaction
     }
 }
 
-// MARK: - DatabaseProtocol Extension
+// MARK: - StorageEngine Extension
 
-extension DatabaseProtocol {
+extension StorageEngine {
     /// Execute a transaction with instrumentation
     ///
     /// Returns both the operation result and collected metrics.
@@ -413,15 +419,12 @@ extension DatabaseProtocol {
 
             do {
                 let result = try await operation(instrumented)
-                let committed = try await instrumented.commit()
-
-                if committed {
-                    return (result, instrumented.metrics)
-                }
+                try await instrumented.commit()
+                return (result, instrumented.metrics)
             } catch {
                 instrumented.cancel()
 
-                if let fdbError = error as? FDBError, fdbError.isRetryable {
+                if let storageError = error as? StorageError, storageError.isRetryable {
                     if attempt < maxRetries - 1 {
                         // Exponential backoff: initialDelay * 2^attempt, capped by maxDelay
                         let exponent = min(attempt, 10)
@@ -439,7 +442,7 @@ extension DatabaseProtocol {
             }
         }
 
-        throw FDBError(code: 1020)  // transaction_too_old
+        throw StorageError.transactionTooOld
     }
 }
 

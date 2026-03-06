@@ -35,7 +35,7 @@ import Core
 ///         self.loadIntoMemory = configuration.loadIntoMemory
 ///     }
 ///
-///     func updateIndex(oldItem: Item?, newItem: Item?, transaction: any TransactionProtocol) async throws {
+///     func updateIndex(oldItem: Item?, newItem: Item?, transaction: any Transaction) async throws {
 ///         // Use dimensions, hnswParameters in index maintenance
 ///     }
 /// }
@@ -75,7 +75,7 @@ public protocol IndexConfigurationApplicable {
 ///         }
 ///     }
 ///
-///     func updateIndex(oldItem: Item?, newItem: Item?, transaction: any TransactionProtocol) async throws {
+///     func updateIndex(oldItem: Item?, newItem: Item?, transaction: any Transaction) async throws {
 ///         // Index content for each configured language
 ///         for (language, config) in languageConfigs {
 ///             let tokenizer = makeTokenizer(for: config)

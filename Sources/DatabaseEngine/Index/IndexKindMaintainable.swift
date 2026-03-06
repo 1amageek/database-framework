@@ -4,7 +4,7 @@
 // IndexMaintainer implementors are responsible for adding IndexKindMaintainable
 // conformance to their corresponding IndexKind.
 
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol that bridges IndexKind (metadata) with IndexMaintainer (runtime)

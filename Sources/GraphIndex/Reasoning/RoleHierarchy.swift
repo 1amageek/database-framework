@@ -370,12 +370,28 @@ public struct RoleHierarchy: Sendable {
         return subRoleClosure[role] ?? []
     }
 
-    /// Get all sub-roles (non-mutating, requires prior `ensureClosuresComputed()`)
+    /// Get all sub-roles (transitive closure, non-mutating)
     ///
-    /// Precondition: `ensureClosuresComputed()` must have been called.
-    /// Returns empty set if closures have not been computed.
+    /// Uses pre-computed cache when available (`ensureClosuresComputed()` was called).
+    /// Otherwise computes the transitive closure on-the-fly from `roles`.
     public func subRolesPrecomputed(of role: String) -> Set<String> {
-        subRoleClosure[role] ?? []
+        if closuresComputed {
+            return subRoleClosure[role] ?? []
+        }
+        var visited = Set<String>()
+        return computeSubRolesOnDemand(for: role, visited: &visited)
+    }
+
+    /// Compute transitive sub-role closure on-the-fly (non-mutating, uncached)
+    private func computeSubRolesOnDemand(for role: String, visited: inout Set<String>) -> Set<String> {
+        guard let info = roles[role] else { return [] }
+        var result = Set<String>()
+        for subRole in info.subRoles {
+            guard visited.insert(subRole).inserted else { continue }
+            result.insert(subRole)
+            result.formUnion(computeSubRolesOnDemand(for: subRole, visited: &visited))
+        }
+        return result
     }
 
     /// Get inverse role (if exists)

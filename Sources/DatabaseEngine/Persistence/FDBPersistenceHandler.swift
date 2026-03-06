@@ -2,7 +2,7 @@
 // DatabaseEngine - ModelPersistenceHandler implementation using FDBContext
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// FDBContext-based implementation of ModelPersistenceHandler
@@ -28,7 +28,7 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
 
     public func save(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let modelType = type(of: model)
 
@@ -50,7 +50,7 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
 
     public func delete(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let modelType = type(of: model)
 
@@ -73,7 +73,7 @@ public struct FDBPersistenceHandler: ModelPersistenceHandler {
     public func load(
         _ typeName: String,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (any Persistable)? {
         guard let entity = context.container.schema.entities.first(where: { $0.name == typeName }) else {
             return nil

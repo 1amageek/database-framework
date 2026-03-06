@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct MinTestProduct: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: MinIndexMaintainer<MinTestProduct, Int64>
 
-    init(indexName: String = "MinTestProduct_category_price") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "MinTestProduct_category_price") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "min", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -142,7 +143,7 @@ struct MinIndexBehaviorTests {
     @Test("Insert adds to sorted set")
     func testInsertAddsToSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
@@ -164,7 +165,7 @@ struct MinIndexBehaviorTests {
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
@@ -194,7 +195,7 @@ struct MinIndexBehaviorTests {
     @Test("Delete removes from sorted set")
     func testDeleteRemovesFromSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
@@ -231,7 +232,7 @@ struct MinIndexBehaviorTests {
     @Test("Update changes position in sorted set")
     func testUpdateChangesPosition() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999)
 
@@ -269,7 +270,7 @@ struct MinIndexBehaviorTests {
     @Test("getMin returns minimum value")
     func testGetMinReturnsMinimum() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
@@ -296,7 +297,7 @@ struct MinIndexBehaviorTests {
     @Test("Multiple groups are independent")
     func testMultipleGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
@@ -327,7 +328,7 @@ struct MinIndexBehaviorTests {
     @Test("getMin for non-existent group throws error")
     func testGetMinNonExistentGroupThrowsError() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         await #expect(throws: IndexError.self) {
             _ = try await ctx.getMin(for: "NonExistent")
@@ -341,7 +342,7 @@ struct MinIndexBehaviorTests {
     @Test("ScanItem adds to sorted set")
     func testScanItemAddsToSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             MinTestProduct(id: "p1", category: "Electronics", brand: "Apple", price: 999),
@@ -373,7 +374,7 @@ struct MinIndexBehaviorTests {
     @Test("Min updates correctly when minimum item is deleted")
     func testMinUpdatesOnMinimumDelete() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             MinTestProduct(id: "p1", category: "Electronics", brand: "Expensive", price: 999),

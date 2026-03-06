@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Permuted
 
 // Re-export PermutedIndexModel types for convenience

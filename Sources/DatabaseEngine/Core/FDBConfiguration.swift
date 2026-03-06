@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// FDB configuration

@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Rank
 import TestSupport
@@ -70,14 +71,14 @@ struct TestPlayer: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: RankIndexMaintainer<TestPlayer, Int64>
     let kind: RankIndexKind<TestPlayer, Int64>
 
-    init(indexName: String = "TestPlayer_score") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "TestPlayer_score") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -137,7 +138,7 @@ struct RankIndexBehaviorTests {
     @Test("Insert adds to ranking")
     func testInsertAddsToRanking() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let player = TestPlayer(id: "p1", name: "Alice", score: 1000)
 
@@ -158,7 +159,7 @@ struct RankIndexBehaviorTests {
     @Test("Multiple inserts create leaderboard")
     func testMultipleInserts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let players = [
             TestPlayer(id: "p1", name: "Alice", score: 1000),
@@ -187,7 +188,7 @@ struct RankIndexBehaviorTests {
     @Test("Delete removes from ranking")
     func testDeleteRemovesFromRanking() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let player = TestPlayer(id: "p1", name: "Alice", score: 1000)
 
@@ -223,7 +224,7 @@ struct RankIndexBehaviorTests {
     @Test("Update changes rank")
     func testUpdateChangesRank() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let player = TestPlayer(id: "p1", name: "Alice", score: 500)
 
@@ -260,7 +261,7 @@ struct RankIndexBehaviorTests {
     @Test("getTopN returns top items")
     func testGetTopNReturnsTopItems() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let players = [
             TestPlayer(id: "p1", name: "Low", score: 100),
@@ -297,7 +298,7 @@ struct RankIndexBehaviorTests {
     @Test("getRank returns correct position")
     func testGetRankReturnsCorrectPosition() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let players = [
             TestPlayer(id: "p1", name: "Third", score: 100),
@@ -335,7 +336,7 @@ struct RankIndexBehaviorTests {
     @Test("Ties handled correctly")
     func testTiesHandledCorrectly() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Multiple players with same score
         let players = [
@@ -374,7 +375,7 @@ struct RankIndexBehaviorTests {
     @Test("ScanItem adds to ranking")
     func testScanItemAddsToRanking() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let players = [
             TestPlayer(id: "p1", name: "Alice", score: 1000),

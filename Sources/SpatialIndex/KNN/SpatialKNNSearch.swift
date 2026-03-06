@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Spatial
 
 /// True K-Nearest Neighbors search using Priority Queue + Cell Pruning
@@ -97,7 +97,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     public func findKNearest(
         k: Int,
         from queryPoint: GeoPoint,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, distance: Double)] {
         guard k > 0 else {
             return []
@@ -204,7 +204,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
     /// Scan a single cell for points
     private func scanCell(
         cellId: UInt64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [PointInfo] {
         let scanner = SpatialCellScanner(
             indexSubspace: indexSubspace,

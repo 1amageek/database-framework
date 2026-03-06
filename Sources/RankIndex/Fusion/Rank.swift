@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Rank-based scoring query for Fusion
 ///

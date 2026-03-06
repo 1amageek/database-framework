@@ -5,7 +5,7 @@
 // Provides hooks for transaction lifecycle events at the database level.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Synchronization
 
 // MARK: - TransactionEvent

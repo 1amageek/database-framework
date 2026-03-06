@@ -6,7 +6,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 import Spatial
 
 // MARK: - Spatial Query Result
@@ -391,7 +391,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         level: Int,
         encoding: SpatialEncoding,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> SpatialScanResult {
         // Get covering cells based on constraint type
         let coveringCells: [UInt64]

@@ -4,7 +4,8 @@
 import Testing
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Spatial
 import TestSupport
 @testable import DatabaseEngine
@@ -75,14 +76,14 @@ struct BenchmarkLocation: Persistable {
 // MARK: - Test Helper
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<BenchmarkLocation>
     let level: Int
 
-    init(encoding: SpatialEncoding = .s2, level: Int = 12, indexName: String = "BenchmarkLocation_location") throws {
-        self.database = try FDBClient.openDatabase()
+    init(encoding: SpatialEncoding = .s2, level: Int = 12, indexName: String = "BenchmarkLocation_location") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -200,7 +201,7 @@ struct SpatialIndexPerformanceTests {
     @Test("Bulk insert performance - 100 locations")
     func testBulkInsert100Locations() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(level: 12)
+        let ctx = try await BenchmarkContext(level: 12)
 
         let locationCount = 100
         let locations = (0..<locationCount).map { i in
@@ -237,7 +238,7 @@ struct SpatialIndexPerformanceTests {
         try await FDBTestSetup.shared.initialize()
 
         for count in [50, 100, 200] {
-            let ctx = try BenchmarkContext(level: 12)
+            let ctx = try await BenchmarkContext(level: 12)
 
             let locations = (0..<count).map { i in
                 randomLocation(id: "\(uniqueID("loc"))-\(i)")
@@ -271,7 +272,7 @@ struct SpatialIndexPerformanceTests {
     func testRadiusSearchSmallRadius() async throws {
         try await FDBTestSetup.shared.initialize()
         // Use coarse level to reduce cell count
-        let ctx = try BenchmarkContext(level: 8)
+        let ctx = try await BenchmarkContext(level: 8)
 
         // Setup: Insert locations around Tokyo
         let centerLat = 35.6812
@@ -326,7 +327,7 @@ struct SpatialIndexPerformanceTests {
     @Test("Radius search performance - varying radius")
     func testRadiusSearchVaryingRadius() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(level: 8)
+        let ctx = try await BenchmarkContext(level: 8)
 
         // Setup: Insert locations
         let centerLat = 35.6812
@@ -381,7 +382,7 @@ struct SpatialIndexPerformanceTests {
     @Test("Bounding box search performance")
     func testBoundingBoxSearchPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(level: 8)
+        let ctx = try await BenchmarkContext(level: 8)
 
         // Setup: Insert locations in Tokyo area
         let locationCount = 100
@@ -443,7 +444,7 @@ struct SpatialIndexPerformanceTests {
         let centerLon = 139.7671
 
         for level in [6, 8, 10, 12] {
-            let ctx = try BenchmarkContext(level: level)
+            let ctx = try await BenchmarkContext(level: level)
 
             let locations = (0..<locationCount).map { i in
                 clusteredLocation(
@@ -495,7 +496,7 @@ struct SpatialIndexPerformanceTests {
         let locationCount = 50
 
         for encoding in [SpatialEncoding.s2, SpatialEncoding.morton] {
-            let ctx = try BenchmarkContext(encoding: encoding, level: 10)
+            let ctx = try await BenchmarkContext(encoding: encoding, level: 10)
 
             let locations = (0..<locationCount).map { i in
                 randomLocation(id: "\(uniqueID("loc"))-\(i)")
@@ -527,7 +528,7 @@ struct SpatialIndexPerformanceTests {
     @Test("Update performance")
     func testUpdatePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(level: 10)
+        let ctx = try await BenchmarkContext(level: 10)
 
         // Setup: Insert initial locations
         let locationCount = 50
@@ -587,7 +588,7 @@ struct SpatialIndexPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(level: 10)
+        let ctx = try await BenchmarkContext(level: 10)
 
         // Setup: Insert locations
         let locationCount = 50
@@ -642,7 +643,7 @@ struct SpatialIndexPerformanceTests {
         let centerLon = 139.7671
 
         for count in [50, 100, 200] {
-            let ctx = try BenchmarkContext(level: 8)
+            let ctx = try await BenchmarkContext(level: 8)
 
             let locations = (0..<count).map { i in
                 clusteredLocation(

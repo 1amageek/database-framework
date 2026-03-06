@@ -2,7 +2,7 @@
 // QueryPlanner - Unified statistics management
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 
@@ -493,7 +493,7 @@ public final class StatisticsManager: StatisticsProvider, Sendable {
 
             let (beginKey, endKey) = indexSubspace.range()
 
-            for try await (key, _) in transaction.getRange(begin: beginKey, end: endKey, snapshot: true) {
+            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(beginKey), to: .firstGreaterOrEqual(endKey), snapshot: true) {
                 entryCount += 1
 
                 // Extract key values for distinct count estimation

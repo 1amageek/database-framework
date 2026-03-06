@@ -2,7 +2,7 @@
 // DatabaseEngine - Context for index-based queries
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Context for executing index-based queries
@@ -144,12 +144,12 @@ public struct IndexQueryContext: Sendable {
     /// Execute a closure within a transaction
     ///
     /// Uses `context.withRawTransaction()` internally to benefit from ReadVersionCache
-    /// while providing direct access to the raw TransactionProtocol.
+    /// while providing direct access to the raw Transaction.
     ///
     /// - Parameter body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
-        _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
+        _ body: @Sendable @escaping (any Transaction) async throws -> R
     ) async throws -> R {
         return try await context.withRawTransaction(configuration: .default) { transaction in
             try await body(transaction)
@@ -237,7 +237,7 @@ public struct IndexQueryContext: Sendable {
     public func fetchItem<T: Persistable>(
         id: Tuple,
         type: T.Type,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> T? {
         let itemSub = try await itemSubspace(for: type)
         let key = itemSub.subspace(T.persistableType).pack(id)
@@ -526,9 +526,9 @@ extension FDBDataStore {
         endInclusive: Bool,
         reverse: Bool,
         limit: Int? = nil,
-        streamingMode: FDB.StreamingMode? = nil
+        streamingMode: StreamingMode? = nil
     ) -> AsyncThrowingStream<(key: [UInt8], value: [UInt8]), Error> {
-        let mode = streamingMode ?? FDB.StreamingMode.forQuery(limit: limit)
+        let mode = streamingMode ?? StreamingMode.forQuery(limit: limit)
         let effectiveLimit = limit ?? 0
 
         return AsyncThrowingStream { continuation in
@@ -560,18 +560,18 @@ extension FDBDataStore {
                             endKey = self.incrementKey(subspace.prefix)
                         }
 
-                        let fromSelector: FDB.KeySelector
-                        let toSelector: FDB.KeySelector
+                        let fromSelector: KeySelector
+                        let toSelector: KeySelector
 
                         if reverse {
-                            fromSelector = FDB.KeySelector.lastLessThan(endKey)
-                            toSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
+                            fromSelector = KeySelector.lastLessThan(endKey)
+                            toSelector = KeySelector.firstGreaterOrEqual(beginKey)
                         } else {
-                            fromSelector = FDB.KeySelector.firstGreaterOrEqual(beginKey)
-                            toSelector = FDB.KeySelector.firstGreaterOrEqual(endKey)
+                            fromSelector = KeySelector.firstGreaterOrEqual(beginKey)
+                            toSelector = KeySelector.firstGreaterOrEqual(endKey)
                         }
 
-                        let sequence = transaction.getRange(
+                        let sequence = try await transaction.collectRange(
                             from: fromSelector,
                             to: toSelector,
                             limit: effectiveLimit,
@@ -579,7 +579,7 @@ extension FDBDataStore {
                             snapshot: true,
                             streamingMode: mode
                         )
-                        for try await (key, value) in sequence {
+                        for (key, value) in sequence {
                             continuation.yield((key: key, value: value))
                         }
                     }

@@ -1,4 +1,4 @@
-import FoundationDB
+import StorageKit
 import Logging
 
 /// Manages index state transitions with validation
@@ -79,7 +79,7 @@ public final class IndexStateManager: Sendable {
     ///   - transaction: The transaction to use
     /// - Returns: Current IndexState (defaults to .disabled if not found)
     /// - Throws: Error if state value is invalid
-    public func state(of indexName: String, transaction: any TransactionProtocol) async throws -> IndexState {
+    public func state(of indexName: String, transaction: any Transaction) async throws -> IndexState {
         // Check cache first
         if let cachedState = cache.get(indexName) {
             return cachedState
@@ -212,7 +212,7 @@ public final class IndexStateManager: Sendable {
     /// - Parameters:
     ///   - indexName: Name of the index
     ///   - transaction: The transaction to use
-    public func disable(_ indexName: String, transaction: any TransactionProtocol) async throws {
+    public func disable(_ indexName: String, transaction: any Transaction) async throws {
         let stateKey = makeStateKey(for: indexName)
 
         // Read current state within transaction (for logging)
@@ -242,7 +242,7 @@ public final class IndexStateManager: Sendable {
     ///   - indexName: Name of the index
     ///   - transaction: The transaction to use
     /// - Throws: IndexStateError.invalidTransition if not in DISABLED state
-    public func enable(_ indexName: String, transaction: any TransactionProtocol) async throws {
+    public func enable(_ indexName: String, transaction: any Transaction) async throws {
         let stateKey = makeStateKey(for: indexName)
 
         // Read current state within transaction
@@ -312,7 +312,7 @@ public final class IndexStateManager: Sendable {
     ///   - indexNames: List of index names
     ///   - transaction: The transaction to use
     /// - Returns: Dictionary mapping index names to states
-    public func states(of indexNames: [String], transaction: any TransactionProtocol) async throws -> [String: IndexState] {
+    public func states(of indexNames: [String], transaction: any Transaction) async throws -> [String: IndexState] {
         var states: [String: IndexState] = [:]
 
         for indexName in indexNames {
@@ -350,7 +350,7 @@ public final class IndexStateManager: Sendable {
     ///
     /// - Parameter indexName: Index name
     /// - Returns: FDB key for storing index state
-    private func makeStateKey(for indexName: String) -> FDB.Bytes {
+    private func makeStateKey(for indexName: String) -> Bytes {
         return subspace.subspace("state").pack(Tuple(indexName))
     }
 }

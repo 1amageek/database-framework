@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 import Logging
@@ -899,7 +899,7 @@ public final class FDBContext: Sendable {
     private func processDualWrites(
         serializedInserts: [SerializedModel],
         deletes: [any Persistable],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Group by polymorphic protocol type for efficient directory resolution
         var insertsByPolyType: [ObjectIdentifier: [(SerializedModel, any Polymorphable.Type)]] = [:]
@@ -1192,7 +1192,7 @@ extension FDBContext {
     ///
     /// **Design Intent**:
     /// This is an internal API for FDBContext's own operations (clearAll, fetchPolymorphic, etc.)
-    /// that need direct TransactionProtocol access for low-level operations like `clearRange`.
+    /// that need direct Transaction access for low-level operations like `clearRange`.
     ///
     /// Uses the context's ReadVersionCache for weak read semantics optimization.
     ///
@@ -1207,7 +1207,7 @@ extension FDBContext {
     /// - Throws: Error if the transaction cannot be committed after retries
     internal func withRawTransaction<T: Sendable>(
         configuration: TransactionConfiguration = .default,
-        _ operation: @Sendable @escaping (any TransactionProtocol) async throws -> T
+        _ operation: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: container.database)
         return try await runner.run(
@@ -1486,7 +1486,7 @@ extension FDBContext {
         let data = try DataAccess.serialize(item)
 
         // Security: Check if this is CREATE or UPDATE
-        let oldData: FDB.Bytes? = try await self.withRawTransaction(configuration: .default) { transaction in
+        let oldData: Bytes? = try await self.withRawTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
@@ -1556,7 +1556,7 @@ extension FDBContext {
         let key = typeSubspace.pack(idTuple)
 
         // Security: Fetch existing item to evaluate DELETE permission
-        if let oldData: FDB.Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
+        if let oldData: Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: blobsSubspace

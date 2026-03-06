@@ -5,7 +5,7 @@
 // Manages storage format versions to support schema evolution and migrations.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - FormatVersion
@@ -157,7 +157,7 @@ public struct FormatVersionManager: Sendable {
     // MARK: - Storage Keys
 
     /// Key for storing format version
-    private let versionKey: FDB.Bytes
+    private let versionKey: Bytes
 
     // MARK: - Initialization
 
@@ -175,7 +175,7 @@ public struct FormatVersionManager: Sendable {
     ///
     /// - Parameter transaction: The transaction to use
     /// - Returns: The stored version, or nil if not set
-    public func loadVersion(transaction: any TransactionProtocol) async throws -> FormatVersion? {
+    public func loadVersion(transaction: any Transaction) async throws -> FormatVersion? {
         guard let bytes = try await transaction.getValue(for: versionKey) else {
             return nil
         }
@@ -188,7 +188,7 @@ public struct FormatVersionManager: Sendable {
     /// - Parameters:
     ///   - version: The version to save
     ///   - transaction: The transaction to use
-    public func saveVersion(_ version: FormatVersion, transaction: any TransactionProtocol) {
+    public func saveVersion(_ version: FormatVersion, transaction: any Transaction) {
         transaction.setValue(version.toBytes(), for: versionKey)
     }
 
@@ -246,7 +246,7 @@ public struct FormatVersionManager: Sendable {
     /// - Parameters:
     ///   - from: Source version
     ///   - transaction: Transaction to use
-    public func upgrade(from: FormatVersion, transaction: any TransactionProtocol) {
+    public func upgrade(from: FormatVersion, transaction: any Transaction) {
         // Save new version
         saveVersion(FormatVersion.current, transaction: transaction)
     }

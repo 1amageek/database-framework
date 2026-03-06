@@ -6,7 +6,7 @@
 
 import Foundation
 import Synchronization
-import FoundationDB
+import StorageKit
 
 // MARK: - ThrottleConfiguration
 
@@ -330,9 +330,9 @@ public final class AdaptiveThrottler: Sendable {
     /// - Parameter error: The error to check
     /// - Returns: true if the operation should be retried
     public func isRetryable(_ error: Error) -> Bool {
-        // FDB errors have a built-in isRetryable property
-        if let fdbError = error as? FDBError {
-            return fdbError.isRetryable
+        // StorageError has a built-in isRetryable property
+        if let storageError = error as? StorageError {
+            return storageError.isRetryable
         }
 
         // Generic timeout errors

@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct PercentileTestRequest: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: PercentileIndexMaintainer<PercentileTestRequest>
 
-    init(indexName: String = "PercentileTestRequest_endpoint_latencyMs") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "PercentileTestRequest_endpoint_latencyMs") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "percentile", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -155,7 +156,7 @@ struct PercentileIndexBehaviorTests {
     @Test("Insert adds value to TDigest")
     func testInsertAddsValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0)
 
@@ -177,7 +178,7 @@ struct PercentileIndexBehaviorTests {
     @Test("Multiple values produce expected percentiles")
     func testMultipleValuesPercentiles() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert latency values: 10, 20, 30, 40, 50, 60, 70, 80, 90, 100
         let latencies = stride(from: 10.0, through: 100.0, by: 10.0)
@@ -210,7 +211,7 @@ struct PercentileIndexBehaviorTests {
     @Test("Different groups have independent percentiles")
     func testDifferentGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Fast endpoint: 10-50ms
         try await ctx.database.withTransaction { transaction in
@@ -256,7 +257,7 @@ struct PercentileIndexBehaviorTests {
     @Test("Delete does NOT change percentiles (add-only)")
     func testDeleteDoesNotChangePercentiles() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let request = PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0)
 
@@ -291,7 +292,7 @@ struct PercentileIndexBehaviorTests {
     @Test("Update adds new value (old value remains in TDigest)")
     func testUpdateAddsNewValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let request = PercentileTestRequest(id: "req1", endpoint: "/api/users", latencyMs: 100.0)
 
@@ -328,7 +329,7 @@ struct PercentileIndexBehaviorTests {
     @Test("GetPercentiles returns multiple percentiles efficiently")
     func testGetMultiplePercentiles() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert 100 values (1 to 100)
         try await ctx.database.withTransaction { transaction in
@@ -365,7 +366,7 @@ struct PercentileIndexBehaviorTests {
     @Test("GetPercentile for non-existent group returns nil")
     func testGetPercentileNonExistentReturnsNil() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let p50 = try await ctx.getPercentile(percentile: 0.5, for: "nonexistent")
         #expect(p50 == nil, "Percentile for non-existent group should be nil")
@@ -376,7 +377,7 @@ struct PercentileIndexBehaviorTests {
     @Test("GetStatistics for non-existent group returns nil")
     func testGetStatisticsNonExistentReturnsNil() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let stats = try await ctx.getStatistics(for: "nonexistent")
         #expect(stats == nil, "Statistics for non-existent group should be nil")
@@ -389,7 +390,7 @@ struct PercentileIndexBehaviorTests {
     @Test("GetCDF returns correct cumulative distribution")
     func testGetCDF() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert values: 10, 20, 30, 40, 50
         try await ctx.database.withTransaction { transaction in
@@ -423,7 +424,7 @@ struct PercentileIndexBehaviorTests {
     @Test("ScanItem adds to TDigest")
     func testScanItemAddsToTDigest() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let requests = [
             PercentileTestRequest(endpoint: "/api/users", latencyMs: 100.0),
@@ -453,7 +454,7 @@ struct PercentileIndexBehaviorTests {
     @Test("TDigest accuracy at extreme percentiles (p99, p99.9)")
     func testExtremePercentileAccuracy() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert 1000 values with heavy tail distribution
         // Most values between 50-100, a few outliers at 500-1000

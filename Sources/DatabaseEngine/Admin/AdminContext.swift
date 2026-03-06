@@ -1,6 +1,6 @@
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 // Type aliases to match protocol (avoiding naming conflicts with internal types)
 // These must match the typealiases in AdminContextProtocol
@@ -81,7 +81,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
             // Count documents (sample-based for large collections)
             var count: Int64 = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 count += 1
                 // Limit to avoid timeout
                 if count >= 100_000 {
@@ -133,7 +133,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             )
 
             var count: Int64 = 0
-            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for _ in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 count += 1
                 if count >= 100_000 {
                     break
@@ -435,9 +435,7 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
     /// Get statistics subspace from DirectoryLayer
     private func getStatisticsSubspace() async throws -> Subspace {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: ["_metadata", "statistics"])
-        return dirSubspace.subspace
+        return try await container.database.directoryService.createOrOpen(path: ["_metadata", "statistics"])
     }
 
     // MARK: - FDB-Specific Features

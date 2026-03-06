@@ -5,7 +5,7 @@
 // Provides coordination between multiple processes working on shared data.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Synchronization
 
 // MARK: - SessionConfiguration
@@ -130,11 +130,11 @@ public final class SynchronizedSession: Sendable {
 
     // MARK: - Lock Keys
 
-    private var lockKey: FDB.Bytes {
+    private var lockKey: Bytes {
         lockSubspace.pack(Tuple("lock", configuration.sessionName))
     }
 
-    private var heartbeatKey: FDB.Bytes {
+    private var heartbeatKey: Bytes {
         lockSubspace.pack(Tuple("heartbeat", configuration.sessionName))
     }
 
@@ -364,14 +364,14 @@ public final class SynchronizedSession: Sendable {
 
     // MARK: - Storage Helpers
 
-    private func readLockHolder(transaction: any TransactionProtocol) async throws -> LockHolder? {
+    private func readLockHolder(transaction: any Transaction) async throws -> LockHolder? {
         guard let data = try await transaction.getValue(for: lockKey) else {
             return nil
         }
         return try LockHolder.decode(from: Data(data))
     }
 
-    private func writeLockHolder(_ holder: LockHolder, transaction: any TransactionProtocol) throws {
+    private func writeLockHolder(_ holder: LockHolder, transaction: any Transaction) throws {
         let data = try holder.encode()
         transaction.setValue(Array(data), for: lockKey)
     }

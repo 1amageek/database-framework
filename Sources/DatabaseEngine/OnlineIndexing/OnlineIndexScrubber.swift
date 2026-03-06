@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Metrics
 
@@ -72,8 +72,8 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     private let configuration: ScrubberConfiguration
 
     // Progress tracking keys
-    private let phase1ProgressKey: FDB.Bytes
-    private let phase2ProgressKey: FDB.Bytes
+    private let phase1ProgressKey: Bytes
+    private let phase2ProgressKey: Bytes
 
     // MARK: - Metrics
 
@@ -344,11 +344,11 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             var entriesScanned = 0
             var danglingDetected = 0
             var danglingRepaired = 0
-            var lastProcessedKey: FDB.Bytes? = nil
+            var lastProcessedKey: Bytes? = nil
 
             // Use limit + .iterator for efficient batch scrubbing
             // .iterator is appropriate since we do reads within the transaction
-            let sequence = transaction.getRange(
+            let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(bounds.begin),
                 to: .firstGreaterOrEqual(bounds.end),
                 limit: batchSize,
@@ -356,7 +356,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
                 streamingMode: .iterator
             )
 
-            for try await (indexKey, _) in sequence {
+            for (indexKey, _) in sequence {
                 entriesScanned += 1
 
                 // Extract primary key from index key
@@ -500,7 +500,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
             var itemsScanned = 0
             var missingDetected = 0
             var missingRepaired = 0
-            var lastProcessedKey: FDB.Bytes? = nil
+            var lastProcessedKey: Bytes? = nil
 
             // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
             let storage = ItemStorage(
@@ -587,7 +587,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     /// Index key structure: [indexSubspace]/[indexName]/[indexValues...]/[primaryKey]
     /// The primary key is typically the last element(s) of the tuple.
     private func extractPrimaryKeyFromIndexKey(
-        _ indexKey: FDB.Bytes,
+        _ indexKey: Bytes,
         indexSubspace: Subspace
     ) throws -> Tuple {
         let tuple = try indexSubspace.unpack(indexKey)
@@ -609,7 +609,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     // MARK: - Progress Management
 
     /// Load saved progress
-    private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
+    private func loadProgress(key: Bytes) async throws -> RangeSet? {
         return try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
@@ -621,7 +621,7 @@ public final class OnlineIndexScrubber<Item: Persistable>: Sendable {
     }
 
     /// Save progress
-    private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes) async throws {
+    private func saveProgress(_ rangeSet: RangeSet, key: Bytes) async throws {
         try await container.database.withTransaction(configuration: .batch) { transaction in
             let encoder = JSONEncoder()
             let data = try encoder.encode(rangeSet)

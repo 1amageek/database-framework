@@ -8,7 +8,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Graph connectivity query for Fusion
 ///
@@ -305,7 +305,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
         node: String,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String] {
         var results: Set<String> = []
 
@@ -350,7 +350,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Query outgoing edges from a node
     private func queryOutgoingEdges(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         subspace: Subspace,
         strategy: GraphIndexStrategy,
         from: String
@@ -364,12 +364,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             if let edge = edgeType {
                 let edgeFromSubspace = outSubspace.subspace(edge).subspace(from)
                 let (beginKey, endKey) = edgeFromSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? edgeFromSubspace.unpack(key),
                        let to = unpacked[0] as? String {
                         results.append(to)
@@ -378,12 +378,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             } else {
                 // Scan all edge types for this from node
                 let (beginKey, endKey) = outSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? outSubspace.unpack(key),
                        unpacked.count >= 3,
                        let fromNode = unpacked[1] as? String,
@@ -401,12 +401,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             if let edge = edgeType {
                 let edgeSubspace = fromSubspace.subspace(edge)
                 let (beginKey, endKey) = edgeSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? edgeSubspace.unpack(key),
                        let to = unpacked[0] as? String {
                         results.append(to)
@@ -414,12 +414,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
                 }
             } else {
                 let (beginKey, endKey) = fromSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? fromSubspace.unpack(key),
                        unpacked.count >= 2,
                        let to = unpacked[1] as? String {
@@ -434,7 +434,7 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
 
     /// Query incoming edges to a node
     private func queryIncomingEdges(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         subspace: Subspace,
         strategy: GraphIndexStrategy,
         to: String
@@ -448,12 +448,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             if let edge = edgeType {
                 let edgeToSubspace = inSubspace.subspace(edge).subspace(to)
                 let (beginKey, endKey) = edgeToSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? edgeToSubspace.unpack(key),
                        let from = unpacked[0] as? String {
                         results.append(from)
@@ -461,12 +461,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
                 }
             } else {
                 let (beginKey, endKey) = inSubspace.range()
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     if let unpacked = try? inSubspace.unpack(key),
                        unpacked.count >= 3,
                        let toNode = unpacked[1] as? String,
@@ -482,12 +482,12 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
             let ospSubspace = subspace.subspace(GraphSubspaceKey.osp.rawValue)
             let toSubspace = ospSubspace.subspace(to)
             let (beginKey, endKey) = toSubspace.range()
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let unpacked = try? toSubspace.unpack(key),
                    unpacked.count >= 2,
                    let from = unpacked[0] as? String {

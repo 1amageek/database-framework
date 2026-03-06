@@ -1,12 +1,12 @@
 import Foundation
-import FoundationDB
+import StorageKit
 
 /// Handler for raw FDB key-value operations
 public struct RawCommands {
-    private let database: any DatabaseProtocol
+    private let database: any StorageEngine
     private let output: OutputFormatter
 
-    public init(database: any DatabaseProtocol, output: OutputFormatter) {
+    public init(database: any StorageEngine, output: OutputFormatter) {
         self.database = database
         self.output = output
     }
@@ -108,11 +108,11 @@ public struct RawCommands {
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        let results: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.withTransaction { transaction in
-            var collected: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+        let results: [(key: Bytes, value: Bytes)] = try await database.withTransaction { transaction in
+            var collected: [(key: Bytes, value: Bytes)] = []
 
-            let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
-            for try await (key, value) in sequence {
+            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+            for (key, value) in sequence {
                 collected.append((key: key, value: value))
                 if collected.count >= limit { break }
             }
@@ -137,7 +137,7 @@ public struct RawCommands {
     /// Supports:
     /// - Simple strings: "mykey" -> UTF-8 bytes
     /// - Tuple format: "(\"mykey\", 123)" -> Tuple encoding
-    private func encodeKey(_ keyString: String) -> FDB.Bytes {
+    private func encodeKey(_ keyString: String) -> Bytes {
         // Try tuple format first
         if keyString.hasPrefix("(") && keyString.hasSuffix(")") {
             if let tuple = parseTuple(keyString) {
@@ -150,7 +150,7 @@ public struct RawCommands {
     }
 
     /// Decode a key for display
-    private func decodeKey(_ key: FDB.Bytes, prefix: FDB.Bytes) -> String {
+    private func decodeKey(_ key: Bytes, prefix: Bytes) -> String {
         do {
             let elements = try Tuple.unpack(from: key)
             let parts = elements.map { "\($0)" }

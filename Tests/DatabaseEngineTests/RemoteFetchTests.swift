@@ -223,7 +223,7 @@ struct ArrayChunkingTests {
 // MARK: - Test Model
 
 import Core
-import FoundationDB
+import StorageKit
 
 @Persistable
 struct TestFetchItem: Equatable {

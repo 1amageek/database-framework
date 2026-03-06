@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Migration Definition
@@ -429,7 +429,7 @@ public struct MigrationContext: Sendable {
     /// - Returns: Operation result
     /// - Throws: Any error from the operation
     public func executeOperation<T: Sendable>(
-        _ operation: @escaping @Sendable (any TransactionProtocol) async throws -> T
+        _ operation: @escaping @Sendable (any Transaction) async throws -> T
     ) async throws -> T {
         return try await container.database.withTransaction(configuration: .default) { transaction in
             try await operation(transaction)
@@ -656,19 +656,19 @@ public struct MigrationContext: Sendable {
 
         // Exact count via full scan
         var totalCount = 0
-        var lastKey: FDB.Bytes? = nil
+        var lastKey: Bytes? = nil
         let batchSize = 10000  // Use large batches for counting
 
         while true {
             let currentLastKey = lastKey
-            let (batchCount, newLastKey): (Int, FDB.Bytes?) = try await container.database.withTransaction(configuration: .batch) { transaction in
-                let rangeBegin = currentLastKey.map { FDB.Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
+            let (batchCount, newLastKey): (Int, Bytes?) = try await container.database.withTransaction(configuration: .batch) { transaction in
+                let rangeBegin = currentLastKey.map { Bytes($0.dropFirst(0)) + [0x00] } ?? beginKey
 
                 var count = 0
-                var lastKeyInBatch: FDB.Bytes? = nil
+                var lastKeyInBatch: Bytes? = nil
 
                 // Use limit and wantAll mode to reduce round-trips for counting
-                let sequence = transaction.getRange(
+                let sequence = try await transaction.collectRange(
                     from: .firstGreaterOrEqual(rangeBegin),
                     to: .firstGreaterOrEqual(endKey),
                     limit: batchSize,
@@ -676,7 +676,7 @@ public struct MigrationContext: Sendable {
                     streamingMode: .wantAll
                 )
 
-                for try await (key, _) in sequence {
+                for (key, _) in sequence {
                     count += 1
                     lastKeyInBatch = key
                 }
@@ -864,7 +864,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                    let (beginKey, endKey) = itemPrefix.range()
 	                    let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
 
-	                    var lastKey: FDB.Bytes? = nil
+	                    var lastKey: Bytes? = nil
 	                    let decoder = ProtobufDecoder()
 
                     while !Task.isCancelled {
@@ -872,7 +872,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
                         let currentLastKey = lastKey
 
 	                        // Each batch is a separate transaction
-	                        let batch: [(key: FDB.Bytes, value: FDB.Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
+	                        let batch: [(key: Bytes, value: Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
 	                            let rangeBegin = currentLastKey.map { $0 + [0x00] } ?? beginKey
 
 	                            let storage = ItemStorage(
@@ -880,7 +880,7 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	                                blobsSubspace: blobsSubspace
 	                            )
 
-	                            var results: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+	                            var results: [(key: Bytes, value: Bytes)] = []
 	                            for try await (key, value) in storage.scan(
 	                                begin: rangeBegin,
 	                                end: endKey,

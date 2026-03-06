@@ -8,7 +8,7 @@
 // Reference: Staudt, M., Jarke, M. (1996). "Incremental Maintenance of Externally Materialized Views"
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 /// Incremental reasoner using DRed algorithm
 ///
@@ -87,7 +87,7 @@ public final class IncrementalReasoner: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let ontologyStore: OntologyStore
     private let materializer: OWL2RLMaterializer
     private let configuration: Configuration
@@ -96,7 +96,7 @@ public final class IncrementalReasoner: Sendable {
     // MARK: - Initialization
 
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         ontologyStore: OntologyStore,
         materializer: OWL2RLMaterializer,
         dependencySubspace: Subspace,
@@ -121,7 +121,7 @@ public final class IncrementalReasoner: Sendable {
     public func addTriple(
         _ triple: (subject: String, predicate: String, object: String),
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> InferenceChanges {
         var changes = InferenceChanges()
         let startTime = Date()
@@ -174,7 +174,7 @@ public final class IncrementalReasoner: Sendable {
     public func deleteTriple(
         _ triple: (subject: String, predicate: String, object: String),
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> InferenceChanges {
         var changes = InferenceChanges()
         let startTime = Date()
@@ -250,7 +250,7 @@ public final class IncrementalReasoner: Sendable {
     public func addAxiom(
         _ axiom: IncrementalAxiom,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> InferenceChanges {
         switch axiom {
         case .subClassOf(let subClass, let superClass):
@@ -349,7 +349,7 @@ public final class IncrementalReasoner: Sendable {
     public func removeAxiom(
         _ axiom: IncrementalAxiom,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> InferenceChanges {
         switch axiom {
         case .subClassOf(let subClass, let superClass):
@@ -444,7 +444,7 @@ public final class IncrementalReasoner: Sendable {
     private func storeDependencies(
         consequent: TripleKey,
         antecedents: [TripleKey],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Key structure: [dependency]/[dependents]/[antecedent]/[consequent]
         let dependentsSubspace = dependencySubspace.subspace(Int64(0))
@@ -479,7 +479,7 @@ public final class IncrementalReasoner: Sendable {
     /// Get all triples that depend on the given triple
     private func getDependents(
         of triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [TripleKey] {
         let dependentsSubspace = dependencySubspace.subspace(Int64(0))
         let prefix = dependentsSubspace
@@ -491,13 +491,13 @@ public final class IncrementalReasoner: Sendable {
 
         var results: [TripleKey] = []
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             let elements = try prefix.unpack(key)
             guard elements.count >= 3,
                   let s = elements[0] as? String,
@@ -514,7 +514,7 @@ public final class IncrementalReasoner: Sendable {
     /// Get all transitive dependents (cascade)
     private func getTransitiveDependents(
         of triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<TripleKey> {
         var visited: Set<TripleKey> = []
         var queue: [TripleKey] = try await getDependents(of: triple, transaction: transaction)
@@ -536,7 +536,7 @@ public final class IncrementalReasoner: Sendable {
     /// Delete dependencies of a triple
     private func deleteDependencies(
         of triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let dependentsSubspace = dependencySubspace.subspace(Int64(0))
         let dependenciesSubspace = dependencySubspace.subspace(Int64(1))
@@ -566,7 +566,7 @@ public final class IncrementalReasoner: Sendable {
     private func storeInferredTriple(
         _ triple: TripleKey,
         provenance: InferenceProvenance,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Key structure: [inferred]/[s]/[p]/[o]
         let inferredSubspace = dependencySubspace.subspace(Int64(2))
@@ -582,7 +582,7 @@ public final class IncrementalReasoner: Sendable {
     /// Delete an inferred triple
     private func deleteInferredTriple(
         _ triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let inferredSubspace = dependencySubspace.subspace(Int64(2))
         let key = inferredSubspace
@@ -596,7 +596,7 @@ public final class IncrementalReasoner: Sendable {
     /// Mark a triple as tentatively deleted
     private func markTentativelyDeleted(
         _ triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Update provenance to mark as invalid
         let inferredSubspace = dependencySubspace.subspace(Int64(2))
@@ -616,7 +616,7 @@ public final class IncrementalReasoner: Sendable {
     /// Mark a triple as valid (after re-derivation)
     private func markValid(
         _ triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let inferredSubspace = dependencySubspace.subspace(Int64(2))
         let key = inferredSubspace
@@ -639,7 +639,7 @@ public final class IncrementalReasoner: Sendable {
         triple: TripleKey,
         excluding: TripleKey,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Bool {
         // Get the original dependencies of this triple
         let dependenciesSubspace = dependencySubspace.subspace(Int64(1))
@@ -653,13 +653,13 @@ public final class IncrementalReasoner: Sendable {
         // Collect all antecedents that are NOT the excluded triple
         var alternativeAntecedents: [TripleKey] = []
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             let elements = try prefix.unpack(key)
             guard elements.count >= 3,
                   let s = elements[0] as? String,
@@ -694,7 +694,7 @@ public final class IncrementalReasoner: Sendable {
     /// Check if a triple exists (either explicit or inferred)
     private func tripleExists(
         _ triple: TripleKey,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Bool {
         let inferredSubspace = dependencySubspace.subspace(Int64(2))
         let key = inferredSubspace

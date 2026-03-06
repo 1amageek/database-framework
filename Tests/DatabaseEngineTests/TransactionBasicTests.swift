@@ -1,5 +1,6 @@
 import Testing
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
@@ -8,7 +9,7 @@ struct TransactionBasicTests {
 
     @Test func simpleReadWrite() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
         
         // Simple write
@@ -26,7 +27,7 @@ struct TransactionBasicTests {
     
     @Test func simpleGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
         
         // Write multiple keys
@@ -36,17 +37,12 @@ struct TransactionBasicTests {
             tx.setValue([3], for: [0, 0, 2, 3])
         }
         
-        // Read with getRange
+        // Read with collectRange
         let results = try await runner.run(configuration: .default) { tx in
-            var items: [(FDB.Bytes, FDB.Bytes)] = []
-            let seq = tx.getRange(
+            try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 0, 2]),
                 to: .firstGreaterOrEqual([0, 0, 3])
             )
-            for try await (k, v) in seq {
-                items.append((k, v))
-            }
-            return items
         }
         
         #expect(results.count == 3)

@@ -8,7 +8,7 @@
 // https://www.w3.org/TR/shacl/#shapes-graph
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 
 /// Persistent storage for SHACL shapes graphs in FoundationDB
@@ -40,7 +40,7 @@ struct SHACLShapesStore: Sendable {
         subspace.subspace(SubspaceKey.graphs.rawValue)
     }
 
-    private func graphKey(_ iri: String) -> FDB.Bytes {
+    private func graphKey(_ iri: String) -> Bytes {
         graphsSubspace.pack(Tuple(iri))
     }
 
@@ -55,7 +55,7 @@ struct SHACLShapesStore: Sendable {
     ///   - transaction: The FDB transaction
     func save(
         _ graph: SHACLShapesGraph,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) throws {
         let data = try JSONEncoder().encode(graph)
         let key = graphKey(graph.iri)
@@ -72,7 +72,7 @@ struct SHACLShapesStore: Sendable {
     /// - Returns: The shapes graph, or nil if not found
     func get(
         iri: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> SHACLShapesGraph? {
         let key = graphKey(iri)
         guard let data = try await transaction.getValue(for: key, snapshot: true) else {
@@ -88,17 +88,17 @@ struct SHACLShapesStore: Sendable {
     /// - Parameter transaction: The FDB transaction
     /// - Returns: Array of shapes graph IRIs
     func listGraphIRIs(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String] {
         let (beginKey, endKey) = graphsSubspace.range()
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
         var iris: [String] = []
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let tuple = try? graphsSubspace.unpack(key),
                let iri = tuple[0] as? String {
                 iris.append(iri)
@@ -116,7 +116,7 @@ struct SHACLShapesStore: Sendable {
     ///   - transaction: The FDB transaction
     func delete(
         iri: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         let key = graphKey(iri)
         transaction.clear(key: key)
@@ -126,7 +126,7 @@ struct SHACLShapesStore: Sendable {
     ///
     /// - Parameter transaction: The FDB transaction
     func deleteAll(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         let (beginKey, endKey) = graphsSubspace.range()
         transaction.clearRange(beginKey: beginKey, endKey: endKey)

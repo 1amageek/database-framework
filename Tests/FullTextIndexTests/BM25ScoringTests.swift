@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import FullText
 import TestSupport
@@ -70,14 +71,14 @@ struct BM25TestArticle: Persistable {
 // MARK: - Test Helper
 
 private struct BM25TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<BM25TestArticle>
     let kind: FullTextIndexKind<BM25TestArticle>
 
-    init(indexName: String = "BM25TestArticle_content") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "BM25TestArticle_content") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bm25", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -257,7 +258,7 @@ struct BM25IntegrationTests {
     @Test("BM25 statistics are maintained")
     func testBM25StatisticsAreMaintained() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         // Index some articles
         let articles = [
@@ -280,7 +281,7 @@ struct BM25IntegrationTests {
     @Test("BM25 statistics update on delete")
     func testBM25StatisticsUpdateOnDelete() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         let article = BM25TestArticle(id: "a1", title: "Test", content: "Swift programming language")
         try await ctx.indexArticle(article)
@@ -306,7 +307,7 @@ struct BM25IntegrationTests {
     @Test("BM25 scored search returns ranked results")
     func testBM25ScoredSearchReturnsRankedResults() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         // Create articles with varying relevance to "swift programming"
         // Note: BM25 IDF is positive only when df < N/2
@@ -353,7 +354,7 @@ struct BM25IntegrationTests {
     @Test("BM25 length normalization affects ranking")
     func testBM25LengthNormalizationAffectsRanking() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         // Two documents with same TF but different lengths
         // Plus non-matching documents to ensure positive IDF for "swift"
@@ -392,7 +393,7 @@ struct BM25IntegrationTests {
     @Test("BM25 custom parameters work")
     func testBM25CustomParametersWork() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         let articles = [
             BM25TestArticle(id: "short", title: "Short", content: "Swift is great"),
@@ -437,7 +438,7 @@ struct BM25IntegrationTests {
     @Test("BM25 rare terms score higher than common terms")
     func testBM25RareTermsScoreHigher() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BM25TestContext()
+        let ctx = try await BM25TestContext()
 
         // Create corpus where "programming" is common but "swift" is rare
         let articles = [

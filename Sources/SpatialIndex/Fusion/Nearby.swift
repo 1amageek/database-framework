@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Spatial
 
 /// Spatial search query for Fusion
@@ -240,7 +240,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
         constraint: SpatialConstraint,
         level: Int,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         // Get covering cells based on constraint type
         let coveringCells: [UInt64]
@@ -281,13 +281,13 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             let cellSubspace = indexSubspace.subspace(cellTuple)
             let (begin, end) = cellSubspace.range()
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
                 snapshot: true
             )
 
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
                 guard cellSubspace.contains(key) else { break }
 
                 let keyTuple = try cellSubspace.unpack(key)

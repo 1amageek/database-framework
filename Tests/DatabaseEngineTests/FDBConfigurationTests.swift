@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Logging
 import Synchronization
 @testable import Core
@@ -31,7 +32,7 @@ struct FDBConfigurationTests {
     func singleConfigurationAPI() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([ConfigTestUser.self])
 
         let container = FDBContainer(
@@ -56,7 +57,7 @@ struct FDBConfigurationTests {
     func multipleConfigurationsGroupedByIndexName() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([ConfigTestUser.self])
 
         let container = FDBContainer(
@@ -79,7 +80,7 @@ struct FDBConfigurationTests {
     func emptyIndexConfigurations() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([ConfigTestUser.self])
 
         let container = FDBContainer(
@@ -97,7 +98,7 @@ struct FDBConfigurationTests {
     func indexConfigurationTypedAccess() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([ConfigTestUser.self])
 
         let container = FDBContainer(
@@ -127,7 +128,7 @@ struct FDBConfigurationTests {
     func indexConfigurationsTypedAccess() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([ConfigTestUser.self])
 
         let container = FDBContainer(

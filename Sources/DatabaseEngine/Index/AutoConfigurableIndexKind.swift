@@ -6,7 +6,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Type-erased loader for items by type name and ID
 ///
@@ -20,7 +20,7 @@ import FoundationDB
 public typealias GenericItemLoader = @Sendable (
     _ typeName: String,
     _ id: any Sendable,
-    _ transaction: any TransactionProtocol
+    _ transaction: any Transaction
 ) async throws -> (any Persistable)?
 
 /// Protocol for index kinds that support automatic configuration generation

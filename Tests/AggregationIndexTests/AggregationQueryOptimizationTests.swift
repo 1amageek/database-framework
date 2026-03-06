@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -91,7 +92,7 @@ private func makeTestEntity(
 // MARK: - Test Helper
 
 private struct OptTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let testId: String
@@ -101,8 +102,8 @@ private struct OptTestContext {
     let sumMaintainer: SumIndexMaintainer<AggQueryTestOrder, Int64>
     let avgMaintainer: AverageIndexMaintainer<AggQueryTestOrder, Int64>
 
-    init() throws {
-        self.database = try FDBClient.openDatabase()
+    init() async throws {
+        self.database = try await FDBStorageEngine.open()
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "aggquery", testId).pack())
         self.indexSubspace = subspace.subspace("I")
@@ -207,7 +208,7 @@ struct AggregationQueryOptimizationTests {
     @Test("COUNT index maintains correct counts")
     func testCountIndexMaintainsCorrectCounts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try OptTestContext()
+        let ctx = try await OptTestContext()
 
         let orders = [
             AggQueryTestOrder(region: "Tokyo", amount: 100),
@@ -234,7 +235,7 @@ struct AggregationQueryOptimizationTests {
     @Test("SUM index maintains correct sums")
     func testSumIndexMaintainsCorrectSums() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try OptTestContext()
+        let ctx = try await OptTestContext()
 
         let orders = [
             AggQueryTestOrder(region: "Tokyo", amount: 100),
@@ -259,7 +260,7 @@ struct AggregationQueryOptimizationTests {
     @Test("AVG index maintains correct averages")
     func testAvgIndexMaintainsCorrectAverages() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try OptTestContext()
+        let ctx = try await OptTestContext()
 
         let orders = [
             AggQueryTestOrder(region: "Tokyo", amount: 100),
@@ -288,7 +289,7 @@ struct AggregationQueryOptimizationTests {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "min", testId).pack())
 
@@ -344,7 +345,7 @@ struct AggregationQueryOptimizationTests {
         try await FDBTestSetup.shared.initialize()
 
         // Create a mock IndexQueryContext
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "max", testId).pack())
 
@@ -399,7 +400,7 @@ struct AggregationQueryOptimizationTests {
     func testCountAggregationMatchesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "count_match", testId).pack())
 
@@ -453,7 +454,7 @@ struct AggregationQueryOptimizationTests {
     func testSumAggregationMatchesIndex() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "sum_match", testId).pack())
 
@@ -509,7 +510,7 @@ struct AggregationQueryOptimizationTests {
     func testMixedAggregationsWithCountAndMinUseIndexes() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "mixed", testId).pack())
 
@@ -574,7 +575,7 @@ struct AggregationQueryOptimizationTests {
     func testAggregationWithoutMatchingGroupByUsesInMemory() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = String(UUID().uuidString.prefix(8))
         let subspace = Subspace(prefix: Tuple("test", "aggquery", "no_match", testId).pack())
 

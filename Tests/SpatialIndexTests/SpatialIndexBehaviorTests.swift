@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Spatial
 import TestSupport
@@ -75,7 +76,7 @@ struct TestLocation: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<TestLocation>
@@ -86,8 +87,8 @@ private struct TestContext {
     /// - Parameters:
     ///   - encoding: Spatial encoding (default: .s2)
     ///   - level: S2/Morton level (default: 10 for coarse cells, faster tests)
-    init(encoding: SpatialEncoding = .s2, level: Int = 10, indexName: String = "TestLocation_location") throws {
-        self.database = try FDBClient.openDatabase()
+    init(encoding: SpatialEncoding = .s2, level: Int = 10, indexName: String = "TestLocation_location") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -175,7 +176,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Insert stores location")
     func testInsertStoresLocation() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Tokyo Station
         let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
@@ -197,7 +198,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Multiple locations are indexed")
     func testMultipleLocations() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671),
@@ -226,7 +227,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Delete removes location")
     func testDeleteRemovesLocation() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
@@ -262,7 +263,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Update changes location")
     func testUpdateChangesLocation() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let location = TestLocation(id: "point", name: "Original", latitude: 35.0, longitude: 139.0)
 
@@ -297,7 +298,7 @@ struct SpatialIndexBehaviorTests {
     func testRadiusSearchSmallRadius() async throws {
         try await FDBTestSetup.shared.initialize()
         // Use coarse level (8) to reduce cell count
-        let ctx = try TestContext(level: 8)
+        let ctx = try await TestContext(level: 8)
 
         let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
 
@@ -322,7 +323,7 @@ struct SpatialIndexBehaviorTests {
     func testBoundingBoxSearch() async throws {
         try await FDBTestSetup.shared.initialize()
         // Use coarse level for faster test
-        let ctx = try TestContext(level: 8)
+        let ctx = try await TestContext(level: 8)
 
         // Insert location in Tokyo area
         let location = TestLocation(id: "tokyo", name: "Tokyo Station", latitude: 35.6812, longitude: 139.7671)
@@ -353,7 +354,7 @@ struct SpatialIndexBehaviorTests {
     @Test("ScanItem stores location")
     func testScanItemStoresLocation() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "p1", name: "Point 1", latitude: 35.0, longitude: 139.0),
@@ -381,7 +382,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Morton encoding works for 2D coordinates")
     func testMortonEncoding() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(encoding: .morton, level: 16)
+        let ctx = try await TestContext(encoding: .morton, level: 16)
 
         let location = TestLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
 
@@ -402,7 +403,7 @@ struct SpatialIndexBehaviorTests {
     @Test("S2 encoding produces consistent cell IDs")
     func testS2EncodingConsistency() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(encoding: .s2, level: 10)
+        let ctx = try await TestContext(encoding: .s2, level: 10)
 
         // Insert same location twice (should produce same cell)
         let location = TestLocation(id: "test", name: "Test", latitude: 35.6812, longitude: 139.7671)
@@ -443,7 +444,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Handles locations near equator")
     func testLocationNearEquator() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Singapore (near equator)
         let location = TestLocation(id: "singapore", name: "Singapore", latitude: 1.3521, longitude: 103.8198)
@@ -465,7 +466,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Handles locations near poles")
     func testLocationNearPole() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Svalbard (high latitude)
         let location = TestLocation(id: "svalbard", name: "Svalbard", latitude: 78.2232, longitude: 15.6469)
@@ -487,7 +488,7 @@ struct SpatialIndexBehaviorTests {
     @Test("Handles negative coordinates")
     func testNegativeCoordinates() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Sydney, Australia (negative latitude)
         let sydney = TestLocation(id: "sydney", name: "Sydney", latitude: -33.8688, longitude: 151.2093)

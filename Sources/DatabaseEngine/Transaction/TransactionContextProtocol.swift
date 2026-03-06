@@ -2,7 +2,7 @@
 // DatabaseEngine - Protocol for transactional operations
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for transactional operations
@@ -110,7 +110,7 @@ public protocol TransactionContextProtocol: Sendable {
     ///
     /// **Warning**: Direct transaction access bypasses security evaluation.
     /// Use with caution for operations that don't involve Persistable data.
-    var rawTransaction: any TransactionProtocol { get }
+    var rawTransaction: any Transaction { get }
 }
 
 // MARK: - Default Parameter Values

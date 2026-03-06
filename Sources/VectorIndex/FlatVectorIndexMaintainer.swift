@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Vector
 
 /// Maintainer for flat scan vector indexes
@@ -57,7 +57,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old index entry
         // Sparse index: if vector field is nil, there's no entry to remove
@@ -86,7 +86,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if vector field is nil, skip indexing
         do {
@@ -105,7 +105,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         do {
             return [try buildIndexKey(for: item, id: id)]
         } catch DataAccessError.nilValueCannotBeIndexed {
@@ -135,7 +135,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -150,9 +150,9 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Scan all vectors
         let (begin, end) = subspace.range()
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
@@ -162,7 +162,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             comparator: { $0.distance > $1.distance }
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             // Decode primary key - skip corrupt entries
             guard let primaryKeyTuple = try? subspace.unpack(key) else {
                 continue // Skip corrupt entry

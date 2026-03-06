@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 @testable import DatabaseEngine
 
@@ -245,9 +246,9 @@ struct BatchFetcherIntegrationTests {
         var email: String
     }
 
-    private func setupDatabase() async throws -> any DatabaseProtocol {
+    private func setupDatabase() async throws -> any StorageEngine {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        return try FDBClient.openDatabase()
+        return try await FDBStorageEngine.open()
     }
 
     private func testSubspace() -> Subspace {

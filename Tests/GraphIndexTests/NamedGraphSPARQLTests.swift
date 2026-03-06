@@ -7,7 +7,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -44,14 +45,14 @@ struct NamedGraphSPARQLTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([SPARQLQuadStatement.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "sparql", "quads"])
+        
+        try? await container.database.directoryService.remove(path: ["test", "sparql", "quads"])
     }
 
     private func setIndexStatesToReadable(container: FDBContainer) async throws {
@@ -400,7 +401,7 @@ struct NamedGraphSPARQLTests {
         let container: FDBContainer
         do {
             try await FDBTestSetup.shared.initialize()
-            let database = try FDBClient.openDatabase()
+            let database = try await FDBStorageEngine.open()
             let schema = Schema(
                 [SPARQLTestStatement.self],
                 version: Schema.Version(1, 0, 0)
@@ -408,8 +409,8 @@ struct NamedGraphSPARQLTests {
             container = FDBContainer(database: database, schema: schema, security: .disabled)
         }
 
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "sparql", "statements"])
+        
+        try? await container.database.directoryService.remove(path: ["test", "sparql", "statements"])
 
         let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
@@ -440,6 +441,6 @@ struct NamedGraphSPARQLTests {
         #expect(results.count == 1)
         #expect(results.bindings[0]["?friend"]?.stringValue == "Bob")
 
-        try? await directoryLayer.remove(path: ["test", "sparql", "statements"])
+        try? await container.database.directoryService.remove(path: ["test", "sparql", "statements"])
     }
 }

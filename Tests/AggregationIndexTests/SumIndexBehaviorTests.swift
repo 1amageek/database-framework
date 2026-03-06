@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct SumTestSale: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SumIndexMaintainer<SumTestSale, Double>
 
-    init(indexName: String = "SumTestSale_category_amount") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "SumTestSale_category_amount") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "sum", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -137,7 +138,7 @@ struct SumIndexBehaviorTests {
     @Test("Insert adds value to sum")
     func testInsertAddsValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
@@ -158,7 +159,7 @@ struct SumIndexBehaviorTests {
     @Test("Multiple inserts to same group accumulate")
     func testMultipleInsertsAccumulate() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
@@ -185,7 +186,7 @@ struct SumIndexBehaviorTests {
     @Test("Inserts to different groups are independent")
     func testDifferentGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
@@ -217,7 +218,7 @@ struct SumIndexBehaviorTests {
     @Test("Delete subtracts value from sum")
     func testDeleteSubtractsValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
@@ -251,7 +252,7 @@ struct SumIndexBehaviorTests {
     @Test("Delete partial from group")
     func testDeletePartialFromGroup() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sale1 = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
         let sale2 = SumTestSale(id: "sale2", category: "Electronics", region: "Osaka", amount: 1500.0)
@@ -285,7 +286,7 @@ struct SumIndexBehaviorTests {
     @Test("Update same group adjusts sum")
     func testUpdateSameGroupAdjustsSum() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
@@ -317,7 +318,7 @@ struct SumIndexBehaviorTests {
     @Test("Update different group moves sum")
     func testUpdateDifferentGroupMovesSum() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sale = SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0)
 
@@ -358,7 +359,7 @@ struct SumIndexBehaviorTests {
     @Test("Decimal values are handled correctly")
     func testDecimalPrecision() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 99.99),
@@ -386,7 +387,7 @@ struct SumIndexBehaviorTests {
     @Test("Negative values are supported")
     func testNegativeValues() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Returns", region: "Tokyo", amount: -500.0),
@@ -416,7 +417,7 @@ struct SumIndexBehaviorTests {
     @Test("GetAllSums returns all groups")
     func testGetAllSumsReturnsAllGroups() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),
@@ -446,7 +447,7 @@ struct SumIndexBehaviorTests {
     @Test("GetSum for non-existent group returns zero")
     func testGetSumNonExistentReturnsZero() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sum = try await ctx.getSum(for: "NonExistentCategory")
         #expect(abs(sum) < 0.01, "Sum for non-existent group should be 0.0")
@@ -459,7 +460,7 @@ struct SumIndexBehaviorTests {
     @Test("Composite grouping with region and category")
     func testCompositeGrouping() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "sum", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("SumTestSale_region_category_amount")
@@ -540,7 +541,7 @@ struct SumIndexBehaviorTests {
     @Test("ScanItem adds to sum")
     func testScanItemAddsToSum() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let sales = [
             SumTestSale(id: "sale1", category: "Electronics", region: "Tokyo", amount: 1000.0),

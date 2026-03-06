@@ -6,7 +6,8 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import GraphIndex
 
@@ -44,12 +45,12 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([EdgeCaseConnection.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "edge_case"])
+        
+        try? await database.directoryService.remove(path: ["test", "edge_case"])
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: EdgeCaseConnection.self)

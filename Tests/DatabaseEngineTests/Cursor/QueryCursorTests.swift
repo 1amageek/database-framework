@@ -9,7 +9,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 @testable import DatabaseEngine
 @testable import TestSupport
@@ -32,7 +33,7 @@ struct QueryCursorTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema([PaginatedUser.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(database: database, schema: schema, security: .disabled)
@@ -40,8 +41,7 @@ struct QueryCursorTests {
 
     private func cleanup(container: FDBContainer) async throws {
         // Use DirectoryLayer to remove the whole directory (handles old format data too)
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "cursor", "users"])
+        try? await container.database.directoryService.remove(path: ["test", "cursor", "users"])
     }
 
     private func seedUsers(context: FDBContext, count: Int) async throws -> [PaginatedUser] {

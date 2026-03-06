@@ -5,7 +5,7 @@
 // All item I/O should go through this layer.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - ItemStorage
@@ -47,7 +47,7 @@ public struct ItemStorage: Sendable {
     // MARK: - Properties
 
     /// Underlying FDB transaction
-    private let transaction: any TransactionProtocol
+    private let transaction: any Transaction
 
     /// Blobs subspace for large value chunks
     private let blobsSubspace: Subspace
@@ -71,7 +71,7 @@ public struct ItemStorage: Sendable {
     ///   - maxInlineSize: Maximum size for inline storage (default: 90KB)
     ///   - chunkSize: Size of each chunk for external storage (default: 90KB)
     public init(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         blobsSubspace: Subspace,
         maxInlineSize: Int = ItemEnvelope.maxInlineSize,
         chunkSize: Int = ItemEnvelope.maxInlineSize
@@ -87,7 +87,7 @@ public struct ItemStorage: Sendable {
 
     /// Get blob prefix for an item key
     /// Uses key bytes as single Tuple element for clearRange compatibility
-    private func blobPrefix(for key: FDB.Bytes) -> Subspace {
+    private func blobPrefix(for key: Bytes) -> Subspace {
         // Store the raw key bytes as a single Tuple element (byte string)
         blobsSubspace.subspace(Tuple([key]))
     }
@@ -101,7 +101,7 @@ public struct ItemStorage: Sendable {
     /// - Parameters:
     ///   - data: The raw data to write
     ///   - key: The item key (in items subspace)
-    public func write(_ data: FDB.Bytes, for key: FDB.Bytes) async throws {
+    public func write(_ data: Bytes, for key: Bytes) async throws {
         // Step 1: Always clear any existing blobs (handles overwrite and corrupted data)
         clearAllBlobs(for: key)
 
@@ -153,7 +153,7 @@ public struct ItemStorage: Sendable {
     /// - Overwrite (external → inline, external → external, etc.)
     /// - Delete
     /// - Cleanup even if the existing item value is corrupted/non-envelope
-    private func clearAllBlobs(for key: FDB.Bytes) {
+    private func clearAllBlobs(for key: Bytes) {
         let blobBase = blobPrefix(for: key)
         let (begin, end) = blobBase.range()
         transaction.clearRange(beginKey: begin, endKey: end)
@@ -169,7 +169,7 @@ public struct ItemStorage: Sendable {
     ///   - key: The item key to read
     ///   - snapshot: If true, perform snapshot read (no conflict tracking)
     /// - Returns: The decompressed data, or nil if not found
-    public func read(for key: FDB.Bytes, snapshot: Bool = false) async throws -> FDB.Bytes? {
+    public func read(for key: Bytes, snapshot: Bool = false) async throws -> Bytes? {
         // Read envelope
         guard let envelopeBytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
             return nil
@@ -184,7 +184,7 @@ public struct ItemStorage: Sendable {
         let envelope = try ItemEnvelope.deserialize(envelopeBytes)
 
         // Get compressed data
-        let compressed: FDB.Bytes
+        let compressed: Bytes
         switch envelope.content {
         case .inline(let data):
             compressed = data
@@ -203,7 +203,7 @@ public struct ItemStorage: Sendable {
     ///   - key: The item key
     ///   - snapshot: If true, perform snapshot read
     /// - Returns: True if item exists
-    public func exists(for key: FDB.Bytes, snapshot: Bool = false) async throws -> Bool {
+    public func exists(for key: Bytes, snapshot: Bool = false) async throws -> Bool {
         return try await transaction.getValue(for: key, snapshot: snapshot) != nil
     }
 
@@ -212,7 +212,7 @@ public struct ItemStorage: Sendable {
     /// Delete an item (handles external chunks with clearRange)
     ///
     /// - Parameter key: The item key to delete
-    public func delete(for key: FDB.Bytes) async throws {
+    public func delete(for key: Bytes) async throws {
         // Always clear blob range (handles external storage and corrupted/non-envelope data)
         clearAllBlobs(for: key)
 
@@ -234,8 +234,8 @@ public struct ItemStorage: Sendable {
     ///   - reverse: If true, scan in reverse order
     /// - Returns: AsyncSequence of (key, decompressed data) pairs
     public func scan(
-        begin: FDB.Bytes,
-        end: FDB.Bytes,
+        begin: Bytes,
+        end: Bytes,
         snapshot: Bool = false,
         limit: Int = 0,
         reverse: Bool = false
@@ -254,10 +254,10 @@ public struct ItemStorage: Sendable {
 
     /// Load chunks for an external reference
     func loadChunks(
-        for key: FDB.Bytes,
+        for key: Bytes,
         ref: ItemEnvelope.ExternalRef,
         snapshot: Bool
-    ) async throws -> FDB.Bytes {
+    ) async throws -> Bytes {
         let blobBase = blobPrefix(for: key)
 
         var result: [UInt8] = []
@@ -283,13 +283,13 @@ public struct ItemStorage: Sendable {
 
     // MARK: - Internal: Compression
 
-    private func compress(_ value: FDB.Bytes) throws -> FDB.Bytes {
+    private func compress(_ value: Bytes) throws -> Bytes {
         let data = Data(value)
         let compressed = try transformer.serializeSync(data)
         return Array(compressed)
     }
 
-    func decompress(_ value: FDB.Bytes) throws -> FDB.Bytes {
+    func decompress(_ value: Bytes) throws -> Bytes {
         guard !value.isEmpty else { return value }
         let data = Data(value)
         let decompressed = try transformer.deserializeSync(data)
@@ -299,7 +299,7 @@ public struct ItemStorage: Sendable {
     // MARK: - Direct Transaction Access
 
     /// Access the underlying transaction for non-item operations
-    public var underlying: any TransactionProtocol {
+    public var underlying: any Transaction {
         transaction
     }
 }
@@ -308,19 +308,19 @@ public struct ItemStorage: Sendable {
 
 /// AsyncSequence for scanning items
 public struct ItemScanSequence: AsyncSequence, Sendable {
-    public typealias Element = (key: FDB.Bytes, data: FDB.Bytes)
+    public typealias Element = (key: Bytes, data: Bytes)
 
     private let storage: ItemStorage
-    private let begin: FDB.Bytes
-    private let end: FDB.Bytes
+    private let begin: Bytes
+    private let end: Bytes
     private let snapshot: Bool
     private let limit: Int
     private let reverse: Bool
 
     init(
         storage: ItemStorage,
-        begin: FDB.Bytes,
-        end: FDB.Bytes,
+        begin: Bytes,
+        end: Bytes,
         snapshot: Bool,
         limit: Int,
         reverse: Bool
@@ -347,17 +347,18 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
     public struct AsyncIterator: AsyncIteratorProtocol {
         private let storage: ItemStorage
         private let snapshot: Bool
-        private let begin: FDB.Bytes
-        private let end: FDB.Bytes
+        private let begin: Bytes
+        private let end: Bytes
         private let reverse: Bool
         private let limit: Int
         private var count: Int = 0
-        private var kvIterator: FDB.AsyncKVSequence.AsyncIterator?
+        private var collected: [(Bytes, Bytes)]?
+        private var index: Int = 0
 
         init(
             storage: ItemStorage,
-            begin: FDB.Bytes,
-            end: FDB.Bytes,
+            begin: Bytes,
+            end: Bytes,
             snapshot: Bool,
             limit: Int,
             reverse: Bool
@@ -371,35 +372,24 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
         }
 
         public mutating func next() async throws -> Element? {
-            // Check limit
-            if limit > 0 && count >= limit {
-                await kvIterator?.finish()
-                return nil
-            }
-
-            // Initialize streaming iterator on first access.
-            if kvIterator == nil {
-                let sequence = storage.underlying.getRange(
-                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+            // Lazily collect all KV pairs on first access
+            if collected == nil {
+                collected = try await storage.underlying.collectRange(
+                    from: KeySelector.firstGreaterOrEqual(begin),
+                    to: KeySelector.firstGreaterOrEqual(end),
                     limit: limit,
                     reverse: reverse,
                     snapshot: snapshot,
                     streamingMode: limit > 0 ? .small : .wantAll
                 )
-                kvIterator = sequence.makeAsyncIterator()
             }
 
-            guard var iterator = kvIterator else {
+            guard let items = collected, index < items.count else {
                 return nil
             }
 
-            guard let (key, envelopeBytes) = try await iterator.next() else {
-                kvIterator = iterator
-                return nil
-            }
-            kvIterator = iterator
-            count += 1
+            let (key, envelopeBytes) = items[index]
+            index += 1
 
             // All data must be in envelope format
             guard ItemEnvelope.isEnvelope(envelopeBytes) else {
@@ -409,7 +399,7 @@ public struct ItemScanSequence: AsyncSequence, Sendable {
             // Parse envelope and load data
             let envelope = try ItemEnvelope.deserialize(envelopeBytes)
 
-            let compressed: FDB.Bytes
+            let compressed: Bytes
             switch envelope.content {
             case .inline(let data):
                 compressed = data

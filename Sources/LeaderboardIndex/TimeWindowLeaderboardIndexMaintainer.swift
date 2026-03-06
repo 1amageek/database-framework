@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for TIME_WINDOW_LEADERBOARD indexes with compile-time type safety
 ///
@@ -95,7 +95,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -193,7 +193,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if score field is nil, skip indexing
         let score: Int64
@@ -225,7 +225,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Sparse index: if score field is nil, no index entry
         let score: Int64
         let grouping: [any TupleElement]
@@ -316,7 +316,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         grouping: [any TupleElement],
         score: Int64,
         pk: Tuple
-    ) throws -> FDB.Bytes {
+    ) throws -> Bytes {
         var elements: [any TupleElement] = [windowId]
         elements.append(contentsOf: grouping)
         elements.append(invertScore(score))
@@ -335,7 +335,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         grouping: [any TupleElement],
         windowId: Int64,
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Create window entry
         let entryKey = try makeWindowEntryKey(
@@ -360,7 +360,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     /// Delete an entry
     private func deleteEntry(
         pk: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -401,7 +401,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         newGrouping: [any TupleElement],
         currentWindowId: Int64,
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Get current position
         let posKey = posSubspace.pack(pk)
@@ -441,7 +441,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     /// Ensure window metadata exists
     private func ensureWindowMetadata(
         windowId: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let startKey = metaSubspace.subspace("start").pack(Tuple(windowId))
         if try await transaction.getValue(for: startKey) == nil {
@@ -456,7 +456,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     /// This avoids issues with early `break` from async sequences conflicting with commit.
     private func cleanupOldWindows(
         currentWindowId: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let oldestAllowedWindow = currentWindowId - Int64(windowCount)
 
@@ -482,7 +482,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func getTopK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -507,7 +507,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -516,27 +516,27 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         // Range: All keys with prefix pack([windowId, grouping...])
-        // Use FDB.strinc on prefix bytes to get exclusive upper bound
+        // Use strinc on prefix bytes to get exclusive upper bound
         // This includes ALL scores (including 0, which has invertedScore=Int64.max)
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: FDB.Bytes
+        let rangeEnd: Bytes
         do {
-            rangeEnd = try FDB.strinc(rangeStart)
+            rangeEnd = try strinc(rangeStart)
         } catch {
             // Fallback: append 0xFF (should never happen in practice)
             rangeEnd = rangeStart + [0xFF]
         }
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         var results: [(pk: Tuple, score: Int64)] = []
         var count = 0
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard windowSubspace.contains(key), count < k else { break }
 
             let keyTuple = try windowSubspace.unpack(key)
@@ -579,7 +579,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func getRank(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -612,14 +612,14 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             pk: pk
         )
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(targetKey),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(targetKey),
             snapshot: true
         )
 
         var rank = 1
-        for try await _ in sequence {
+        for _ in sequence {
             rank += 1
         }
 
@@ -631,18 +631,18 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of window IDs (newest first)
     public func getAvailableWindows(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Int64] {
         let range = metaSubspace.subspace("start").range()
         var windowIds: [Int64] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             let keyTuple = try metaSubspace.subspace("start").unpack(key)
             if let e = keyTuple[0], let wid = try? TypeConversion.int64(from: e) {
                 windowIds.append(wid)
@@ -667,7 +667,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func getBottomK(
         k: Int,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, score: Int64)] {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -696,7 +696,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         k: Int,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Build range for this window (optionally with grouping)
         var prefixElements: [any TupleElement] = [windowId]
@@ -705,9 +705,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: FDB.Bytes
+        let rangeEnd: Bytes
         do {
-            rangeEnd = try FDB.strinc(rangeStart)
+            rangeEnd = try strinc(rangeStart)
         } catch {
             rangeEnd = rangeStart + [0xFF]
         }
@@ -715,16 +715,16 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         // Forward iteration - collect all entries, then return last K
         // Since scores are stored inverted, forward scan gives highest scores first
         // So we collect all and take the tail (lowest scores)
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         // Use a sliding window to keep only the last K entries (lowest scores)
         var allEntries: [(pk: Tuple, score: Int64)] = []
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard windowSubspace.contains(key) else { break }
 
             let keyTuple = try windowSubspace.unpack(key)
@@ -773,7 +773,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func getPercentile(
         _ percentile: Double,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -798,7 +798,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         _ percentile: Double,
         windowId: Int64,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64? {
         guard percentile >= 0 && percentile <= 1 else {
             return nil
@@ -835,7 +835,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     private func getTotalCount(
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {
@@ -843,21 +843,21 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         }
 
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: FDB.Bytes
+        let rangeEnd: Bytes
         do {
-            rangeEnd = try FDB.strinc(rangeStart)
+            rangeEnd = try strinc(rangeStart)
         } catch {
             rangeEnd = rangeStart + [0xFF]
         }
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         var count = 0
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
         }
 
@@ -897,7 +897,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
     public func getRankDense(
         pk: Tuple,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int? {
         let now = Date()
         let currentWindowId = windowId(for: now)
@@ -937,7 +937,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         pk: Tuple,
         strategy: RankingStrategy,
         grouping: [any TupleElement]? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int? {
         switch strategy {
         case .competition:
@@ -952,7 +952,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         score: Int64,
         windowId: Int64,
         grouping: [any TupleElement]?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         var prefixElements: [any TupleElement] = [windowId]
         if let g = grouping {
@@ -968,9 +968,9 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         endElements.append(invertScore(score))
         let rangeEnd = windowSubspace.pack(Tuple(endElements))
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
@@ -978,7 +978,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let groupingCount = grouping?.count ?? 0
         let invertedScoreIndex = 1 + groupingCount
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard windowSubspace.contains(key) else { break }
 
             let keyTuple = try windowSubspace.unpack(key)

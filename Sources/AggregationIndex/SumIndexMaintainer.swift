@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for SUM aggregation indexes with compile-time type safety
 ///
@@ -59,7 +59,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
@@ -70,7 +70,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if any field value is nil, skip indexing
         let allValues: [any TupleElement]
@@ -108,7 +108,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Sparse index: if any field value is nil, no index entry
         let allValues: [any TupleElement]
         do {
@@ -132,7 +132,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     /// - Returns: The sum as Double (0.0 if no entries)
     public func getSum(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Double {
         let sumKey = try buildGroupingKey(groupingValues)
 
@@ -153,13 +153,13 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     /// - Parameter transaction: The transaction to use
     /// - Returns: Array of (groupingValues, sum) tuples
     public func getAllSums(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], sum: Double)] {
         var results: [(grouping: [any TupleElement], sum: Double)] = []
 
-        let sequence = scanAllEntries(transaction: transaction)
+        let sequence = try await scanAllEntries(transaction: transaction)
         var scannedKeys = 0
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard subspace.contains(key) else { break }
 
             // Resource limit
@@ -180,7 +180,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     // MARK: - Private Helpers
 
     private struct AggregationData {
-        let groupingKey: FDB.Bytes
+        let groupingKey: Bytes
         let int64Value: Int64?
         let doubleValue: Double?
     }
@@ -217,7 +217,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
     private func applyDelta(
         oldData: AggregationData?,
         newData: AggregationData?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new)) where old.groupingKey == new.groupingKey:

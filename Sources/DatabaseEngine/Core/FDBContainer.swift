@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 import Logging
@@ -28,7 +28,7 @@ import Logging
 /// **Architecture**:
 /// ```
 /// FDBContainer (Resource Manager)
-///     ├── database: DatabaseProtocol (for system operations only)
+///     ├── database: StorageEngine (for system operations only)
 ///     ├── schema: Schema
 ///     └── newContext() → FDBContext (owns transactions + cache)
 /// ```
@@ -65,7 +65,7 @@ public final class FDBContainer: Sendable {
     /// Thread-safe: FDB client handles thread safety internally.
     /// Used for system operations (DirectoryLayer, Migration).
     /// Application transactions should use FDBContext.withTransaction().
-    nonisolated(unsafe) public let database: any DatabaseProtocol
+    nonisolated(unsafe) public let database: any StorageEngine
 
     /// Schema (version, entities, indexes)
     public let schema: Schema
@@ -124,6 +124,7 @@ public final class FDBContainer: Sendable {
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
     public init(
         for schema: Schema,
+        engine: any StorageEngine,
         configuration: FDBConfiguration? = nil,
         security: SecurityConfiguration = .enabled()
     ) async throws {
@@ -131,15 +132,7 @@ public final class FDBContainer: Sendable {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
         }
 
-        // FDB ネットワーク初期化（未初期化の場合のみ）
-        if !FDBClient.isInitialized {
-            let version = configuration?.apiVersion.map { Int($0) } ?? FDBClient.defaultApiVersion
-            try await FDBClient.initialize(version: version)
-        }
-
-        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
-
-        self.database = database
+        self.database = engine
         self.schema = schema
         self.configuration = configuration
         self.securityConfiguration = security
@@ -160,7 +153,7 @@ public final class FDBContainer: Sendable {
         try await ensureIndexesReady()
 
         // Persist schema catalog (entities + ontology) for CLI and dynamic tools
-        let registry = SchemaRegistry(database: database)
+        let registry = SchemaRegistry(database: engine)
         try await registry.persist(schema)
     }
 
@@ -177,7 +170,7 @@ public final class FDBContainer: Sendable {
     ///   Index states and catalog entries must be managed externally. Intended for testing and
     ///   advanced use cases where the caller controls initialization.
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         schema: Schema,
         configuration: FDBConfiguration? = nil,
         security: SecurityConfiguration = .enabled(),
@@ -320,24 +313,12 @@ public final class FDBContainer: Sendable {
             return cached
         }
 
-        let layer = convertDirectoryLayer(type.directoryLayer)
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: pathComponents, type: layer)
-        let subspace = dirSubspace.subspace
+        let subspace = try await database.directoryService.createOrOpen(path: pathComponents)
 
         directoryCache.withLock { $0[cacheKey] = subspace }
         return subspace
     }
 
-    /// Convert Core.DirectoryLayer to FoundationDB.DirectoryType
-    private func convertDirectoryLayer(_ layer: Core.DirectoryLayer) -> DirectoryType? {
-        switch layer {
-        case .default:
-            return nil
-        case .partition:
-            return .partition
-        }
-    }
 
     // MARK: - Store Access
 
@@ -425,9 +406,7 @@ public final class FDBContainer: Sendable {
         }
 
         // Create or open the directory
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path)
-        let subspace = dirSubspace.subspace
+        let subspace = try await database.directoryService.createOrOpen(path: path)
 
         // Cache the result
         directoryCache.withLock { $0[cacheKey] = subspace }
@@ -467,9 +446,7 @@ public final class FDBContainer: Sendable {
         }
 
         // Create or open the directory
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path)
-        let subspace = dirSubspace.subspace
+        let subspace = try await database.directoryService.createOrOpen(path: path)
 
         // Cache the result
         directoryCache.withLock { $0[cacheKey] = subspace }
@@ -523,7 +500,7 @@ public final class FDBContainer: Sendable {
     /// - RelationshipIndexKind: Auto-generates `RelationshipIndexConfiguration` with item loader
     internal static func generateAutoConfigurations(
         schema: Schema,
-        database: any DatabaseProtocol
+        database: any StorageEngine
     ) -> [any IndexConfiguration] {
         var configs: [any IndexConfiguration] = []
 
@@ -577,8 +554,8 @@ public final class FDBContainer: Sendable {
         typeName: String,
         id: any Sendable,
         schema: Schema,
-        database: any DatabaseProtocol,
-        transaction: any TransactionProtocol
+        database: any StorageEngine,
+        transaction: any Transaction
     ) async throws -> (any Persistable)? {
         // Find the entity in schema
         guard let entity = schema.entities.first(where: { $0.name == typeName }) else {
@@ -591,9 +568,7 @@ public final class FDBContainer: Sendable {
 
         // Resolve directory for the type
         let pathComponents = resolveStaticDirectoryPath(for: type)
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: pathComponents)
-        let subspace = dirSubspace.subspace
+        let subspace = try await database.directoryService.createOrOpen(path: pathComponents)
 
         // Build the item key
         let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(type.persistableType)
@@ -651,9 +626,7 @@ public final class FDBContainer: Sendable {
 extension FDBContainer {
     /// Get metadata directory for schema versioning
     private func getMetadataSubspace() async throws -> Subspace {
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
-        return dirSubspace.subspace
+        try await database.directoryService.createOrOpen(path: ["_metadata"])
     }
 
     /// Get the current schema version from FDB
@@ -711,15 +684,15 @@ extension FDBContainer {
     /// Initialize with VersionedSchema and MigrationPlan
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
+        engine: any StorageEngine,
         migrationPlan: P.Type,
         configuration: FDBConfiguration? = nil
     ) throws {
         try P.validate()
         let schemaInstance = S.makeSchema()
-        let database = try FDBClient.openDatabase(clusterFilePath: configuration?.url?.path)
 
         self.init(
-            database: database,
+            database: engine,
             schema: schemaInstance,
             configuration: configuration,
             indexConfigurations: configuration?.indexConfigurations ?? []
@@ -844,12 +817,13 @@ extension FDBContainer {
 // MARK: - Lifecycle
 
 extension FDBContainer {
-    /// FDB ネットワークをシャットダウンする
+    /// ストレージエンジンをシャットダウンする
     ///
     /// 全ての FDBContainer / FDBContext の使用完了後に呼ぶ。
-    /// ネットワークスレッドの終了を待ってからリターンする。
-    /// シャットダウン後、プロセスは自然に終了できる。
+    /// FDB バックエンドの場合、ネットワークスレッドの終了を待つ。
+    /// バックエンド固有のシャットダウンはアプリ側で行うこと。
+    @available(*, deprecated, message: "Use backend-specific shutdown instead (e.g., FDBStorageEngine)")
     public static func shutdown() {
-        FDBClient.shutdown()
+        // No-op: backend-specific shutdown should be handled at the app level
     }
 }

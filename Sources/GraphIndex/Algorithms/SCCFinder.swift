@@ -6,7 +6,7 @@
 // SIAM Journal on Computing, 1(2), 146-160.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import DatabaseEngine
 import Graph
@@ -132,14 +132,14 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let scanner: GraphEdgeScanner
     private let configuration: SCCConfiguration
 
     // MARK: - Initialization
 
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         scanner: GraphEdgeScanner,
         configuration: SCCConfiguration = .default
     ) {

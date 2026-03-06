@@ -5,18 +5,18 @@
 /// and DynamicProtobufDecoder/Encoder for Protobuf serialization.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import DatabaseEngine
 import Core
 import Graph
 
 /// Direct FDB data access driven by Schema.Entity
 public struct CatalogDataAccess: Sendable {
-    nonisolated(unsafe) public let database: any DatabaseProtocol
+    nonisolated(unsafe) public let database: any StorageEngine
     private let entities: [String: Schema.Entity]
     private let transformer = TransformingSerializer(configuration: .default)
 
-    public init(database: any DatabaseProtocol, entities: [Schema.Entity]) {
+    public init(database: any StorageEngine, entities: [Schema.Entity]) {
         self.database = database
         var map: [String: Schema.Entity] = [:]
         for entity in entities {
@@ -41,9 +41,7 @@ public struct CatalogDataAccess: Sendable {
     /// Resolve the FDB subspace for a type using its entity's directory path
     func resolveSubspace(for entity: Schema.Entity, partitionValues: [String: String] = [:]) async throws -> Subspace {
         let path = try entity.resolvedDirectoryPath(partitionValues: partitionValues)
-        let directoryLayer = DirectoryLayer(database: database)
-        let dirSubspace = try await directoryLayer.createOrOpen(path: path)
-        return dirSubspace.subspace
+        return try await database.directoryService.createOrOpen(path: path)
     }
 
     /// Build the item subspace: [directory]/R/[typeName]
@@ -61,7 +59,7 @@ public struct CatalogDataAccess: Sendable {
         let key = typeSubspace.pack(Tuple([id]))
 
         // Get raw bytes inside transaction
-        let rawValue: FDB.Bytes? = try await database.withTransaction { transaction in
+        let rawValue: Bytes? = try await database.withTransaction { transaction in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -83,11 +81,11 @@ public struct CatalogDataAccess: Sendable {
         let (begin, end) = typeSubspace.range()
 
         // Collect raw key-value pairs inside transaction
-        let rawPairs: [(key: FDB.Bytes, value: FDB.Bytes)] = try await database.withTransaction { transaction in
-            var pairs: [(key: FDB.Bytes, value: FDB.Bytes)] = []
-            let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let rawPairs: [(key: Bytes, value: Bytes)] = try await database.withTransaction { transaction in
+            var pairs: [(key: Bytes, value: Bytes)] = []
+            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-            for try await (key, value) in sequence {
+            for (key, value) in sequence {
                 pairs.append((key: key, value: value))
                 if let limit, pairs.count >= limit {
                     break
@@ -205,7 +203,7 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Envelope Helpers
 
     /// Unwrap ItemEnvelope bytes -> decompressed Protobuf bytes
-    private func unwrapEnvelope(_ rawValue: FDB.Bytes) throws -> [UInt8] {
+    private func unwrapEnvelope(_ rawValue: Bytes) throws -> [UInt8] {
         guard ItemEnvelope.isEnvelope(rawValue) else {
             // Not an envelope — treat as raw Protobuf
             return rawValue
@@ -213,7 +211,7 @@ public struct CatalogDataAccess: Sendable {
 
         let envelope = try ItemEnvelope.deserialize(rawValue)
 
-        let compressed: FDB.Bytes
+        let compressed: Bytes
         switch envelope.content {
         case .inline(let data):
             compressed = data
@@ -229,7 +227,7 @@ public struct CatalogDataAccess: Sendable {
     // MARK: - Key Helpers
 
     /// Extract ID string from an FDB key by unpacking the Tuple suffix
-    private func extractID(from key: FDB.Bytes, subspace: Subspace) -> String {
+    private func extractID(from key: Bytes, subspace: Subspace) -> String {
         do {
             let tuple = try subspace.unpack(key)
             if let first = tuple[0] {

@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Graph
 
 // MARK: - PathPatternQueryBuilder
@@ -348,13 +348,13 @@ public struct PathPatternQueryBuilder<T: Persistable>: Sendable {
         return try await queryContext.withTransaction { transaction in
             var results: [(node: String, edge: String)] = []
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 let elements = try prefix.unpack(key)
 
                 guard !elements.isEmpty else { continue }

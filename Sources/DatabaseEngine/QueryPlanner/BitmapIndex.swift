@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Bitmap index support for efficient filtering on low-cardinality columns
 ///

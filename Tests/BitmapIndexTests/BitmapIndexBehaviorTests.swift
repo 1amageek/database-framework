@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct TestProduct: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: BitmapIndexMaintainer<TestProduct>
 
-    init(indexName: String = "TestProduct_category") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "TestProduct_category") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -349,7 +350,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Insert adds to bitmap")
     func testInsertAddsToBitmap() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
 
@@ -370,7 +371,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Multiple inserts with same category")
     func testMultipleInsertsWithSameCategory() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -397,7 +398,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Multiple inserts with different categories")
     func testMultipleInsertsWithDifferentCategories() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -434,7 +435,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Delete removes from bitmap")
     func testDeleteRemovesFromBitmap() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
 
@@ -468,7 +469,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Delete one of many maintains others")
     func testDeleteOneOfMany() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -507,7 +508,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Update category changes bitmap membership")
     func testUpdateCategory() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let oldProduct = TestProduct(id: "p1", category: "electronics", brand: "Sony")
 
@@ -545,7 +546,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("Update non-indexed field keeps bitmap membership")
     func testUpdateNonIndexedField() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let oldProduct = TestProduct(id: "p1", category: "electronics", brand: "Sony")
 
@@ -580,7 +581,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     func testAndQueryReturnsIntersection() async throws {
         try await FDBTestSetup.shared.initialize()
         // Create separate maintainers for category and brand
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
 
@@ -657,7 +658,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("OR query returns union")
     func testOrQueryReturnsUnion() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -686,7 +687,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("getAllDistinctValues returns all categories")
     func testGetAllDistinctValues() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -719,7 +720,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("getPrimaryKeys returns correct IDs")
     func testGetPrimaryKeysReturnsCorrectIds() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "product-001", category: "electronics", brand: "Sony"),
@@ -755,7 +756,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("scanItem adds to bitmap")
     func testScanItemAddsToBitmap() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics", brand: "Sony"),
@@ -783,7 +784,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     @Test("computeIndexKeys returns expected keys")
     func testComputeIndexKeys() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let product = TestProduct(id: "p1", category: "electronics", brand: "Sony")
         let keys = try await ctx.maintainer.computeIndexKeys(for: product, id: Tuple("p1"))
@@ -803,7 +804,7 @@ struct BitmapIndexEdgeCasesTests {
     @Test("Empty bitmap query returns empty")
     func testEmptyBitmapQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let bitmap = try await ctx.getBitmap(for: "nonexistent")
         #expect(bitmap.cardinality == 0, "Non-existent category should return empty bitmap")
@@ -814,7 +815,7 @@ struct BitmapIndexEdgeCasesTests {
     @Test("Sequential ID management across transactions")
     func testSequentialIdManagement() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert products in separate transactions
         for i in 1...5 {
@@ -841,7 +842,7 @@ struct BitmapIndexEdgeCasesTests {
     @Test("Large number of entries")
     func testLargeNumberOfEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Insert 100 products
         try await ctx.database.withTransaction { transaction in
@@ -867,7 +868,7 @@ struct BitmapIndexEdgeCasesTests {
     @Test("Special characters in field values")
     func testSpecialCharactersInValues() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let products = [
             TestProduct(id: "p1", category: "electronics & gadgets", brand: "Sony"),

@@ -10,7 +10,7 @@
 // https://www.w3.org/TR/shacl/#core-components
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 import Core
 import DatabaseEngine

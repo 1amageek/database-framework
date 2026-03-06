@@ -4,7 +4,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Mock IndexKind for CLI Tests
 

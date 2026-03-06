@@ -2,7 +2,7 @@
 // QueryPlanner - Plan enumeration and generation
 
 import Core
-import FoundationDB
+import StorageKit
 
 /// Generates candidate execution plans for a query
 public struct PlanEnumerator<T: Persistable> {

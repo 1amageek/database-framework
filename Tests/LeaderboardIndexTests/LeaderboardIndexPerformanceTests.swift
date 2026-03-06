@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ private struct PerfGameScore: Persistable {
 // MARK: - Performance Test Helper
 
 private struct PerfTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let maintainer: TimeWindowLeaderboardIndexMaintainer<PerfGameScore, Int64>
     let indexName: String
 
-    init(testName: String, window: LeaderboardWindowType = .daily, windowCount: Int = 7) throws {
-        self.database = try FDBClient.openDatabase()
+    init(testName: String, window: LeaderboardWindowType = .daily, windowCount: Int = 7) async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.indexName = "PerfGameScore_leaderboard_score"
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard_perf", String(testId), testName).pack())
@@ -142,7 +143,7 @@ struct LeaderboardIndexInsertPerformanceTests {
     @Test("Bulk insert performance - 100 records")
     func testBulkInsert100Records() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "bulk_insert_100")
+            let ctx = try await PerfTestContext(testName: "bulk_insert_100")
 
             let scores = (0..<100).map { i in
                 PerfGameScore(
@@ -175,7 +176,7 @@ struct LeaderboardIndexInsertPerformanceTests {
     @Test("Bulk insert performance - 1000 records")
     func testBulkInsert1000Records() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "bulk_insert_1000")
+            let ctx = try await PerfTestContext(testName: "bulk_insert_1000")
 
             let scores = (0..<1000).map { i in
                 PerfGameScore(
@@ -208,7 +209,7 @@ struct LeaderboardIndexInsertPerformanceTests {
     @Test("Sequential insert performance")
     func testSequentialInsertPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "sequential_insert")
+            let ctx = try await PerfTestContext(testName: "sequential_insert")
 
             let scores = (0..<100).map { i in
                 PerfGameScore(
@@ -249,7 +250,7 @@ struct LeaderboardIndexQueryPerformanceTests {
     @Test("Top-K query performance")
     func testTopKQueryPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "topk_query")
+            let ctx = try await PerfTestContext(testName: "topk_query")
 
             // Setup: Insert 1000 records
             let scores = (0..<1000).map { i in
@@ -302,7 +303,7 @@ struct LeaderboardIndexQueryPerformanceTests {
     @Test("Rank lookup performance")
     func testRankLookupPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "rank_lookup")
+            let ctx = try await PerfTestContext(testName: "rank_lookup")
 
             // Setup: Insert 1000 records with sequential scores
             let scores = (0..<1000).map { i in
@@ -367,7 +368,7 @@ struct LeaderboardIndexQueryPerformanceTests {
     @Test("Available windows query performance")
     func testAvailableWindowsPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "available_windows")
+            let ctx = try await PerfTestContext(testName: "available_windows")
 
             // Setup: Insert records
             let scores = (0..<100).map { i in
@@ -414,7 +415,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
     @Test("Score update performance")
     func testScoreUpdatePerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "score_update")
+            let ctx = try await PerfTestContext(testName: "score_update")
 
             // Setup: Insert 100 records
             var scores = (0..<100).map { i in
@@ -471,7 +472,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "delete")
+            let ctx = try await PerfTestContext(testName: "delete")
 
             // Setup: Insert 100 records
             let scores = (0..<100).map { i in
@@ -528,7 +529,7 @@ struct LeaderboardIndexScaleTests {
     @Test("Large leaderboard - 10000 entries")
     func testLargeLeaderboard() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "large_leaderboard")
+            let ctx = try await PerfTestContext(testName: "large_leaderboard")
 
             // Insert 10000 records in batches
             let batchSize = 500
@@ -593,7 +594,7 @@ struct LeaderboardIndexScaleTests {
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "scan_item")
+            let ctx = try await PerfTestContext(testName: "scan_item")
 
             let scores = (0..<1000).map { i in
                 PerfGameScore(
@@ -627,7 +628,7 @@ struct LeaderboardIndexScaleTests {
     @Test("Ties handling performance")
     func testTiesHandlingPerformance() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try PerfTestContext(testName: "ties")
+            let ctx = try await PerfTestContext(testName: "ties")
 
             // Insert 1000 records with only 10 distinct scores (many ties)
             let scores = (0..<1000).map { i in
@@ -680,7 +681,7 @@ struct LeaderboardIndexScaleTests {
             ]
 
             for (windowType, name) in windowTypes {
-                let ctx = try PerfTestContext(testName: "window_\(name)", window: windowType)
+                let ctx = try await PerfTestContext(testName: "window_\(name)", window: windowType)
 
                 let scores = (0..<100).map { i in
                     PerfGameScore(

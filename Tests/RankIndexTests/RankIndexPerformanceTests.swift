@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Rank
 import TestSupport
@@ -13,13 +14,13 @@ import TestSupport
 // MARK: - Benchmark Context
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: RankIndexMaintainer<BenchmarkPlayer, Int64>
 
-    init() throws {
-        self.database = try FDBClient.openDatabase()
+    init() async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("score_rank")
@@ -138,7 +139,7 @@ struct RankIndexPerformanceTests {
     @Test("Bulk insert performance - 100 players")
     func testBulkInsert100() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let players = (0..<100).map { i in
             BenchmarkPlayer(name: "Player\(i)", score: Int64.random(in: 0...10000))
@@ -172,7 +173,7 @@ struct RankIndexPerformanceTests {
     @Test("Bulk insert performance - 1000 players")
     func testBulkInsert1000() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let players = (0..<1000).map { i in
             BenchmarkPlayer(name: "Player\(i)", score: Int64.random(in: 0...100000))
@@ -215,7 +216,7 @@ struct RankIndexPerformanceTests {
     @Test("Top-K query performance - varying K values")
     func testTopKPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 players
         let playerCount = 500
@@ -262,7 +263,7 @@ struct RankIndexPerformanceTests {
     @Test("Top-K ordering verification")
     func testTopKOrdering() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert players with known scores
         let knownScores: [Int64] = [100, 500, 200, 1000, 800, 300, 900, 400, 600, 700]
@@ -296,7 +297,7 @@ struct RankIndexPerformanceTests {
     @Test("Rank lookup performance - varying ranks")
     func testRankLookupPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 players with scores 1-500
         let playerCount = 500
@@ -349,7 +350,7 @@ struct RankIndexPerformanceTests {
     @Test("Count query performance (O(1))")
     func testCountPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 players
         let playerCount = 500
@@ -401,7 +402,7 @@ struct RankIndexPerformanceTests {
     @Test("Percentile query performance")
     func testPercentilePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 players with scores 1-500
         let playerCount = 500
@@ -450,7 +451,7 @@ struct RankIndexPerformanceTests {
     @Test("Update performance")
     func testUpdatePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 100 players
         let players = (0..<100).map { i in
@@ -505,7 +506,7 @@ struct RankIndexPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 100 players
         let players = (0..<100).map { i in
@@ -557,7 +558,7 @@ struct RankIndexPerformanceTests {
     @Test("Ties handling performance")
     func testTiesPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 100 players with only 10 distinct scores (many ties)
         let distinctScores: [Int64] = [100, 200, 300, 400, 500, 600, 700, 800, 900, 1000]
@@ -612,7 +613,7 @@ struct RankIndexPerformanceTests {
     @Test("Scale test - 2000 players")
     func testScale2000() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let playerCount = 2000
         let players = (0..<playerCount).map { i in

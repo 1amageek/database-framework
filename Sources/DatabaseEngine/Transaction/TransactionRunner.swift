@@ -5,7 +5,7 @@
 // https://apple.github.io/foundationdb/developer-guide.html#transactions
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - TransactionRunner
 
@@ -37,8 +37,8 @@ import FoundationDB
 internal struct TransactionRunner: Sendable {
     // MARK: - Properties
 
-    /// DatabaseProtocol is internally thread-safe (manages FDB connections)
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    /// StorageEngine is internally thread-safe (manages FDB connections)
+    nonisolated(unsafe) private let database: any StorageEngine
 
     /// Initial backoff delay in milliseconds
     ///
@@ -50,7 +50,7 @@ internal struct TransactionRunner: Sendable {
 
     // MARK: - Initialization
 
-    init(database: any DatabaseProtocol) {
+    init(database: any StorageEngine) {
         self.database = database
     }
 
@@ -67,7 +67,7 @@ internal struct TransactionRunner: Sendable {
     func run<T: Sendable>(
         configuration: TransactionConfiguration,
         readVersionCache: ReadVersionCache? = nil,
-        operation: @Sendable (any TransactionProtocol) async throws -> T
+        operation: @Sendable (any Transaction) async throws -> T
     ) async throws -> T {
         let maxRetries = max(1, configuration.retryLimit)
         let maxDelayMs = configuration.maxRetryDelay
@@ -90,26 +90,20 @@ internal struct TransactionRunner: Sendable {
             }
 
             do {
-                // 4. Execute operation
-                let result = try await operation(transaction)
-
-                // 5. Commit
-                let committed = try await transaction.commit()
-                if committed {
-                    // 6. Update cache after successful commit
-                    await updateCacheAfterCommit(
-                        transaction: transaction,
-                        cache: readVersionCache
-                    )
-                    return result
+                // 4. Execute operation (set TaskLocal for nested transaction detection)
+                let result = try await ActiveTransactionScope.$current.withValue(transaction) {
+                    try await operation(transaction)
                 }
 
-                // Commit returned false → cancel and apply backoff before retry
-                transaction.cancel()
-                if attempt < maxRetries - 1 {
-                    try await applyBackoff(attempt: attempt, maxDelayMs: maxDelayMs)
-                }
-                continue
+                // 5. Commit (throws on failure)
+                try await transaction.commit()
+
+                // 6. Update cache after successful commit
+                await updateCacheAfterCommit(
+                    transaction: transaction,
+                    cache: readVersionCache
+                )
+                return result
 
             } catch {
                 // Cancel transaction before retry or rethrow
@@ -117,8 +111,8 @@ internal struct TransactionRunner: Sendable {
                 transaction.cancel()
 
                 // 6. Check if retryable
-                if let fdbError = error as? FDBError {
-                    if fdbError.isRetryable && attempt < maxRetries - 1 {
+                if let storageError = error as? StorageError, storageError.isRetryable {
+                    if attempt < maxRetries - 1 {
                         // Apply exponential backoff before retry
                         try await applyBackoff(attempt: attempt, maxDelayMs: maxDelayMs)
                         continue
@@ -131,7 +125,7 @@ internal struct TransactionRunner: Sendable {
         }
 
         // Should not reach here, but safety fallback
-        throw FDBError(.transactionTooOld)
+        throw StorageError.transactionTooOld
     }
 
     // MARK: - Cache Policy
@@ -141,7 +135,7 @@ internal struct TransactionRunner: Sendable {
     /// Only called on first attempt. On retry, we use fresh version to avoid
     /// repeating `transaction_too_old` errors from stale cached versions.
     private func applyCachedReadVersion(
-        to transaction: any TransactionProtocol,
+        to transaction: any Transaction,
         configuration: TransactionConfiguration,
         cache: ReadVersionCache?
     ) {
@@ -158,7 +152,7 @@ internal struct TransactionRunner: Sendable {
     /// For write transactions: use committed version (most accurate)
     /// For read-only transactions: use read version
     private func updateCacheAfterCommit(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         cache: ReadVersionCache?
     ) async {
         guard let cache = cache else { return }
@@ -213,16 +207,3 @@ internal struct TransactionRunner: Sendable {
     }
 }
 
-// MARK: - FDBError Extension
-
-extension FDBError {
-    /// Create an FDBError from an error code enum case
-    init(_ code: FDBErrorCode) {
-        self.init(code: Int(code.rawValue))
-    }
-}
-
-/// Internal error codes matching FDB
-internal enum FDBErrorCode: Int32 {
-    case transactionTooOld = 1020
-}

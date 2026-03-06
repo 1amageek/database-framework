@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Permuted
 import TestSupport
@@ -13,14 +14,14 @@ import TestSupport
 // MARK: - Benchmark Context
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: PermutedIndexMaintainer<BenchmarkLocation>
     let permutation: Permutation
 
-    init(permutation: Permutation? = nil) throws {
-        self.database = try FDBClient.openDatabase()
+    init(permutation: Permutation? = nil) async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("compound")
@@ -172,7 +173,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Bulk insert performance - 100 locations")
     func testBulkInsert100() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let locations = generateLocations(count: 100)
 
@@ -204,7 +205,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Bulk insert performance - 1000 locations")
     func testBulkInsert1000() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let locations = generateLocations(count: 1000)
 
@@ -244,7 +245,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Prefix query performance - single field")
     func testPrefixQuerySingleField() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
         let locations = generateLocations(count: 500)
@@ -289,7 +290,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Prefix query performance - two fields")
     func testPrefixQueryTwoFields() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
         let locations = generateLocations(count: 500)
@@ -340,7 +341,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Exact match performance")
     func testExactMatchPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 500 locations
         let locations = generateLocations(count: 500)
@@ -391,14 +392,14 @@ struct PermutedIndexPerformanceTests {
     @Test("Scan all performance")
     func testScanAllPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let counts = [100, 500]
 
         for count in counts {
             // Clear and re-insert
             try await ctx.cleanup()
-            let freshCtx = try BenchmarkContext()
+            let freshCtx = try await BenchmarkContext()
 
             let locations = generateLocations(count: count)
             let batchSize = 100
@@ -438,7 +439,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Update performance")
     func testUpdatePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 100 locations
         let locations = generateLocations(count: 100)
@@ -494,7 +495,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Insert 100 locations
         let locations = generateLocations(count: 100)
@@ -552,7 +553,7 @@ struct PermutedIndexPerformanceTests {
         ]
 
         for perm in permutations {
-            let ctx = try BenchmarkContext(permutation: perm)
+            let ctx = try await BenchmarkContext(permutation: perm)
             let locations = generateLocations(count: 100)
 
             let (_, insertDuration) = try await measure {
@@ -597,7 +598,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Inverse permutation performance")
     func testInversePermutation() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         // Test inverse conversion
         let permutedValues: [any TupleElement] = ["Tokyo", "Japan", "Station A"]
@@ -622,7 +623,7 @@ struct PermutedIndexPerformanceTests {
     @Test("Scale test - 2000 locations")
     func testScale2000() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext()
+        let ctx = try await BenchmarkContext()
 
         let locationCount = 2000
         let locations = generateLocations(count: locationCount)

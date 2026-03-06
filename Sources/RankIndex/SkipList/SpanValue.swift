@@ -9,7 +9,7 @@
 // - Redis Skip List implementation
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Span value stored at each skip list node

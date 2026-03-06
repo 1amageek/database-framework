@@ -7,7 +7,8 @@ import Foundation
 @testable import DatabaseEngine
 import Core
 import Graph
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 @Suite("SPARQL Function Debug", .serialized)
@@ -42,12 +43,11 @@ struct SPARQLFunctionDebugTest {
 
     @Test("Debug: Check data insertion and graph index")
     func testDataInsertionAndIndex() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "sparql_debug"])
+        try? await database.directoryService.remove(path: ["test", "sparql_debug"])
 
         // Create container and ensure indexes are ready
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
@@ -97,12 +97,11 @@ struct SPARQLFunctionDebugTest {
 
     @Test("Debug: Check executeSPARQL string method")
     func testExecuteSPARQLString() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "sparql_debug"])
+        try? await database.directoryService.remove(path: ["test", "sparql_debug"])
 
         // Create container and ensure indexes are ready (handles all index state management)
         let container = FDBContainer(database: database, schema: schema, security: .disabled)

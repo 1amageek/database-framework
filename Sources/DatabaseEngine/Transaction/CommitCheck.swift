@@ -5,7 +5,7 @@
 // Provides extensible pre-commit validation for transactions.
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - CommitCheck Protocol
 
@@ -30,7 +30,7 @@ import FoundationDB
 ///     let value: String
 ///     let indexSubspace: Subspace
 ///
-///     func check(transaction: any TransactionProtocol) async throws {
+///     func check(transaction: any Transaction) async throws {
 ///         let key = indexSubspace.pack(Tuple([value]))
 ///         if let existing = try await transaction.getValue(for: key) {
 ///             throw UniquenessViolation(field: field, value: value)
@@ -51,7 +51,7 @@ public protocol CommitCheck: Sendable {
     ///
     /// - Parameter transaction: The transaction to validate against
     /// - Throws: Error if validation fails (transaction will be aborted)
-    func check(transaction: any TransactionProtocol) async throws
+    func check(transaction: any Transaction) async throws
 }
 
 // MARK: - CommitCheckResult
@@ -123,13 +123,13 @@ public struct NamedCommitCheck: Sendable {
 
 /// Closure-based commit check for simple validations
 public struct ClosureCommitCheck: CommitCheck {
-    private let closure: @Sendable (any TransactionProtocol) async throws -> Void
+    private let closure: @Sendable (any Transaction) async throws -> Void
 
-    public init(_ closure: @escaping @Sendable (any TransactionProtocol) async throws -> Void) {
+    public init(_ closure: @escaping @Sendable (any Transaction) async throws -> Void) {
         self.closure = closure
     }
 
-    public func check(transaction: any TransactionProtocol) async throws {
+    public func check(transaction: any Transaction) async throws {
         try await closure(transaction)
     }
 }
@@ -171,14 +171,14 @@ public struct UniquenessCommitCheck: CommitCheck {
         self.fieldName = fieldName
     }
 
-    public func check(transaction: any TransactionProtocol) async throws {
+    public func check(transaction: any Transaction) async throws {
         let valueSubspace = indexSubspace.subspace(Tuple([value]))
         let (begin, end) = valueSubspace.range()
 
         // Scan for existing entries with this value
-        for try await (key, _) in transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        for (key, _) in try await transaction.collectRange(
+            from: KeySelector.firstGreaterOrEqual(begin),
+            to: KeySelector.firstGreaterOrEqual(end),
             snapshot: false
         ) {
             // Extract ID from key
@@ -235,7 +235,7 @@ public struct ConditionalCommitCheck: CommitCheck {
         self.innerCheck = check
     }
 
-    public func check(transaction: any TransactionProtocol) async throws {
+    public func check(transaction: any Transaction) async throws {
         if condition() {
             try await innerCheck.check(transaction: transaction)
         }
@@ -257,7 +257,7 @@ public struct CompositeCommitCheck: CommitCheck {
         self.failFast = failFast
     }
 
-    public func check(transaction: any TransactionProtocol) async throws {
+    public func check(transaction: any Transaction) async throws {
         if failFast {
             for check in checks {
                 try await check.check(transaction: transaction)
@@ -311,7 +311,7 @@ public final class CommitCheckRegistry: Sendable {
     public func add(
         name: String? = nil,
         priority: Int = 100,
-        _ closure: @escaping @Sendable (any TransactionProtocol) async throws -> Void
+        _ closure: @escaping @Sendable (any Transaction) async throws -> Void
     ) {
         add(ClosureCommitCheck(closure), name: name, priority: priority)
     }
@@ -325,7 +325,7 @@ public final class CommitCheckRegistry: Sendable {
     ///
     /// - Parameter transaction: Transaction to validate against
     /// - Throws: CommitCheckError if any check fails
-    public func executeAll(transaction: any TransactionProtocol) async throws {
+    public func executeAll(transaction: any Transaction) async throws {
         let sortedChecks = checks.withLock { checks in
             checks.sorted { $0.priority < $1.priority }
         }

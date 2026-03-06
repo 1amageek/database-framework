@@ -1,6 +1,7 @@
 import Foundation
 import ArgumentParser
-import FoundationDB
+import StorageKit
+import FDBStorage
 import DatabaseEngine
 import DatabaseCLICore
 
@@ -31,7 +32,7 @@ struct DatabaseCLI: AsyncParsableCommand {
 
     /// 引数なし → REPLモード
     mutating func run() async throws {
-        let (database, _) = try await ClusterConnection.openDatabase()
+        let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
         let registry = SchemaRegistry(database: database)
         let entities = try await registry.loadAll()
         let repl = DatabaseREPL(database: database, entities: entities)
@@ -105,7 +106,7 @@ extension DatabaseCLI {
             )
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let registry = SchemaRegistry(database: database)
                 let entities = try await registry.loadAll()
                 let output = OutputFormatter()
@@ -124,7 +125,7 @@ extension DatabaseCLI {
             var typeName: String
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let registry = SchemaRegistry(database: database)
                 let entities = try await registry.loadAll()
                 let output = OutputFormatter()
@@ -143,7 +144,7 @@ extension DatabaseCLI {
             var path: String
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
                 try await cmd.apply(fileOrDirectory: path)
@@ -166,7 +167,7 @@ extension DatabaseCLI {
             var exportAll: Bool = false
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
 
@@ -212,7 +213,7 @@ extension DatabaseCLI {
             var force: Bool = false
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = SchemaDefinitionCommands(database: database, output: output)
 
@@ -233,7 +234,7 @@ extension DatabaseCLI {
             )
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = OntologyCommands(database: database, output: output)
                 try await cmd.show()
@@ -261,7 +262,7 @@ extension DatabaseCLI {
         var partitions: [String] = []
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -290,7 +291,7 @@ extension DatabaseCLI {
         var json: String
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -316,7 +317,7 @@ extension DatabaseCLI {
         var json: String
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -339,7 +340,7 @@ extension DatabaseCLI {
         var id: String
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -375,7 +376,7 @@ extension DatabaseCLI {
         var partitions: [String] = []
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -424,7 +425,7 @@ extension DatabaseCLI {
         var limit: Int?
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -454,7 +455,7 @@ extension DatabaseCLI {
         var query: String
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -484,7 +485,7 @@ extension DatabaseCLI {
         var force: Bool = false
 
         mutating func run() async throws {
-            let (database, _) = try await ClusterConnection.openDatabase()
+            let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
             let registry = SchemaRegistry(database: database)
             let entities = try await registry.loadAll()
             let dataAccess = CatalogDataAccess(database: database, entities: entities)
@@ -526,7 +527,7 @@ extension DatabaseCLI {
             var key: String
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("get", args: [key])
@@ -546,7 +547,7 @@ extension DatabaseCLI {
             var value: String
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("set", args: [key, value])
@@ -563,7 +564,7 @@ extension DatabaseCLI {
             var key: String
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
                 try await cmd.execute("delete", args: [key])
@@ -583,7 +584,7 @@ extension DatabaseCLI {
             var limit: Int?
 
             mutating func run() async throws {
-                let (database, _) = try await ClusterConnection.openDatabase()
+                let (database, _) = try await ClusterConnection.openDatabase(engineFactory: FDBStorageEngine.open)
                 let output = OutputFormatter()
                 let cmd = RawCommands(database: database, output: output)
 

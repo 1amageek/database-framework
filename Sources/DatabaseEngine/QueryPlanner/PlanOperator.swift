@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Operators that make up a query plan
 public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {

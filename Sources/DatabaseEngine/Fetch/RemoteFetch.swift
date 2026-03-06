@@ -5,7 +5,7 @@
 // Optimizes record retrieval by reducing round trips and leveraging locality.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 
@@ -161,7 +161,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: The fetched items (in request order where found)
     public func fetch(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Item] {
         guard !primaryKeys.isEmpty else { return [] }
 
@@ -242,7 +242,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: AsyncStream of fetched items
     public func stream(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncStream<Item> {
         AsyncStream { continuation in
             Task {
@@ -278,7 +278,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
     /// - Returns: Fetch result with items and metadata
     public func fetchWithMetadata(
         primaryKeys: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> RemoteFetchResult<Item> {
         let startTime = DispatchTime.now()
 

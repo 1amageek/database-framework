@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Estimates the cost of executing a query plan
 public struct CostEstimator<T: Persistable> {

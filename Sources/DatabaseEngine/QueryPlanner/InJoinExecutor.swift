@@ -6,7 +6,7 @@
 // This module implements strategy selection for IN-Join operations.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - InJoinExecutionStrategy

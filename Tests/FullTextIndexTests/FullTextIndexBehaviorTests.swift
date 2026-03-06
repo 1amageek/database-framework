@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import FullText
 import TestSupport
@@ -70,14 +71,14 @@ struct TestArticle: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<TestArticle>
     let kind: FullTextIndexKind<TestArticle>
 
-    init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "TestArticle_content") throws {
-        self.database = try FDBClient.openDatabase()
+    init(tokenizer: TokenizationStrategy = .simple, storePositions: Bool = false, indexName: String = "TestArticle_content") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "fulltext", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -156,7 +157,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Insert tokenizes and indexes")
     func testInsertTokenizesAndIndexes() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
 
@@ -177,7 +178,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Multiple documents are indexed")
     func testMultipleDocuments() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let articles = [
             TestArticle(id: "a1", title: "Swift", content: "Swift programming language"),
@@ -206,7 +207,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Delete removes all tokens")
     func testDeleteRemovesAllTokens() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
 
@@ -242,7 +243,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Update re-tokenizes")
     func testUpdateReTokenizes() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let article = TestArticle(id: "a1", title: "Test", content: "Hello world")
 
@@ -281,7 +282,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Simple term search")
     func testSimpleTermSearch() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let articles = [
             TestArticle(id: "a1", title: "Swift", content: "Swift is a modern programming language"),
@@ -317,7 +318,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Boolean AND query")
     func testBooleanANDQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let articles = [
             TestArticle(id: "a1", title: "Swift", content: "Swift is modern and fast"),
@@ -345,7 +346,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Boolean OR query")
     func testBooleanORQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let articles = [
             TestArticle(id: "a1", title: "Swift", content: "Swift is fast"),
@@ -375,7 +376,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Stemming tokenizer")
     func testStemmingTokenizer() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(tokenizer: .stem)
+        let ctx = try await TestContext(tokenizer: .stem)
 
         let article = TestArticle(id: "a1", title: "Test", content: "Running runners run")
 
@@ -399,7 +400,7 @@ struct FullTextIndexBehaviorTests {
     @Test("ScanItem tokenizes and indexes")
     func testScanItemTokenizesAndIndexes() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let articles = [
             TestArticle(id: "a1", title: "First", content: "First article content"),
@@ -427,7 +428,7 @@ struct FullTextIndexBehaviorTests {
     @Test("Case insensitive search")
     func testCaseInsensitiveSearch() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let article = TestArticle(id: "a1", title: "Test", content: "Hello WORLD")
 

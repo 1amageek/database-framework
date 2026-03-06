@@ -4,7 +4,8 @@ import PackageDescription
 let package = Package(
     name: "Database",
     platforms: [
-        .macOS(.v15)
+        .macOS(.v15),
+        .iOS(.v18),
     ],
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
@@ -23,18 +24,21 @@ let package = Package(
         // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
+        .library(name: "FDBite", targets: ["FDBite"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
         .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
         .executable(name: "database", targets: ["DatabaseCLI"]),
     ],
+    traits: [
+        .default(enabledTraits: ["FoundationDB"]),
+        .trait(name: "FoundationDB"),
+        .trait(name: "FDBite"),
+    ],
     dependencies: [
         .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0222.1"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
-        .package(
-            url: "https://github.com/1amageek/fdb-swift-bindings.git",
-            branch: "feature/directory-layer"
-        ),
+        .package(path: "../storage-kit"),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
@@ -49,7 +53,7 @@ let package = Package(
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "Crypto", package: "swift-crypto"),
@@ -62,7 +66,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -72,7 +76,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "SwiftHNSW", package: "swift-hnsw"),
             ],
@@ -84,7 +88,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -94,7 +98,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Spatial", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -104,7 +108,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -114,7 +118,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -125,7 +129,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -134,7 +138,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -143,7 +147,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -152,7 +156,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -161,7 +165,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -171,7 +175,7 @@ let package = Package(
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -182,7 +186,7 @@ let package = Package(
                 .product(name: "QueryIR", package: "database-kit"),
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
         ),
@@ -210,13 +214,38 @@ let package = Package(
             ],
             exclude: ["README.md"]
         ),
+        // FDBite: On-device database facade (SQLite backend)
+        .target(
+            name: "FDBite",
+            dependencies: [
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
+                "DatabaseEngine",
+                "ScalarIndex",
+                "VectorIndex",
+                "FullTextIndex",
+                "SpatialIndex",
+                "RankIndex",
+                "PermutedIndex",
+                "GraphIndex",
+                "AggregationIndex",
+                "VersionIndex",
+                "BitmapIndex",
+                "LeaderboardIndex",
+                "RelationshipIndex",
+                .product(name: "QueryIR", package: "database-kit"),
+                "QueryAST",
+                .product(name: "SQLiteStorage", package: "storage-kit"),
+            ]
+        ),
         // BenchmarkFramework - Performance benchmarking infrastructure
         .target(
             name: "BenchmarkFramework",
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
         // DatabaseCLICore - Embeddable CLI library with REPL, commands, and catalog access
@@ -229,7 +258,7 @@ let package = Package(
                 "QueryAST",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Yams", package: "Yams"),
             ],
             exclude: ["README.md"]
@@ -242,7 +271,7 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
         // DatabaseCLI - Standalone executable entry point
@@ -251,7 +280,8 @@ let package = Package(
             dependencies: [
                 "DatabaseCLICore",
                 "DatabaseEngine",
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit"),
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["README.md"],
@@ -267,7 +297,8 @@ let package = Package(
                 "DatabaseEngine",
                 "ScalarIndex",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "FoundationDB", package: "fdb-swift-bindings"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit"),
             ],
             path: "Tests/Shared"
         ),
@@ -524,6 +555,14 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // FDBite tests (no libfdb_c required)
+        .testTarget(
+            name: "FDBiteTests",
+            dependencies: [
+                "FDBite",
+                .product(name: "Core", package: "database-kit"),
             ]
         ),
     ],

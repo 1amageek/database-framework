@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Graph
 
 // MARK: - ShortestPathFinder
@@ -67,7 +67,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     // MARK: - Properties
 
     /// Database connection (internally thread-safe)
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
 
     /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
     private let scanner: GraphEdgeScanner
@@ -85,7 +85,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     ///   - strategy: Graph index storage strategy (default: .adjacency)
     ///   - configuration: Algorithm configuration
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         subspace: Subspace,
         strategy: GraphIndexStrategy = .adjacency,
         configuration: ShortestPathConfiguration = .default

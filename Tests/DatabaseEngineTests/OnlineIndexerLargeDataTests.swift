@@ -10,7 +10,8 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 @Suite("OnlineIndexer Large Data Tests", .tags(.requiresFDB), .serialized)
@@ -23,15 +24,15 @@ struct OnlineIndexerLargeDataTests {
     // MARK: - Test Context
 
     struct TestContext: Sendable {
-        nonisolated(unsafe) let database: any DatabaseProtocol
+        nonisolated(unsafe) let database: any StorageEngine
         let container: FDBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
         let blobsSubspace: Subspace
 
-        init() throws {
-            self.database = try FDBClient.openDatabase()
+        init() async throws {
+            self.database = try await FDBStorageEngine.open()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "largedata", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")
@@ -84,7 +85,7 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index with large dataset - batch processing works")
     func testBuildIndexWithLargeDataset() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             // Generate dataset with 200 items (enough to require multiple batches)
             let players = LargeTestDataGenerator.generatePlayers(count: 200, nameLength: 100)
@@ -128,7 +129,7 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index respects batch boundaries")
     func testBatchBoundaryProcessing() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let batchSize = 25
             // Generate exactly 3 batches + 7 remainder = 82 items
@@ -178,7 +179,7 @@ struct OnlineIndexerLargeDataTests {
     @Test("MultiTarget build with dataset")
     func testMultiTargetIndexer() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 100)
             try await ctx.insertPlayers(players)
@@ -234,7 +235,7 @@ struct OnlineIndexerLargeDataTests {
     @Test("Build index with empty dataset")
     func testBuildIndexWithEmptyDataset() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let index = TestIndex.create(name: "empty_idx")
             let maintainer = CountingIndexMaintainer<Player>(
@@ -270,7 +271,7 @@ struct OnlineIndexerLargeDataTests {
 
     @Test("Build index with single item")
     func testBuildIndexWithSingleItem() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let player = Player(id: "single", name: "Only One", score: 100, level: 1)
         try await ctx.insertPlayers([player])

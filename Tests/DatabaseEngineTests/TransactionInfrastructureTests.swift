@@ -9,7 +9,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Synchronization
 @testable import DatabaseEngine
 @testable import Core
@@ -118,7 +119,7 @@ struct CommitCheckTests {
 
         // Execute to verify closure works
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         try await database.withTransaction { tx in
             try await registry.executeAll(transaction: tx)
         }
@@ -130,7 +131,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll runs all passing checks")
     func executeAllRunsPassingChecks() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -156,7 +157,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll throws on first failure")
     func executeAllThrowsOnFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -188,7 +189,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=true stops on first failure")
     func compositeFailFastStopsOnFirstFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let executed = AtomicArray<Int>()
 
@@ -211,7 +212,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=false collects all failures")
     func compositeNoFailFastCollectsAllFailures() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let executed = AtomicArray<Int>()
 
@@ -244,7 +245,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck executes when condition is true")
     func conditionalExecutesWhenTrue() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)
@@ -260,7 +261,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck skips when condition is false")
     func conditionalSkipsWhenFalse() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)
@@ -981,7 +982,7 @@ struct TransactionConfigurationExtendedTests {
 // MARK: - Test Helpers (Sendable-compliant)
 
 struct PassingCommitCheck: CommitCheck {
-    func check(transaction: any TransactionProtocol) async throws {
+    func check(transaction: any Transaction) async throws {
         // Always passes
     }
 }
@@ -990,7 +991,7 @@ struct TrackingCommitCheck: CommitCheck {
     let id: Int
     let tracker: AtomicArray<Int>
 
-    func check(transaction: any TransactionProtocol) async throws {
+    func check(transaction: any Transaction) async throws {
         tracker.append(id)
     }
 }
@@ -999,7 +1000,7 @@ struct FailingCommitCheck: CommitCheck {
     let id: Int
     let tracker: AtomicArray<Int>
 
-    func check(transaction: any TransactionProtocol) async throws {
+    func check(transaction: any Transaction) async throws {
         tracker.append(id)
         throw TestCommitCheckError.validationFailed("test")
     }
@@ -1008,7 +1009,7 @@ struct FailingCommitCheck: CommitCheck {
 struct SettingCommitCheck: CommitCheck {
     let flag: AtomicBool
 
-    func check(transaction: any TransactionProtocol) async throws {
+    func check(transaction: any Transaction) async throws {
         flag.set(true)
     }
 }

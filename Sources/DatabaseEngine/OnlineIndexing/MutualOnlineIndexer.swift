@@ -5,7 +5,7 @@
 // Used for bidirectional relationships where each index helps build the other.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Metrics
 import Synchronization
@@ -79,8 +79,8 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
     private let throttleDelayMs: Int
 
     // Progress tracking
-    private let forwardProgressKey: FDB.Bytes
-    private let reverseProgressKey: FDB.Bytes
+    private let forwardProgressKey: Bytes
+    private let reverseProgressKey: Bytes
 
     // MARK: - Metrics
 
@@ -255,7 +255,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 let (itemsInBatch, pairsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
                     var pairsInBatch = 0
-                    var lastProcessedKey: FDB.Bytes? = nil
+                    var lastProcessedKey: Bytes? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                     let storage = ItemStorage(
@@ -364,7 +364,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
             let sampleLimit = 1000  // Sample check limit
 
             // Use limit to control server-side prefetch instead of break
-            let sequence = transaction.getRange(
+            let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(forwardRange.begin),
                 to: .firstGreaterOrEqual(forwardRange.end),
                 limit: sampleLimit,
@@ -372,7 +372,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 streamingMode: .iterator
             )
 
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
 
                 // Parse forward key to extract relationship
                 let forwardTuple = try forwardSubspace.unpack(key)
@@ -405,7 +405,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
     // MARK: - Progress Management
 
-    private func loadProgress(key: FDB.Bytes) async throws -> RangeSet? {
+    private func loadProgress(key: Bytes) async throws -> RangeSet? {
         try await container.database.withTransaction(configuration: .batch) { transaction in
             guard let bytes = try await transaction.getValue(for: key, snapshot: false) else {
                 return nil
@@ -414,7 +414,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, key: FDB.Bytes, _ transaction: any TransactionProtocol) throws {
+    private func saveProgress(_ rangeSet: RangeSet, key: Bytes, _ transaction: any Transaction) throws {
         let data = try JSONEncoder().encode(rangeSet)
         transaction.setValue(Array(data), for: key)
     }
@@ -515,7 +515,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     public func storeRelationship(
         sourceId: String,
         targetId: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         // Canonicalize: always store smaller ID first
         let (first, second) = sourceId < targetId ? (sourceId, targetId) : (targetId, sourceId)
@@ -533,7 +533,7 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
     /// Returns all entities connected to the given entity ID.
     public func queryRelationships(
         entityId: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String] {
         var results: [String] = []
         let indexSpace = indexSubspace.subspace(config.forwardIndexName)
@@ -544,14 +544,14 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         let range1 = prefixSubspace.range()
 
         // Use .wantAll for read-only queries that need all results
-        let seq1 = transaction.getRange(
+        let seq1 = try await transaction.collectRange(
             from: .firstGreaterOrEqual(range1.begin),
             to: .firstGreaterOrEqual(range1.end),
             snapshot: true,
             streamingMode: .wantAll
         )
 
-        for try await (key, _) in seq1 {
+        for (key, _) in seq1 {
             let tuple = try indexSpace.unpack(key)
             if tuple.count >= 2, let otherId = tuple[1] as? String {
                 results.append(otherId)
@@ -561,14 +561,14 @@ public final class SymmetricIndexBuilder<Item: Persistable>: Sendable {
         // Query 2: Scan for entity in second position (more expensive)
         // In a real implementation, we might maintain a secondary index
         let fullRange = indexSpace.range()
-        let seq2 = transaction.getRange(
+        let seq2 = try await transaction.collectRange(
             from: .firstGreaterOrEqual(fullRange.begin),
             to: .firstGreaterOrEqual(fullRange.end),
             snapshot: true,
             streamingMode: .wantAll
         )
 
-        for try await (key, _) in seq2 {
+        for (key, _) in seq2 {
             let tuple = try indexSpace.unpack(key)
             if tuple.count >= 2,
                let firstId = tuple[0] as? String,

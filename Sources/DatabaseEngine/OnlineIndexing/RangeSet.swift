@@ -1,10 +1,10 @@
-import FoundationDB
+import StorageKit
 
 // MARK: - Byte Array Comparison Helpers
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs < rhs
-private func bytesLessThan(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> Bool {
+private func bytesLessThan(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
     let minLength = min(lhs.count, rhs.count)
     for i in 0..<minLength {
         if lhs[i] < rhs[i] { return true }
@@ -15,24 +15,24 @@ private func bytesLessThan(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> Bool {
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs <= rhs
-private func bytesLessThanOrEqual(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> Bool {
+private func bytesLessThanOrEqual(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
     return lhs == rhs || bytesLessThan(lhs, rhs)
 }
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs > rhs
-private func bytesGreaterThan(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> Bool {
+private func bytesGreaterThan(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
     return bytesLessThan(rhs, lhs)
 }
 
 /// Compare two byte arrays lexicographically
 /// - Returns: true if lhs >= rhs
-private func bytesGreaterThanOrEqual(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> Bool {
+private func bytesGreaterThanOrEqual(_ lhs: Bytes, _ rhs: Bytes) -> Bool {
     return lhs == rhs || bytesGreaterThan(lhs, rhs)
 }
 
 /// Return the maximum of two byte arrays
-private func bytesMax(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> FDB.Bytes {
+private func bytesMax(_ lhs: Bytes, _ rhs: Bytes) -> Bytes {
     return bytesGreaterThanOrEqual(lhs, rhs) ? lhs : rhs
 }
 
@@ -48,20 +48,20 @@ private func bytesMax(_ lhs: FDB.Bytes, _ rhs: FDB.Bytes) -> FDB.Bytes {
 /// **Reference**: FDB Record Layer's `ScanProperties` and continuation handling
 public struct RangeContinuation: Sendable, Codable, Equatable {
     /// Beginning of the range (inclusive)
-    public let rangeBegin: FDB.Bytes
+    public let rangeBegin: Bytes
 
     /// End of the range (exclusive)
-    public let rangeEnd: FDB.Bytes
+    public let rangeEnd: Bytes
 
     /// Last successfully processed key (nil if not started)
     /// Next batch starts AFTER this key (firstGreaterThan)
-    public var lastProcessedKey: FDB.Bytes?
+    public var lastProcessedKey: Bytes?
 
     /// Whether this range has been fully processed
     public var isComplete: Bool
 
     /// Initialize a new range continuation
-    public init(begin: FDB.Bytes, end: FDB.Bytes) {
+    public init(begin: Bytes, end: Bytes) {
         self.rangeBegin = begin
         self.rangeEnd = end
         self.lastProcessedKey = nil
@@ -72,7 +72,7 @@ public struct RangeContinuation: Sendable, Codable, Equatable {
     ///
     /// If we have a continuation, start AFTER it (exclusive).
     /// Otherwise start at the range beginning (inclusive).
-    public var nextBatchBegin: FDB.Bytes {
+    public var nextBatchBegin: Bytes {
         if let lastKey = lastProcessedKey {
             // Add a zero byte to make it "first greater than lastKey"
             return lastKey + [0x00]
@@ -111,7 +111,7 @@ public struct RangeContinuation: Sendable, Codable, Equatable {
 ///
 /// while let bounds = rangeSet.nextBatchBounds() {
 ///     try await database.withTransaction { tx in
-///         var lastKey: FDB.Bytes? = nil
+///         var lastKey: Bytes? = nil
 ///         var count = 0
 ///
 ///         // FDB limits the batch, not RangeSet
@@ -121,7 +121,7 @@ public struct RangeContinuation: Sendable, Codable, Equatable {
 ///             limit: batchSize
 ///         )
 ///
-///         for try await (key, value) in sequence {
+///         for (key, value) in sequence {
 ///             // Process item
 ///             lastKey = Array(key)
 ///             count += 1
@@ -142,17 +142,17 @@ public struct RangeSet: Sendable, Codable {
     /// A single range of keys (for backwards compatibility)
     public struct Range: Sendable, Codable, Equatable {
         /// Beginning of range (inclusive)
-        public let begin: FDB.Bytes
+        public let begin: Bytes
 
         /// End of range (exclusive)
-        public let end: FDB.Bytes
+        public let end: Bytes
 
-        public init(begin: FDB.Bytes, end: FDB.Bytes) {
+        public init(begin: Bytes, end: Bytes) {
             self.begin = begin
             self.end = end
         }
 
-        public func contains(_ key: FDB.Bytes) -> Bool {
+        public func contains(_ key: Bytes) -> Bool {
             return bytesGreaterThanOrEqual(key, begin) && bytesLessThan(key, end)
         }
 
@@ -172,7 +172,7 @@ public struct RangeSet: Sendable, Codable {
     // MARK: - Initialization
 
     /// Initialize with a single range
-    public init(initialRange: (begin: FDB.Bytes, end: FDB.Bytes)) {
+    public init(initialRange: (begin: Bytes, end: Bytes)) {
         self.continuations = [RangeContinuation(begin: initialRange.begin, end: initialRange.end)]
         self.currentIndex = 0
     }
@@ -233,13 +233,13 @@ public struct RangeSet: Sendable, Codable {
         public let rangeIndex: Int
 
         /// Beginning of batch (inclusive)
-        public let begin: FDB.Bytes
+        public let begin: Bytes
 
         /// End of batch (exclusive) - this is the range end, not batch end
         /// Actual batch end is controlled by getRange(limit:)
-        public let end: FDB.Bytes
+        public let end: Bytes
 
-        public init(rangeIndex: Int, begin: FDB.Bytes, end: FDB.Bytes) {
+        public init(rangeIndex: Int, begin: Bytes, end: Bytes) {
             self.rangeIndex = rangeIndex
             self.begin = begin
             self.end = end
@@ -274,7 +274,7 @@ public struct RangeSet: Sendable, Codable {
     ///   - isComplete: True if the range is fully processed (count < limit)
     public mutating func recordProgress(
         rangeIndex: Int,
-        lastProcessedKey: FDB.Bytes,
+        lastProcessedKey: Bytes,
         isComplete: Bool
     ) {
         guard rangeIndex < continuations.count else { return }

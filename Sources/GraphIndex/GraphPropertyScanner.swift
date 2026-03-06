@@ -8,7 +8,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - GraphEdgeWithProperties
 
@@ -225,7 +225,7 @@ public struct GraphPropertyScanner: Sendable {
         to: String?,
         graph: String? = nil,
         propertyFilters: [PropertyFilter]?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncThrowingStream<GraphEdgeWithProperties, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -256,7 +256,7 @@ public struct GraphPropertyScanner: Sendable {
         to: String?,
         graph: String?,
         propertyFilters: [PropertyFilter]?,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         continuation: AsyncThrowingStream<GraphEdgeWithProperties, Error>.Continuation
     ) async throws {
         // Select optimal index ordering based on bound fields
@@ -280,13 +280,13 @@ public struct GraphPropertyScanner: Sendable {
         )
 
         // Scan index
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, value) in stream {
+        for (key, value) in stream {
             // Parse key to extract graph structure
             guard let (parsedFrom, parsedEdge, parsedTo, parsedGraph) = try parseKey(
                 key,
@@ -405,7 +405,7 @@ public struct GraphPropertyScanner: Sendable {
         graph: String?,
         ordering: GraphIndexOrdering,
         subspace: Subspace
-    ) -> (begin: FDB.Bytes, end: FDB.Bytes) {
+    ) -> (begin: Bytes, end: Bytes) {
         var prefixElements: [any TupleElement] = []
 
         // Construct prefix based on ordering
@@ -452,7 +452,7 @@ public struct GraphPropertyScanner: Sendable {
 
     /// Parse key to extract graph structure
     private func parseKey(
-        _ key: FDB.Bytes,
+        _ key: Bytes,
         ordering: GraphIndexOrdering,
         subspace: Subspace
     ) throws -> (from: String, edge: String, to: String, graph: String?)? {
@@ -502,7 +502,7 @@ public struct GraphPropertyScanner: Sendable {
     }
 
     /// Decode CoveringValue to property dictionary
-    private func decodeCoveringValue(_ value: FDB.Bytes) throws -> [String: any Sendable] {
+    private func decodeCoveringValue(_ value: Bytes) throws -> [String: any Sendable] {
         guard !value.isEmpty else { return [:] }
 
         // Use CoveringValueBuilder.decode() which properly handles presence bitmap

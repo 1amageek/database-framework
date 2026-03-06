@@ -5,7 +5,8 @@ import Rank
 import DatabaseEngine
 import RankIndex
 import BenchmarkFramework
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -22,13 +23,13 @@ struct Player {
 
 @Suite("RankIndex: Range Tree Benchmark", .serialized)
 struct RangeTreeBenchmark {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: FDBContainer
     nonisolated(unsafe) private let context: FDBContext
 
     init() async throws {
         try await FDBTestSetup.shared.initialize()
-        let db = try FDBClient.openDatabase()
+        let db = try await FDBStorageEngine.open()
         let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
         let cont = FDBContainer(database: db, schema: schema, security: .disabled)
 

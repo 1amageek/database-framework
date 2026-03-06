@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -44,7 +45,7 @@ struct MigrationTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([MigrationTestUser.self], version: Schema.Version(1, 0, 0))
@@ -58,7 +59,7 @@ struct MigrationTests {
 
     private func setupBatchTestContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([BatchTestRecord.self], version: Schema.Version(1, 0, 0))
@@ -71,9 +72,8 @@ struct MigrationTests {
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "migration"])
-        try? await directoryLayer.remove(path: ["_metadata"])
+        try? await container.database.directoryService.remove(path: ["test", "migration"])
+        try? await container.database.directoryService.remove(path: ["_metadata"])
     }
 
     private func insertTestRecords(
@@ -128,13 +128,13 @@ struct MigrationTests {
     @Test("Schema version persists across container instances")
     func schemaVersionPersistsAcrossContainers() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let database = try FDBClient.openDatabase()
+            let database = try await FDBStorageEngine.open()
 
             let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
 
             // Clean up first
-            let directoryLayer = DirectoryLayer(database: database)
-            try? await directoryLayer.remove(path: ["_metadata"])
+            
+            try? await database.directoryService.remove(path: ["_metadata"])
 
             // Create first container and set version
             let container1 = FDBContainer(database: database, schema: schema, security: .disabled)
@@ -147,7 +147,7 @@ struct MigrationTests {
             #expect(version == Schema.Version(2, 0, 0))
 
             // Cleanup
-            try? await directoryLayer.remove(path: ["_metadata"])
+            try? await database.directoryService.remove(path: ["_metadata"])
         }
     }
 
@@ -173,13 +173,12 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-            let directoryLayer = DirectoryLayer(database: container.database)
-            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.database.directoryService.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
                 schema: container.schema,
-                metadataSubspace: metadataSubspace.subspace,
+                metadataSubspace: metadataSubspace,
                 storeRegistry: storeRegistry
             )
 
@@ -195,7 +194,7 @@ struct MigrationTests {
             for record in records {
                 let validatedID = try record.validateIDForStorage()
                 let key = itemSubspace.pack(Tuple(validatedID))
-                let data: FDB.Bytes? = try await container.database.withTransaction { tx in
+                let data: Bytes? = try await container.database.withTransaction { tx in
                     let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
                     return try await storage.read(for: key, snapshot: false)
                 }
@@ -229,13 +228,12 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-            let directoryLayer = DirectoryLayer(database: container.database)
-            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.database.directoryService.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
                 schema: container.schema,
-                metadataSubspace: metadataSubspace.subspace,
+                metadataSubspace: metadataSubspace,
                 storeRegistry: storeRegistry
             )
 
@@ -265,13 +263,12 @@ struct MigrationTests {
             )
             let storeRegistry = [BatchTestRecord.persistableType: storeInfo]
 
-            let directoryLayer = DirectoryLayer(database: container.database)
-            let metadataSubspace = try await directoryLayer.createOrOpen(path: ["_metadata"])
+            let metadataSubspace = try await container.database.directoryService.createOrOpen(path: ["_metadata"])
 
             let context = MigrationContext(
                 container: container,
                 schema: container.schema,
-                metadataSubspace: metadataSubspace.subspace,
+                metadataSubspace: metadataSubspace,
                 storeRegistry: storeRegistry
             )
 
@@ -288,7 +285,7 @@ struct MigrationTests {
             // Check update
             let updateValidatedID = try updateRecord.validateIDForStorage()
             let updateKey = itemSubspace.pack(Tuple(updateValidatedID))
-            let updateData: FDB.Bytes? = try await container.database.withTransaction { tx in
+            let updateData: Bytes? = try await container.database.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
                 return try await storage.read(for: updateKey, snapshot: false)
             }
@@ -301,7 +298,7 @@ struct MigrationTests {
             // Check delete
             let deleteValidatedID = try deleteRecord.validateIDForStorage()
             let deleteKey = itemSubspace.pack(Tuple(deleteValidatedID))
-            let deleteData: FDB.Bytes? = try await container.database.withTransaction { tx in
+            let deleteData: Bytes? = try await container.database.withTransaction { tx in
                 let storage = ItemStorage(transaction: tx, blobsSubspace: storeInfo.blobsSubspace)
                 return try await storage.read(for: deleteKey, snapshot: false)
             }

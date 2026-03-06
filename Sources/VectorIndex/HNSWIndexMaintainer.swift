@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Logging
 import Synchronization
 import SwiftHNSW
@@ -144,7 +144,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Handle deletion
         // Sparse index: if vector field was nil, there's no entry to delete
@@ -169,7 +169,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if vector field is nil, skip indexing
         do {
@@ -183,7 +183,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Return the vector storage key
         guard let label = try? await getLabelForPrimaryKey(primaryKey: id, transaction: nil) else {
             return []
@@ -198,7 +198,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         primaryKey: Tuple,
         vector: [Float],
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Get or create label for this primary key
         let label = try await getOrCreateLabel(for: primaryKey, transaction: transaction)
@@ -225,7 +225,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Delete a vector from the index
     private func deleteVector(
         primaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Get label for this primary key
         guard let label = try await getLabelForPrimaryKey(primaryKey: primaryKey, transaction: transaction) else {
@@ -263,7 +263,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         queryVector: [Float],
         k: Int,
         searchParams: HNSWSearchParameters,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -331,7 +331,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         let searchParams = HNSWSearchParameters(ef: max(k, parameters.efSearch))
         return try await search(
@@ -361,10 +361,10 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         queryVector: [Float],
         k: Int,
         predicate: @escaping @Sendable (Item) async throws -> Bool,
-        fetchItem: @escaping @Sendable (Tuple, any TransactionProtocol) async throws -> Item?,
+        fetchItem: @escaping @Sendable (Tuple, any Transaction) async throws -> Item?,
         acornParams: ACORNParameters = .default,
         searchParams: HNSWSearchParameters = HNSWSearchParameters(),
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(
@@ -430,7 +430,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Get or create a label for a primary key
     private func getOrCreateLabel(
         for primaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> UInt64 {
         // Check if label already exists
         let labelKey = labelsSubspace.pack(primaryKey)
@@ -447,7 +447,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Get the next available label
-    private func getNextLabel(transaction: any TransactionProtocol) async throws -> UInt64 {
+    private func getNextLabel(transaction: any Transaction) async throws -> UInt64 {
         let currentValue = try await transaction.getValue(for: nextLabelKey, snapshot: false)
         let current: UInt64
         if let value = currentValue {
@@ -464,7 +464,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Get label for a primary key
     private func getLabelForPrimaryKey(
         primaryKey: Tuple,
-        transaction: (any TransactionProtocol)?
+        transaction: (any Transaction)?
     ) async throws -> UInt64? {
         guard let tx = transaction else { return nil }
 
@@ -483,7 +483,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Get primary key for a label
     private func getPrimaryKeyForLabel(
         label: UInt64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Tuple? {
         let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
         guard let value = try await transaction.getValue(for: pkKey, snapshot: true) else {
@@ -498,7 +498,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load or create HNSW index
     private func loadOrCreateIndex(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> HNSWIndexF32 {
         // Try to load existing index
         if let graphData = try await transaction.getValue(for: graphKey, snapshot: true) {
@@ -530,7 +530,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Save HNSW index to FDB
     private func saveIndex(
         _ index: HNSWIndexF32,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let graphData = try index.serialize()
         transaction.setValue(Array(graphData), for: graphKey)
@@ -538,18 +538,18 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Estimate maximum elements for index sizing
     private func estimateMaxElements(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         // Count existing vectors
         let (begin, end) = vectorsSubspace.range()
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
         var count = 0
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
             if count > 100_000 {
                 break  // Cap the count for performance
@@ -567,7 +567,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Parameter transaction: FDB transaction
     /// - Returns: Number of nodes in the index
     public func getNodeCount(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let hnswIndex = try await loadOrCreateIndex(transaction: transaction)
         return hnswIndex.count

@@ -7,7 +7,8 @@ import Testing
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Graph
 import TestSupport
 @testable import GraphIndex
@@ -45,14 +46,14 @@ struct GraphQueryBuilderTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([GraphQueryTestEdge.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "graphquerybuilder", "edges"])
+        
+        try? await container.database.directoryService.remove(path: ["test", "graphquerybuilder", "edges"])
     }
 
     private func setIndexStatesToReadable(container: FDBContainer) async throws {

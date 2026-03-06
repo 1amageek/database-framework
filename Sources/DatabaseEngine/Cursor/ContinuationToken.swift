@@ -5,7 +5,7 @@
 // Enables stateless pagination across transactions.
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - ContinuationToken
 

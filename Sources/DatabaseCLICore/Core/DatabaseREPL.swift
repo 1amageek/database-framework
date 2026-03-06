@@ -24,7 +24,7 @@
 /// ```
 
 import Foundation
-import FoundationDB
+import StorageKit
 import DatabaseEngine
 import Core
 
@@ -34,7 +34,7 @@ public final class DatabaseREPL: Sendable {
     private let entities: [Schema.Entity]
 
     /// Initialize with database and pre-loaded entities (standalone mode)
-    public init(database: any DatabaseProtocol, entities: [Schema.Entity]) {
+    public init(database: any StorageEngine, entities: [Schema.Entity]) {
         self.entities = entities
         self.dataAccess = CatalogDataAccess(database: database, entities: entities)
     }

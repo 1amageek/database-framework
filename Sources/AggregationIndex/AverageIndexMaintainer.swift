@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for AVERAGE aggregation indexes with compile-time type safety
 ///
@@ -58,7 +58,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
@@ -69,7 +69,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Sparse index: if any field value is nil, skip indexing
         let allValues: [any TupleElement]
@@ -110,7 +110,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Sparse index: if any field value is nil, no index entry
         let allValues: [any TupleElement]
         do {
@@ -135,7 +135,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     /// Get the average for a specific grouping (result always Double)
     public func getAverage(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (sum: Double, count: Int64, average: Double) {
         let groupingTuple = Tuple(groupingValues)
         let sumKey = try buildSumKey(groupingTuple: groupingTuple)
@@ -170,14 +170,14 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     ///
     /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
     public func getAllAverages(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], sum: Double, count: Int64, average: Double)] {
         var sumData: [String: (grouping: [any TupleElement], sum: Double)] = [:]
         var countData: [String: Int64] = [:]
 
-        let sequence = scanAllEntries(transaction: transaction)
+        let sequence = try await scanAllEntries(transaction: transaction)
         var scannedKeys = 0
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard subspace.contains(key) else { break }
 
             // Resource limit
@@ -252,7 +252,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
     private func applyDelta(
         oldData: AggregationData?,
         newData: AggregationData?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new)) where old.groupingTuple.pack() == new.groupingTuple.pack():
@@ -312,7 +312,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         }
     }
 
-    private func buildSumKey(groupingTuple: Tuple) throws -> FDB.Bytes {
+    private func buildSumKey(groupingTuple: Tuple) throws -> Bytes {
         var elements: [any TupleElement] = []
         for i in 0..<groupingTuple.count {
             if let element = groupingTuple[i] {
@@ -323,7 +323,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         return try packAndValidate(Tuple(elements))
     }
 
-    private func buildCountKey(groupingTuple: Tuple) throws -> FDB.Bytes {
+    private func buildCountKey(groupingTuple: Tuple) throws -> Bytes {
         var elements: [any TupleElement] = []
         for i in 0..<groupingTuple.count {
             if let element = groupingTuple[i] {

@@ -8,7 +8,7 @@ import QueryAST
 import GraphIndex
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Rewrites SelectQuery by executing SPARQL() subqueries
 ///

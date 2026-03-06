@@ -5,7 +5,7 @@
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/indexes/StandardIndexMaintainer.java
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 

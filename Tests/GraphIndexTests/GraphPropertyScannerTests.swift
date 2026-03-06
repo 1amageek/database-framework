@@ -6,7 +6,8 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import GraphIndex
 
@@ -63,12 +64,12 @@ struct GraphPropertyScannerTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "social_edges"])
+        
+        try? await database.directoryService.remove(path: ["test", "social_edges"])
 
         // Set index states to readable
         try await setIndexStatesToReadable(container: container)

@@ -2,7 +2,7 @@
 // QueryPlanner - FoundationDB persistence for statistics
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 
@@ -84,7 +84,7 @@ public final class StatisticsStorage: Sendable {
             var results: [String: TableStatisticsData] = [:]
 
             let (begin, end) = tableSubspace.range()
-            for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 // Graceful skip for malformed keys (batch operation pattern)
                 let keyTuple: Tuple
                 do {
@@ -144,7 +144,7 @@ public final class StatisticsStorage: Sendable {
             var results: [String: FieldStatisticsData] = [:]
 
             let (begin, end) = fieldSubspace.range()
-            for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 // Graceful skip for malformed keys (batch operation pattern)
                 let keyTuple: Tuple
                 do {

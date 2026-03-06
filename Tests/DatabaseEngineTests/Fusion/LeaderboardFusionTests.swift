@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -207,14 +208,13 @@ struct LeaderboardIntegrationTests {
 
     private func createContainer() async throws -> FDBContainer {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([LeaderboardTestScore.self])
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "leaderboard"])
+        try? await container.database.directoryService.remove(path: ["test", "leaderboard"])
     }
 
     @Test("Insert and retrieve scores via FDBContext")

@@ -2,7 +2,7 @@
 // DatabaseEngine - Security-aware transaction context
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Security-aware transaction context
@@ -13,7 +13,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
 
     // MARK: - Properties
 
-    private let transaction: any TransactionProtocol
+    private let transaction: any Transaction
     private let itemSubspace: Subspace
     private let indexSubspace: Subspace
     private let blobsSubspace: Subspace
@@ -23,7 +23,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     // MARK: - Initialization
 
     init(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         itemSubspace: Subspace,
         indexSubspace: Subspace,
         blobsSubspace: Subspace,
@@ -140,7 +140,7 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         try await delete(model)
     }
 
-    public var rawTransaction: any TransactionProtocol {
+    public var rawTransaction: any Transaction {
         transaction
     }
 

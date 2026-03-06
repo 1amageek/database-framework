@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,14 +75,14 @@ struct TestDocument: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: VersionIndexMaintainer<TestDocument>
     let kind: VersionIndexKind<TestDocument>
 
-    init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "TestDocument_version") throws {
-        self.database = try FDBClient.openDatabase()
+    init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "TestDocument_version") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "version", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -152,7 +153,7 @@ struct VersionIndexBehaviorTests {
     @Test("Insert creates version entry")
     func testInsertCreatesVersionEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc = TestDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
 
@@ -175,7 +176,7 @@ struct VersionIndexBehaviorTests {
     @Test("Multiple updates create multiple versions")
     func testMultipleUpdatesCreateVersions() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
         let doc2 = TestDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
@@ -219,7 +220,7 @@ struct VersionIndexBehaviorTests {
     @Test("getVersionHistory returns all versions")
     func testGetVersionHistoryReturnsAllVersions() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
         let doc2 = TestDocument(id: "doc1", title: "v2", content: "Version 2", version: 2)
@@ -251,7 +252,7 @@ struct VersionIndexBehaviorTests {
     @Test("getVersionHistory with limit returns limited versions")
     func testGetVersionHistoryWithLimit() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Create multiple versions
         for i in 1...5 {
@@ -274,7 +275,7 @@ struct VersionIndexBehaviorTests {
     @Test("getLatestVersion returns most recent data")
     func testGetLatestVersionReturnsMostRecent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc1 = TestDocument(id: "doc1", title: "v1", content: "Version 1", version: 1)
         let doc2 = TestDocument(id: "doc1", title: "v2", content: "Latest Version", version: 2)
@@ -308,7 +309,7 @@ struct VersionIndexBehaviorTests {
     @Test("Delete creates deletion marker")
     func testDeleteCreatesDeletionMarker() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc = TestDocument(id: "doc1", title: "Test", content: "Hello", version: 1)
 
@@ -342,7 +343,7 @@ struct VersionIndexBehaviorTests {
     @Test("keepLast strategy limits versions")
     func testKeepLastStrategyLimitsVersions() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepLast(3))
+        let ctx = try await TestContext(strategy: .keepLast(3))
 
         // Create 5 versions
         for i in 1...5 {
@@ -367,7 +368,7 @@ struct VersionIndexBehaviorTests {
     @Test("ScanItem creates version entry")
     func testScanItemCreatesVersionEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc = TestDocument(id: "doc1", title: "Scanned", content: "Content", version: 1)
 
@@ -390,7 +391,7 @@ struct VersionIndexBehaviorTests {
     @Test("Different documents have separate histories")
     func testDifferentDocumentsHaveSeparateHistories() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let doc1v1 = TestDocument(id: "doc1", title: "Doc1 v1", content: "Content", version: 1)
         let doc1v2 = TestDocument(id: "doc1", title: "Doc1 v2", content: "Updated", version: 2)
@@ -426,7 +427,7 @@ struct VersionIndexBehaviorTests {
     @Test("Versions are ordered by versionstamp")
     func testVersionsAreOrderedByVersionstamp() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Create versions with delays to ensure different versionstamps
         for i in 1...3 {

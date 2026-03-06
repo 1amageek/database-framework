@@ -6,7 +6,8 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 import QueryIR
 @testable import GraphIndex
@@ -65,12 +66,12 @@ struct GraphTableExecutorTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "social_edges_executor"])
+        
+        try? await database.directoryService.remove(path: ["test", "social_edges_executor"])
 
         // Set index states to readable
         try await setIndexStatesToReadable(container: container)
@@ -357,7 +358,7 @@ struct GraphTableExecutorTests {
 
     @Test("Error: graph index not found")
     func testErrorIndexNotFound() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([NoGraphIndexType.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 

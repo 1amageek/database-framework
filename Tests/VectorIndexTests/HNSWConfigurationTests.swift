@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Vector
 import TestSupport
@@ -249,7 +250,7 @@ struct HNSWBasicBehaviorTests {
     func testHNSWInsertStoresVector() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
@@ -300,7 +301,7 @@ struct HNSWBasicBehaviorTests {
     func testHNSWSearchFindsNearestNeighbors() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
@@ -411,7 +412,7 @@ struct HNSWBasicBehaviorTests {
     func testHNSWDeleteMarksNodeAsDeleted() async throws {
         try await FDBTestSetup.shared.initialize()
 
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")

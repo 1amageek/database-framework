@@ -7,7 +7,7 @@
 // all the information needed for the target index.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Metrics
 import Synchronization
@@ -96,7 +96,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     private let throttler: AdaptiveThrottler
 
     /// Progress tracking key
-    private let progressKey: FDB.Bytes
+    private let progressKey: Bytes
 
     // MARK: - Metrics
 
@@ -288,17 +288,17 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
-                    var lastProcessedKey: FDB.Bytes? = nil
+                    var lastProcessedKey: Bytes? = nil
 
                     // Use .iterator for adaptive batching that respects transaction limits
-                    let sequence = transaction.getRange(
+                    let sequence = try await transaction.collectRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
                         snapshot: false,
                         streamingMode: .iterator
                     )
 
-                    for try await (key, value) in sequence {
+                    for (key, value) in sequence {
                         // Extract primary key from source index entry
                         guard let pk = try self.extractPrimaryKey(from: key, sourceSubspace: sourceSubspace) else {
                             continue
@@ -395,11 +395,11 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, dataFetches, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
-                    var lastProcessedKey: FDB.Bytes? = nil
+                    var lastProcessedKey: Bytes? = nil
                     var dataFetches = 0
 
                     // Use .iterator for adaptive batching that respects transaction limits
-                    let sequence = transaction.getRange(
+                    let sequence = try await transaction.collectRange(
                         from: .firstGreaterOrEqual(bounds.begin),
                         to: .firstGreaterOrEqual(bounds.end),
                         snapshot: false,
@@ -412,7 +412,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         blobsSubspace: self.blobsSubspace
                     )
 
-                    for try await (key, _) in sequence {
+                    for (key, _) in sequence {
                         // Extract primary key from source index
                         guard let pk = try self.extractPrimaryKey(from: key, sourceSubspace: sourceSubspace) else {
                             continue
@@ -495,7 +495,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     // MARK: - Helper Methods
 
     /// Extract primary key from source index entry
-    private func extractPrimaryKey(from key: FDB.Bytes, sourceSubspace: Subspace) throws -> Tuple? {
+    private func extractPrimaryKey(from key: Bytes, sourceSubspace: Subspace) throws -> Tuple? {
         let indexTuple = try sourceSubspace.unpack(key)
 
         // Primary key is typically the last element(s) of the index key
@@ -512,7 +512,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     /// Extract field values from source index entry
-    private func extractFieldValues(from key: FDB.Bytes, value: FDB.Bytes, sourceSubspace: Subspace) throws -> [any TupleElement] {
+    private func extractFieldValues(from key: Bytes, value: Bytes, sourceSubspace: Subspace) throws -> [any TupleElement] {
         let indexTuple = try sourceSubspace.unpack(key)
 
         // Field values are all elements except the last (which is the PK)
@@ -527,7 +527,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
     }
 
     /// Build a target index entry
-    private func buildTargetEntry(pk: Tuple, fieldValues: [any TupleElement], transaction: any TransactionProtocol) async throws {
+    private func buildTargetEntry(pk: Tuple, fieldValues: [any TupleElement], transaction: any Transaction) async throws {
         // This is a simplified implementation
         // In reality, we would need to map source fields to target fields
         let targetSubspace = indexSubspace.subspace(targetIndex.name)
@@ -555,7 +555,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, transaction: any TransactionProtocol) throws {
+    private func saveProgress(_ rangeSet: RangeSet, transaction: any Transaction) throws {
         let data = try JSONEncoder().encode(rangeSet)
         transaction.setValue(Array(data), for: progressKey)
     }
@@ -595,17 +595,17 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
 
         // Collect sample using reservoir sampling
         // Move reservoir and itemsSeen inside transaction to avoid Sendable capture issues
-        let reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
-            var reservoir: [(key: FDB.Bytes, value: FDB.Bytes)] = []
+        let reservoir: [(key: Bytes, value: Bytes)] = try await container.database.withTransaction(configuration: .batch) { transaction in
+            var reservoir: [(key: Bytes, value: Bytes)] = []
             var itemsSeen = 0
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(sourceRange.begin),
-                endSelector: .firstGreaterOrEqual(sourceRange.end),
+            let sequence = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(sourceRange.begin),
+                to: KeySelector.firstGreaterOrEqual(sourceRange.end),
                 snapshot: true
             )
 
-            for try await (key, value) in sequence {
+            for (key, value) in sequence {
                 itemsSeen += 1
 
                 if reservoir.count < sampleSize {

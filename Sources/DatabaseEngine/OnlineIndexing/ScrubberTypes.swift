@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - ScrubberConfiguration
 
@@ -238,7 +238,7 @@ public struct ScrubberIssue: Sendable {
     public let type: IssueType
 
     /// Index key where issue was found
-    public let indexKey: FDB.Bytes
+    public let indexKey: Bytes
 
     /// Primary key extracted from index key
     public let primaryKey: [any TupleElement]
@@ -261,7 +261,7 @@ public struct ScrubberIssue: Sendable {
     /// Initialize a scrubber issue
     public init(
         type: IssueType,
-        indexKey: FDB.Bytes,
+        indexKey: Bytes,
         primaryKey: [any TupleElement],
         repaired: Bool,
         context: String?

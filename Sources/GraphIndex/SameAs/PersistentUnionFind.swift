@@ -8,7 +8,7 @@
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/#Individual_Equality
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 /// Persistent Union-Find for owl:sameAs equivalence classes
 ///
@@ -74,7 +74,7 @@ public struct PersistentUnionFind: Sendable {
     public func find(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> String {
         var current = individual
         var path: [String] = []
@@ -125,7 +125,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual1: String,
         _ individual2: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> String {
         // Find roots
         let root1 = try await find(individual1, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -201,7 +201,7 @@ public struct PersistentUnionFind: Sendable {
     public func members(
         of individual: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<String> {
         // Find the representative first
         let representative = try await find(individual, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -220,7 +220,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual1: String,
         _ individual2: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Bool {
         let root1 = try await find(individual1, ontologyIRI: ontologyIRI, transaction: transaction)
         let root2 = try await find(individual2, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -233,7 +233,7 @@ public struct PersistentUnionFind: Sendable {
     public func makeSet(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let parentKey = subspace.sameAsParentKey(ontologyIRI, individual: individual)
 
@@ -254,18 +254,18 @@ public struct PersistentUnionFind: Sendable {
     /// Returns a dictionary mapping representatives to their members.
     public func getAllEquivalenceClasses(
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String: Set<String>] {
         let (beginKey, endKey) = subspace.sameAsMembers(ontologyIRI).range()
         var classes: [String: Set<String>] = [:]
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let tuple = try? subspace.sameAsMembers(ontologyIRI).unpack(key),
                let representative = tuple[0] as? String,
                let member = tuple[1] as? String {
@@ -279,7 +279,7 @@ public struct PersistentUnionFind: Sendable {
     /// Get the number of equivalence classes
     public func countEquivalenceClasses(
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let classes = try await getAllEquivalenceClasses(ontologyIRI: ontologyIRI, transaction: transaction)
         return classes.count
@@ -290,7 +290,7 @@ public struct PersistentUnionFind: Sendable {
     private func getRank(
         _ individual: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
         guard let data = try await transaction.getValue(for: rankKey, snapshot: true) else {
@@ -310,7 +310,7 @@ public struct PersistentUnionFind: Sendable {
         _ individual: String,
         rank: Int,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let rankKey = subspace.sameAsRankKey(ontologyIRI, individual: individual)
         var value = Int64(rank)
@@ -321,18 +321,18 @@ public struct PersistentUnionFind: Sendable {
     private func getMembersInternal(
         _ representative: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<String> {
         let (beginKey, endKey) = subspace.sameAsMembers(ontologyIRI).subspace(representative).range()
         var members: Set<String> = []
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let tuple = try? subspace.sameAsMembers(ontologyIRI).subspace(representative).unpack(key),
                let member = tuple[0] as? String {
                 members.insert(member)
@@ -355,7 +355,7 @@ extension PersistentUnionFind {
     public func unionAll(
         _ pairs: [(String, String)],
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         for (ind1, ind2) in pairs {
             try await union(ind1, ind2, ontologyIRI: ontologyIRI, transaction: transaction)
@@ -374,7 +374,7 @@ extension PersistentUnionFind {
     public func expand(
         _ individuals: Set<String>,
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<String> {
         var expanded: Set<String> = []
 

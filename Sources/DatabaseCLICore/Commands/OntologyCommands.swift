@@ -1,7 +1,7 @@
 /// OntologyCommands - OWL Ontology introspection from OntologyStore
 
 import Foundation
-import FoundationDB
+import StorageKit
 import DatabaseEngine
 import GraphIndex
 import Core
@@ -9,10 +9,10 @@ import Graph
 
 public struct OntologyCommands: Sendable {
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let output: OutputFormatter
 
-    public init(database: any DatabaseProtocol, output: OutputFormatter) {
+    public init(database: any StorageEngine, output: OutputFormatter) {
         self.database = database
         self.output = output
     }

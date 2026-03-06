@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Vector
 
 /// Maintainer for Product Quantization vector indexes
@@ -95,7 +95,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old entry
         if let oldItem = oldItem {
@@ -122,7 +122,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         do {
             let vector = try extractVector(from: item)
@@ -135,7 +135,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         return [codesSubspace.pack(id)]
     }
@@ -147,7 +147,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Should be called after inserting a representative sample of vectors.
     ///
     /// - Parameter transaction: FDB transaction
-    public func train(transaction: any TransactionProtocol) async throws {
+    public func train(transaction: any Transaction) async throws {
         // Load all vectors from storage
         let vectors = try await loadAllVectors(transaction: transaction)
         guard !vectors.isEmpty else {
@@ -181,7 +181,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Check if the index has been trained
-    public func isTrained(transaction: any TransactionProtocol) async throws -> Bool {
+    public func isTrained(transaction: any Transaction) async throws -> Bool {
         guard let metadata = try await loadMetadata(transaction: transaction) else {
             return false
         }
@@ -205,7 +205,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: queryVector.count)
@@ -235,9 +235,9 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let (begin, end) = codesSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             // Decode primary key
             guard let pkTuple = try? codesSubspace.unpack(key) else { continue }
 
@@ -268,7 +268,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Remove entry for a vector
     private func removeEntry(
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove codes
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
@@ -286,7 +286,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         vector: [Float],
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Store original vector (for retraining)
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
@@ -307,7 +307,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func storeCodes(
         _ codes: [UInt8],
         for id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let codesSubspace = subspace.subspace(SubspaceKey.codes.rawValue)
         let key = codesSubspace.pack(id)
@@ -317,7 +317,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store codebooks
     private func storeCodebooks(
         _ codebooks: [[[Float]]],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let codebooksSubspace = subspace.subspace(SubspaceKey.codebooks.rawValue)
 
@@ -336,15 +336,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load codebooks
     private func loadCodebooks(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[[Float]]] {
         let codebooksSubspace = subspace.subspace(SubspaceKey.codebooks.rawValue)
         let (begin, end) = codebooksSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         var codebooks: [[[Float]]] = []
 
-        for try await (_, value) in sequence {
+        for (_, value) in sequence {
             let flattened = bytesToFloatArray(value)
             let dsub = dimensions / parameters.m
 
@@ -363,15 +363,15 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load all vectors for training
     private func loadAllVectors(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[Float]] {
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         var vectors: [[Float]] = []
 
-        for try await (_, value) in sequence {
+        for (_, value) in sequence {
             guard let elements = try? Tuple.unpack(from: value) else { continue }
             let vector = tupleElementsToVector(elements)
             if vector.count == dimensions {
@@ -385,14 +385,14 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Get primary key for a vector by index (for re-encoding after training)
     private func getPrimaryKeyForVectorIndex(
         _ index: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Tuple? {
         let vectorsSubspace = subspace.subspace(SubspaceKey.vectors.rawValue)
         let (begin, end) = vectorsSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         var count = 0
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             if count == index {
                 return try? vectorsSubspace.unpack(key)
             }
@@ -404,7 +404,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store metadata
     private func storeMetadata(
         _ metadata: PQMetadata,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
@@ -414,7 +414,7 @@ public struct PQIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load metadata
     private func loadMetadata(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> PQMetadata? {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         guard let data = try await transaction.getValue(for: metadataKey) else {

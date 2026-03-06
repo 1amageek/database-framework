@@ -4,7 +4,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 import Vector
 
 // MARK: - Vector Query Builder
@@ -380,17 +380,17 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// Count vectors in the index for auto algorithm selection
     private func countVectors(
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let (begin, end) = indexSubspace.range()
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
         var count = 0
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
             // Early exit if we have enough to determine algorithm
             // (only need to know if > flatThreshold or > hnswThreshold)
@@ -474,7 +474,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             )
 
             // Create fetch function for ACORN
-            let fetchItem: @Sendable (Tuple, any TransactionProtocol) async throws -> T? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> T? = { primaryKey, tx in
                 // Fetch item using IndexQueryContext
                 let items = try await self.queryContext.fetchItems(ids: [primaryKey], type: T.self)
                 return items.first

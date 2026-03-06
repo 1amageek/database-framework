@@ -1,6 +1,6 @@
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// キー変更監視マネージャー
 ///

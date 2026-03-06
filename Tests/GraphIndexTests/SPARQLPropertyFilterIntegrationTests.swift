@@ -6,7 +6,8 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import GraphIndex
 
@@ -85,12 +86,12 @@ struct SPARQLPropertyFilterIntegrationTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "sparql_property"])
+        
+        try? await database.directoryService.remove(path: ["test", "sparql_property"])
 
         // Set index states to readable
         try await setIndexStatesToReadable(container: container)
@@ -326,12 +327,12 @@ struct SPARQLPropertyFilterIntegrationTests {
 
     @Test("Backward compatibility - no stored fields")
     func testBackwardCompatibilityNoStoredFields() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([BasicEdge.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "basic_edge"])
+        
+        try? await database.directoryService.remove(path: ["test", "basic_edge"])
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: BasicEdge.self)

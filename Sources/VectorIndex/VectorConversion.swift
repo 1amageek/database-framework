@@ -8,7 +8,7 @@
 // FlatVectorIndexMaintainer, HNSWIndexMaintainer, IVFIndexMaintainer, PQIndexMaintainer
 
 import Foundation
-import FoundationDB
+import StorageKit
 import DatabaseEngine
 
 /// Unified vector conversion utilities for VectorIndex module

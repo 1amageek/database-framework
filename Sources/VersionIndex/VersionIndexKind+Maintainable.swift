@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - IndexKindMaintainable Extension
 
@@ -42,12 +42,12 @@ extension VersionIndexKind: IndexKindMaintainable {
 ///
 /// Versions are comparable and provide total ordering for optimistic concurrency control.
 public struct Version: Sendable, Comparable, Hashable, CustomStringConvertible {
-    public let bytes: FDB.Bytes  // Must be exactly 10 bytes
+    public let bytes: Bytes  // Must be exactly 10 bytes
 
     // MARK: - Initialization
 
     /// Create a Version from versionstamp bytes
-    public init(bytes: FDB.Bytes) {
+    public init(bytes: Bytes) {
         precondition(bytes.count == 10, "Version must be 10 bytes (80-bit versionstamp)")
         self.bytes = bytes
     }

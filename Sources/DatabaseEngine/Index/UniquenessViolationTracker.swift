@@ -5,7 +5,7 @@
 // https://github.com/FoundationDB/fdb-record-layer/blob/main/fdb-record-layer-core/src/main/java/com/apple/foundationdb/record/provider/foundationdb/IndexingMerger.java
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Logging
 
@@ -111,7 +111,7 @@ public final class UniquenessViolationTracker: Sendable {
         persistableType: String,
         valueKey: [UInt8],
         primaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -185,7 +185,7 @@ public final class UniquenessViolationTracker: Sendable {
         valueKey: [UInt8],
         existingPrimaryKey: Tuple,
         newPrimaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -271,7 +271,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func scanViolations(
         indexName: String,
         limit: Int? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [UniquenessViolation] {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
@@ -279,9 +279,9 @@ public final class UniquenessViolationTracker: Sendable {
         var violations: [UniquenessViolation] = []
         var count = 0
 
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await (_, value) in sequence {
+        for (_, value) in sequence {
             if let maxLimit = limit, count >= maxLimit {
                 break
             }
@@ -312,15 +312,15 @@ public final class UniquenessViolationTracker: Sendable {
     /// Scan all violations across all indexes within a transaction
     public func scanAllViolations(
         limit: Int? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String: [UniquenessViolation]] {
         let (begin, end) = violationsSubspace.range()
 
         var result: [String: [UniquenessViolation]] = [:]
 
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await (_, value) in sequence {
+        for (_, value) in sequence {
             let violation = try JSONDecoder().decode(
                 UniquenessViolation.self,
                 from: Data(value)
@@ -352,14 +352,14 @@ public final class UniquenessViolationTracker: Sendable {
     /// Check if an index has any violations within a transaction
     public func hasViolations(
         indexName: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Bool {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await _ in sequence {
+        for _ in sequence {
             return true
         }
 
@@ -379,15 +379,15 @@ public final class UniquenessViolationTracker: Sendable {
     /// Count violations for an index within a transaction
     public func countViolations(
         indexName: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()
 
         var count = 0
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
         }
 
@@ -425,7 +425,7 @@ public final class UniquenessViolationTracker: Sendable {
         indexName: String,
         valueKey: [UInt8],
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> ViolationResolution {
         // Check violation record
         let violationSubspace = indexViolationsSubspace(indexName: indexName)
@@ -442,9 +442,9 @@ public final class UniquenessViolationTracker: Sendable {
         let (begin, end) = valueSubspace.range()
 
         var foundPrimaryKeys: [[UInt8]] = []
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             // Extract primary key from index key
             let keyBytes = Array(key)
             if keyBytes.count > valueSubspace.prefix.count {
@@ -493,7 +493,7 @@ public final class UniquenessViolationTracker: Sendable {
     public func clearViolation(
         indexName: String,
         valueKey: [UInt8],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let key = subspace.pack(Tuple(valueKey))
@@ -519,7 +519,7 @@ public final class UniquenessViolationTracker: Sendable {
     /// Clear all violations for an index within a transaction
     public func clearAllViolations(
         indexName: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let subspace = indexViolationsSubspace(indexName: indexName)
         let (begin, end) = subspace.range()

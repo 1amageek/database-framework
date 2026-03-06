@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import DatabaseEngine
 @testable import Core
 
@@ -39,7 +40,7 @@ struct TransactionContextTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema(
             [TransactionTestUser.self, TransactionTestProduct.self],
@@ -54,9 +55,8 @@ struct TransactionContextTests {
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "txcontext", "users"])
-        try? await directoryLayer.remove(path: ["test", "txcontext", "products"])
+        try? await container.database.directoryService.remove(path: ["test", "txcontext", "users"])
+        try? await container.database.directoryService.remove(path: ["test", "txcontext", "products"])
     }
 
     // MARK: - TransactionConfiguration Tests

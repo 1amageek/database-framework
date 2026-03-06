@@ -6,7 +6,8 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import GraphIndex
 
@@ -37,12 +38,12 @@ struct SPARQLDebugTest {
 
     @Test("Debug: Check storedFieldNames propagation")
     func testStoredFieldNamesPropagation() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "debug_edge"])
+        
+        try? await database.directoryService.remove(path: ["test", "debug_edge"])
 
         // Create container and ensure indexes are ready AFTER cleanup
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
@@ -113,12 +114,12 @@ struct SPARQLDebugTest {
 
     @Test("Debug: Direct GraphPropertyScanner test")
     func testDirectGraphPropertyScanner() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "debug_edge"])
+        
+        try? await database.directoryService.remove(path: ["test", "debug_edge"])
 
         // Create container and ensure indexes are ready AFTER cleanup
         let container = FDBContainer(database: database, schema: schema, security: .disabled)

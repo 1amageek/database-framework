@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for COUNT_NOT_NULL indexes
 ///
@@ -67,7 +67,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let oldData = try extractNullCheckData(from: oldItem)
         let newData = try extractNullCheckData(from: newItem)
@@ -110,7 +110,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         guard !isValueNull(in: item) else { return }
 
@@ -122,7 +122,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         guard !isValueNull(in: item) else { return [] }
 
         let groupingValues = try evaluateGroupingFields(from: item)
@@ -134,14 +134,14 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     /// Get the non-null count for a specific grouping
     public func getCount(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         try await getCountValue(groupingValues: groupingValues, transaction: transaction)
     }
 
     /// Get all non-null counts in this index
     public func getAllCounts(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], count: Int64)] {
         let allCounts = try await scanAllCounts(transaction: transaction)
         return allCounts.filter { $0.count > 0 }
@@ -150,7 +150,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     // MARK: - Private Helpers
 
     private struct NullCheckData {
-        let groupingKey: FDB.Bytes
+        let groupingKey: Bytes
         let isNull: Bool
     }
 

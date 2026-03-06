@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - IndexKindMaintainable Extension
 

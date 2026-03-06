@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Vector
 import TestSupport
@@ -86,7 +87,7 @@ struct ACORNTestProduct: Persistable {
 // MARK: - Test Helper
 
 private struct ACORNTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: HNSWIndexMaintainer<ACORNTestProduct>
@@ -94,8 +95,8 @@ private struct ACORNTestContext {
     let itemsSubspace: Subspace
     let blobsSubspace: Subspace
 
-    init(dimensions: Int = 4, indexName: String = "ACORNTestProduct_embedding") throws {
-        self.database = try FDBClient.openDatabase()
+    init(dimensions: Int = 4, indexName: String = "ACORNTestProduct_embedding") async throws {
+        self.database = try await FDBStorageEngine.open()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "acorn", String(testId)).pack())
@@ -181,7 +182,7 @@ private struct ACORNTestContext {
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         try await database.withTransaction { transaction in
             // Create fetch function using ItemStorage for proper envelope handling
-            let fetchItem: @Sendable (Tuple, any TransactionProtocol) async throws -> ACORNTestProduct? = { primaryKey, tx in
+            let fetchItem: @Sendable (Tuple, any Transaction) async throws -> ACORNTestProduct? = { primaryKey, tx in
                 guard let id = primaryKey[0] as? String else { return nil }
                 let itemKey = self.itemsSubspace.pack(Tuple(id))
                 let storage = ItemStorage(transaction: tx, blobsSubspace: self.blobsSubspace)
@@ -246,7 +247,7 @@ struct ACORNFilteredSearchTests {
     @Test("Basic filtered search")
     func testBasicFilteredSearch() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         // Create products with different categories
         let products = [
@@ -294,7 +295,7 @@ struct ACORNFilteredSearchTests {
     @Test("Filtered search respects distance ordering")
     func testFilteredSearchRespectsDistanceOrdering() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         // Create electronics products at varying distances
         let products = [
@@ -348,7 +349,7 @@ struct ACORNFilteredSearchTests {
     @Test("Complex predicate filter")
     func testComplexPredicateFilter() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         let products = [
             ACORNTestProduct(id: "p1", name: "Cheap Electronics", category: "electronics", price: 100,
@@ -387,7 +388,7 @@ struct ACORNFilteredSearchTests {
     @Test("Filter with k limit")
     func testFilterWithKLimit() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         // Create 10 electronics products
         var products: [ACORNTestProduct] = []
@@ -418,7 +419,7 @@ struct ACORNFilteredSearchTests {
     @Test("Filter that excludes all")
     func testFilterExcludesAll() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         let products = [
             ACORNTestProduct(id: "p1", name: "Product 1", category: "electronics", price: 100,
@@ -446,7 +447,7 @@ struct ACORNFilteredSearchTests {
     @Test("ACORN expansion factor affects results")
     func testACORNExpansionFactorAffectsResults() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         // Create a mix of products
         var products: [ACORNTestProduct] = []
@@ -494,7 +495,7 @@ struct ACORNFilteredSearchTests {
     @Test("Comparison: filtered vs unfiltered search")
     func testComparisonFilteredVsUnfiltered() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try ACORNTestContext(dimensions: 4)
+        let ctx = try await ACORNTestContext(dimensions: 4)
 
         let products = [
             ACORNTestProduct(id: "e1", name: "Electronics 1", category: "electronics", price: 100,

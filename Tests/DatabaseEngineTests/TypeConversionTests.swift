@@ -5,7 +5,7 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 
 @Suite("TypeConversion Tests")
 struct TypeConversionTests {

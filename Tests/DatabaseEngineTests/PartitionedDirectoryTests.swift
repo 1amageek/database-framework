@@ -5,7 +5,8 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 @Suite("Partitioned Directory Tests", .serialized)
@@ -17,7 +18,7 @@ struct PartitionedDirectoryTests {
     }
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(database: database, schema: schema, security: .disabled)
     }

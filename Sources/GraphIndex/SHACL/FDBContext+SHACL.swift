@@ -7,7 +7,7 @@
 // Reference: W3C SHACL https://www.w3.org/TR/shacl/
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 import Core
 import DatabaseEngine

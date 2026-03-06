@@ -5,7 +5,7 @@
 // https://apple.github.io/foundationdb/api-general.html#transaction-options
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - TransactionPriority
 
@@ -408,7 +408,7 @@ extension TransactionConfiguration {
     /// **Note**: `retryLimit` is NOT applied to the FDB transaction here because
     /// TransactionRunner manages retries at a higher level. Applying retryLimit
     /// to both would cause double retry control and unexpected behavior.
-    public func apply(to transaction: any TransactionProtocol) throws {
+    public func apply(to transaction: any Transaction) throws {
         // Transaction priority
         switch priority {
         case .batch:
@@ -431,7 +431,7 @@ extension TransactionConfiguration {
 
         // Timeout
         if let timeout = timeout {
-            try transaction.setOption(to: timeout, forOption: .timeout)
+            try transaction.setOption(to: timeout, forOption: .timeout(milliseconds: timeout))
         }
 
         // Note: retryLimit and maxRetryDelay are NOT applied to FDB transaction.

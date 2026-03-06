@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Errors that can occur during query plan execution
 public enum PlanExecutionError: Error, Sendable {

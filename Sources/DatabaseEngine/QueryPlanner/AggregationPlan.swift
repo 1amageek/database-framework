@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Specification for an aggregation operation
 public struct AggregationSpec: Sendable, Hashable {

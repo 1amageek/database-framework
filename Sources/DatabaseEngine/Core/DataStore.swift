@@ -8,7 +8,7 @@
 // Security: DataStore uses DataStoreSecurityDelegate for access control.
 // Auth context is obtained via TaskLocal (AuthContextKey.current).
 
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for storage backend abstraction
@@ -174,7 +174,7 @@ public protocol DataStore: AnyObject, Sendable {
     func fetchByIdInTransaction<T: Persistable>(
         _ type: T.Type,
         id: any TupleElement,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> T?
 
     /// Execute batch operations within an externally-provided transaction
@@ -197,7 +197,7 @@ public protocol DataStore: AnyObject, Sendable {
     func executeBatchInTransaction(
         inserts: [any Persistable],
         deletes: [any Persistable],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [SerializedModel]
 
     /// Execute operations within a raw transaction
@@ -223,7 +223,7 @@ public protocol DataStore: AnyObject, Sendable {
     /// - Parameter body: The closure to execute within the transaction
     /// - Returns: Result of the closure
     func withRawTransaction<T: Sendable>(
-        _ body: @Sendable @escaping (any TransactionProtocol) async throws -> T
+        _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T
 }
 

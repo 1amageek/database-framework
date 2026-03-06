@@ -13,7 +13,7 @@
 // 5. Increment span at higher levels
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import DatabaseEngine
 
@@ -76,7 +76,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         score: Score,
         primaryKey: Tuple,
         currentLevels: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         // Cache score encoding to avoid repeated TupleEncoder.encode() calls
         let scoreElement = try TupleEncoder.encode(score)
@@ -240,7 +240,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     // MARK: - Helper Methods
 
     /// Get current count before insertion
-    private func getCurrentCount(transaction: any TransactionProtocol) async throws -> Int64 {
+    private func getCurrentCount(transaction: any Transaction) async throws -> Int64 {
         guard let value = try await transaction.getValue(for: subspaces.countKey, snapshot: false) else {
             return 0
         }
@@ -253,20 +253,20 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
     /// - (score, primaryKey) of the first entry, or nil if level is empty
     private func findFirstEntryAtLevel(
         _ level: Int,
-        _ transaction: any TransactionProtocol
+        _ transaction: any Transaction
     ) async throws -> (score: Score, primaryKey: Tuple)? {
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
-        let sequence = transaction.getRange(
-            from: range.begin,
-            to: range.end,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 1,
             reverse: true,  // Descending: get highest score (first entry)
             snapshot: false  // Must see current transaction's changes
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             let suffix = try levelSubspace.unpack(key)
@@ -306,7 +306,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         level: Int,
         targetScoreElement: any TupleElement,
         targetPrimaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (accumulatedRank: Int64, lastKeyBeforeInsert: [UInt8]?) {
         var accumulatedRank: Int64 = 0
         var lastKey: [UInt8]? = nil
@@ -318,15 +318,15 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         let range = levelSubspace.range()
 
         // Scan in descending order (high to low scores)
-        let sequence = transaction.getRange(
-            from: range.begin,
-            to: range.end,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 0,
             reverse: true,
             snapshot: true  // Use snapshot: true for optimistic locking (Skip List is probabilistic)
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             // Zero-copy: Direct byte comparison without unpack/pack cycle
@@ -355,7 +355,7 @@ public struct SkipListInsertion<Score: Comparable & Numeric & Codable & Sendable
         level: Int,
         targetScore: Score,
         targetPrimaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (accumulatedRank: Int64, lastKeyBeforeInsert: [UInt8]?) {
         let scoreElement = try TupleEncoder.encode(targetScore)
         return try await findInsertionPoint(

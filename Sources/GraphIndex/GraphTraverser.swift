@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Graph
 
 // MARK: - GraphTraverserConfiguration
@@ -252,7 +252,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     // MARK: - Properties
 
     /// Database connection (internally thread-safe)
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let subspace: Subspace
 
     /// Edge scanner for neighbor lookups
@@ -270,7 +270,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     ///   - subspace: Index subspace (same as used by GraphIndexMaintainer)
     ///   - configuration: Traversal configuration (default: `.default`)
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         subspace: Subspace,
         configuration: GraphTraverserConfiguration = .default
     ) {

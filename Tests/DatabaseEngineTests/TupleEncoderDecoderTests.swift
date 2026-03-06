@@ -3,7 +3,7 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
 @testable import DatabaseEngine
 
 // MARK: - TupleEncoder Tests

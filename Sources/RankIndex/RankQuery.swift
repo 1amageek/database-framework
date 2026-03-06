@@ -6,7 +6,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 import Rank
 
 // MARK: - Rank Query Builder
@@ -146,7 +146,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute query using the rank index
     private func executeWithIndex(
         scoresSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, rank: Int)] {
         switch queryMode {
         case .top(let k):
@@ -173,7 +173,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanTopK(
         k: Int,
         scoresSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, rank: Int)] {
         let range = scoresSubspace.range()
 
@@ -183,14 +183,14 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
         )
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
         var scannedKeys = 0
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
 
             // Resource limit
@@ -216,20 +216,20 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanBottomK(
         k: Int,
         scoresSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, rank: Int)] {
         let range = scoresSubspace.range()
 
         var results: [(score: Double, primaryKey: Tuple)] = []
         results.reserveCapacity(k)
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
 
             if let (score, primaryKey) = try parseIndexKey(key, scoresSubspace: scoresSubspace) {
@@ -250,7 +250,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         from: Int,
         to: Int,
         scoresSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, rank: Int)] {
         // First, get all items to determine ranks
         // This is similar to top(to) but we skip the first `from` items
@@ -258,14 +258,14 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
         var allItems: [(score: Double, primaryKey: Tuple)] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
         var scannedKeys = 0
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
 
             // Resource limit
@@ -292,19 +292,19 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanPercentile(
         p: Double,
         scoresSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(item: T, rank: Int)] {
         // First, count total items
         let range = scoresSubspace.range()
         var totalCount = 0
 
-        let countSequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let countSequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, _) in countSequence {
+        for (key, _) in countSequence {
             guard scoresSubspace.contains(key) else { break }
             totalCount += 1
             // Resource limit for count operation
@@ -334,7 +334,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Parse index key to extract score and primary key
     ///
     /// Key format: [scoresSubspace][score][primaryKey...]
-    private func parseIndexKey(_ key: FDB.Bytes, scoresSubspace: Subspace) throws -> (score: Double, primaryKey: Tuple)? {
+    private func parseIndexKey(_ key: Bytes, scoresSubspace: Subspace) throws -> (score: Double, primaryKey: Tuple)? {
         let tuple = try scoresSubspace.unpack(key)
 
         guard tuple.count >= 2 else {

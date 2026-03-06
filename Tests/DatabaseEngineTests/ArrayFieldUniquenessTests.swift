@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import DatabaseEngine
 @testable import Core
 
@@ -75,7 +76,7 @@ struct ArrayFieldUniquenessTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema(
             [TaggedDocument.self, UniqueEmail.self, UUIDTaggedDocument.self, Int64TaggedDocument.self],

@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// SPARQL query execution engine
 ///
@@ -24,7 +24,7 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let fromFieldName: String
@@ -90,7 +90,7 @@ public struct SPARQLQueryExecutor: Sendable {
     ///   - graphFieldName: Name of the graph field (nil = no graph support)
     ///   - storedFieldNames: Property field names stored in CoveringValue (empty = no properties)
     public init(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         fromFieldName: String,
@@ -180,7 +180,7 @@ public struct SPARQLQueryExecutor: Sendable {
         pattern: ExecutionPattern,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression? = nil
     ) async throws -> EvaluationResult {
         var stats = ExecutionStatistics()
@@ -419,7 +419,7 @@ public struct SPARQLQueryExecutor: Sendable {
         patterns: [ExecutionTriple],
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var stats = ExecutionStatistics()
@@ -538,7 +538,7 @@ public struct SPARQLQueryExecutor: Sendable {
         leftBindings: [VariableBinding],
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression?
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var results: [VariableBinding] = []
@@ -574,7 +574,7 @@ public struct SPARQLQueryExecutor: Sendable {
         leftBindings: [VariableBinding],
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression?
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var results: [VariableBinding] = []
@@ -623,7 +623,7 @@ public struct SPARQLQueryExecutor: Sendable {
         joinVariables: Set<String>,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression?
     ) async throws -> HashJoinEvaluation {
         let sortedJoinVars = joinVariables.sorted()
@@ -680,7 +680,7 @@ public struct SPARQLQueryExecutor: Sendable {
         rightPattern: ExecutionPattern,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         var results: [VariableBinding] = []
         var combinedStats = ExecutionStatistics()
@@ -716,7 +716,7 @@ public struct SPARQLQueryExecutor: Sendable {
         rightPattern: ExecutionPattern,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         if case .basic(let patterns) = rightPattern, patterns.count == 1, let rightTriple = patterns.first {
             return try await evaluateOptionalBatchedSingleTriple(
@@ -778,7 +778,7 @@ public struct SPARQLQueryExecutor: Sendable {
         rightTriple: ExecutionTriple,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         guard !leftBindings.isEmpty else {
             return ([], ExecutionStatistics())
@@ -861,7 +861,7 @@ public struct SPARQLQueryExecutor: Sendable {
         _ pattern: ExecutionTriple,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression? = nil,
         resultLimit: Int? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
@@ -981,7 +981,7 @@ public struct SPARQLQueryExecutor: Sendable {
         _ pattern: ExecutionTriple,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         filter: FilterExpression?,
         resultLimit: Int? = nil
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
@@ -995,13 +995,13 @@ public struct SPARQLQueryExecutor: Sendable {
 
         var results: [VariableBinding] = []
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let binding = try parseKeyToBinding(key, pattern: pattern, ordering: ordering, subspace: orderingSubspace) {
                 // Apply filter if provided
                 if let filter = filter {
@@ -1146,7 +1146,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// **Fully-bound case**: When all 3 elements are bound, we need to find the EXACT key,
     /// not keys with additional suffixes. Subspace.range() adds 0x00/0xFF which excludes
     /// the exact key. Use `[key, strinc(key))` instead to include the exact key.
-    private func buildScanRange(pattern: ExecutionTriple, ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: FDB.Bytes, end: FDB.Bytes) {
+    private func buildScanRange(pattern: ExecutionTriple, ordering: GraphIndexOrdering, subspace: Subspace) -> (begin: Bytes, end: Bytes) {
         var prefixElements: [any TupleElement] = []
         let elementOrder = ordering.elementOrder
         let terms = [pattern.subject, pattern.predicate, pattern.object]
@@ -1176,7 +1176,7 @@ public struct SPARQLQueryExecutor: Sendable {
                 // Subspace.range() returns (prefix+0x00, prefix+0xFF) which EXCLUDES the exact key
                 // Use [prefixKey, strinc(prefixKey)) to include the exact key
                 do {
-                    let endKey = try FDB.strinc(prefixKey)
+                    let endKey = try strinc(prefixKey)
                     return (prefixKey, endKey)
                 } catch {
                     // Edge case: key is all 0xFF bytes (extremely rare)
@@ -1199,7 +1199,7 @@ public struct SPARQLQueryExecutor: Sendable {
     /// Uses `FieldValue(tupleElement:)` to preserve the native type from the hexastore,
     /// eliminating the need for string-based type inference.
     private func parseKeyToBinding(
-        _ key: FDB.Bytes,
+        _ key: Bytes,
         pattern: ExecutionTriple,
         ordering: GraphIndexOrdering,
         subspace: Subspace
@@ -1522,7 +1522,7 @@ public struct SPARQLQueryExecutor: Sendable {
         object: ExecutionTerm,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         config: ExecutionPropertyPathConfiguration = .default,
         depth: Int = 0
     ) async throws -> EvaluationResult {
@@ -1910,7 +1910,7 @@ public struct SPARQLQueryExecutor: Sendable {
         object: ExecutionTerm,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         config: ExecutionPropertyPathConfiguration,
         includeZeroHop: Bool
     ) async throws -> EvaluationResult {
@@ -2113,7 +2113,7 @@ public struct SPARQLQueryExecutor: Sendable {
         from source: FieldValue,
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(edge: FieldValue, target: FieldValue)] {
         let ordering: GraphIndexOrdering = strategy == .adjacency ? .out : .spo
         let orderingSubspace = subspaceForOrdering(ordering, base: indexSubspace)
@@ -2127,13 +2127,13 @@ public struct SPARQLQueryExecutor: Sendable {
 
         var results: [(FieldValue, FieldValue)] = []
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(range.begin),
-            endSelector: .firstGreaterOrEqual(range.end),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             snapshot: true
         )
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             // Parse key to get edge and target
             guard let tuple = try? prefixSubspace.unpack(key) else {
                 continue
@@ -2173,7 +2173,7 @@ public struct SPARQLQueryExecutor: Sendable {
         indexSubspace: Subspace,
         strategy: GraphIndexStrategy,
         maxNodes: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<FieldValue> {
         let scanner = GraphEdgeScanner(indexSubspace: indexSubspace, strategy: strategy)
         let stringNodes = try await scanner.getAllNodes(edgeLabel: nil, maxNodes: maxNodes, transaction: transaction)

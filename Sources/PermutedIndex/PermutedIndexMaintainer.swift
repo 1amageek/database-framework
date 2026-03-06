@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for PERMUTED indexes
 ///
@@ -69,7 +69,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old permuted entry
         if let oldItem = oldItem {
@@ -91,7 +91,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         if let key = try buildPermutedKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
@@ -103,7 +103,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         if let key = try buildPermutedKey(for: item, id: id) {
             return [key]
         }
@@ -124,7 +124,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Array of primary keys matching the prefix
     public func scanByPrefix(
         prefixValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
         let prefixSubspace: Subspace
         if prefixValues.isEmpty {
@@ -140,13 +140,13 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
         var results: [[any TupleElement]] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard prefixSubspace.contains(key) else { break }
 
             // Extract primary key from the key
@@ -178,7 +178,7 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Array of primary keys with exact match
     public func scanByExactMatch(
         values: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
         guard values.count == permutation.size else {
             throw PermutedIndexError.fieldCountMismatch(
@@ -194,13 +194,13 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
 
         var results: [[any TupleElement]] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard valueSubspace.contains(key) else { break }
 
             // The entire remaining key is the primary key
@@ -218,19 +218,19 @@ public struct PermutedIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Parameter transaction: FDB transaction
     /// - Returns: Array of (permutedFields, primaryKey) tuples
     public func scanAll(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] {
         let (begin, end) = subspace.range()
 
         var results: [(permutedFields: [any TupleElement], primaryKey: [any TupleElement])] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard subspace.contains(key) else { break }
 
             let keyTuple = try subspace.unpack(key)

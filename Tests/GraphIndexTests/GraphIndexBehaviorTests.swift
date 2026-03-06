@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -80,15 +81,15 @@ struct TestEdge: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: GraphIndexMaintainer<TestEdge>
     let kind: GraphIndexKind<TestEdge>
     let strategy: GraphIndexStrategy
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "TestEdge_graph") throws {
-        self.database = try FDBClient.openDatabase()
+    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "TestEdge_graph") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -161,7 +162,7 @@ private struct TestContext {
         return try await database.withTransaction { transaction -> [String] in
             let (begin, end) = prefixSubspace.range()
             var targets: [String] = []
-            for try await (key, _) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 let unpacked = try prefixSubspace.unpack(key)
                 let elements = try Tuple.unpack(from: unpacked.pack())
                 if let target = elements.first as? String {
@@ -179,7 +180,7 @@ private struct TestContext {
         return try await database.withTransaction { transaction -> [String] in
             let (begin, end) = prefixSubspace.range()
             var sources: [String] = []
-            for try await (key, _) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, _) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 let unpacked = try prefixSubspace.unpack(key)
                 let elements = try Tuple.unpack(from: unpacked.pack())
                 if let source = elements.first as? String {
@@ -199,7 +200,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Insert creates outgoing edge entry")
     func testInsertCreatesOutgoingEdge() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -220,7 +221,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Insert creates incoming edge entry")
     func testInsertCreatesIncomingEdge() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -241,7 +242,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Multiple edges from same source")
     func testMultipleEdgesFromSameSource() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(source: "alice", target: "bob", label: "follows"),
@@ -271,7 +272,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Multiple edges to same target")
     func testMultipleEdgesToSameTarget() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(source: "alice", target: "dave", label: "follows"),
@@ -301,7 +302,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Delete removes edge entries")
     func testDeleteRemovesEdges() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "follows")
 
@@ -337,7 +338,7 @@ struct GraphIndexAdjacencyTests {
     @Test("Different labels create separate edges")
     func testDifferentLabels() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .adjacency)
+        let ctx = try await TestContext(strategy: .adjacency)
 
         let edges = [
             TestEdge(id: "e1", source: "alice", target: "bob", label: "follows"),
@@ -375,7 +376,7 @@ struct GraphIndexTripleStoreTests {
     @Test("TripleStore creates 3 index entries")
     func testTripleStoreCreates3Entries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .tripleStore)
+        let ctx = try await TestContext(strategy: .tripleStore)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 
@@ -407,7 +408,7 @@ struct GraphIndexTripleStoreTests {
     @Test("TripleStore delete removes all 3 entries")
     func testTripleStoreDeleteRemovesAllEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .tripleStore)
+        let ctx = try await TestContext(strategy: .tripleStore)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 
@@ -455,7 +456,7 @@ struct GraphIndexHexastoreTests {
     @Test("Hexastore creates 6 index entries")
     func testHexastoreCreates6Entries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .hexastore)
+        let ctx = try await TestContext(strategy: .hexastore)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 
@@ -487,7 +488,7 @@ struct GraphIndexHexastoreTests {
     @Test("Hexastore delete removes all 6 entries")
     func testHexastoreDeleteRemovesAllEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .hexastore)
+        let ctx = try await TestContext(strategy: .hexastore)
 
         let edge = TestEdge(source: "alice", target: "bob", label: "knows")
 

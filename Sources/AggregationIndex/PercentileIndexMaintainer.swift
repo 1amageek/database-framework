@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - IndexKindMaintainable Extension
 
@@ -89,7 +89,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // For INSERT: add value to t-digest
         // For DELETE: no-op (t-digest is add-only, cannot remove values)
@@ -106,7 +106,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         try await addValueToTDigest(item: item, transaction: transaction)
     }
@@ -114,7 +114,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Sparse index: if any field value is nil, no index entry
         let allValues: [any TupleElement]
         do {
@@ -140,7 +140,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func getPercentile(
         percentile: Double,
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Double? {
         let key = try buildGroupingKey(groupingValues)
 
@@ -165,7 +165,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func getPercentiles(
         percentiles: [Double],
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Double: Double] {
         let key = try buildGroupingKey(groupingValues)
 
@@ -190,7 +190,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     public func getCDF(
         value: Double,
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Double? {
         let key = try buildGroupingKey(groupingValues)
 
@@ -213,7 +213,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     /// - Returns: Tuple of (count, min, max, median) or nil if no data
     public func getStatistics(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (count: Int64, min: Double, max: Double, median: Double)? {
         let key = try buildGroupingKey(groupingValues)
 
@@ -241,13 +241,13 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     /// - Returns: Array of (grouping values, percentile values)
     public func getAllPercentiles(
         percentiles: [Double],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], values: [Double: Double])] {
         let range = subspace.range()
 
         var results: [(grouping: [any TupleElement], values: [Double: Double])] = []
 
-        for try await (key, value) in transaction.getRange(from: range.begin, to: range.end) {
+        for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end)) {
             // Extract grouping values from key by unpacking the subspace
             let keyTuple = try subspace.unpack(key)
             var groupingValues: [any TupleElement] = []
@@ -274,7 +274,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
     // MARK: - Private Methods
 
     /// Add a value to the t-digest for the item's group
-    private func addValueToTDigest(item: Item, transaction: any TransactionProtocol) async throws {
+    private func addValueToTDigest(item: Item, transaction: any Transaction) async throws {
         // Sparse index: if any field value is nil, skip indexing
         let allValues: [any TupleElement]
         do {

@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Leaderboard ranking query for Fusion
 ///
@@ -267,7 +267,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         grouping: [any TupleElement]?,
         windowId: Int64?,
         windowDurationSeconds: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, score: Int64)] {
         // Calculate current window ID if not specified
         let effectiveWindowId = windowId ?? {
@@ -287,9 +287,9 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
         let rangeEnd = windowSubspace.pack(Tuple(prefixElements + [Int64.max]))
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(rangeStart),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
@@ -297,7 +297,7 @@ public struct Leaderboard<T: Persistable>: FusionQuery, Sendable {
         var count = 0
         let groupingCount = grouping?.count ?? 0
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard windowSubspace.contains(key), count < k else { break }
 
             let keyTuple = try windowSubspace.unpack(key)

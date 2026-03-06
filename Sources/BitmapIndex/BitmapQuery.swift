@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Bitmap Entry Point
 
@@ -175,7 +175,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// Centralizes maintainer creation and operation dispatch shared by
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
-        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any TransactionProtocol) async throws -> R
+        _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any Transaction) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
             throw BitmapQueryError.noOperation

@@ -7,7 +7,8 @@ import Foundation
 @testable import DatabaseEngine
 import Core
 import Graph
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 @Suite("SPARQL() Function Integration Tests", .serialized)
@@ -48,13 +49,12 @@ struct SPARQLFunctionIntegrationTests {
     // MARK: - Helper Methods
 
     private func setupContainer() async throws -> FDBContainer {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([User.self, RDFTriple.self], version: Schema.Version(1, 0, 0))
         let container = FDBContainer(database: database, schema: schema, security: .disabled)
 
         // Clean up previous test data
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["test", "sparql_func"])
+        try? await database.directoryService.remove(path: ["test", "sparql_func"])
 
         // Set index to readable (required for SPARQL queries)
         let subspace = try await container.resolveDirectory(for: RDFTriple.self)

@@ -8,7 +8,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import FullText
 import Graph
@@ -90,7 +91,7 @@ struct IndexMaintenanceE2ETests {
 
     private func setupContainer<T: Persistable>(_ types: [T.Type]) async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
 
@@ -102,9 +103,8 @@ struct IndexMaintenanceE2ETests {
     }
 
     private func cleanup(container: FDBContainer, paths: [[String]]) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
         for path in paths {
-            try? await directoryLayer.remove(path: path)
+            try? await container.database.directoryService.remove(path: path)
         }
     }
 
@@ -156,7 +156,7 @@ struct IndexMaintenanceE2ETests {
 
     /// Helper to count entries in a subspace
     private func countEntriesInSubspace(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         subspace: Subspace
     ) async throws -> Int {
         try await database.withTransaction { transaction -> Int in
@@ -171,14 +171,14 @@ struct IndexMaintenanceE2ETests {
 
     /// Helper to dump all keys in a subspace for debugging
     private func dumpSubspaceKeys(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         subspace: Subspace,
         label: String
     ) async throws {
         try await database.withTransaction { transaction in
             let (begin, end) = subspace.range()
             print("=== \(label) ===")
-            for try await (key, value) in transaction.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 print("  Key: \(key.count) bytes, Value: \(value.count) bytes")
             }
             print("=== END ===")

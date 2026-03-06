@@ -8,7 +8,7 @@
 // https://www.w3.org/TR/shacl/#targets
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 import DatabaseEngine
 

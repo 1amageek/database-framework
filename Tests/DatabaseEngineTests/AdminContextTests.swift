@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -38,7 +39,7 @@ struct AdminContextTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema([
             AdminTestEntity.self,
@@ -57,8 +58,7 @@ struct AdminContextTests {
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "admin"])
+        try? await container.database.directoryService.remove(path: ["test", "admin"])
     }
 
     /// Get the first index name for AdminTestEntity from schema

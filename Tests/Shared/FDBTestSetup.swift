@@ -2,13 +2,14 @@
 // Shared FDB initialization and serialization for all test targets
 
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import DatabaseEngine
 
 /// Shared FDB initialization and test serialization singleton
 ///
 /// This actor ensures:
-/// 1. FDBClient.initialize() is called only once across all test suites
+/// 1. FDBStorageEngine.initialize() is called only once across all test suites
 /// 2. FDB tests run serially to prevent version conflicts
 ///
 /// **Usage**:
@@ -44,8 +45,6 @@ public actor FDBTestSetup {
     public func initialize() async throws {
         switch initState {
         case .initialized:
-            // Best-effort cleanup may not have run yet if initialization succeeded
-            // via an in-flight continuation.
             if !didCleanupTestDirectories {
                 await cleanupTestDirectoriesBestEffort()
             }
@@ -64,7 +63,7 @@ public actor FDBTestSetup {
             initState = .initializing([])
 
             do {
-                try await FDBClient.initialize()
+                try await FDBStorageEngine.initialize()
                 await cleanupTestDirectoriesBestEffort()
                 if case .initializing(let continuations) = initState {
                     initState = .initialized
@@ -89,18 +88,13 @@ public actor FDBTestSetup {
     }
 
     /// Best-effort cleanup for stale local test data.
-    ///
-    /// This project intentionally dropped backward compatibility for old item formats.
-    /// If an older test run left data in FoundationDB, new tests can fail when scanning items.
-    /// We therefore delete the common `["test"]` DirectoryLayer root once per process.
     private func cleanupTestDirectoriesBestEffort() async {
         guard !didCleanupTestDirectories else { return }
         didCleanupTestDirectories = true
 
         do {
-            let database = try FDBClient.openDatabase()
-            let directoryLayer = DirectoryLayer(database: database)
-            try? await directoryLayer.remove(path: ["test"])
+            let engine = try await FDBStorageEngine.open()
+            try await engine.directoryService.remove(path: ["test"])
         } catch {
             // Ignore cleanup failures; tests will surface real issues.
         }
@@ -134,7 +128,6 @@ public actor FDBTestSetup {
 
     /// Acquire exclusive access for a test
     private func acquireAccess() async {
-        // If a test is already running, wait in queue
         while isTestRunning {
             await withCheckedContinuation { continuation in
                 waitingTests.append(continuation)

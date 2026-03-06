@@ -5,12 +5,12 @@
 /// Enables CLI and dynamic tools to discover and decode data without compiled types.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Manages persistence and retrieval of Schema.Entity entries in FDB
 public struct SchemaRegistry: Sendable {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
 
     /// Schema key prefix
     private static let catalogPrefix = "_schema"
@@ -18,7 +18,7 @@ public struct SchemaRegistry: Sendable {
     /// In-memory cache for entities (reduces CLI latency by 10-100x)
     private let cache: SchemaCatalogCache
 
-    public init(database: any DatabaseProtocol, cacheTTLSeconds: Int = 300) {
+    public init(database: any StorageEngine, cacheTTLSeconds: Int = 300) {
         self.database = database
         self.cache = SchemaCatalogCache(ttlSeconds: cacheTTLSeconds)
     }
@@ -69,8 +69,8 @@ public struct SchemaRegistry: Sendable {
             var entities: [Schema.Entity] = []
             let decoder = JSONDecoder()
 
-            let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
-            for try await (_, value) in sequence {
+            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
+            for (_, value) in sequence {
                 let data = Data(value)
                 let entity = try decoder.decode(Schema.Entity.self, from: data)
                 entities.append(entity)
@@ -135,7 +135,7 @@ public struct SchemaRegistry: Sendable {
     // MARK: - Key Construction
 
     /// Build FDB key for a schema entry: (_schema, typeName) as Tuple
-    private static func key(for typeName: String) -> FDB.Bytes {
+    private static func key(for typeName: String) -> Bytes {
         Tuple([catalogPrefix, typeName]).pack()
     }
 }

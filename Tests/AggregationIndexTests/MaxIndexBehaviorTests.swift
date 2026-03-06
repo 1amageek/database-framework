@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct MaxTestScore: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: MaxIndexMaintainer<MaxTestScore, Int64>
 
-    init(indexName: String = "MaxTestScore_subject_score") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "MaxTestScore_subject_score") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "max", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -142,7 +143,7 @@ struct MaxIndexBehaviorTests {
     @Test("Insert adds to sorted set")
     func testInsertAddsToSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
 
@@ -164,7 +165,7 @@ struct MaxIndexBehaviorTests {
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let scores = [
             MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
@@ -194,7 +195,7 @@ struct MaxIndexBehaviorTests {
     @Test("Delete removes from sorted set")
     func testDeleteRemovesFromSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95)
 
@@ -231,7 +232,7 @@ struct MaxIndexBehaviorTests {
     @Test("Update changes position in sorted set")
     func testUpdateChangesPosition() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let score = MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 85)
 
@@ -269,7 +270,7 @@ struct MaxIndexBehaviorTests {
     @Test("getMax returns maximum value")
     func testGetMaxReturnsMaximum() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let scores = [
             MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
@@ -296,7 +297,7 @@ struct MaxIndexBehaviorTests {
     @Test("Multiple groups are independent")
     func testMultipleGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let scores = [
             MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
@@ -327,7 +328,7 @@ struct MaxIndexBehaviorTests {
     @Test("getMax for non-existent group throws error")
     func testGetMaxNonExistentGroupThrowsError() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         await #expect(throws: IndexError.self) {
             _ = try await ctx.getMax(for: "NonExistent")
@@ -341,7 +342,7 @@ struct MaxIndexBehaviorTests {
     @Test("ScanItem adds to sorted set")
     func testScanItemAddsToSortedSet() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let scores = [
             MaxTestScore(id: "s1", subject: "Math", studentName: "Alice", score: 95),
@@ -373,7 +374,7 @@ struct MaxIndexBehaviorTests {
     @Test("Max updates correctly when maximum item is deleted")
     func testMaxUpdatesOnMaximumDelete() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let scores = [
             MaxTestScore(id: "s1", subject: "Math", studentName: "Low", score: 60),

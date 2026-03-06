@@ -5,11 +5,11 @@
 // https://apple.github.io/foundationdb/api-general.html#streaming-mode
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - StreamingMode Selection
 
-extension FDB.StreamingMode {
+extension StreamingMode {
     /// Select optimal StreamingMode based on query characteristics
     ///
     /// This method analyzes the query pattern and selects the most efficient
@@ -32,7 +32,7 @@ extension FDB.StreamingMode {
         limit: Int? = nil,
         isFullScan: Bool = false,
         isSingleClient: Bool = false
-    ) -> FDB.StreamingMode {
+    ) -> StreamingMode {
         // Case 1: Small result set with limit - use exact for single round-trip
         if let limit = limit, limit <= 100 {
             return .exact
@@ -78,7 +78,7 @@ extension FDB.StreamingMode {
     public static func forIndexScan(
         selectivity: Double,
         limit: Int? = nil
-    ) -> FDB.StreamingMode {
+    ) -> StreamingMode {
         // Highly selective (< 1%) - small batches
         if selectivity < 0.01 {
             if let limit = limit, limit <= 10 {
@@ -107,7 +107,7 @@ extension FDB.StreamingMode {
     ///
     /// - Parameter batchSize: Number of items to fetch
     /// - Returns: Optimal StreamingMode
-    public static func forBatchFetch(batchSize: Int) -> FDB.StreamingMode {
+    public static func forBatchFetch(batchSize: Int) -> StreamingMode {
         if batchSize <= 10 {
             return .exact
         }
@@ -126,7 +126,7 @@ extension FDB.StreamingMode {
 /// Configuration for streaming mode selection
 public struct StreamingModeConfiguration: Sendable, Equatable {
     /// Override streaming mode (nil = automatic selection)
-    public let override: FDB.StreamingMode?
+    public let override: StreamingMode?
 
     /// Hint: estimated result set size
     public let estimatedRows: Int?
@@ -141,7 +141,7 @@ public struct StreamingModeConfiguration: Sendable, Equatable {
     public static let `default` = StreamingModeConfiguration()
 
     /// Force a specific streaming mode
-    public static func force(_ mode: FDB.StreamingMode) -> StreamingModeConfiguration {
+    public static func force(_ mode: StreamingMode) -> StreamingModeConfiguration {
         StreamingModeConfiguration(override: mode)
     }
 
@@ -154,7 +154,7 @@ public struct StreamingModeConfiguration: Sendable, Equatable {
     }
 
     public init(
-        override: FDB.StreamingMode? = nil,
+        override: StreamingMode? = nil,
         estimatedRows: Int? = nil,
         isFullScan: Bool = false,
         isSingleClient: Bool = false
@@ -166,7 +166,7 @@ public struct StreamingModeConfiguration: Sendable, Equatable {
     }
 
     /// Resolve the streaming mode to use
-    public func resolve(limit: Int?) -> FDB.StreamingMode {
+    public func resolve(limit: Int?) -> StreamingMode {
         if let override = override {
             return override
         }

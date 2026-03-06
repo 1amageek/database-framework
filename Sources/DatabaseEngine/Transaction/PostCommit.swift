@@ -5,7 +5,7 @@
 // Provides callbacks that execute after successful transaction commit.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Synchronization
 
 // MARK: - PostCommit Protocol

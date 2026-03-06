@@ -4,7 +4,7 @@
 // Reference: FDB Record Layer multi-target indexing strategy
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Metrics
 import Synchronization
@@ -70,7 +70,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
     private let throttleDelayMs: Int
 
     // Progress tracking
-    private let progressKey: FDB.Bytes
+    private let progressKey: Bytes
 
     // MARK: - Metrics
 
@@ -223,7 +223,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 // Process batch and save progress atomically in same transaction
                 let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
                     var itemsInBatch = 0
-                    var lastProcessedKey: FDB.Bytes? = nil
+                    var lastProcessedKey: Bytes? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                     let storage = ItemStorage(
@@ -316,7 +316,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
         }
     }
 
-    private func saveProgress(_ rangeSet: RangeSet, _ transaction: any TransactionProtocol) throws {
+    private func saveProgress(_ rangeSet: RangeSet, _ transaction: any Transaction) throws {
         let data = try JSONEncoder().encode(rangeSet)
         transaction.setValue(Array(data), for: progressKey)
     }

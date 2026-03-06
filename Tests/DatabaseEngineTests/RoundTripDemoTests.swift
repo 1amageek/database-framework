@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import DatabaseEngine
 @testable import Core
 
@@ -22,7 +23,7 @@ struct RoundTripDemoTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema([DemoItem.self], version: Schema.Version(1, 0, 0))
         return FDBContainer(
             database: database,

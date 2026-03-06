@@ -8,7 +8,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import FullText
 import Graph
@@ -85,7 +86,7 @@ struct IndexRebuildConsistencyTests {
 
     private func setupContainer(_ types: [any Persistable.Type]) async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema(types, version: Schema.Version(1, 0, 0))
         for type in types {
             IndexBuilderRegistry.shared.register(type)
@@ -98,8 +99,8 @@ struct IndexRebuildConsistencyTests {
     }
 
     private func cleanup(container: FDBContainer, path: [String]) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: path)
+        
+        try? await container.database.directoryService.remove(path: path)
     }
 
     private func setIndexStatesToReadable<T: Persistable>(
@@ -156,7 +157,7 @@ struct IndexRebuildConsistencyTests {
         return try await container.database.withTransaction { tx -> Set<[UInt8]> in
             let (begin, end) = namedSubspace.range()
             var keys = Set<[UInt8]>()
-            for try await (key, _) in tx.getRange(begin: begin, end: end, snapshot: true) {
+            for (key, _) in try await tx.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true) {
                 keys.insert(Array(key))
             }
             return keys

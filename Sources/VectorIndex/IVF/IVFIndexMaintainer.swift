@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Vector
 
 /// Maintainer for IVF (Inverted File Index) vector indexes
@@ -92,7 +92,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old vector from inverted list
         if let oldItem = oldItem {
@@ -119,7 +119,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         do {
             let vector = try extractVector(from: item)
@@ -132,7 +132,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // IVF stores data in inverted lists, not directly by primary key
         // Return the assignment key for verification
         let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
@@ -151,7 +151,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     ///   - transaction: FDB transaction
     public func train(
         vectors: [[Float]],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let clustering = KMeansClustering(
             k: parameters.nlist,
@@ -173,7 +173,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     /// Check if the index has been trained
-    public func isTrained(transaction: any TransactionProtocol) async throws -> Bool {
+    public func isTrained(transaction: any Transaction) async throws -> Bool {
         guard let metadata = try await loadMetadata(transaction: transaction) else {
             return false
         }
@@ -197,7 +197,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func search(
         queryVector: [Float],
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(primaryKey: [any TupleElement], distance: Double)] {
         guard queryVector.count == dimensions else {
             throw VectorIndexError.dimensionMismatch(expected: dimensions, actual: queryVector.count)
@@ -234,9 +234,9 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 .subspace(clusterId)
 
             let (begin, end) = listSubspace.range()
-            let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
-            for try await (key, value) in sequence {
+            for (key, value) in sequence {
                 // Decode primary key
                 guard let pkTuple = try? listSubspace.unpack(key) else { continue }
 
@@ -269,7 +269,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Remove a vector from its inverted list
     private func removeFromInvertedList(
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Get current cluster assignment
         let assignmentSubspace = subspace.subspace(SubspaceKey.assignments.rawValue)
@@ -298,7 +298,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         vector: [Float],
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Load centroids
         let centroids = try await loadCentroids(transaction: transaction)
@@ -345,7 +345,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store centroids
     private func storeCentroids(
         _ centroids: [[Float]],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let centroidSubspace = subspace.subspace(SubspaceKey.centroids.rawValue)
 
@@ -359,14 +359,14 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load centroids
     private func loadCentroids(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[Float]] {
         let centroidSubspace = subspace.subspace(SubspaceKey.centroids.rawValue)
         let (begin, end) = centroidSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         var centroids: [[Float]] = []
-        for try await (_, value) in sequence {
+        for (_, value) in sequence {
             guard let elements = try? Tuple.unpack(from: value) else { continue }
             let vector = tupleToVector(elements)
             centroids.append(vector)
@@ -378,7 +378,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Store metadata
     private func storeMetadata(
         _ metadata: IVFMetadata,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         let encoder = JSONEncoder()
@@ -388,7 +388,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Load metadata
     private func loadMetadata(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> IVFMetadata? {
         let metadataKey = subspace.pack(Tuple([SubspaceKey.metadata.rawValue]))
         guard let data = try await transaction.getValue(for: metadataKey) else {

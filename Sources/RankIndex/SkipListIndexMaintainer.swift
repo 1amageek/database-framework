@@ -12,7 +12,7 @@
 // - getCount: O(1) (unchanged)
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import DatabaseEngine
 
@@ -106,7 +106,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         switch (oldItem, newItem) {
         case (nil, let new?):
@@ -130,12 +130,12 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         try await insertEntry(item: item, id: id, transaction: transaction)
     }
 
-    public func computeIndexKeys(for item: Item, id: Tuple) async throws -> [FDB.Bytes] {
+    public func computeIndexKeys(for item: Item, id: Tuple) async throws -> [Bytes] {
         // Get score from item
         guard let (score, primaryKey) = try await extractScore(from: item, id: id) else {
             return []
@@ -159,7 +159,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     /// - Returns: Array of (score, primaryKey) tuples in descending order
     public func getTopK(
         k: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
@@ -197,7 +197,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     /// - Throws: `IndexError.invalidStructure` if score doesn't exist
     public func getRank(
         score: Score,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         // We need a primary key to identify the exact entry
         // For now, use the first entry with this score
@@ -213,14 +213,14 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
         let scorePrefixBytes = levelSubspace.pack(Tuple([scoreElement]))
         let rangeEnd = levelSubspace.range().end
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(scorePrefixBytes),
-            endSelector: .firstGreaterOrEqual(rangeEnd),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(scorePrefixBytes),
+            to: .firstGreaterOrEqual(rangeEnd),
             snapshot: true
         )
 
         var foundPrimaryKey: Tuple?
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             // Check if key starts with our score prefix
             guard key.count > scorePrefixBytes.count,
                   key.prefix(scorePrefixBytes.count).elementsEqual(scorePrefixBytes) else {
@@ -266,7 +266,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     ///
     /// - Parameter transaction: FDB transaction
     /// - Returns: Total number of elements
-    public func getCount(transaction: any TransactionProtocol) async throws -> Int64 {
+    public func getCount(transaction: any Transaction) async throws -> Int64 {
         guard let value = try await transaction.getValue(for: subspaces.countKey, snapshot: true) else {
             return 0
         }
@@ -311,7 +311,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     private func insertEntry(
         item: Item,
         id: Tuple?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         guard let (score, primaryKey) = try await extractScore(from: item, id: id) else {
             return
@@ -336,7 +336,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     private func deleteEntry(
         item: Item,
         id: Tuple?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         guard let (score, primaryKey) = try await extractScore(from: item, id: id) else {
             return
@@ -358,7 +358,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     }
 
     /// Get current number of levels
-    private func getCurrentLevels(transaction: any TransactionProtocol) async throws -> Int {
+    private func getCurrentLevels(transaction: any Transaction) async throws -> Int {
         let value = try? await transaction.getValue(for: subspaces.numLevelsKey, snapshot: true)
 
         if let value = value, !value.isEmpty {
@@ -396,7 +396,7 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     /// - Parameter transaction: FDB transaction
     /// - Returns: Dictionary mapping level to (entryCount, spanSum) tuples
     /// - Throws: IndexError.invalidStructure if span counters are inconsistent
-    public func validateSpanIntegrity(transaction: any TransactionProtocol) async throws -> [Int: (entries: Int, spanSum: Int64)] {
+    public func validateSpanIntegrity(transaction: any Transaction) async throws -> [Int: (entries: Int, spanSum: Int64)] {
         // Read metadata directly to avoid side effects
         guard let countBytes = try await transaction.getValue(for: subspaces.countKey, snapshot: true) else {
             throw IndexError.invalidStructure("Count metadata not found")
@@ -426,15 +426,15 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
             let levelSubspace = subspaces.subspace(for: level)
             let range = levelSubspace.range()
 
-            let sequence = transaction.getRange(
-                from: range.begin,
-                to: range.end,
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(range.begin),
+                to: .firstGreaterOrEqual(range.end),
                 limit: 0,
                 reverse: false,
                 snapshot: true
             )
 
-            for try await (_, value) in sequence {
+            for (_, value) in sequence {
                 entryCount += 1
                 let span = try SpanValue.decode(value)
                 spanSum += span.count

@@ -10,7 +10,8 @@ import Testing
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 
 @Suite("OnlineIndexer Atomicity Tests", .tags(.requiresFDB), .serialized)
@@ -23,15 +24,15 @@ struct OnlineIndexerAtomicityTests {
     // MARK: - Test Context
 
     struct TestContext: Sendable {
-        nonisolated(unsafe) let database: any DatabaseProtocol
+        nonisolated(unsafe) let database: any StorageEngine
         let container: FDBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
         let blobsSubspace: Subspace
 
-        init() throws {
-            self.database = try FDBClient.openDatabase()
+        init() async throws {
+            self.database = try await FDBStorageEngine.open()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "atomicity", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")
@@ -73,7 +74,7 @@ struct OnlineIndexerAtomicityTests {
     @Test("Progress is consistent with indexed data")
     func testProgressConsistencyWithIndexedData() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let players = LargeTestDataGenerator.generatePlayers(count: 100, nameLength: 50)
             try await ctx.insertPlayers(players)
@@ -115,7 +116,7 @@ struct OnlineIndexerAtomicityTests {
     @Test("MultiTarget progress is atomic across all indexes")
     func testMultiTargetAtomicProgress() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let players = LargeTestDataGenerator.generatePlayers(count: 75, nameLength: 50)
             try await ctx.insertPlayers(players)
@@ -171,7 +172,7 @@ struct OnlineIndexerAtomicityTests {
     @Test("RangeSet progress is saved atomically with work")
     func testRangeSetAtomicProgress() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let batchSize = 10
             let players = LargeTestDataGenerator.generateForBatchTesting(
@@ -220,7 +221,7 @@ struct OnlineIndexerAtomicityTests {
     @Test("Progress cleared after successful completion")
     func testProgressClearedAfterCompletion() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let players = LargeTestDataGenerator.generatePlayers(count: 25, nameLength: 50)
             try await ctx.insertPlayers(players)

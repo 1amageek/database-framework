@@ -6,7 +6,7 @@
 // Reference: W3C OWL 2 RL Profile https://www.w3.org/TR/owl2-profiles/#OWL_2_RL
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 
 /// OWL 2 RL Materializer for forward-chaining inference
@@ -101,7 +101,7 @@ public struct OWL2RLMaterializer: Sendable {
     public func materializeOnWrite(
         triple: (subject: String, predicate: String, object: String),
         ontologyIRI: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> InferenceResult {
         var visited = Set<TripleKey>()
         return try await materializeOnWrite(
@@ -121,7 +121,7 @@ public struct OWL2RLMaterializer: Sendable {
     private func materializeOnWrite(
         triple: (subject: String, predicate: String, object: String),
         ontologyIRI: String,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         depth: Int,
         visited: inout Set<TripleKey>
     ) async throws -> InferenceResult {
@@ -208,7 +208,7 @@ public struct OWL2RLMaterializer: Sendable {
         classIRI: String,
         ontologyIRI: String,
         baseTriple: TripleKey,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
         result.statistics.ruleApplications += 1
@@ -266,7 +266,7 @@ public struct OWL2RLMaterializer: Sendable {
         superClass: String,
         ontologyIRI: String,
         baseTriple: TripleKey,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
         // scm-sco: Transitivity of subClassOf
@@ -305,7 +305,7 @@ public struct OWL2RLMaterializer: Sendable {
         superProperty: String,
         ontologyIRI: String,
         baseTriple: TripleKey,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
         // scm-spo: Transitivity of subPropertyOf
@@ -342,7 +342,7 @@ public struct OWL2RLMaterializer: Sendable {
         object: String,
         ontologyIRI: String,
         baseTriple: TripleKey,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
         // prp-spo1: If p1 rdfs:subPropertyOf p2, and x p1 y, then x p2 y
@@ -477,7 +477,7 @@ public struct OWL2RLMaterializer: Sendable {
         predicate: String,
         object: String,
         ontologyIRI: String,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         result: inout InferenceResult
     ) async throws {
         // prp-irp: Irreflexive property violation

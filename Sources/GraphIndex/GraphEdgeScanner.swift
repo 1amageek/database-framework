@@ -8,7 +8,7 @@ import Foundation
 import Core
 import Graph
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - EdgeInfo
 
@@ -182,7 +182,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanOutgoing(
         from nodeID: String,
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncThrowingStream<EdgeInfo, Error> {
         scanEdges(
             nodeID: nodeID,
@@ -207,7 +207,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanIncoming(
         to nodeID: String,
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncThrowingStream<EdgeInfo, Error> {
         scanEdges(
             nodeID: nodeID,
@@ -230,7 +230,7 @@ public struct GraphEdgeScanner: Sendable {
     /// - Returns: Sequence of all EdgeInfo in the graph
     public func scanAllEdges(
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncThrowingStream<EdgeInfo, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -262,7 +262,7 @@ public struct GraphEdgeScanner: Sendable {
     /// Uses [out] subspace with key structure: [edge]/[from]/[to]
     private func scanAllEdgesAdjacency(
         edgeLabel: String?,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
         if let label = edgeLabel {
@@ -270,13 +270,13 @@ public struct GraphEdgeScanner: Sendable {
             let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [label])
             let (beginKey, endKey) = prefix.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let edgeInfo = try self.extractEdgeFromAllEdgesScanAdjacency(
                     key: key,
                     prefix: prefix,
@@ -289,13 +289,13 @@ public struct GraphEdgeScanner: Sendable {
             // Wildcard: Scan entire [out]/* subspace
             let (beginKey, endKey) = outgoingSubspace.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let edgeInfo = try self.extractEdgeFromFullScanAdjacency(
                     key: key,
                     subspace: outgoingSubspace
@@ -313,7 +313,7 @@ public struct GraphEdgeScanner: Sendable {
     /// - Wildcard: Uses SPO index `[from]/[edge]/[to]` with full scan O(E)
     private func scanAllEdgesTripleStore(
         edgeLabel: String?,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
         if let label = edgeLabel {
@@ -323,13 +323,13 @@ public struct GraphEdgeScanner: Sendable {
             let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label])
             let (beginKey, endKey) = prefix.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let edgeInfo = try self.extractEdgeFromPOSLabelScan(
                     key: key,
                     prefix: prefix,
@@ -343,13 +343,13 @@ public struct GraphEdgeScanner: Sendable {
             // SPO key structure: [from]/[edge]/[to]
             let (beginKey, endKey) = outgoingSubspace.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let edgeInfo = try self.extractEdgeFromFullScanTripleStore(
                     key: key,
                     subspace: outgoingSubspace,
@@ -453,7 +453,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanOutgoing(
         from nodeIDs: [String],
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         try await batchScan(
             nodeIDs: nodeIDs,
@@ -476,7 +476,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanIncoming(
         to nodeIDs: [String],
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         try await batchScan(
             nodeIDs: nodeIDs,
@@ -509,7 +509,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeID: String,
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) -> AsyncThrowingStream<EdgeInfo, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -549,7 +549,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeID: String,
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
         let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
@@ -559,13 +559,13 @@ public struct GraphEdgeScanner: Sendable {
             let prefix = Self.buildPrefixSubspace(from: scanSubspace, elements: [label, nodeID])
             let (beginKey, endKey) = prefix.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let otherNodeID = try self.extractNodeID(key: key, prefix: prefix) {
                     let edgeInfo: EdgeInfo
                     if direction == .outgoing {
@@ -580,13 +580,13 @@ public struct GraphEdgeScanner: Sendable {
             // Wildcard: full scan + filter
             let (beginKey, endKey) = scanSubspace.range()
 
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let edgeInfo = try self.extractEdgeFromWildcardScan(
                     key: key,
                     subspace: scanSubspace,
@@ -609,7 +609,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeID: String,
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
         if direction == .outgoing {
@@ -619,13 +619,13 @@ public struct GraphEdgeScanner: Sendable {
                 let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID, label])
                 let (beginKey, endKey) = prefix.range()
 
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
 
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     // Extract [to] from key
                     if let toNodeID = try self.extractNodeID(key: key, prefix: prefix) {
                         continuation.yield(EdgeInfo(source: nodeID, target: toNodeID, edgeLabel: label))
@@ -636,13 +636,13 @@ public struct GraphEdgeScanner: Sendable {
                 let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID])
                 let (beginKey, endKey) = prefix.range()
 
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
 
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     // Extract [edge, to] from key
                     if let edgeInfo = try self.extractEdgeToFromSPOWildcard(key: key, prefix: prefix, fromNodeID: nodeID) {
                         continuation.yield(edgeInfo)
@@ -657,13 +657,13 @@ public struct GraphEdgeScanner: Sendable {
                 let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label, nodeID])
                 let (beginKey, endKey) = prefix.range()
 
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
 
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     // Extract [from] from key
                     if let fromNodeID = try self.extractNodeID(key: key, prefix: prefix) {
                         continuation.yield(EdgeInfo(source: fromNodeID, target: nodeID, edgeLabel: label))
@@ -680,13 +680,13 @@ public struct GraphEdgeScanner: Sendable {
                 let prefix = Self.buildPrefixSubspace(from: ospSubspace, elements: [nodeID])
                 let (beginKey, endKey) = prefix.range()
 
-                let stream = transaction.getRange(
-                    beginSelector: .firstGreaterOrEqual(beginKey),
-                    endSelector: .firstGreaterOrEqual(endKey),
+                let stream = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(beginKey),
+                    to: .firstGreaterOrEqual(endKey),
                     snapshot: true
                 )
 
-                for try await (key, _) in stream {
+                for (key, _) in stream {
                     // Extract [from, edge] from key
                     if let edgeInfo = try self.extractEdgeFromOSPWildcard(key: key, prefix: prefix, toNodeID: nodeID) {
                         continuation.yield(edgeInfo)
@@ -753,7 +753,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeIDs: [String],
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         guard !nodeIDs.isEmpty else { return [] }
 
@@ -780,7 +780,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeIDs: [String],
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         let scanSubspace = direction == .outgoing ? outgoingSubspace : incomingSubspace
 
@@ -809,7 +809,7 @@ public struct GraphEdgeScanner: Sendable {
         nodeIDs: [String],
         edgeLabel: String?,
         direction: Direction,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         var results: [EdgeInfo] = []
 
@@ -821,13 +821,13 @@ public struct GraphEdgeScanner: Sendable {
                     let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID, label])
                     let (beginKey, endKey) = prefix.range()
 
-                    let stream = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(beginKey),
-                        endSelector: .firstGreaterOrEqual(endKey),
+                    let stream = try await transaction.collectRange(
+                        from: .firstGreaterOrEqual(beginKey),
+                        to: .firstGreaterOrEqual(endKey),
                         snapshot: true
                     )
 
-                    for try await (key, _) in stream {
+                    for (key, _) in stream {
                         if let toNodeID = try extractNodeID(key: key, prefix: prefix) {
                             results.append(EdgeInfo(source: nodeID, target: toNodeID, edgeLabel: label))
                         }
@@ -839,13 +839,13 @@ public struct GraphEdgeScanner: Sendable {
                     let prefix = Self.buildPrefixSubspace(from: outgoingSubspace, elements: [nodeID])
                     let (beginKey, endKey) = prefix.range()
 
-                    let stream = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(beginKey),
-                        endSelector: .firstGreaterOrEqual(endKey),
+                    let stream = try await transaction.collectRange(
+                        from: .firstGreaterOrEqual(beginKey),
+                        to: .firstGreaterOrEqual(endKey),
                         snapshot: true
                     )
 
-                    for try await (key, _) in stream {
+                    for (key, _) in stream {
                         if let edgeInfo = try extractEdgeToFromSPOWildcard(key: key, prefix: prefix, fromNodeID: nodeID) {
                             results.append(edgeInfo)
                         }
@@ -860,13 +860,13 @@ public struct GraphEdgeScanner: Sendable {
                     let prefix = Self.buildPrefixSubspace(from: incomingSubspace, elements: [label, nodeID])
                     let (beginKey, endKey) = prefix.range()
 
-                    let stream = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(beginKey),
-                        endSelector: .firstGreaterOrEqual(endKey),
+                    let stream = try await transaction.collectRange(
+                        from: .firstGreaterOrEqual(beginKey),
+                        to: .firstGreaterOrEqual(endKey),
                         snapshot: true
                     )
 
-                    for try await (key, _) in stream {
+                    for (key, _) in stream {
                         if let fromNodeID = try extractNodeID(key: key, prefix: prefix) {
                             results.append(EdgeInfo(source: fromNodeID, target: nodeID, edgeLabel: label))
                         }
@@ -882,13 +882,13 @@ public struct GraphEdgeScanner: Sendable {
                     let prefix = Self.buildPrefixSubspace(from: ospSubspace, elements: [nodeID])
                     let (beginKey, endKey) = prefix.range()
 
-                    let stream = transaction.getRange(
-                        beginSelector: .firstGreaterOrEqual(beginKey),
-                        endSelector: .firstGreaterOrEqual(endKey),
+                    let stream = try await transaction.collectRange(
+                        from: .firstGreaterOrEqual(beginKey),
+                        to: .firstGreaterOrEqual(endKey),
                         snapshot: true
                     )
 
-                    for try await (key, _) in stream {
+                    for (key, _) in stream {
                         if let edgeInfo = try extractEdgeFromOSPWildcard(key: key, prefix: prefix, toNodeID: nodeID) {
                             results.append(edgeInfo)
                         }
@@ -906,7 +906,7 @@ public struct GraphEdgeScanner: Sendable {
         label: String,
         direction: Direction,
         scanSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         // Pre-compute scan parameters
         let scanParams: [(nodeID: String, beginKey: [UInt8], endKey: [UInt8], prefix: Subspace)] =
@@ -919,13 +919,13 @@ public struct GraphEdgeScanner: Sendable {
         var results: [EdgeInfo] = []
 
         for (nodeID, beginKey, endKey, prefix) in scanParams {
-            let stream = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, _) in stream {
+            for (key, _) in stream {
                 if let otherNodeID = try extractNodeID(key: key, prefix: prefix) {
                     let edgeInfo: EdgeInfo
                     if direction == .outgoing {
@@ -957,19 +957,19 @@ public struct GraphEdgeScanner: Sendable {
         nodeIDs: Set<String>,
         direction: Direction,
         scanSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         let (beginKey, endKey) = scanSubspace.range()
 
-        let stream = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let stream = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
         var results: [EdgeInfo] = []
 
-        for try await (key, _) in stream {
+        for (key, _) in stream {
             if let edgeInfo = try extractEdgeFromBatchWildcardScan(
                 key: key,
                 subspace: scanSubspace,
@@ -1197,7 +1197,7 @@ public struct GraphEdgeScanner: Sendable {
     /// - Returns: Set of all unique node IDs in the graph
     public func getAllNodes(
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<String> {
         var nodes = Set<String>()
 
@@ -1222,7 +1222,7 @@ public struct GraphEdgeScanner: Sendable {
     public func getAllNodes(
         edgeLabel: String?,
         maxNodes: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Set<String> {
         var nodes = Set<String>()
 
@@ -1252,7 +1252,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanAllOutgoing(
         from nodeID: String,
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         var results: [EdgeInfo] = []
         for try await edge in scanOutgoing(from: nodeID, edgeLabel: edgeLabel, transaction: transaction) {
@@ -1273,7 +1273,7 @@ public struct GraphEdgeScanner: Sendable {
     public func scanAllIncoming(
         to nodeID: String,
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         var results: [EdgeInfo] = []
         for try await edge in scanIncoming(to: nodeID, edgeLabel: edgeLabel, transaction: transaction) {
@@ -1293,7 +1293,7 @@ public struct GraphEdgeScanner: Sendable {
     ///   - callback: Callback for each edge. Return `false` to stop.
     public func scanAllEdges(
         edgeLabel: String?,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         _ callback: (EdgeInfo) throws -> Bool
     ) async throws {
         for try await edge in scanAllEdges(edgeLabel: edgeLabel, transaction: transaction) {
@@ -1322,7 +1322,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanAllOutgoing(
         from sources: [String],
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String: [EdgeInfo]] {
         let edges = try await batchScanOutgoing(
             from: sources,
@@ -1358,7 +1358,7 @@ public struct GraphEdgeScanner: Sendable {
     public func batchScanAllIncoming(
         to targets: [String],
         edgeLabel: String?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [String: [EdgeInfo]] {
         let edges = try await batchScanIncoming(
             to: targets,

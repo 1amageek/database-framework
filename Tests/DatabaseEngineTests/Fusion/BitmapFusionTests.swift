@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -89,15 +90,15 @@ struct BitmapTestUser: Persistable {
 // MARK: - Test Context
 
 private struct BitmapTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace
     let blobsSubspace: Subspace
     let maintainer: BitmapIndexMaintainer<BitmapTestUser>
 
-    init(indexName: String = "BitmapTestUser_bitmap_status") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "BitmapTestUser_bitmap_status") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_fusion", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -262,7 +263,7 @@ struct BitmapFusionIntegrationTests {
     @Test("Bitmap index maintainer initialization")
     func testBitmapIndexMaintainerInitialization() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try BitmapTestContext()
+            let context = try await BitmapTestContext()
             defer { Task { try? await context.cleanup() } }
 
             // Verify maintainer is created with correct configuration
@@ -274,7 +275,7 @@ struct BitmapFusionIntegrationTests {
     @Test("Insert and index user")
     func testInsertAndIndexUser() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try BitmapTestContext()
+            let context = try await BitmapTestContext()
             defer { Task { try? await context.cleanup() } }
 
             let userId = uniqueID("user")
@@ -296,7 +297,7 @@ struct BitmapFusionIntegrationTests {
     @Test("Multiple users with same status value")
     func testMultipleUsersWithSameStatus() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let context = try BitmapTestContext()
+            let context = try await BitmapTestContext()
             defer { Task { try? await context.cleanup() } }
 
             let user1 = BitmapTestUser(id: uniqueID("user"), name: "Alice", status: "active", role: "admin")

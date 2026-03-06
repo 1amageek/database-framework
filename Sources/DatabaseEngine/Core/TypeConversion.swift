@@ -8,7 +8,7 @@
 // AggregationPlanExecutor.swift, AggregationExecution.swift, etc.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// 統一型変換ユーティリティ

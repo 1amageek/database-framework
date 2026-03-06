@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import DatabaseEngine
 
 @Suite("ItemStorage Tests", .serialized)
@@ -11,9 +12,9 @@ struct ItemStorageTests {
 
     // MARK: - Setup
 
-    private func setupDatabase() async throws -> any DatabaseProtocol {
+    private func setupDatabase() async throws -> any StorageEngine {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        return try FDBClient.openDatabase()
+        return try await FDBStorageEngine.open()
     }
 
     /// Create isolated test subspaces - returns both items and blobs subspaces

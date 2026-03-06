@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -109,14 +110,14 @@ private func benchmark<T>(
 // MARK: - Test Context Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: VersionIndexMaintainer<PerfTestDocument>
     let kind: VersionIndexKind<PerfTestDocument>
 
-    init(strategy: VersionHistoryStrategy = .keepAll, testId: String? = nil) throws {
-        self.database = try FDBClient.openDatabase()
+    init(strategy: VersionHistoryStrategy = .keepAll, testId: String? = nil) async throws {
+        self.database = try await FDBStorageEngine.open()
         let id = testId ?? String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "version", "perf", id).pack())
         let indexName = "PerfTestDocument_version"
@@ -169,7 +170,7 @@ struct VersionIndexPerformanceTests {
     @Test("Version insert performance (keepAll)")
     func testVersionInsertPerformanceKeepAll() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let itemCount = 100
         var documents: [PerfTestDocument] = []
@@ -210,7 +211,7 @@ struct VersionIndexPerformanceTests {
     @Test("Version insert performance (keepLast)")
     func testVersionInsertPerformanceKeepLast() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepLast(5))
+        let ctx = try await TestContext(strategy: .keepLast(5))
 
         let itemCount = 50
         var documents: [PerfTestDocument] = []
@@ -247,7 +248,7 @@ struct VersionIndexPerformanceTests {
     @Test("Multiple versions per document performance")
     func testMultipleVersionsPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let docCount = 10
         let versionsPerDoc = 10
@@ -294,7 +295,7 @@ struct VersionIndexPerformanceTests {
     @Test("Get latest version performance")
     func testGetLatestVersionPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         // Create 20 documents with 10 versions each
         let docCount = 20
@@ -345,7 +346,7 @@ struct VersionIndexPerformanceTests {
     @Test("Get version history performance")
     func testGetVersionHistoryPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         // Create 10 documents with 20 versions each
         let docCount = 10
@@ -415,7 +416,7 @@ struct VersionIndexPerformanceTests {
     @Test("KeepLast retention cleanup performance")
     func testKeepLastRetentionPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepLast(5))
+        let ctx = try await TestContext(strategy: .keepLast(5))
 
         let docId = "retention-test-doc"
         let totalUpdates = 20
@@ -463,7 +464,7 @@ struct VersionIndexPerformanceTests {
     func testKeepForDurationRetentionPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
         // Very short duration for testing (retention won't actually clean up recent items)
-        let ctx = try TestContext(strategy: .keepForDuration(3600)) // 1 hour
+        let ctx = try await TestContext(strategy: .keepForDuration(3600)) // 1 hour
 
         let docId = "duration-test-doc"
         let totalUpdates = 20
@@ -511,7 +512,7 @@ struct VersionIndexPerformanceTests {
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let itemCount = 100
         var documents: [PerfTestDocument] = []
@@ -549,7 +550,7 @@ struct VersionIndexPerformanceTests {
     @Test("Delete marker performance")
     func testDeleteMarkerPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let itemCount = 50
         var documents: [PerfTestDocument] = []
@@ -601,7 +602,7 @@ struct VersionIndexPerformanceTests {
     @Test("Large history scale test")
     func testLargeHistoryScaleTest() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let docId = "scale-test-doc"
         let versionCount = 100
@@ -670,7 +671,7 @@ struct VersionIndexPerformanceTests {
     @Test("Concurrent version updates")
     func testConcurrentVersionUpdates() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext(strategy: .keepAll)
+        let ctx = try await TestContext(strategy: .keepAll)
 
         let docCount = 20
         let versionsPerDoc = 5

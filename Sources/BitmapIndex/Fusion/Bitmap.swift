@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Bitmap filter query for Fusion
 ///
@@ -221,7 +221,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     private func readBitmapPrimaryKeys(
         fieldValues: [any TupleElement],
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         let dataSubspace = indexSubspace.subspace("data")
         let idsSubspace = indexSubspace.subspace("ids")

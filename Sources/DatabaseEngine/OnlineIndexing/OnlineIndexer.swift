@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Metrics
 
@@ -80,7 +80,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     private let throttleDelayMs: Int
 
     // Progress tracking
-    private let progressKey: FDB.Bytes
+    private let progressKey: Bytes
 
     // Uniqueness enforcement
     private let metadataSubspace: Subspace
@@ -286,7 +286,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 let (itemsInBatch, lastProcessedKey) = try await container.database.withTransaction(configuration: .batch) { transaction in
 
                     var itemsInBatch = 0
-                    var lastProcessedKey: FDB.Bytes? = nil
+                    var lastProcessedKey: Bytes? = nil
 
                     // Use ItemStorage.scan() to handle ItemEnvelope format (inline/external)
                     let storage = ItemStorage(
@@ -396,7 +396,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     ///   - transaction: Transaction to use
     private func saveProgress(
         _ rangeSet: RangeSet,
-        _ transaction: any TransactionProtocol
+        _ transaction: any Transaction
     ) throws {
         let encoder = JSONEncoder()
         let data = try encoder.encode(rangeSet)
@@ -869,14 +869,14 @@ internal final class ParallelBuildProgress: Sendable {
         return try await container.database.withTransaction(configuration: .batch) { transaction in
             var progress: [Int: ChunkProgress] = [:]
 
-            let sequence = transaction.getRange(
+            let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
                 snapshot: true,
                 streamingMode: .wantAll
             )
 
-            for try await (key, value) in sequence {
+            for (key, value) in sequence {
                 guard let chunkIndex = self.extractChunkIndex(from: key) else { continue }
                 guard let chunkProgress = self.decodeProgress(from: value) else { continue }
                 progress[chunkIndex] = chunkProgress
@@ -916,7 +916,7 @@ internal final class ParallelBuildProgress: Sendable {
         chunkIndex: Int,
         status: ChunkStatus,
         lastKey: [UInt8]?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) {
         let key = progressSubspace.pack(Tuple(chunkIndex))
         let value = encodeProgress(status: status, lastKey: lastKey)
@@ -950,7 +950,7 @@ internal final class ParallelBuildProgress: Sendable {
 
     private func encodeProgress(status: ChunkStatus, lastKey: [UInt8]?) -> [UInt8] {
         if let lastKey = lastKey {
-            // Use [UInt8] directly as it conforms to TupleElement (FDB.Bytes)
+            // Use [UInt8] directly as it conforms to TupleElement (Bytes)
             return Tuple(status.rawValue, lastKey).pack()
         } else {
             return Tuple(status.rawValue).pack()

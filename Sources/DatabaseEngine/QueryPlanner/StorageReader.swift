@@ -2,7 +2,7 @@
 // QueryPlanner - Low-level storage access abstraction
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for low-level storage access during query execution

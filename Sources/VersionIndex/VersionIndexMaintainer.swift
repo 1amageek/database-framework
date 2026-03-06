@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for version history indexes
 ///
@@ -73,7 +73,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Apply retention strategy FIRST (before setVersionstampedKey)
         // FDB constraint: cannot read keys written with setVersionstampedKey in same transaction
@@ -94,7 +94,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         try await storeVersion(item: item, id: id, transaction: transaction)
     }
@@ -103,7 +103,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         return []
     }
 
@@ -119,7 +119,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func getVersionHistory(
         primaryKey: [any TupleElement],
         limit: Int? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(version: Version, data: [UInt8])] {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
@@ -131,18 +131,16 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             // Reverse scan: fetch newest N versions directly.
             // FDB stores versionstamps in ascending order (oldest first).
             // Reverse scan returns newest first, so limit correctly returns newest N.
-            let result = try await transaction.getRangeNative(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let records = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(beginKey),
+                to: KeySelector.firstGreaterOrEqual(endKey),
                 limit: limit,
-                targetBytes: 0,
-                streamingMode: .wantAll,
-                iteration: 1,
                 reverse: true,
-                snapshot: true
+                snapshot: true,
+                streamingMode: .wantAll
             )
 
-            for (key, value) in result.records {
+            for (key, value) in records {
                 guard key.count >= 10 else { continue }
                 let versionBytes = Array(key.suffix(10))
                 let version = Version(bytes: versionBytes)
@@ -159,13 +157,13 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
             // Already in descending order (newest first) from reverse scan
         } else {
             // No limit: forward scan all versions, then reverse
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(beginKey),
-                endSelector: .firstGreaterOrEqual(endKey),
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
                 snapshot: true
             )
 
-            for try await (key, value) in sequence {
+            for (key, value) in sequence {
                 guard key.count >= 10 else { continue }
                 let versionBytes = Array(key.suffix(10))
                 let version = Version(bytes: versionBytes)
@@ -188,14 +186,14 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Get latest version of an item
     public func getLatestVersion(
         primaryKey: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [UInt8]? {
         let pkTuple = Tuple(primaryKey)
         let beginKey = subspace.pack(pkTuple)
         let endKey = beginKey + [0xFF]
 
         // Use lastLessThan to get the most recent version efficiently
-        let lastSelector = FDB.KeySelector.lastLessThan(endKey)
+        let lastSelector = KeySelector.lastLessThan(endKey)
 
         guard let lastKey = try await transaction.getKey(selector: lastSelector, snapshot: true) else {
             return nil
@@ -224,7 +222,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func storeVersion(
         item: Item,
         id: Tuple? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Extract primary key using protocol method
         let primaryKeyTuple = try resolveItemId(for: item, providedId: id)
@@ -262,7 +260,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Store a deletion marker using FDB versionstamp
     private func storeDeletionMarker(
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let primaryKeyTuple = try resolveItemId(for: item, providedId: nil)
 
@@ -300,7 +298,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     /// Apply retention strategy to clean up old versions
     private func applyRetentionStrategy(
         item: Item,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         switch strategy {
         case .keepAll:
@@ -321,19 +319,19 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func applyKeepLastStrategy(
         item: Item,
         count: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
 
         var versionKeys: [[UInt8]] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: false
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             versionKeys.append(key)
         }
 
@@ -351,7 +349,7 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     private func applyKeepForDurationStrategy(
         item: Item,
         duration: TimeInterval,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let (_, beginKey, endKey) = try getPrimaryKeySubspace(for: item)
         let cutoffTime = Date().timeIntervalSince1970 - duration
@@ -359,13 +357,13 @@ public struct VersionIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         var versionsToDelete: [[UInt8]] = []
         var totalCount = 0
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: false
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             totalCount += 1
 
             // Extract timestamp from value (first 8 bytes)

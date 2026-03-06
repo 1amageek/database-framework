@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Normalizes predicates to Conjunctive Normal Form (CNF) or Disjunctive Normal Form (DNF)
 ///

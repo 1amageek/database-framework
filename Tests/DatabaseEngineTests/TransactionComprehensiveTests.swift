@@ -2,7 +2,8 @@
 // Comprehensive tests for Transaction infrastructure
 
 import Testing
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
@@ -14,7 +15,7 @@ struct TransactionComprehensiveTests {
     @Test("Multiple getRange() calls in single transaction")
     func multipleGetRangeInSingleTransaction() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 50 keys
@@ -26,23 +27,20 @@ struct TransactionComprehensiveTests {
 
         // Test: Read with 10 separate getRange() calls in same transaction
         let results = try await runner.run(configuration: .default) { tx in
-            var allResults: [[(FDB.Bytes, FDB.Bytes)]] = []
+            var allResults: [[(Bytes, Bytes)]] = []
 
             // 10 separate getRange() calls
             for batch in 0..<10 {
-                var batchResults: [(FDB.Bytes, FDB.Bytes)] = []
+                var batchResults: [(Bytes, Bytes)] = []
                 let start = batch * 5
                 let end = start + 5
 
-                let sequence = tx.getRange(
+                let items = try await tx.collectRange(
                     from: .firstGreaterOrEqual([0, 1, UInt8(start)]),
                     to: .firstGreaterOrEqual([0, 1, UInt8(end)]),
                     snapshot: true
                 )
-
-                for try await (key, value) in sequence {
-                    batchResults.append((key, value))
-                }
+                batchResults = items
 
                 allResults.append(batchResults)
             }
@@ -60,7 +58,7 @@ struct TransactionComprehensiveTests {
     @Test("100 getRange() calls in single transaction")
     func hundredGetRangeCalls() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 100 keys
@@ -97,7 +95,7 @@ struct TransactionComprehensiveTests {
     @Test("Iterator fully consumed")
     func iteratorFullyConsumed() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -107,19 +105,12 @@ struct TransactionComprehensiveTests {
         }
 
         let results = try await runner.run(configuration: .default) { tx in
-            var items: [FDB.Bytes] = []
-            let sequence = tx.getRange(
+            let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 3]),
                 to: .firstGreaterOrEqual([0, 4]),
                 snapshot: true
             )
-
-            // Fully consume iterator
-            for try await (_, value) in sequence {
-                items.append(value)
-            }
-
-            return items
+            return pairs.map(\.1)
         }
 
         #expect(results.count == 10)
@@ -128,7 +119,7 @@ struct TransactionComprehensiveTests {
     @Test("Iterator partially consumed")
     func iteratorPartiallyConsumed() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -138,22 +129,13 @@ struct TransactionComprehensiveTests {
         }
 
         let results = try await runner.run(configuration: .default) { tx in
-            var items: [FDB.Bytes] = []
-            let sequence = tx.getRange(
+            let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 4]),
                 to: .firstGreaterOrEqual([0, 5]),
+                limit: 5,
                 snapshot: true
             )
-
-            // Only consume first 5 items
-            for try await (_, value) in sequence {
-                items.append(value)
-                if items.count >= 5 {
-                    break
-                }
-            }
-
-            return items
+            return pairs.map(\.1)
         }
 
         #expect(results.count == 5)
@@ -162,7 +144,7 @@ struct TransactionComprehensiveTests {
     @Test("Multiple concurrent iterators")
     func multipleConcurrentIterators() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         try await runner.run(configuration: .default) { tx in
@@ -172,41 +154,21 @@ struct TransactionComprehensiveTests {
         }
 
         let results = try await runner.run(configuration: .default) { tx in
-            // Create 3 sequences
-            let seq1 = tx.getRange(
+            let items1 = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 5, 0]),
                 to: .firstGreaterOrEqual([0, 5, 7]),
                 snapshot: true
             )
-            let seq2 = tx.getRange(
+            let items2 = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 5, 7]),
                 to: .firstGreaterOrEqual([0, 5, 14]),
                 snapshot: true
             )
-            let seq3 = tx.getRange(
+            let items3 = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 5, 14]),
                 to: .firstGreaterOrEqual([0, 6]),
                 snapshot: true
             )
-
-            var items1: [FDB.Bytes] = []
-            var items2: [FDB.Bytes] = []
-            var items3: [FDB.Bytes] = []
-
-            // Interleaved iteration
-            var iter1 = seq1.makeAsyncIterator()
-            var iter2 = seq2.makeAsyncIterator()
-            var iter3 = seq3.makeAsyncIterator()
-
-            while let (_, v1) = try await iter1.next() {
-                items1.append(v1)
-                if let (_, v2) = try await iter2.next() {
-                    items2.append(v2)
-                }
-                if let (_, v3) = try await iter3.next() {
-                    items3.append(v3)
-                }
-            }
 
             return (items1.count, items2.count, items3.count)
         }
@@ -221,7 +183,7 @@ struct TransactionComprehensiveTests {
     @Test("Snapshot read does not conflict")
     func snapshotReadDoesNotConflict() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
@@ -231,19 +193,13 @@ struct TransactionComprehensiveTests {
 
         // Read with snapshot: true (should not add to conflict range)
         let value = try await runner.run(configuration: .default) { tx in
-            let sequence = tx.getRange(
+            let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 6]),
                 to: .firstGreaterOrEqual([0, 7]),
+                limit: 1,
                 snapshot: true
             )
-
-            var result: FDB.Bytes? = nil
-            for try await (_, v) in sequence {
-                result = v
-                break
-            }
-
-            return result
+            return pairs.first?.1
         }
 
         #expect(value != nil)
@@ -252,7 +208,7 @@ struct TransactionComprehensiveTests {
     @Test("Non-snapshot read adds to conflict range")
     func nonSnapshotReadAddsToConflictRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup initial data
@@ -262,19 +218,13 @@ struct TransactionComprehensiveTests {
 
         // Read with snapshot: false (adds to conflict range)
         let value = try await runner.run(configuration: .default) { tx in
-            let sequence = tx.getRange(
+            let pairs = try await tx.collectRange(
                 from: .firstGreaterOrEqual([0, 7]),
                 to: .firstGreaterOrEqual([0, 8]),
+                limit: 1,
                 snapshot: false
             )
-
-            var result: FDB.Bytes? = nil
-            for try await (_, v) in sequence {
-                result = v
-                break
-            }
-
-            return result
+            return pairs.first?.1
         }
 
         #expect(value != nil)
@@ -285,7 +235,7 @@ struct TransactionComprehensiveTests {
     @Test("Scan 1000 items with getRange")
     func scanThousandItems() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup: Write 1000 items
@@ -320,7 +270,7 @@ struct TransactionComprehensiveTests {
     @Test("Nested getRange iteration")
     func nestedGetRangeIteration() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Setup: 5 groups × 10 items
@@ -365,7 +315,7 @@ struct TransactionComprehensiveTests {
     @Test("Transaction commit succeeds after multiple getRange")
     func commitSucceedsAfterMultipleGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let runner = TransactionRunner(database: database)
 
         // Write initial data

@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Relationship
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for relationship indexes
 ///
@@ -86,7 +86,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old index entries
         if let oldItem = oldItem {
@@ -109,7 +109,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let keys = try await buildIndexKeys(for: item, id: id, transaction: transaction)
         let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
@@ -121,7 +121,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // RelationshipIndex requires transaction access to load related items
         // This method should never be called - use computeIndexKeys(for:id:transaction:) instead
         throw RelationshipIndexError.transactionRequired(indexName: index.name)
@@ -140,8 +140,8 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws -> [FDB.Bytes] {
+        transaction: any Transaction
+    ) async throws -> [Bytes] {
         return try await buildIndexKeys(for: item, id: id, transaction: transaction)
     }
 
@@ -152,7 +152,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func buildIndexKeys(
         for item: Item,
         id: Tuple? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[UInt8]] {
         // Extract item id
         let itemId: Tuple
@@ -176,7 +176,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func buildToOneIndexKey(
         for item: Item,
         itemId: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [UInt8]? {
         // Get foreign key value (single ID)
         guard let foreignKeyValue = item[dynamicMember: foreignKeyFieldName] else {
@@ -209,7 +209,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func buildToManyIndexKeys(
         for item: Item,
         itemId: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [[UInt8]] {
         // Get foreign key array
         guard let foreignKeyArray = item[dynamicMember: foreignKeyFieldName] else {
@@ -266,7 +266,7 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// - Throws: RelationshipIndexError if field is nil or cannot be converted
     private func loadRelatedFieldValues(
         foreignKey: any Sendable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [any TupleElement]? {
         guard let relatedItem = try await relatedItemLoader(relatedTypeName, foreignKey, transaction) else {
             // Related item not found - this is a valid case (FK points to deleted/non-existent item)

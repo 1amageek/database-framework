@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Vector
 
 /// Vector similarity search query for Fusion
@@ -255,18 +255,18 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
         queryVector: [Float],
         k: Int,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(pk: Tuple, distance: Double)] {
         let (begin, end) = indexSubspace.range()
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
         var results: [(pk: Tuple, distance: Double)] = []
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             // Skip HNSW metadata keys
             if let keyStr = String(data: Data(key), encoding: .utf8),
                keyStr.contains("hnsw") {

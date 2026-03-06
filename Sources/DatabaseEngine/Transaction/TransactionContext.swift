@@ -5,7 +5,7 @@
 // https://firebase.google.com/docs/firestore/manage-data/transactions
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - TransactionContext
@@ -44,7 +44,7 @@ public final class TransactionContext: @unchecked Sendable {
     // MARK: - Properties
 
     /// The underlying FDB transaction
-    private let transaction: any TransactionProtocol
+    private let transaction: any Transaction
 
     /// The container for directory resolution
     private let container: FDBContainer
@@ -67,7 +67,7 @@ public final class TransactionContext: @unchecked Sendable {
     ///   - transaction: The underlying FDB transaction
     ///   - container: The FDBContainer for directory resolution
     init(
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         container: FDBContainer
     ) {
         self.transaction = transaction
@@ -462,7 +462,7 @@ public final class TransactionContext: @unchecked Sendable {
     ///
     /// Use with caution - direct transaction access bypasses the
     /// TransactionContext's abstractions.
-    public var rawTransaction: any TransactionProtocol {
+    public var rawTransaction: any Transaction {
         transaction
     }
 }

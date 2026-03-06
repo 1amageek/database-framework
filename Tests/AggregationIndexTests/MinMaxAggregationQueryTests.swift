@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -84,7 +85,8 @@ struct MinMaxAggregationQueryTests {
     func testMinAggregationEndToEnd() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMinTest.self])
-        let container = try await FDBContainer(for: schema, security: .disabled)
+        let engine = try await FDBStorageEngine.open()
+        let container = try await FDBContainer(for: schema, engine: engine, security: .disabled)
         let context = container.newContext()
 
         // Insert test data
@@ -130,7 +132,8 @@ struct MinMaxAggregationQueryTests {
     func testMaxAggregationEndToEnd() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMaxTest.self])
-        let container = try await FDBContainer(for: schema, security: .disabled)
+        let engine = try await FDBStorageEngine.open()
+        let container = try await FDBContainer(for: schema, engine: engine, security: .disabled)
         let context = container.newContext()
 
         // Insert test data
@@ -176,7 +179,8 @@ struct MinMaxAggregationQueryTests {
     func testMixedMinMaxCountAggregation() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMixedTest.self])
-        let container = try await FDBContainer(for: schema, security: .disabled)
+        let engine = try await FDBStorageEngine.open()
+        let container = try await FDBContainer(for: schema, engine: engine, security: .disabled)
         let context = container.newContext()
 
         // Insert test data
@@ -251,7 +255,8 @@ struct MinMaxAggregationQueryTests {
     func testMinAggregationWithInt64() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderInt64Test.self])
-        let container = try await FDBContainer(for: schema, security: .disabled)
+        let engine = try await FDBStorageEngine.open()
+        let container = try await FDBContainer(for: schema, engine: engine, security: .disabled)
         let context = container.newContext()
 
         // Insert test data

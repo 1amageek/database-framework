@@ -3,7 +3,7 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
 @testable import Core
 @testable import Core
 @testable import DatabaseEngine
@@ -343,7 +343,7 @@ final class MockConfigurableIndexMaintainer<Item: Persistable>: IndexMaintainer,
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // No-op for testing
     }
@@ -351,7 +351,7 @@ final class MockConfigurableIndexMaintainer<Item: Persistable>: IndexMaintainer,
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // No-op for testing
     }
@@ -379,7 +379,7 @@ final class MockMultiConfigIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // No-op for testing
     }
@@ -387,7 +387,7 @@ final class MockMultiConfigIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // No-op for testing
     }

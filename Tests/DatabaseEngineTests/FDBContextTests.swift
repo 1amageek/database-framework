@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import DatabaseEngine
 @testable import Core
 
@@ -40,7 +41,7 @@ struct FDBContextTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))
@@ -55,9 +56,8 @@ struct FDBContextTests {
     /// Clean up test data - call at START of each test that modifies data
     /// Uses DirectoryLayer.remove() to handle old format data
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "fdbcontext", "users"])
-        try? await directoryLayer.remove(path: ["test", "fdbcontext", "products"])
+        try? await container.database.directoryService.remove(path: ["test", "fdbcontext", "users"])
+        try? await container.database.directoryService.remove(path: ["test", "fdbcontext", "products"])
     }
 
     // MARK: - Autosave Tests

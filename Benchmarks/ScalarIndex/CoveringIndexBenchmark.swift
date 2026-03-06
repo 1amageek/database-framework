@@ -4,7 +4,8 @@ import Core
 import DatabaseEngine
 import ScalarIndex
 import BenchmarkFramework
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -25,13 +26,13 @@ struct User {
 
 @Suite("ScalarIndex: Covering Index Benchmark", .serialized)
 struct CoveringIndexBenchmark {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: FDBContainer
     nonisolated(unsafe) private let context: FDBContext
 
     init() async throws {
         try await FDBTestSetup.shared.initialize()
-        let db = try FDBClient.openDatabase()
+        let db = try await FDBStorageEngine.open()
         let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
         let cont = FDBContainer(database: db, schema: schema, security: .disabled)
 
@@ -43,8 +44,7 @@ struct CoveringIndexBenchmark {
     @Test("Covering Index Baseline")
     func coveringIndexBaseline() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+        try? await database.directoryService.remove(path: ["benchmarks", "users"])
 
         // Setup: Create test users
         let userCount = 300
@@ -108,8 +108,7 @@ struct CoveringIndexBenchmark {
     @Test("Index Scan Scalability")
     func indexScanScalability() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+        try? await database.directoryService.remove(path: ["benchmarks", "users"])
 
         // Re-create context after directory cleanup
         let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
@@ -160,8 +159,7 @@ struct CoveringIndexBenchmark {
     @Test("Batch Fetch Performance")
     func batchFetchPerformance() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "users"])
+        try? await database.directoryService.remove(path: ["benchmarks", "users"])
 
         // Re-create context after directory cleanup
         let schema = Schema([User.self], version: Schema.Version(1, 0, 0))

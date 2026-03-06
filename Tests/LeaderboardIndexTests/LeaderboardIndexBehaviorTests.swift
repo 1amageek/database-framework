@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,7 +75,7 @@ struct TestGameScore: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: TimeWindowLeaderboardIndexMaintainer<TestGameScore, Int64>
@@ -84,8 +85,8 @@ private struct TestContext {
         indexName: String = "TestGameScore_leaderboard_score",
         window: LeaderboardWindowType = .daily,
         windowCount: Int = 7
-    ) throws {
-        self.database = try FDBClient.openDatabase()
+    ) async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "leaderboard", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -152,7 +153,7 @@ struct LeaderboardIndexInsertTests {
     @Test("Insert adds to leaderboard")
     func testInsertAddsToLeaderboard() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
 
@@ -175,7 +176,7 @@ struct LeaderboardIndexInsertTests {
     @Test("Multiple inserts create leaderboard order")
     func testMultipleInsertsCreateOrder() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 500),
@@ -216,7 +217,7 @@ struct LeaderboardIndexDeleteTests {
     @Test("Delete removes from leaderboard")
     func testDeleteRemovesFromLeaderboard() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
 
@@ -251,7 +252,7 @@ struct LeaderboardIndexDeleteTests {
     @Test("Delete one maintains others")
     func testDeleteOneMaintainsOthers() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 1000),
@@ -297,7 +298,7 @@ struct LeaderboardIndexUpdateTests {
     @Test("Update score changes rank")
     func testUpdateScoreChangesRank() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 1000),
@@ -343,7 +344,7 @@ struct LeaderboardIndexUpdateTests {
     @Test("Update non-score field keeps position")
     func testUpdateNonScoreFieldKeepsPosition() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let oldScore = TestGameScore(id: "g1", playerId: "player1", score: 1000, region: "us")
 
@@ -383,7 +384,7 @@ struct LeaderboardIndexTopKTests {
     @Test("getTopK returns correct count")
     func testGetTopKReturnsCorrectCount() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             // Insert 10 scores
             try await ctx.database.withTransaction { transaction in
@@ -415,7 +416,7 @@ struct LeaderboardIndexTopKTests {
     @Test("getTopK returns all when k > count")
     func testGetTopKReturnsAllWhenKGreaterThanCount() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             // Insert 3 scores
             try await ctx.database.withTransaction { transaction in
@@ -440,7 +441,7 @@ struct LeaderboardIndexTopKTests {
     @Test("getTopK empty when no entries")
     func testGetTopKEmptyWhenNoEntries() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let top = try await ctx.getTopK(k: 10)
             #expect(top.isEmpty, "Should be empty")
@@ -458,7 +459,7 @@ struct LeaderboardIndexRankTests {
     @Test("getRank returns correct position")
     func testGetRankReturnsCorrectPosition() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 100),
@@ -492,7 +493,7 @@ struct LeaderboardIndexRankTests {
     @Test("getRank returns nil for non-existent")
     func testGetRankReturnsNilForNonExistent() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
 
@@ -520,7 +521,7 @@ struct LeaderboardIndexTiesTests {
     @Test("Ties are handled correctly")
     func testTiesHandled() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             // Multiple players with same score
             let scores = [
@@ -565,7 +566,7 @@ struct LeaderboardIndexWindowTests {
     @Test("Available windows are tracked")
     func testAvailableWindowsTracked() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
 
@@ -588,7 +589,7 @@ struct LeaderboardIndexWindowTests {
     func testWindowUsesCorrectDuration() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             // Test hourly window
-            let hourlyCtx = try TestContext(indexName: "hourly_test", window: .hourly)
+            let hourlyCtx = try await TestContext(indexName: "hourly_test", window: .hourly)
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
 
@@ -620,7 +621,7 @@ struct LeaderboardIndexScanItemTests {
     @Test("scanItem adds to leaderboard")
     func testScanItemAddsToLeaderboard() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 1000),
@@ -655,7 +656,7 @@ struct LeaderboardIndexEdgeCasesTests {
     @Test("Large scores work correctly")
     func testLargeScores() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: Int64.max - 100),
@@ -684,7 +685,7 @@ struct LeaderboardIndexEdgeCasesTests {
     @Test("Zero scores work correctly")
     func testZeroScores() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: 0),
@@ -715,7 +716,7 @@ struct LeaderboardIndexEdgeCasesTests {
     @Test("Negative scores work correctly")
     func testNegativeScores() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let scores = [
                 TestGameScore(id: "g1", playerId: "player1", score: -100),
@@ -746,7 +747,7 @@ struct LeaderboardIndexEdgeCasesTests {
     @Test("Large number of entries")
     func testLargeNumberOfEntries() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             // Insert 100 scores
             try await ctx.database.withTransaction { transaction in
@@ -777,7 +778,7 @@ struct LeaderboardIndexEdgeCasesTests {
     @Test("computeIndexKeys returns expected keys")
     func testComputeIndexKeys() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let ctx = try TestContext()
+            let ctx = try await TestContext()
 
             let score = TestGameScore(id: "g1", playerId: "player1", score: 1000)
             let keys = try await ctx.maintainer.computeIndexKeys(for: score, id: Tuple("g1"))

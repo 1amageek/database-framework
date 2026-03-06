@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 @testable import Core
@@ -44,7 +45,7 @@ struct UniquenessEnforcementTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         let schema = Schema(
             [UniqueTestUser.self, NonUniqueTestProduct.self],

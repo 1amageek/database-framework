@@ -6,7 +6,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -101,7 +102,7 @@ struct OntologyIRIValidationTests {
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let schema = Schema(
             [ValEmployee.self, ValAssignment.self, ValBadClass.self,
              ValBadRelation.self, ValDataPropAsObjectProp.self,

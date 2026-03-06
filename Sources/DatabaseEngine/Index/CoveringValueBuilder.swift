@@ -7,7 +7,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Shared utility for building covering index values
 ///

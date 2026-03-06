@@ -1,4 +1,4 @@
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for maintaining an index
@@ -22,7 +22,7 @@ import Core
 ///     func updateIndex(
 ///         oldItem: Item?,
 ///         newItem: Item?,
-///         transaction: any TransactionProtocol
+///         transaction: any Transaction
 ///     ) async throws {
 ///         // Remove old index entries
 ///         if let old = oldItem {
@@ -40,7 +40,7 @@ import Core
 ///     func scanItem(
 ///         _ item: Item,
 ///         id: Tuple,
-///         transaction: any TransactionProtocol
+///         transaction: any Transaction
 ///     ) async throws {
 ///         // Build index entries for this item
 ///         let values = try DataAccess.evaluate(item: item, expression: index.rootExpression)
@@ -68,7 +68,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws
 
     /// Scan and build index entries for an item
@@ -86,7 +86,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws
 
     /// Optional custom build strategy for this index
@@ -130,7 +130,7 @@ public protocol IndexMaintainer<Item>: Sendable {
     func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes]
+    ) async throws -> [Bytes]
 
     /// Compute expected index keys for an item with transaction access
     ///
@@ -152,8 +152,8 @@ public protocol IndexMaintainer<Item>: Sendable {
     func computeIndexKeys(
         for item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws -> [FDB.Bytes]
+        transaction: any Transaction
+    ) async throws -> [Bytes]
 }
 
 // MARK: - Default Implementations
@@ -170,7 +170,7 @@ extension IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         return []
     }
 
@@ -180,8 +180,8 @@ extension IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
-    ) async throws -> [FDB.Bytes] {
+        transaction: any Transaction
+    ) async throws -> [Bytes] {
         return try await computeIndexKeys(for: item, id: id)
     }
 }

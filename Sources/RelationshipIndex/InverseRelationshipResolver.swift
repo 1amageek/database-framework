@@ -5,7 +5,7 @@ import Foundation
 import Core
 import Relationship
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Resolves inverse relationships using existing scalar indexes
 ///
@@ -63,7 +63,7 @@ public final class InverseRelationshipResolver: Sendable {
         id targetId: Target.ID,
         from owningType: Owner.Type,
         via relationshipPropertyName: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         // Build the index name: "{OwnerType}_{propertyName}"
         let ownerTypeName = Owner.persistableType
@@ -80,10 +80,10 @@ public final class InverseRelationshipResolver: Sendable {
 
         // Scan index
         let (begin, end) = prefixSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: false)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: false)
 
         var itemIds: [Tuple] = []
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             if prefixSubspace.contains(key) {
                 let tuple = try prefixSubspace.unpack(key)
                 if tuple.count > 0 {
@@ -110,7 +110,7 @@ public final class InverseRelationshipResolver: Sendable {
         id targetId: Target.ID,
         from owningType: Owner.Type,
         via relationshipPropertyName: String,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         handler: ModelPersistenceHandler
     ) async throws -> [Owner] {
         let ids = try await findReferringItemIds(
@@ -151,7 +151,7 @@ public final class InverseRelationshipResolver: Sendable {
         id targetId: Target.ID,
         from owningType: Owner.Type,
         via relationshipPropertyName: String,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         // Build the index name
         let ownerTypeName = Owner.persistableType
@@ -168,10 +168,10 @@ public final class InverseRelationshipResolver: Sendable {
 
         // Count entries
         let (begin, end) = prefixSubspace.range()
-        let sequence = transaction.getRange(begin: begin, end: end, snapshot: true)
+        let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
         var count = 0
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
         }
 

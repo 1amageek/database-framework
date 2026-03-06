@@ -1,14 +1,14 @@
-// DatabaseProtocol+Transaction.swift
-// DatabaseEngine - Convenience extensions for DatabaseProtocol transaction execution
+// StorageEngine+Transaction.swift
+// DatabaseEngine - Convenience extensions for StorageEngine transaction execution
 //
 // Provides a higher-level API for running transactions with configuration.
 
 import Foundation
-import FoundationDB
+import StorageKit
 
-// MARK: - DatabaseProtocol Extension
+// MARK: - StorageEngine Extension
 
-extension DatabaseProtocol {
+extension StorageEngine {
     /// Execute a transaction with the specified configuration
     ///
     /// This method uses `TransactionRunner` to provide:
@@ -37,7 +37,7 @@ extension DatabaseProtocol {
     /// - Throws: Error if transaction fails after all retry attempts
     public func withTransaction<T: Sendable>(
         configuration: TransactionConfiguration,
-        _ operation: @Sendable (any TransactionProtocol) async throws -> T
+        _ operation: @Sendable (any Transaction) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: self)
         return try await runner.run(configuration: configuration, operation: operation)

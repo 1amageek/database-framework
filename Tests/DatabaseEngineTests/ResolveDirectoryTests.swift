@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -47,7 +48,7 @@ struct ResolveDirectoryTests {
 
     private func setupContainer() async throws -> FDBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([
@@ -64,8 +65,7 @@ struct ResolveDirectoryTests {
     }
 
     private func cleanup(container: FDBContainer) async throws {
-        let directoryLayer = DirectoryLayer(database: container.database)
-        try? await directoryLayer.remove(path: ["test", "resolve"])
+        try? await container.database.directoryService.remove(path: ["test", "resolve"])
     }
 
     // MARK: - Basic Resolution Tests
@@ -201,7 +201,7 @@ struct ResolveDirectoryTests {
             }
 
             // Read back in a new transaction
-            let readValue: FDB.Bytes? = try await container.database.withTransaction { transaction in
+            let readValue: Bytes? = try await container.database.withTransaction { transaction in
                 try await transaction.getValue(for: testKey, snapshot: false)
             }
 
@@ -218,11 +218,11 @@ struct ResolveDirectoryTests {
     func multipleContainersShareDirectory() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
-            let database = try FDBClient.openDatabase()
+            let database = try await FDBStorageEngine.open()
 
             // Clean up first
-            let directoryLayer = DirectoryLayer(database: database)
-            try? await directoryLayer.remove(path: ["test", "resolve"])
+            
+            try? await database.directoryService.remove(path: ["test", "resolve"])
 
             let schema = Schema([DirectoryUser.self], version: Schema.Version(1, 0, 0))
 
@@ -236,7 +236,7 @@ struct ResolveDirectoryTests {
             #expect(subspace1.prefix == subspace2.prefix)
 
             // Cleanup
-            try? await directoryLayer.remove(path: ["test", "resolve"])
+            try? await database.directoryService.remove(path: ["test", "resolve"])
         }
     }
 

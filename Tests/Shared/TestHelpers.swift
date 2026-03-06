@@ -5,7 +5,7 @@ import Foundation
 import Core
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - Product Model (for Scalar Index tests)
 

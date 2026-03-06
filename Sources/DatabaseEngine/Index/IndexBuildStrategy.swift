@@ -1,4 +1,4 @@
-import FoundationDB
+import StorageKit
 import Core
 
 /// Protocol for custom index build strategies

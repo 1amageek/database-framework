@@ -6,7 +6,7 @@
 // - Skip Lists: A Probabilistic Alternative to Balanced Trees (Pugh 1990)
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 /// Subspace layout for Skip List index storage
 ///

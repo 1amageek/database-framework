@@ -2,7 +2,7 @@
 // Extension to bridge Core.FieldValue with FoundationDB TupleElement
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - TupleElement Conversion

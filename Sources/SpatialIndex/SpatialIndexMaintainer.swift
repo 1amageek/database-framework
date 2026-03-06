@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Spatial index maintainer
 ///
@@ -55,7 +55,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         if let oldItem = oldItem {
             if let oldKey = try buildIndexKey(for: oldItem) {
@@ -74,7 +74,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         if let indexKey = try buildIndexKey(for: item, id: id) {
             let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
@@ -86,7 +86,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         if let key = try buildIndexKey(for: item, id: id) {
             return [key]
         }
@@ -107,7 +107,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         longitude: Double,
         radiusMeters: Double,
         limit: Int? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> SpatialScanResult {
         // Get covering cells for the search area
         let coveringCells = S2Geometry.getCoveringCells(
@@ -149,7 +149,7 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         maxLat: Double,
         maxLon: Double,
         limit: Int? = nil,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> SpatialScanResult {
         // Get covering cells for the bounding box
         let coveringCells = S2Geometry.getCoveringCellsForBox(

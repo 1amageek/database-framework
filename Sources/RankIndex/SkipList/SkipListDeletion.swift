@@ -6,7 +6,7 @@
 // - FoundationDB Record Layer RankedSet
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import DatabaseEngine
 
@@ -52,7 +52,7 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         score: Score,
         primaryKey: Tuple,
         currentLevels: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Phase 1: Find deletion position and track update nodes
         var updateKeys: [[UInt8]?] = Array(repeating: nil, count: currentLevels)
@@ -149,20 +149,20 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
     /// - (score, primaryKey) of the first entry, or nil if level is empty
     private func findFirstEntryAtLevel(
         _ level: Int,
-        _ transaction: any TransactionProtocol
+        _ transaction: any Transaction
     ) async throws -> (score: Score, primaryKey: Tuple)? {
         let levelSubspace = subspaces.subspace(for: level)
         let range = levelSubspace.range()
 
-        let sequence = transaction.getRange(
-            from: range.begin,
-            to: range.end,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 1,
             reverse: true,  // Descending: get highest score (first entry)
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             let suffix = try levelSubspace.unpack(key)
@@ -190,7 +190,7 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         level: Int,
         targetScore: Score,
         targetPrimaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (lastKeyBeforeDelete: [UInt8]?, deletedSpan: Int64?) {
         var lastKey: [UInt8]? = nil
         var deletedSpan: Int64? = nil
@@ -202,15 +202,15 @@ public struct SkipListDeletion<Score: Comparable & Numeric & Codable & Sendable>
         let range = levelSubspace.range()
 
         // Scan in descending order (highest to lowest score)
-        let sequence = transaction.getRange(
-            from: range.begin,
-            to: range.end,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 0,
             reverse: true,
             snapshot: true
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             // Zero-copy: Direct byte comparison without unpack/pack cycle

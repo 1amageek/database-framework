@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 
 public struct StorageMetrics: Codable, Sendable, Hashable {
     public let bytes: Int
@@ -16,7 +16,7 @@ public struct StorageMetrics: Codable, Sendable, Hashable {
     ///   - subspace: The subspace to measure
     /// - Returns: Storage metrics
     public static func measure(
-        database: any DatabaseProtocol,
+        database: any StorageEngine,
         subspace: Subspace
     ) async throws -> StorageMetrics {
         let range = subspace.range()
@@ -24,8 +24,8 @@ public struct StorageMetrics: Codable, Sendable, Hashable {
         let totalBytes = try await database.withTransaction { transaction in
             var bytes = 0
 
-            let kvs = try await transaction.getRange(begin: range.begin, end: range.end)
-            for try await (key, value) in kvs {
+            let kvs = try await transaction.collectRange(from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end))
+            for (key, value) in kvs {
                 bytes += key.count + value.count
             }
 

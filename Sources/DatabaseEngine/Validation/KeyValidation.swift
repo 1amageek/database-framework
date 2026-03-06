@@ -1,7 +1,7 @@
 // KeyValidation.swift
 // FDBIndexing - Key and value size validation for FoundationDB limits
 
-import FoundationDB
+import StorageKit
 
 // MARK: - FDB Limits
 
@@ -38,7 +38,7 @@ public enum FDBLimitError: Error, CustomStringConvertible {
 /// - Parameter key: The key bytes to validate
 /// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
-public func validateKeySize(_ key: FDB.Bytes) throws {
+public func validateKeySize(_ key: Bytes) throws {
     if key.count > fdbMaxKeySize {
         throw FDBLimitError.keyTooLarge(size: key.count, limit: fdbMaxKeySize)
     }
@@ -49,7 +49,7 @@ public func validateKeySize(_ key: FDB.Bytes) throws {
 /// - Parameter value: The value bytes to validate
 /// - Throws: `FDBLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
-public func validateValueSize(_ value: FDB.Bytes) throws {
+public func validateValueSize(_ value: Bytes) throws {
     if value.count > fdbMaxValueSize {
         throw FDBLimitError.valueTooLarge(size: value.count, limit: fdbMaxValueSize)
     }
@@ -61,7 +61,7 @@ public func validateValueSize(_ value: FDB.Bytes) throws {
 /// - Returns: The validated key
 /// - Throws: `FDBLimitError.keyTooLarge` if key exceeds 10KB
 @inlinable
-public func validatedKey(_ key: FDB.Bytes) throws -> FDB.Bytes {
+public func validatedKey(_ key: Bytes) throws -> Bytes {
     try validateKeySize(key)
     return key
 }
@@ -72,7 +72,7 @@ public func validatedKey(_ key: FDB.Bytes) throws -> FDB.Bytes {
 /// - Returns: The validated value
 /// - Throws: `FDBLimitError.valueTooLarge` if value exceeds 100KB
 @inlinable
-public func validatedValue(_ value: FDB.Bytes) throws -> FDB.Bytes {
+public func validatedValue(_ value: Bytes) throws -> Bytes {
     try validateValueSize(value)
     return value
 }

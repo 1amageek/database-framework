@@ -5,7 +5,7 @@
 // and external blob references for large values.
 
 import Foundation
-import FoundationDB
+import StorageKit
 
 // MARK: - ItemEnvelope
 
@@ -54,7 +54,7 @@ public struct ItemEnvelope: Sendable, Equatable {
 
     /// Create an inline envelope
     public static func inline(
-        data: FDB.Bytes
+        data: Bytes
     ) -> ItemEnvelope {
         ItemEnvelope(
             version: currentVersion,
@@ -83,7 +83,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     // MARK: - Serialization
 
     /// Serialize envelope to bytes for storage
-    public func serialize() -> FDB.Bytes {
+    public func serialize() -> Bytes {
         var result: [UInt8] = []
 
         // Magic
@@ -106,7 +106,7 @@ public struct ItemEnvelope: Sendable, Equatable {
     }
 
     /// Deserialize envelope from stored bytes
-    public static func deserialize(_ bytes: FDB.Bytes) throws -> ItemEnvelope {
+    public static func deserialize(_ bytes: Bytes) throws -> ItemEnvelope {
         guard bytes.count >= headerSize else {
             throw ItemEnvelopeError.invalidHeader
         }
@@ -148,7 +148,7 @@ public struct ItemEnvelope: Sendable, Equatable {
 
     /// Check if bytes represent a valid ItemEnvelope
     /// Only checks magic number - no weak heuristics
-    public static func isEnvelope(_ bytes: FDB.Bytes) -> Bool {
+    public static func isEnvelope(_ bytes: Bytes) -> Bool {
         guard bytes.count >= headerSize else { return false }
 
         // Check magic only - this is unambiguous
@@ -178,7 +178,7 @@ extension ItemEnvelope {
     /// Envelope content: either inline data or external reference
     public enum Content: Sendable, Equatable {
         /// Data stored inline in this envelope
-        case inline(FDB.Bytes)
+        case inline(Bytes)
 
         /// Reference to external blob storage
         case external(ExternalRef)
@@ -216,7 +216,7 @@ extension ItemEnvelope {
         }
 
         /// Serialize to bytes
-        public func serialize() -> FDB.Bytes {
+        public func serialize() -> Bytes {
             var result: [UInt8] = []
             result.reserveCapacity(Self.serializedSize)
 
@@ -236,7 +236,7 @@ extension ItemEnvelope {
         }
 
         /// Deserialize from bytes
-        public static func deserialize(_ bytes: FDB.Bytes) throws -> ExternalRef {
+        public static func deserialize(_ bytes: Bytes) throws -> ExternalRef {
             guard bytes.count >= serializedSize else {
                 throw ItemEnvelopeError.invalidExternalRef
             }

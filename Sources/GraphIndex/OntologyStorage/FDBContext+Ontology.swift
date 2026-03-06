@@ -6,7 +6,7 @@
 // Reference: W3C OWL 2 https://www.w3.org/TR/owl2-syntax/
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Graph
 import Core
 import DatabaseEngine

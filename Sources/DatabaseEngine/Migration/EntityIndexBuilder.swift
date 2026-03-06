@@ -3,7 +3,7 @@
 //
 // Provides runtime type dispatch for OnlineIndexer instantiation.
 
-import FoundationDB
+import StorageKit
 import Core
 import Synchronization
 

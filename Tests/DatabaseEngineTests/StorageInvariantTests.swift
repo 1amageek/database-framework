@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -8,9 +9,9 @@ import TestSupport
 @Suite("Storage Invariant Tests", .tags(.requiresFDB), .serialized)
 struct StorageInvariantTests {
 
-    private func openDB() async throws -> any DatabaseProtocol {
+    private func openDB() async throws -> any StorageEngine {
         try await FDBTestSetup.shared.initialize()
-        return try FDBClient.openDatabase()
+        return try await FDBStorageEngine.open()
     }
 
     @Test("OnlineIndexer.clearFirst clears uniqueness violations stored under metadata subspace")
@@ -196,14 +197,14 @@ struct StorageInvariantTests {
                 }
 
                 // Allow up to 2 calls because AsyncKVSequence may prefetch the next batch.
-                let limiting = LimitingTransaction(wrapping: tx, maxNativeCalls: 2, maxRecordsPerNativeCall: 1)
+                let limiting = LimitingTransaction(wrapping: tx, maxCollectCalls: 2)
                 let storage = ItemStorage(transaction: limiting, blobsSubspace: blobsSubspace)
                 let (b, e) = itemsSubspace.range()
 
                 var it = storage.scan(begin: b, end: e, snapshot: false, limit: 0, reverse: false).makeAsyncIterator()
                 let first = try await it.next()
                 #expect(first != nil)
-                #expect(limiting.nativeCallCountValue <= 2)
+                #expect(limiting.callCountValue <= 2)
             }
 
             // Cleanup

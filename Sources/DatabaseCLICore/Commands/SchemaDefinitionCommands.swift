@@ -4,13 +4,13 @@
 import Foundation
 import DatabaseEngine
 import Core
-import FoundationDB
+import StorageKit
 
 public struct SchemaDefinitionCommands {
-    private let database: any DatabaseProtocol
+    private let database: any StorageEngine
     private let output: OutputFormatter
 
-    public init(database: any DatabaseProtocol, output: OutputFormatter) {
+    public init(database: any StorageEngine, output: OutputFormatter) {
         self.database = database
         self.output = output
     }

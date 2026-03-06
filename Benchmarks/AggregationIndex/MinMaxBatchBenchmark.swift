@@ -4,7 +4,8 @@ import Core
 import DatabaseEngine
 import AggregationIndex
 import BenchmarkFramework
-import FoundationDB
+import StorageKit
+import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -22,13 +23,13 @@ struct Sale {
 
 @Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized)
 struct MinMaxBatchBenchmark {
-    nonisolated(unsafe) private let database: any DatabaseProtocol
+    nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: FDBContainer
     nonisolated(unsafe) private let context: FDBContext
 
     init() async throws {
         try await FDBTestSetup.shared.initialize()
-        let db = try FDBClient.openDatabase()
+        let db = try await FDBStorageEngine.open()
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
         let cont = FDBContainer(database: db, schema: schema, security: .disabled)
 
@@ -40,8 +41,7 @@ struct MinMaxBatchBenchmark {
     @Test("MIN/MAX Index vs Full Scan")
     func minMaxIndexedVsScan() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
 
         // Re-create context after directory cleanup
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
@@ -125,8 +125,7 @@ struct MinMaxBatchBenchmark {
     @Test("Aggregation Scalability Test")
     func aggregationScalability() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
 
         // Re-create context and insert test data
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
@@ -179,8 +178,7 @@ struct MinMaxBatchBenchmark {
     @Test("Multiple Aggregations Performance")
     func multipleAggregations() async throws {
         // Clean up previous test data to ensure isolation
-        let directoryLayer = DirectoryLayer(database: database)
-        try? await directoryLayer.remove(path: ["benchmarks", "sales"])
+        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
 
         // Re-create context after directory cleanup
         let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))

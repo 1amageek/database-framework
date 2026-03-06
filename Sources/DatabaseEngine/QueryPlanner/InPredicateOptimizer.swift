@@ -5,7 +5,7 @@
 // Transforms IN predicates into efficient join or union operations.
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 // MARK: - InOptimizationStrategy

@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Spatial
 import TestSupport
@@ -91,15 +92,15 @@ struct TestStore: Persistable {
 // MARK: - Test Helper
 
 private struct AdvancedTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<TestStore>
     let kind: SpatialIndexKind<TestStore>
     let testId: String
 
-    init() throws {
-        self.database = try FDBClient.openDatabase()
+    init() async throws {
+        self.database = try await FDBStorageEngine.open()
         self.testId = String(UUID().uuidString.prefix(8))
         self.subspace = Subspace(prefix: Tuple("test", "spatial_advanced", testId).pack())
         let indexName = "TestStore_spatial_geoPoint"

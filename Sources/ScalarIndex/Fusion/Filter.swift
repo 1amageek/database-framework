@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - FilterError
 
@@ -472,7 +472,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
     private func searchScalarEquals(
         value: any Sendable & Hashable,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         let tupleValue = try TupleEncoder.encode(value)
         let valueSubspace = indexSubspace.subspace(tupleValue)
@@ -480,13 +480,13 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard valueSubspace.contains(key) else { break }
 
             guard let keyTuple = try? valueSubspace.unpack(key) else {
@@ -507,7 +507,7 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
         minInclusive: Bool,
         maxInclusive: Bool,
         indexSubspace: Subspace,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         // Build range selectors
         let beginKey: [UInt8]
@@ -539,13 +539,13 @@ public struct Filter<T: Persistable>: FusionQuery, Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(beginKey),
-            endSelector: .firstGreaterOrEqual(endKey),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(beginKey),
+            to: .firstGreaterOrEqual(endKey),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard indexSubspace.contains(key) else { break }
 
             guard let keyTuple = try? indexSubspace.unpack(key) else {

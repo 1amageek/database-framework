@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 
 /// Static utility for accessing Persistable item data
@@ -320,7 +320,7 @@ public struct DataAccess: Sendable {
     /// - Parameter item: The item to serialize
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
-    public static func serialize<Item: Persistable>(_ item: Item) throws -> FDB.Bytes {
+    public static func serialize<Item: Persistable>(_ item: Item) throws -> Bytes {
         let encoder = ProtobufEncoder()
         let data = try encoder.encode(item)
         return Array(data)
@@ -331,7 +331,7 @@ public struct DataAccess: Sendable {
     /// - Parameter bytes: The bytes to deserialize
     /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
-    public static func deserialize<Item: Persistable>(_ bytes: FDB.Bytes) throws -> Item {
+    public static func deserialize<Item: Persistable>(_ bytes: Bytes) throws -> Item {
         let decoder = ProtobufDecoder()
         return try decoder.decode(Item.self, from: Data(bytes))
     }
@@ -346,7 +346,7 @@ public struct DataAccess: Sendable {
     /// - Returns: Deserialized item (type-erased)
     /// - Throws: Error if deserialization fails
     public static func deserializeAny(
-        _ bytes: FDB.Bytes,
+        _ bytes: Bytes,
         as type: any (Persistable & Codable).Type
     ) throws -> any Persistable {
         let decoder = ProtobufDecoder()
@@ -377,7 +377,7 @@ public struct DataAccess: Sendable {
     /// - Throws: Error indicating reconstruction is not supported
     public static func reconstruct<Item: Persistable>(
         indexKey: Tuple,
-        indexValue: FDB.Bytes,
+        indexValue: Bytes,
         idExpression: KeyExpression
     ) throws -> Item {
         throw DataAccessError.reconstructionNotSupported(

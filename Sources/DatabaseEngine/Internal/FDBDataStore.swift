@@ -1,5 +1,5 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import Logging
 
@@ -246,16 +246,21 @@ internal final class FDBDataStore: DataStore, Sendable {
         let valueTuple = condition.valueTuple
         let keyPathsCount = matchingIndex.keyPaths.count
 
+        // Build value subspace using flat encoding (prefix + tuple.pack())
+        // NOTE: Do NOT use indexSubspaceForIndex.subspace(valueTuple) because
+        // Tuple conforms to TupleElement, which would create a NESTED tuple
+        // encoding (type code 0x05) that doesn't match the flat key structure
+        // written by ScalarIndexMaintainer.
+        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
+
         // Compute key range outside transaction to avoid capturing non-Sendable condition
         let scanRange: IndexScanRange
         switch condition.op {
         case .equal:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let (begin, end) = valueSubspace.range()
             scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
 
         case .greaterThan:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let beginKey = valueSubspace.range().1  // End of value range = start after
             let (_, endKey) = indexSubspaceForIndex.range()
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
@@ -272,7 +277,6 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         case .lessThanOrEqual:
             let (beginKey, _) = indexSubspaceForIndex.range()
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let endKey = valueSubspace.range().1
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
 
@@ -283,7 +287,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Execute scan in transaction - all captured values are now Sendable
         // Select optimal StreamingMode based on limit
-        let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
+        let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
 
         let ids: [Tuple] = try await container.database.withTransaction(configuration: .default) { transaction in
             var ids: [Tuple] = []
@@ -294,15 +298,15 @@ internal final class FDBDataStore: DataStore, Sendable {
             switch scanRange {
             case .exactMatch(let begin, let end, let valueSubspace):
                 // Apply limit pushdown to reduce server-side work
-                let sequence = transaction.getRange(
-                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+                let sequence = try await transaction.collectRange(
+                    from: KeySelector.firstGreaterOrEqual(begin),
+                    to: KeySelector.firstGreaterOrEqual(end),
                     limit: limit ?? 0,  // 0 = unlimited in FDB
                     reverse: false,
                     snapshot: true,
                     streamingMode: streamingMode
                 )
-                for try await (key, _) in sequence {
+                for (key, _) in sequence {
                     if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
                         ids.append(idTuple)
                     }
@@ -310,15 +314,15 @@ internal final class FDBDataStore: DataStore, Sendable {
 
             case .range(let begin, let end, let baseSubspace, let keyPathsCount):
                 // Apply limit pushdown to reduce server-side work
-                let sequence = transaction.getRange(
-                    from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                    to: FDB.KeySelector.firstGreaterOrEqual(end),
+                let sequence = try await transaction.collectRange(
+                    from: KeySelector.firstGreaterOrEqual(begin),
+                    to: KeySelector.firstGreaterOrEqual(end),
                     limit: limit ?? 0,  // 0 = unlimited in FDB
                     reverse: false,
                     snapshot: true,
                     streamingMode: streamingMode
                 )
-                for try await (key, _) in sequence {
+                for (key, _) in sequence {
                     if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
                         ids.append(idTuple)
                     }
@@ -702,7 +706,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// - Returns: Array of matching items
     func fetchInTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [T] {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
@@ -724,7 +728,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Called by FDBContext.fetch() which manages transaction and cache.
     private func fetchInternalWithTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [T] {
         var results: [T]
 
@@ -784,7 +788,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Fetch all models with an existing transaction
     private func fetchAllWithTransaction<T: Persistable>(
         _ type: T.Type,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
@@ -819,7 +823,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         _ predicate: Predicate<T>,
         type: T.Type,
         limit: Int?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> IndexFetchResult<T>? {
         // Extract indexable condition from predicate
         guard let condition = extractIndexableCondition(from: predicate),
@@ -828,7 +832,8 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Check index state - only use readable indexes for queries
-        let indexState = try await indexStateManager.state(of: matchingIndex.name)
+        // Use transaction-aware overload to avoid nested transaction deadlock
+        let indexState = try await indexStateManager.state(of: matchingIndex.name, transaction: transaction)
         guard indexState.isReadable else {
             logger.debug("Index '\(matchingIndex.name)' is not readable (state: \(indexState)), falling back to scan")
             return nil
@@ -839,16 +844,21 @@ internal final class FDBDataStore: DataStore, Sendable {
         let valueTuple = condition.valueTuple
         let keyPathsCount = matchingIndex.keyPaths.count
 
+        // Build value subspace using flat encoding (prefix + tuple.pack())
+        // NOTE: Do NOT use indexSubspaceForIndex.subspace(valueTuple) because
+        // Tuple conforms to TupleElement, which would create a NESTED tuple
+        // encoding (type code 0x05) that doesn't match the flat key structure
+        // written by ScalarIndexMaintainer.
+        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
+
         // Compute key range
         let scanRange: IndexScanRange
         switch condition.op {
         case .equal:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let (begin, end) = valueSubspace.range()
             scanRange = .exactMatch(begin: begin, end: end, valueSubspace: valueSubspace)
 
         case .greaterThan:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let beginKey = valueSubspace.range().1  // End of value range = start after
             let (_, endKey) = indexSubspaceForIndex.range()
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
@@ -865,7 +875,6 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         case .lessThanOrEqual:
             let (beginKey, _) = indexSubspaceForIndex.range()
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             let endKey = valueSubspace.range().1
             scanRange = .range(begin: beginKey, end: endKey, baseSubspace: indexSubspaceForIndex, keyPathsCount: keyPathsCount)
 
@@ -875,7 +884,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Execute scan with provided transaction
-        let streamingMode: FDB.StreamingMode = FDB.StreamingMode.forQuery(limit: limit)
+        let streamingMode: StreamingMode = StreamingMode.forQuery(limit: limit)
 
         var ids: [Tuple] = []
         if let limit = limit {
@@ -884,30 +893,30 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         switch scanRange {
         case .exactMatch(let begin, let end, let valueSubspace):
-            let sequence = transaction.getRange(
-                from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                to: FDB.KeySelector.firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(begin),
+                to: KeySelector.firstGreaterOrEqual(end),
                 limit: limit ?? 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: streamingMode
             )
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
                 if let idTuple = self.extractIDFromIndexKey(key, subspace: valueSubspace) {
                     ids.append(idTuple)
                 }
             }
 
         case .range(let begin, let end, let baseSubspace, let keyPathsCount):
-            let sequence = transaction.getRange(
-                from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                to: FDB.KeySelector.firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(begin),
+                to: KeySelector.firstGreaterOrEqual(end),
                 limit: limit ?? 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: streamingMode
             )
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
                 if let idTuple = self.extractIDFromIndexKey(key, baseSubspace: baseSubspace, keyPathsCount: keyPathsCount) {
                     ids.append(idTuple)
                 }
@@ -937,7 +946,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func fetchByIdsWithTransaction<T: Persistable>(
         _ type: T.Type,
         ids: [Tuple],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keys = ids.map { typeSubspace.pack($0) }
@@ -976,7 +985,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Called by FDBContext.fetchCount() which manages transaction and ReadVersionCache.
     func fetchCountInTransaction<T: Persistable>(
         _ query: Query<T>,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         // Security evaluation
         let orderByFields = query.sortDescriptors.map { $0.fieldName }
@@ -1022,7 +1031,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func fetchByIdInTransaction<T: Persistable>(
         _ type: T.Type,
         id: any TupleElement,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> T? {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let keyTuple = (id as? Tuple) ?? Tuple([id])
@@ -1049,22 +1058,22 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Count all models with an existing transaction
     private func countAllWithTransaction<T: Persistable>(
         _ type: T.Type,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
 
         var count = 0
-        let sequence = transaction.getRange(
-            from: FDB.KeySelector.firstGreaterOrEqual(begin),
-            to: FDB.KeySelector.firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: KeySelector.firstGreaterOrEqual(begin),
+            to: KeySelector.firstGreaterOrEqual(end),
             limit: 0,
             reverse: false,
             snapshot: true,
             streamingMode: .wantAll
         )
 
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
         }
         return count
@@ -1074,21 +1083,22 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func countUsingIndexWithTransaction(
         condition: IndexableCondition,
         index: IndexDescriptor,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int {
         let indexSubspaceForIndex = indexSubspace.subspace(index.name)
         let valueTuple = condition.valueTuple
+
+        // Build value subspace using flat encoding (see fetchUsingIndexWithTransaction comment)
+        let valueSubspace = Subspace(prefix: indexSubspaceForIndex.prefix + valueTuple.pack())
 
         let beginKey: [UInt8]
         let endKey: [UInt8]
 
         switch condition.op {
         case .equal:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             (beginKey, endKey) = valueSubspace.range()
 
         case .greaterThan:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             beginKey = valueSubspace.range().1
             endKey = indexSubspaceForIndex.range().1
 
@@ -1101,7 +1111,6 @@ internal final class FDBDataStore: DataStore, Sendable {
             endKey = indexSubspaceForIndex.pack(valueTuple)
 
         case .lessThanOrEqual:
-            let valueSubspace = indexSubspaceForIndex.subspace(valueTuple)
             beginKey = indexSubspaceForIndex.range().0
             endKey = valueSubspace.range().1
 
@@ -1110,15 +1119,15 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         var count = 0
-        let sequence = transaction.getRange(
-            from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
-            to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+        let sequence = try await transaction.collectRange(
+            from: KeySelector.firstGreaterOrEqual(beginKey),
+            to: KeySelector.firstGreaterOrEqual(endKey),
             limit: 0,
             reverse: false,
             snapshot: true,
             streamingMode: .wantAll
         )
-        for try await _ in sequence {
+        for _ in sequence {
             count += 1
         }
         return count
@@ -1163,15 +1172,15 @@ internal final class FDBDataStore: DataStore, Sendable {
         return try await container.database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
-            let sequence = transaction.getRange(
-                from: FDB.KeySelector.firstGreaterOrEqual(beginKey),
-                to: FDB.KeySelector.firstGreaterOrEqual(endKey),
+            let sequence = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(beginKey),
+                to: KeySelector.firstGreaterOrEqual(endKey),
                 limit: 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: .wantAll
             )
-            for try await _ in sequence {
+            for _ in sequence {
                 count += 1
             }
             return count
@@ -1186,16 +1195,16 @@ internal final class FDBDataStore: DataStore, Sendable {
         return try await container.database.withTransaction(configuration: .default) { transaction in
             var count = 0
             // Use .wantAll for count operations - aggressive prefetch
-            let sequence = transaction.getRange(
-                from: FDB.KeySelector.firstGreaterOrEqual(begin),
-                to: FDB.KeySelector.firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: KeySelector.firstGreaterOrEqual(begin),
+                to: KeySelector.firstGreaterOrEqual(end),
                 limit: 0,
                 reverse: false,
                 snapshot: true,
                 streamingMode: .wantAll
             )
 
-            for try await _ in sequence {
+            for _ in sequence {
                 count += 1
             }
             return count
@@ -1286,7 +1295,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Save a single model within a transaction
     private func saveModel<T: Persistable>(
         _ model: T,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Validate and get ID
         let validatedID = try model.validateIDForStorage()
@@ -1352,7 +1361,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Delete a single model within a transaction
     private func deleteModel<T: Persistable>(
         _ model: T,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let validatedID = try model.validateIDForStorage()
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
@@ -1446,7 +1455,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func executeBatchInTransaction(
         inserts: [any Persistable],
         deletes: [any Persistable],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [SerializedModel] {
         let encoder = ProtobufEncoder()
         var serializedModels: [SerializedModel] = []
@@ -1476,7 +1485,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Execute operations within a raw transaction
     ///
-    /// Provides raw TransactionProtocol for coordinating operations
+    /// Provides raw Transaction for coordinating operations
     /// across multiple DataStores in a single atomic transaction.
     ///
     /// **Design Intent - No ReadVersionCache**:
@@ -1495,7 +1504,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// For read operations that benefit from weak read semantics, users should use
     /// `FDBContext.withTransaction()` which properly uses the context's cache.
     func withRawTransaction<T: Sendable>(
-        _ body: @Sendable @escaping (any TransactionProtocol) async throws -> T
+        _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
         return try await container.database.withTransaction(configuration: .default, body)
     }
@@ -1503,7 +1512,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Save model with security evaluation, returning serialized data for dual-write
     private func saveModelUntypedWithSecurityReturningData(
         _ model: any Persistable,
-        transaction: any TransactionProtocol,
+        transaction: any Transaction,
         encoder: ProtobufEncoder
     ) async throws -> SerializedModel {
         let modelType = type(of: model)
@@ -1552,7 +1561,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Delete model without type parameter (for batch operations)
     private func deleteModelUntyped(
         _ model: any Persistable,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let persistableType = type(of: model).persistableType
         let validatedID = try validateID(model.id, for: persistableType)

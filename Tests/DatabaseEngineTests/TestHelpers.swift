@@ -1,10 +1,10 @@
 import Foundation
-import FoundationDB
+import StorageKit
 import TestSupport
 
 /// FDB test environment manager
 ///
-/// Ensures FDBClient is initialized exactly once across all tests.
+/// Ensures FDBStorageEngine is initialized exactly once across all tests.
 /// Uses FDBTestSetup from TestSupport to ensure single initialization and serialization.
 actor FDBTestEnvironment {
     /// Shared singleton instance

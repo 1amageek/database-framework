@@ -7,7 +7,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 // MARK: - IndexKindMaintainable Extension
 
@@ -92,7 +92,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // For INSERT: add value to HLL
         // For DELETE: no-op (HLL is add-only, cannot remove values)
@@ -109,7 +109,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         try await addValueToHLL(item: item, transaction: transaction)
     }
@@ -117,7 +117,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         // Sparse index: if any field value is nil, no index entry
         let allValues: [any TupleElement]
         do {
@@ -141,7 +141,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Returns: Tuple of (estimatedCount, errorRate)
     public func getDistinctCount(
         groupingValues: [any TupleElement],
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (estimated: Int64, errorRate: Double) {
         let key = try buildGroupingKey(groupingValues)
 
@@ -164,7 +164,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     /// - Parameter transaction: Transaction to use
     /// - Returns: Array of (grouping values, estimated count, error rate)
     public func getAllDistinctCounts(
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(grouping: [any TupleElement], estimated: Int64, errorRate: Double)] {
         let range = subspace.range()
 
@@ -172,7 +172,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
         // Standard error for HyperLogLog++ with fixed precision=14
         let errorRate = 1.04 / sqrt(Double(1 << fixedPrecision))
 
-        for try await (key, value) in transaction.getRange(from: range.begin, to: range.end) {
+        for (key, value) in try await transaction.collectRange(from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end)) {
             // Extract grouping values from key by unpacking the subspace
             let keyTuple = try subspace.unpack(key)
             var groupingValues: [any TupleElement] = []
@@ -194,7 +194,7 @@ public struct DistinctIndexMaintainer<Item: Persistable>: SubspaceIndexMaintaine
     // MARK: - Private Methods
 
     /// Add a value to the HyperLogLog for the item's group
-    private func addValueToHLL(item: Item, transaction: any TransactionProtocol) async throws {
+    private func addValueToHLL(item: Item, transaction: any Transaction) async throws {
         // Sparse index: if any field value is nil, skip indexing
         let allValues: [any TupleElement]
         do {

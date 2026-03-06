@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ struct DistinctTestPageView: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: DistinctIndexMaintainer<DistinctTestPageView>
 
-    init(indexName: String = "DistinctTestPageView_pageId_userId") throws {
-        self.database = try FDBClient.openDatabase()
+    init(indexName: String = "DistinctTestPageView_pageId_userId") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "distinct", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -141,7 +142,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Insert adds value to HyperLogLog")
     func testInsertAddsValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageView = DistinctTestPageView(pageId: "page1", userId: "user1")
 
@@ -163,7 +164,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Multiple unique users increment distinct count")
     func testMultipleUniqueUsers() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageViews = (1...10).map { i in
             DistinctTestPageView(pageId: "page1", userId: "user\(i)")
@@ -189,7 +190,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Duplicate users do not increment distinct count")
     func testDuplicateUsersNotCounted() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Same user visits same page 5 times
         let pageViews = (1...5).map { i in
@@ -215,7 +216,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Different groups have independent counts")
     func testDifferentGroupsIndependent() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageViews = [
             DistinctTestPageView(pageId: "page1", userId: "user1"),
@@ -249,7 +250,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Delete does NOT decrease distinct count (add-only)")
     func testDeleteDoesNotDecreaseCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageView = DistinctTestPageView(pageId: "page1", userId: "user1")
 
@@ -284,7 +285,7 @@ struct DistinctIndexBehaviorTests {
     @Test("Update adds new value (old value remains in HLL)")
     func testUpdateAddsNewValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageView = DistinctTestPageView(id: "view1", pageId: "page1", userId: "user1")
 
@@ -319,7 +320,7 @@ struct DistinctIndexBehaviorTests {
     @Test("GetAllDistinctCounts returns all groups")
     func testGetAllDistinctCounts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageViews = [
             DistinctTestPageView(pageId: "page1", userId: "user1"),
@@ -349,7 +350,7 @@ struct DistinctIndexBehaviorTests {
     @Test("GetDistinctCount for non-existent group returns zero")
     func testGetDistinctCountNonExistentReturnsZero() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let (count, _) = try await ctx.getDistinctCount(for: "nonexistent")
         #expect(count == 0, "Distinct count for non-existent group should be 0")
@@ -362,7 +363,7 @@ struct DistinctIndexBehaviorTests {
     @Test("ScanItem adds to HyperLogLog")
     func testScanItemAddsToHLL() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let pageViews = [
             DistinctTestPageView(pageId: "page1", userId: "user1"),
@@ -391,7 +392,7 @@ struct DistinctIndexBehaviorTests {
     @Test("HyperLogLog accuracy with large cardinality")
     func testLargeCardinality() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let uniqueUserCount = 1000
 

@@ -4,7 +4,8 @@
 import Testing
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Vector
 import TestSupport
 @testable import DatabaseEngine
@@ -70,14 +71,14 @@ struct BenchmarkDocument: Persistable {
 // MARK: - Test Helper
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let flatMaintainer: FlatVectorIndexMaintainer<BenchmarkDocument>
     let dimensions: Int
 
-    init(dimensions: Int = 128, metric: VectorMetric = .cosine, indexName: String = "BenchmarkDocument_embedding") throws {
-        self.database = try FDBClient.openDatabase()
+    init(dimensions: Int = 128, metric: VectorMetric = .cosine, indexName: String = "BenchmarkDocument_embedding") async throws {
+        self.database = try await FDBStorageEngine.open()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "vector", String(testId)).pack())
@@ -158,7 +159,7 @@ struct VectorIndexPerformanceTests {
     @Test("Flat scan performance - 100 vectors, 128 dimensions")
     func testFlatScan100Vectors() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         // Setup: Insert 100 vectors
         let vectorCount = 100
@@ -208,7 +209,7 @@ struct VectorIndexPerformanceTests {
     @Test("Flat scan performance - 500 vectors, 128 dimensions")
     func testFlatScan500Vectors() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         // Setup: Insert 500 vectors
         let vectorCount = 500
@@ -257,7 +258,7 @@ struct VectorIndexPerformanceTests {
     @Test("Flat scan performance - varying k")
     func testFlatScanVaryingK() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         // Setup: Insert 200 vectors
         let vectorCount = 200
@@ -310,7 +311,7 @@ struct VectorIndexPerformanceTests {
         let vectorCount = 100
 
         for dimensions in [64, 128, 256, 384] {
-            let ctx = try BenchmarkContext(dimensions: dimensions)
+            let ctx = try await BenchmarkContext(dimensions: dimensions)
 
             let docs = (0..<vectorCount).map { i in
                 BenchmarkDocument(
@@ -354,7 +355,7 @@ struct VectorIndexPerformanceTests {
     @Test("Bulk insert performance")
     func testBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         let batchSize = 100
         let docs = (0..<batchSize).map { i in
@@ -403,7 +404,7 @@ struct VectorIndexPerformanceTests {
         let searchCount = 10
 
         for metric in [VectorMetric.cosine, VectorMetric.euclidean, VectorMetric.dotProduct] {
-            let ctx = try BenchmarkContext(dimensions: dimensions, metric: metric)
+            let ctx = try await BenchmarkContext(dimensions: dimensions, metric: metric)
 
             let docs = (0..<vectorCount).map { i in
                 BenchmarkDocument(
@@ -446,7 +447,7 @@ struct VectorIndexPerformanceTests {
     @Test("Search recall quality - cosine similarity")
     func testSearchRecallQuality() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 64, metric: .cosine)
+        let ctx = try await BenchmarkContext(dimensions: 64, metric: .cosine)
 
         // Create a base vector
         let baseVector = randomUnitVector(dimensions: 64)
@@ -509,7 +510,7 @@ struct VectorIndexPerformanceTests {
     @Test("Update performance - replace vector")
     func testUpdatePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         // Setup: Insert initial vectors
         let vectorCount = 50
@@ -573,7 +574,7 @@ struct VectorIndexPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try BenchmarkContext(dimensions: 128)
+        let ctx = try await BenchmarkContext(dimensions: 128)
 
         // Setup: Insert vectors
         let vectorCount = 50

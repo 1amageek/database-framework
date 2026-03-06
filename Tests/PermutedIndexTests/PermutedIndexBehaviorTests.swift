@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Permuted
 import TestSupport
@@ -75,15 +76,15 @@ struct TestLocation: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: PermutedIndexMaintainer<TestLocation>
     let kind: PermutedIndexKind<TestLocation>
 
     /// Creates a test context with a permutation that reorders (country, city, name) to (city, country, name)
-    init(permutation: Permutation? = nil, indexName: String = "TestLocation_compound") throws {
-        self.database = try FDBClient.openDatabase()
+    init(permutation: Permutation? = nil, indexName: String = "TestLocation_compound") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -169,7 +170,7 @@ struct PermutedIndexBehaviorTests {
     @Test("Insert creates permuted key entry")
     func testInsertCreatesPermutedKeyEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
@@ -190,7 +191,7 @@ struct PermutedIndexBehaviorTests {
     @Test("Multiple inserts create multiple entries")
     func testMultipleInserts() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A"),
@@ -219,7 +220,7 @@ struct PermutedIndexBehaviorTests {
     @Test("Delete removes permuted key entry")
     func testDeleteRemovesEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
@@ -255,7 +256,7 @@ struct PermutedIndexBehaviorTests {
     @Test("Update changes permuted key")
     func testUpdateChangesKey() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
@@ -297,7 +298,7 @@ struct PermutedIndexBehaviorTests {
     @Test("scanByPrefix finds entries by permuted prefix")
     func testScanByPrefixFindsEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Permutation is [1, 0, 2]: (city, country, name)
         let locations = [
@@ -331,7 +332,7 @@ struct PermutedIndexBehaviorTests {
     @Test("scanByPrefix with empty prefix returns all")
     func testScanByPrefixEmptyReturnsAll() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
@@ -359,7 +360,7 @@ struct PermutedIndexBehaviorTests {
     @Test("scanByExactMatch finds entries with exact values")
     func testScanByExactMatchFindsEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Permutation is [1, 0, 2]: (city, country, name)
         let locations = [
@@ -388,7 +389,7 @@ struct PermutedIndexBehaviorTests {
     @Test("scanByExactMatch throws for wrong field count")
     func testScanByExactMatchThrowsForWrongFieldCount() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         await #expect(throws: PermutedIndexError.self) {
             _ = try await ctx.scanByExactMatch(values: ["Tokyo", "Japan"])  // Only 2 values, need 3
@@ -402,7 +403,7 @@ struct PermutedIndexBehaviorTests {
     @Test("scanAll returns all entries with permuted fields")
     func testScanAllReturnsAllEntries() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
@@ -449,7 +450,7 @@ struct PermutedIndexBehaviorTests {
     @Test("toOriginalOrder converts permuted values back")
     func testToOriginalOrderConvertsBack() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         // Permutation is [1, 0, 2]: original (country, city, name) -> permuted (city, country, name)
         let permutedValues: [any TupleElement] = ["Tokyo", "Japan", "Station A"]
@@ -470,7 +471,7 @@ struct PermutedIndexBehaviorTests {
     @Test("ScanItem adds permuted entry")
     func testScanItemAddsPermutedEntry() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
 
         let locations = [
             TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "A"),
@@ -499,7 +500,7 @@ struct PermutedIndexBehaviorTests {
     func testDifferentPermutationOrdersFieldsDifferently() async throws {
         try await FDBTestSetup.shared.initialize()
         // Use permutation [2, 0, 1]: (name, country, city)
-        let ctx = try TestContext(permutation: try! Permutation(indices: [2, 0, 1]))
+        let ctx = try await TestContext(permutation: try! Permutation(indices: [2, 0, 1]))
 
         let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 
@@ -524,7 +525,7 @@ struct PermutedIndexBehaviorTests {
     func testIdentityPermutationMaintainsOrder() async throws {
         try await FDBTestSetup.shared.initialize()
         // Use identity permutation [0, 1, 2]: (country, city, name)
-        let ctx = try TestContext(permutation: Permutation.identity(size: 3))
+        let ctx = try await TestContext(permutation: Permutation.identity(size: 3))
 
         let location = TestLocation(id: "loc1", country: "Japan", city: "Tokyo", name: "Station A")
 

@@ -1,6 +1,7 @@
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -84,7 +85,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MIN with composite primary key")
     func testMinWithCompositePrimaryKey() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_pk", testId).pack())
 
@@ -167,7 +168,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MAX with composite primary key")
     func testMaxWithCompositePrimaryKey() async throws {
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_pk", testId).pack())
 

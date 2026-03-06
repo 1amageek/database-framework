@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import TestSupport
 @testable import DatabaseEngine
@@ -74,13 +75,13 @@ private struct PerfProduct: Persistable {
 // MARK: - Performance Test Helper
 
 private struct PerfTestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let maintainer: BitmapIndexMaintainer<PerfProduct>
     let indexName: String
 
-    init(testName: String) throws {
-        self.database = try FDBClient.openDatabase()
+    init(testName: String) async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.indexName = "PerfProduct_bitmap_category"
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), testName).pack())
@@ -309,7 +310,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Bulk insert performance - 100 records, 10 categories")
     func testBulkInsert100Records() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "bulk_insert_100")
+        let ctx = try await PerfTestContext(testName: "bulk_insert_100")
 
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<100).map { i in
@@ -348,7 +349,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Bulk insert performance - 1000 records, 10 categories")
     func testBulkInsert1000Records() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "bulk_insert_1000")
+        let ctx = try await PerfTestContext(testName: "bulk_insert_1000")
 
         let categories = (0..<10).map { "category-\($0)" }
         let products = (0..<1000).map { i in
@@ -387,7 +388,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Query performance - single value lookup")
     func testQueryPerformanceSingleValue() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "query_single")
+        let ctx = try await PerfTestContext(testName: "query_single")
 
         // Setup: Insert 1000 records
         let categories = (0..<10).map { "category-\($0)" }
@@ -440,7 +441,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Query performance - OR query")
     func testQueryPerformanceOrQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "query_or")
+        let ctx = try await PerfTestContext(testName: "query_or")
 
         // Setup: Insert 1000 records
         let categories = (0..<10).map { "category-\($0)" }
@@ -484,7 +485,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Query performance - AND query across indexes")
     func testQueryPerformanceAndQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try FDBClient.openDatabase()
+        let database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), "query_and").pack())
 
@@ -570,7 +571,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Primary key retrieval performance")
     func testPrimaryKeyRetrievalPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "pk_retrieval")
+        let ctx = try await PerfTestContext(testName: "pk_retrieval")
 
         // Setup: Insert 1000 records
         let products = (0..<1000).map { i in
@@ -615,7 +616,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Update performance - category change")
     func testUpdatePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "update")
+        let ctx = try await PerfTestContext(testName: "update")
 
         // Setup: Insert 100 records
         var products = (0..<100).map { i in
@@ -681,7 +682,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "delete")
+        let ctx = try await PerfTestContext(testName: "delete")
 
         // Setup: Insert 100 records
         let products = (0..<100).map { i in
@@ -731,7 +732,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("ScanItem performance")
     func testScanItemPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "scan_item")
+        let ctx = try await PerfTestContext(testName: "scan_item")
 
         let products = (0..<1000).map { i in
             PerfProduct(
@@ -764,7 +765,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("High cardinality performance - 100 distinct values")
     func testHighCardinalityPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let ctx = try PerfTestContext(testName: "high_cardinality")
+        let ctx = try await PerfTestContext(testName: "high_cardinality")
 
         // 100 distinct categories, 10 products each
         let products = (0..<1000).map { i in

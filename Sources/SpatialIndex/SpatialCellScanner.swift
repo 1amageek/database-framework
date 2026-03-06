@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Spatial
 
 // MARK: - SpatialCellScanner
@@ -78,7 +78,7 @@ public final class SpatialCellScanner: Sendable {
     public func scanCells(
         cellIds: [UInt64],
         limit: Int?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
         var seenIds: Set<Data> = []
@@ -91,13 +91,13 @@ public final class SpatialCellScanner: Sendable {
             let cellSubspace = indexSubspace.subspace(cellTuple)
             let (begin, end) = cellSubspace.range()
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
                 snapshot: true
             )
 
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
                 guard cellSubspace.contains(key) else { break }
 
                 // Efficient Tuple extraction: single unpack, no redundant pack/unpack
@@ -144,7 +144,7 @@ public final class SpatialCellScanner: Sendable {
         radiusMeters: Double,
         limit: Int?,
         coordinateExtractor: @escaping @Sendable (Tuple) -> GeoPoint?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (keys: [(key: Tuple, distance: Double)], limitReason: LimitReason?) {
         var results: [(key: Tuple, distance: Double)] = []
         var seenIds: Set<Data> = []
@@ -157,13 +157,13 @@ public final class SpatialCellScanner: Sendable {
             let cellSubspace = indexSubspace.subspace(cellTuple)
             let (begin, end) = cellSubspace.range()
 
-            let sequence = transaction.getRange(
-                beginSelector: .firstGreaterOrEqual(begin),
-                endSelector: .firstGreaterOrEqual(end),
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
                 snapshot: true
             )
 
-            for try await (key, _) in sequence {
+            for (key, _) in sequence {
                 guard cellSubspace.contains(key) else { break }
 
                 let keyTuple = try cellSubspace.unpack(key)
@@ -201,7 +201,7 @@ public final class SpatialCellScanner: Sendable {
     /// - Returns: Array of primary key tuples
     public func scanSingleCell(
         cellId: UInt64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [Tuple] {
         let cellTuple = Tuple(cellId)
         let cellSubspace = indexSubspace.subspace(cellTuple)
@@ -209,13 +209,13 @@ public final class SpatialCellScanner: Sendable {
 
         var results: [Tuple] = []
 
-        let sequence = transaction.getRange(
-            beginSelector: .firstGreaterOrEqual(begin),
-            endSelector: .firstGreaterOrEqual(end),
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
             snapshot: true
         )
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard cellSubspace.contains(key) else { break }
 
             let keyTuple = try cellSubspace.unpack(key)

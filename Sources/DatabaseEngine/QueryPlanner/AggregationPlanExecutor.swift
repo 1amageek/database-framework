@@ -3,7 +3,7 @@
 
 import Foundation
 import Core
-import FoundationDB
+import StorageKit
 
 /// Errors that can occur during aggregation execution
 public enum AggregationExecutionError: Error, Sendable {

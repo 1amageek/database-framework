@@ -9,7 +9,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 import Synchronization
 import ScalarIndex
 
@@ -44,7 +44,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Not used in online indexer tests
     }
@@ -52,7 +52,7 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Use stable binary encoding for ID string
         let idString = Data(id.pack()).base64EncodedString()
@@ -253,7 +253,7 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Not used
     }
@@ -261,7 +261,7 @@ public final class FailingIndexMaintainer<Item: Persistable>: IndexMaintainer, S
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let count = processedCount.withLock { count in
             count += 1

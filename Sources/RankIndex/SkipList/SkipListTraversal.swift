@@ -6,7 +6,7 @@
 // - FoundationDB Record Layer RankedSet
 
 import Foundation
-import FoundationDB
+import StorageKit
 import Core
 import DatabaseEngine
 
@@ -54,7 +54,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         primaryKey: Tuple,
         currentLevels: Int,
         totalCount: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         // Verify the score exists at Level 0
         let key = try makeKey(score: score, primaryKey: primaryKey, level: 0)
@@ -94,7 +94,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         targetScoreElement: any TupleElement,
         targetPrimaryKey: Tuple,
         startAfter: [UInt8]?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> (span: Int64, positionKey: [UInt8]?) {
         var accumulatedSpan: Int64 = 0
         var lastKey: [UInt8]? = nil
@@ -115,15 +115,15 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         let rangeBegin = levelSubspace.range().begin
 
         // Scan in descending order (high to low scores)
-        let sequence = transaction.getRange(
-            from: rangeBegin,
-            to: rangeEnd,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeBegin),
+            to: .firstGreaterOrEqual(rangeEnd),
             limit: 0,
             reverse: true,
             snapshot: true
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             // Zero-copy: Direct byte comparison
@@ -154,7 +154,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         level: Int,
         targetScore: Score,
         targetPrimaryKey: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> Int64 {
         var accumulatedSpan: Int64 = 0
 
@@ -165,15 +165,15 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         let range = levelSubspace.range()
 
         // Scan in descending order (high to low scores)
-        let sequence = transaction.getRange(
-            from: range.begin,
-            to: range.end,
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(range.begin),
+            to: .firstGreaterOrEqual(range.end),
             limit: 0,
             reverse: true,
             snapshot: true
         )
 
-        for try await (key, value) in sequence {
+        for (key, value) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             // Zero-copy: Direct byte comparison
@@ -208,7 +208,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
     public func getTopK(
         k: Int,
         totalCount: Int64,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(score: Score, primaryKey: Tuple, rank: Int64)] {
         guard k > 0, totalCount > 0 else { return [] }
 
@@ -239,7 +239,7 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
     private func collectElementsFromRank(
         startRank: Int64,
         count: Int,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws -> [(score: Score, primaryKey: Tuple, rank: Int64)] {
         var results: [(score: Score, primaryKey: Tuple, rank: Int64)] = []
 
@@ -247,16 +247,16 @@ public struct SkipListTraversal<Score: Comparable & Numeric & Codable & Sendable
         let levelSubspace = subspaces.leaf
         let range = levelSubspace.range()
 
-        let sequence = transaction.getRange(
-            beginSelector: .lastLessThan(range.end),
-            endSelector: .firstGreaterOrEqual(range.begin),
+        let sequence = try await transaction.collectRange(
+            from: .lastLessThan(range.end),
+            to: .firstGreaterOrEqual(range.begin),
             snapshot: true
         )
 
         var currentRank: Int64 = 0
         var collected = 0
 
-        for try await (key, _) in sequence {
+        for (key, _) in sequence {
             guard levelSubspace.contains(key) else { break }
 
             if currentRank >= startRank {

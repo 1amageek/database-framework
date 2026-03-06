@@ -7,7 +7,7 @@ import Foundation
 import Core
 import Relationship
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Type-erased loader for related items
 ///
@@ -21,7 +21,7 @@ import FoundationDB
 public typealias RelatedItemLoader = @Sendable (
     _ typeName: String,
     _ foreignKey: any Sendable,
-    _ transaction: any TransactionProtocol
+    _ transaction: any Transaction
 ) async throws -> (any Persistable)?
 
 /// Configuration for relationship indexes

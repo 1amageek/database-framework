@@ -6,7 +6,7 @@
 import Foundation
 import Core
 import DatabaseEngine
-import FoundationDB
+import StorageKit
 
 /// Maintainer for scalar (VALUE) indexes
 ///
@@ -100,7 +100,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func updateIndex(
         oldItem: Item?,
         newItem: Item?,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         // Remove old index entries
         if let oldItem = oldItem {
@@ -129,7 +129,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func scanItem(
         _ item: Item,
         id: Tuple,
-        transaction: any TransactionProtocol
+        transaction: any Transaction
     ) async throws {
         let keys = try buildIndexKeys(for: item, id: id)
         let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
@@ -145,7 +145,7 @@ public struct ScalarIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
-    ) async throws -> [FDB.Bytes] {
+    ) async throws -> [Bytes] {
         return try buildIndexKeys(for: item, id: id)
     }
 

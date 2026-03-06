@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -80,15 +81,15 @@ private struct Edge: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any DatabaseProtocol
+    nonisolated(unsafe) let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: GraphIndexMaintainer<Edge>
     let kind: GraphIndexKind<Edge>
     let indexName: String
 
-    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphAlgoEdge_graph") throws {
-        self.database = try FDBClient.openDatabase()
+    init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphAlgoEdge_graph") async throws {
+        self.database = try await FDBStorageEngine.open()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graphalgo", String(testId)).pack())
         self.indexName = indexName
@@ -367,7 +368,7 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("Find shortest path in simple graph")
     func simpleShortestPath() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create a simple graph: A -> B -> C -> D
@@ -393,7 +394,7 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("No path between disconnected nodes")
     func noPathDisconnected() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create disconnected graph: A -> B, C -> D
@@ -417,7 +418,7 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("Shortest path with edge label filter")
     func shortestPathWithEdgeFilter() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // A -> B (follows), A -> C (blocks), C -> D (follows)
@@ -444,7 +445,7 @@ struct ShortestPathFinderIntegrationTests {
 
     @Test("Shortest path with edgeLabel=nil (wildcard) considers ALL edge labels")
     func shortestPathWithWildcardEdgeLabel() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Graph with multiple edge labels:
@@ -491,7 +492,7 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank on simple directed graph")
     func simplePageRank() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Simple graph: A -> B -> C, A -> C
@@ -526,7 +527,7 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank converges")
     func pageRankConverges() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create a cycle: A -> B -> C -> A
@@ -563,7 +564,7 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank with edgeLabel=nil (wildcard) considers ALL edge labels")
     func pageRankWithWildcardEdgeLabel() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Graph with multiple edge labels:
@@ -615,7 +616,7 @@ struct PageRankComputerIntegrationTests {
 
     @Test("PageRank with specific edgeLabel filters correctly")
     func pageRankWithSpecificEdgeLabel() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Graph with multiple edge labels:
@@ -665,7 +666,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Detect obvious communities")
     func detectObviousCommunities() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Two fully connected cliques with one bridge
@@ -720,7 +721,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Detect local community")
     func detectLocalCommunity() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Simple star graph: A connected to B, C, D
@@ -751,7 +752,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Deterministic results with seed")
     func deterministicResultsWithSeed() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create a graph with multiple possible community assignments
@@ -806,7 +807,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Different seeds produce different results")
     func differentSeedsProduceDifferentResults() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create a larger graph where different seeds may lead to different results
@@ -848,7 +849,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Modularity computation")
     func modularityComputation() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Two clearly separated cliques should have high modularity
@@ -900,7 +901,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Three or more communities")
     func threeOrMoreCommunities() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Create 3 separate cliques with no connections between them
@@ -949,7 +950,7 @@ struct CommunityDetectorIntegrationTests {
 
     @Test("Single node isolation")
     func singleNodeIsolation() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Graph with isolated node
@@ -992,7 +993,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Sink node handling")
     func sinkNodeHandling() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Graph with sink node (no outgoing edges)
@@ -1030,7 +1031,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Disconnected graph components")
     func disconnectedGraphComponents() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Two disconnected components
@@ -1076,7 +1077,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Self-loop node")
     func selfLoopNode() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Node with self-loop
@@ -1110,7 +1111,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Convergence threshold validation")
     func convergenceThresholdValidation() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Simple cycle for predictable convergence
@@ -1150,7 +1151,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Max iterations limit")
     func maxIterationsLimit() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Use a directed chain (not a cycle) that takes multiple iterations to converge.
@@ -1191,7 +1192,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Empty graph")
     func emptyGraph() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // No edges
@@ -1211,7 +1212,7 @@ struct PageRankEdgeCaseTests {
 
     @Test("Star graph hub dominance")
     func starGraphHubDominance() async throws {
-        let ctx = try TestContext()
+        let ctx = try await TestContext()
         defer { Task { try? await ctx.cleanup() } }
 
         // Star graph: all nodes point to center hub

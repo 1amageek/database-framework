@@ -3,7 +3,8 @@
 
 import Testing
 import Foundation
-import FoundationDB
+import StorageKit
+import FDBStorage
 import Core
 import Graph
 import TestSupport
@@ -25,8 +26,8 @@ struct IncrementalReasoningTests {
         "http://example.org/\(prefix)-\(UUID().uuidString.prefix(8))"
     }
 
-    private func setupDatabase() throws -> any DatabaseProtocol {
-        try FDBClient.openDatabase()
+    private func setupDatabase() async throws -> any StorageEngine {
+        try await FDBStorageEngine.open()
     }
 
     // MARK: - InferenceChanges Tests
