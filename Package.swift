@@ -44,7 +44,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
         .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        .package(url: "https://github.com/jpsim/Yams.git", from: "5.1.0"),
+        .package(url: "https://github.com/1amageek/swift-yaml.git", branch: "main"),
     ],
     targets: [
         .target(
@@ -261,7 +261,7 @@ let package = Package(
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit"),
-                .product(name: "Yams", package: "Yams"),
+                .product(name: "YAML", package: "swift-yaml"),
             ],
             exclude: ["README.md"]
         ),

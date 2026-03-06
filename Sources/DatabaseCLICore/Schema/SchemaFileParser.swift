@@ -4,7 +4,7 @@
 import Foundation
 import DatabaseEngine
 import Core
-import Yams
+import YAML
 
 public enum SchemaFileParser {
 
@@ -19,7 +19,7 @@ public enum SchemaFileParser {
     /// Parse YAML schema string to Schema.Entity
     public static func parseYAML(_ yamlString: String) throws -> Schema.Entity {
         // Use compose to preserve key order
-        guard let node = try Yams.compose(yaml: yamlString) else {
+        guard let node = try YAML.compose(yaml: yamlString) else {
             throw SchemaFileError.invalidFormat("YAML must be a valid document")
         }
 
