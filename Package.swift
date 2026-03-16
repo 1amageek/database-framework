@@ -300,6 +300,7 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit"),
+                .product(name: "PostgreSQLStorage", package: "storage-kit"),
             ],
             path: "Tests/Shared"
         ),
@@ -556,6 +557,20 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // PostgreSQL backend tests (requires running PostgreSQL, no libfdb_c required)
+        .testTarget(
+            name: "PostgreSQLTests",
+            dependencies: [
+                "DatabaseEngine",
+                "ScalarIndex",
+                "GraphIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "PostgreSQLStorage", package: "storage-kit"),
             ]
         ),
         // FDBite tests (no libfdb_c required)
