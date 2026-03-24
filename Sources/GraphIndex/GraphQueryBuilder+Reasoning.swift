@@ -19,6 +19,7 @@ import Graph
 import DatabaseEngine
 import StorageKit
 
+import OntologyIndex
 // MARK: - EdgeKey (efficient deduplication)
 
 /// Struct for efficient edge deduplication (replaces Set<[String]>).

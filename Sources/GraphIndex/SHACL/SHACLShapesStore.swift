@@ -11,6 +11,7 @@ import Foundation
 import StorageKit
 import Graph
 
+import OntologyIndex
 /// Persistent storage for SHACL shapes graphs in FoundationDB
 ///
 /// **Key Layout**:

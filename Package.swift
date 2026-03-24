@@ -140,6 +140,7 @@ let package = Package(
             dependencies: [
                 .product(name: "QueryIR", package: "database-kit"),
                 "DatabaseEngine",
+                "OntologyIndex",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
@@ -261,6 +262,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 "GraphIndex",
+                "OntologyIndex",
                 "Database",
                 "QueryAST",
                 .product(name: "Core", package: "database-kit"),

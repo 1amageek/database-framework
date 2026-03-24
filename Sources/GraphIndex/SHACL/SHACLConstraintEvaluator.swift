@@ -15,6 +15,7 @@ import Graph
 import Core
 import DatabaseEngine
 
+import OntologyIndex
 /// Evaluates individual SHACL constraints against focus nodes and value nodes
 struct SHACLConstraintEvaluator: Sendable {
 

@@ -17,6 +17,7 @@
 import Foundation
 import Graph
 
+import OntologyIndex
 /// Ontology context for SPARQL property path evaluation
 ///
 /// When provided to SPARQLQueryExecutor, enables ontology-aware evaluation:

@@ -12,6 +12,7 @@ import Graph
 import Core
 import DatabaseEngine
 
+import OntologyIndex
 // MARK: - FDBContext Extension
 
 extension FDBContext {

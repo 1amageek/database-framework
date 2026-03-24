@@ -1,11 +1,17 @@
 /// OntologyCommands - OWL Ontology introspection from OntologyStore
 
 import Foundation
+import OntologyIndex
 import StorageKit
+import OntologyIndex
 import DatabaseEngine
+import OntologyIndex
 import GraphIndex
+import OntologyIndex
 import Core
+import OntologyIndex
 import Graph
+import OntologyIndex
 
 public struct OntologyCommands: Sendable {
 

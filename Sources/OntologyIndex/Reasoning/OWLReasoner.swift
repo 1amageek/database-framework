@@ -134,8 +134,8 @@ public final class OWLReasoner: Sendable {
 
     // MARK: - Properties
 
-    /// The ontology being reasoned over (internal for ReasoningGraphQueryBuilder)
-    let ontology: OWLOntology
+    /// The ontology being reasoned over
+    public let ontology: OWLOntology
     private let ontologyIndex: OntologyIndex
     private let configuration: Configuration
     private let state: Mutex<State>
