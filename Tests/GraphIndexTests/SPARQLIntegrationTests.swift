@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLIntegrationTests.swift
 // End-to-end tests for SPARQL-like query functionality against FoundationDB
 //
@@ -817,3 +818,4 @@ struct SPARQLIntegrationTests {
         }
     }
 }
+#endif

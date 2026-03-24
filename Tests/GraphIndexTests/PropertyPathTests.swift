@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PropertyPathTests.swift
 // GraphIndexTests - Tests for SPARQL Property Paths
 
@@ -453,3 +454,4 @@ struct PropertyPathTests {
         #expect(knows.optional() == .zeroOrOne(.iri("knows")))
     }
 }
+#endif

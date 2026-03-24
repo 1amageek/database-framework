@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // RuntimeStatisticsTests.swift
 // Tests for RuntimeStatistics tracking and feedback
 
@@ -396,3 +397,4 @@ struct CollectedStatisticsProviderTests {
         #expect(provider.estimatedIndexEntries(index: descriptor) == 5000)
     }
 }
+#endif

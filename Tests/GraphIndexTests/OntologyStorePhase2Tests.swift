@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OntologyStorePhase2Tests.swift
 // Phase 2 tests: OntologyStore data integrity fixes
 //
@@ -374,3 +375,4 @@ struct OntologyStorePhase2Tests {
         try await cleanup(context: context)
     }
 }
+#endif

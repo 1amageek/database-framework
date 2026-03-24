@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // CoveringValueBuilderTests.swift
 // Tests for CoveringValueBuilder bitmap encoding/decoding
 
@@ -138,3 +139,4 @@ struct CoveringValueBuilderTests {
         #expect(decoded.isEmpty)
     }
 }
+#endif

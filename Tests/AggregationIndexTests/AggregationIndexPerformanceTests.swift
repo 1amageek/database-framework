@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // AggregationIndexPerformanceTests.swift
 // Performance tests for AggregationIndex maintainers
 
@@ -923,3 +924,4 @@ struct AggregationIndexPerformanceTests {
         }
     }
 }
+#endif

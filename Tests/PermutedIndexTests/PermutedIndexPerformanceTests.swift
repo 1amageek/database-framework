@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PermutedIndexPerformanceTests.swift
 // Performance benchmarks for PermutedIndex operations
 
@@ -675,3 +676,4 @@ struct PermutedIndexPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

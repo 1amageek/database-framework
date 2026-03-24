@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SpatialIndexPerformanceTests.swift
 // Performance benchmarks for SpatialIndex
 
@@ -686,3 +687,4 @@ struct SpatialIndexPerformanceTests {
         }
     }
 }
+#endif

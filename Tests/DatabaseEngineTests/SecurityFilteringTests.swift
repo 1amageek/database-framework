@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SecurityFilteringTests.swift
 // Tests for LIST+GET filtering, index query security, and diagnostic improvements
 
@@ -576,3 +577,4 @@ struct SecurityEdgeCaseTests {
         #expect(error.reason == "Denied")
     }
 }
+#endif

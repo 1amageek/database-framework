@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // VectorIndexPerformanceTests.swift
 // Performance benchmarks for VectorIndex
 
@@ -624,3 +625,4 @@ struct VectorIndexPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // VersionIndexKindTests.swift
 // FDBIndexing Tests - VersionIndexKind tests
 
@@ -107,3 +108,4 @@ struct VersionIndexKindTests {
         #expect(kind1.hashValue == kind2.hashValue)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ScalarIndexBehaviorTests.swift
 // Integration tests for ScalarIndex behavior with FDB
 
@@ -450,3 +451,4 @@ struct ScalarIndexBehaviorTests {
         }
     }
 }
+#endif

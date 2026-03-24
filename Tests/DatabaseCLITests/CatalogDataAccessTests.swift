@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// CatalogDataAccessTests.swift
 /// Tests for CatalogDataAccess catalog resolution (non-FDB tests)
 
@@ -208,3 +209,4 @@ struct CatalogDataAccessTests {
         #expect(names == ["region", "tenant"])
     }
 }
+#endif

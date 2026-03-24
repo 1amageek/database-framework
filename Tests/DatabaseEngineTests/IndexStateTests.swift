@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import DatabaseEngine
@@ -45,3 +46,4 @@ struct IndexStateTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // FullTextIndexBehaviorTests.swift
 // Integration tests for FullTextIndex behavior with FDB
 
@@ -450,3 +451,4 @@ struct FullTextIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Foundation
 import StorageKit
 import TestSupport
@@ -37,3 +38,4 @@ actor FDBTestEnvironment {
         try await FDBTestSetup.shared.withSerializedAccess(operation)
     }
 }
+#endif

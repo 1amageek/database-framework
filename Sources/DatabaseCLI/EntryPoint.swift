@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Foundation
 import ArgumentParser
 import StorageKit
@@ -598,3 +599,18 @@ extension DatabaseCLI {
         }
     }
 }
+#else
+import ArgumentParser
+
+@main
+struct DatabaseCLI: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "database",
+        abstract: "Database CLI (requires FoundationDB trait)"
+    )
+
+    mutating func run() throws {
+        print("Error: This CLI requires FoundationDB. Build with default traits or --traits FoundationDB.")
+    }
+}
+#endif

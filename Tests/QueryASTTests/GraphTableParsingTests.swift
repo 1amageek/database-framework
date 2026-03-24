@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// GraphTableParsingTests.swift
 /// Tests for GRAPH_TABLE SQL parsing (ISO/IEC 9075-16:2023 SQL/PGQ)
 
@@ -1089,3 +1090,4 @@ struct ComplexGraphTableQueryTests {
         // Note: Edge properties are in WHERE clause, not in edge pattern
     }
 }
+#endif

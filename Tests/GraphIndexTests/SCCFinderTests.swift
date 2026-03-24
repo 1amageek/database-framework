@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SCCFinderTests.swift
 // GraphIndexTests - Tests for Strongly Connected Components (SCC) Algorithm
 
@@ -815,3 +816,4 @@ struct GraphEdgeScannerBatchTests {
         #expect(grouped[c] != nil)
     }
 }
+#endif

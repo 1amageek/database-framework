@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ItemStorageTests.swift
 // DatabaseEngine Tests - ItemStorage integration tests (compression + splitting)
 
@@ -513,3 +514,4 @@ struct ItemStorageTests {
         }
     }
 }
+#endif

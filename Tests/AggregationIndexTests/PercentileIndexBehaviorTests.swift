@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PercentileIndexBehaviorTests.swift
 // Integration tests for PercentileIndex behavior with FDB
 
@@ -499,3 +500,4 @@ struct PercentileIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

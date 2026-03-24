@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // VectorIndexBehaviorTests.swift
 // Integration tests for VectorIndex (Flat) behavior with FDB
 
@@ -469,3 +470,4 @@ struct VectorIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

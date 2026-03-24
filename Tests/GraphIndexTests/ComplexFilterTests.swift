@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ComplexFilterTests.swift
 // GraphIndexTests - Tests for complex SPARQL FILTER expressions
 //
@@ -732,3 +733,4 @@ struct ComplexFilterTests {
         #expect(result.count == 3)
     }
 }
+#endif

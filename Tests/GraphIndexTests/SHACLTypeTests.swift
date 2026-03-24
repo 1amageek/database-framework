@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SHACLTypeTests.swift
 // Pure unit tests for SHACL types, PrefixMap, and RDFTerm
 //
@@ -823,3 +824,4 @@ struct SHACLValidationReportTests {
         #expect(grouped["ex:Bob"]?.count == 1)
     }
 }
+#endif

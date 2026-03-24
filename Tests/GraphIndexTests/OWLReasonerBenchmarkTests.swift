@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OWLReasonerBenchmarkTests.swift
 // Performance and correctness tests for OWLReasoner optimizations
 
@@ -611,3 +612,4 @@ struct TableauxReasonerBenchmarkTests {
         #expect(!result.isSatisfiable)
     }
 }
+#endif

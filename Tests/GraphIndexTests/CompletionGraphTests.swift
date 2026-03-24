@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // CompletionGraphTests.swift
 // Tests for CompletionGraph - trail-based state management
 
@@ -535,3 +536,4 @@ struct CompletionGraphPropertyChainTests {
         #expect(graph.successors(of: child, via: "ex:hasGrandparent").contains(grandparent))
     }
 }
+#endif

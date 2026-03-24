@@ -1,6 +1,7 @@
 // FDBTestSetup.swift
 // Shared FDB initialization and serialization for all test targets
 
+#if FOUNDATION_DB
 import Foundation
 import StorageKit
 import FDBStorage
@@ -146,3 +147,4 @@ public actor FDBTestSetup {
         }
     }
 }
+#endif

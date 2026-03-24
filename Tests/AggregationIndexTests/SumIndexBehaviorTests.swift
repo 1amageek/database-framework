@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SumIndexBehaviorTests.swift
 // Integration tests for SumIndex behavior with FDB
 
@@ -564,3 +565,4 @@ struct SumIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphQueryBuilderTests.swift
 // GraphIndex - Tests for GraphQueryBuilder API
 //
@@ -318,3 +319,4 @@ struct GraphQueryBuilderTests {
         }
     }
 }
+#endif

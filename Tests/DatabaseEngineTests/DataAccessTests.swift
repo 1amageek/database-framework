@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // DataAccessTests.swift
 // FDBIndexing Tests - DataAccess tests for nested field extraction
 
@@ -207,3 +208,4 @@ struct DataAccessTests {
         #expect((values[1] as? String) == "94102")
     }
 }
+#endif

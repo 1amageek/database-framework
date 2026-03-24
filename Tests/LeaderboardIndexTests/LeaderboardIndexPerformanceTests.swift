@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // LeaderboardIndexPerformanceTests.swift
 // Performance tests for LeaderboardIndex
 
@@ -720,3 +721,4 @@ struct LeaderboardIndexScaleTests {
         }
     }
 }
+#endif

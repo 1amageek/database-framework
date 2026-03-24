@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OnlineIndexerLargeDataTests.swift
 // Tests for OnlineIndexer with large datasets that exceed transaction limits
 //
@@ -307,3 +308,4 @@ struct OnlineIndexerLargeDataTests {
         try await ctx.cleanup()
     }
 }
+#endif

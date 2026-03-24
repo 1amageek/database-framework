@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OntologyPersistenceTests.swift
 // Integration tests for ontology save/load round-trip
 //
@@ -501,3 +502,4 @@ struct OntologyPersistenceTests {
         try await cleanup(context: context)
     }
 }
+#endif

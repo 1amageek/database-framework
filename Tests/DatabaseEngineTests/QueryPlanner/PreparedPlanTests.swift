@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PreparedPlanTests.swift
 // Tests for PreparedPlan, PlanCache, and QueryFingerprint
 
@@ -339,3 +340,4 @@ struct ParameterBindingErrorTests {
         #expect(countError.description.contains("1"))
     }
 }
+#endif

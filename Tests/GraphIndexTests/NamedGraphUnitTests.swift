@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // NamedGraphUnitTests.swift
 // Unit tests for Named Graph (Quad) support
 //
@@ -402,3 +403,4 @@ struct GraphIndexKindNamedGraphTests {
         #expect(a != b)
     }
 }
+#endif

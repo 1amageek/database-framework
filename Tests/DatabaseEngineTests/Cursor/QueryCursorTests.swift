@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // QueryCursorTests.swift
 // DatabaseEngine Tests - QueryCursor integration tests
 //
@@ -335,3 +336,4 @@ struct QueryCursorTests {
         }
     }
 }
+#endif

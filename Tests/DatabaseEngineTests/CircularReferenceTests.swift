@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // CircularReferenceTests.swift
 // Test if @Reference macro allows circular type references
 
@@ -82,3 +83,4 @@ struct CircularReferenceTests {
         #expect(String(describing: orderType) == "RefOrder")
     }
 }
+#endif

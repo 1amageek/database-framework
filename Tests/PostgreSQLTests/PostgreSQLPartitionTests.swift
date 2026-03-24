@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLPartitionTests.swift
 // Dynamic Directory (Partitioned Directory) tests against PostgreSQL backend
 //
@@ -375,3 +376,4 @@ struct PostgreSQLPartitionTests {
         }
     }
 }
+#endif

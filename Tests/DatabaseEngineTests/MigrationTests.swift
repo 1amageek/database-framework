@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -306,3 +307,4 @@ struct MigrationTests {
         }
     }
 }
+#endif

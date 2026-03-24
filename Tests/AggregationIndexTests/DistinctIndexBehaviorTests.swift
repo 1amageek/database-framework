@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // DistinctIndexBehaviorTests.swift
 // Integration tests for DistinctIndex behavior with FDB
 
@@ -423,3 +424,4 @@ struct DistinctIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

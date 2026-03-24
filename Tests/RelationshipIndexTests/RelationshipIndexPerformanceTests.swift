@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // RelationshipIndexPerformanceTests.swift
 // RelationshipIndex Tests - Performance benchmarks for relationship operations
 
@@ -605,3 +606,4 @@ struct RelationshipIndexPerformanceTests {
         #expect(result.durationMs < 15000, "Bidirectional traversal should complete in reasonable time")
     }
 }
+#endif

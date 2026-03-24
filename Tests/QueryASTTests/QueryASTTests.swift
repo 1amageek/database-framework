@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// QueryASTTests.swift
 /// Tests for the QueryAST module
 
@@ -912,3 +913,4 @@ struct SPARQLParserTests {
         }
     }
 }
+#endif

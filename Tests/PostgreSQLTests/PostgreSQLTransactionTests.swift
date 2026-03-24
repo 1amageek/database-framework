@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLTransactionTests.swift
 // Transaction semantics tests against PostgreSQL backend
 
@@ -246,3 +247,4 @@ struct PostgreSQLTransactionTests {
         }
     }
 }
+#endif

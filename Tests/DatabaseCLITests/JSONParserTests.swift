@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 @testable import DatabaseCLICore
 
@@ -74,3 +75,4 @@ struct JSONParserTests {
         #expect(restored["num"] as? Int == 42)
     }
 }
+#endif

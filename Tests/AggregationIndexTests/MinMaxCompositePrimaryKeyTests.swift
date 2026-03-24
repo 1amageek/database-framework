@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -249,3 +250,4 @@ struct MinMaxCompositePrimaryKeyTests {
         #expect(euItemId[1] as? String == "o1")
     }
 }
+#endif

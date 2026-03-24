@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // FullTextIndexPerformanceTests.swift
 // Performance benchmarks for FullTextIndex
 
@@ -749,3 +750,4 @@ struct FullTextIndexPerformanceTests {
         }
     }
 }
+#endif

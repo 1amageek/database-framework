@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -717,3 +718,4 @@ struct MinMaxEdgeCaseTests {
         #expect(maxsByRegion["EU"] == 1599)
     }
 }
+#endif

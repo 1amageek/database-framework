@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SHACLValidationTests.swift
 // End-to-end integration tests for SHACL validation against FoundationDB
 //
@@ -1523,3 +1524,4 @@ struct SHACLValidationTests {
         try await cleanup(container: container)
     }
 }
+#endif

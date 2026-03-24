@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import Core
@@ -187,3 +188,4 @@ struct RangeTreeBenchmark {
         Swift.print("")
     }
 }
+#endif

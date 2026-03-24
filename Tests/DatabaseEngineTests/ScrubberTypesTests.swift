@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 @testable import DatabaseEngine
@@ -332,3 +333,4 @@ struct ScrubberTypesTests {
         #expect(error.description == "Invalid item type: Unknown")
     }
 }
+#endif

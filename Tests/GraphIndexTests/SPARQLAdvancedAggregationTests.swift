@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLAdvancedAggregationTests.swift
 // GraphIndexTests - Tests for advanced SPARQL GROUP BY/HAVING functionality
 //
@@ -770,3 +771,4 @@ struct SPARQLAdvancedAggregationTests {
         }
     }
 }
+#endif

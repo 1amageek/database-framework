@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 @testable import DatabaseCLICore
 
@@ -119,3 +120,4 @@ struct TokenizerTests {
         #expect(tokens == ["insert", "Order", #"{"total": 100}"#, "--partition", "tenantId=t_123"])
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// MultiJoinTests.swift
 /// Comprehensive tests for multi-table JOIN operations
 ///
@@ -734,3 +735,4 @@ struct MultiJoinTests {
         }
     }
 }
+#endif

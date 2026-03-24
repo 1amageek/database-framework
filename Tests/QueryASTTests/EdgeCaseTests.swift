@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// EdgeCaseTests.swift
 /// Comprehensive tests for query edge cases and robustness
 ///
@@ -658,3 +659,4 @@ struct EdgeCaseTests {
         }
     }
 }
+#endif

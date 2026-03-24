@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TransactionAdvancedTests.swift
 // Advanced transaction tests: edge cases, concurrency, error handling
 
@@ -536,3 +537,4 @@ struct TransactionAdvancedTests {
         #expect(count == 5000)
     }
 }
+#endif

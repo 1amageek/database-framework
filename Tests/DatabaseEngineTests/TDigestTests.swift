@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TDigestTests.swift
 // Tests for TDigest streaming quantile estimation
 
@@ -390,3 +391,4 @@ struct SeededRandomNumberGenerator: RandomNumberGenerator {
         return state
     }
 }
+#endif

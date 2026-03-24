@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLDebugTest.swift
 /// Debug test to trace SPARQL property binding
 
@@ -206,3 +207,4 @@ struct SPARQLDebugTest {
         #expect(propertiesFound)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OntologyIRIValidationTests.swift
 // Integration tests for OntologyIRIValidator
 //
@@ -538,3 +539,4 @@ struct OntologyIRIValidationTests {
         try await context.ontology.validateSchema(schema, ontologyIRI: Self.ontologyIRI)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphIndexPerformanceTests.swift
 // Performance benchmarks for GraphIndex operations
 
@@ -666,3 +667,4 @@ struct GraphIndexPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SpatialIndexBehaviorTests.swift
 // Integration tests for SpatialIndex behavior with FDB
 
@@ -506,3 +507,4 @@ struct SpatialIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

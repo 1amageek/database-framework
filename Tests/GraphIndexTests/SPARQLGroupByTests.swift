@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLGroupByTests.swift
 // GraphIndexTests - Tests for SPARQL GROUP BY functionality
 
@@ -784,3 +785,4 @@ struct SPARQLGroupByTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphAlgorithmTests.swift
 // Tests for Graph algorithms: Shortest Path, Path Pattern, PageRank, Community Detection
 
@@ -1248,3 +1249,4 @@ struct PageRankEdgeCaseTests {
         #expect(hubScore > spokeScore * 2)  // Hub should be much higher
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // VersionIndexPerformanceTests.swift
 // Performance tests for VersionIndex maintainer
 
@@ -718,3 +719,4 @@ struct VersionIndexPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

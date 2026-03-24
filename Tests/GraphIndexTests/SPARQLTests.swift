@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLTests.swift
 // Unit and integration tests for SPARQL-like query functionality
 
@@ -987,3 +988,4 @@ struct ExpressionEvaluatorVariableTests {
         #expect(result == true)
     }
 }
+#endif

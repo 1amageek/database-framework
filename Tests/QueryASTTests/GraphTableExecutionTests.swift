@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// GraphTableExecutionTests.swift
 /// Comprehensive tests for SQL/PGQ GRAPH_TABLE execution patterns
 ///
@@ -642,3 +643,4 @@ struct GraphTableExecutionTests {
         #expect(errors.contains(.emptyPattern))
     }
 }
+#endif

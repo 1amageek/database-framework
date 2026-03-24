@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // BitmapIndexPerformanceTests.swift
 // Performance tests for BitmapIndex
 
@@ -806,3 +807,4 @@ struct BitmapIndexFDBPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

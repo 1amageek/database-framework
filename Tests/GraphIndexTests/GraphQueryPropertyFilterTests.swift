@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphQueryPropertyFilterTests.swift
 // Tests for GraphQuery property filtering integration
 
@@ -237,3 +238,4 @@ struct GraphQueryPropertyFilterTests {
         #expect(results.count == 2)
     }
 }
+#endif

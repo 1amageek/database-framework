@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ValueAccessLayerTests.swift
 // Tests for the 3-layer value access architecture:
 // Layer 1: FieldComparison.evaluate(on:) / SortDescriptor.orderedComparison
@@ -821,3 +822,4 @@ struct OptionalStringPredicateTests {
         }
     }
 }
+#endif

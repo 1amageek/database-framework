@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -660,3 +661,4 @@ struct UniquenessEnforcementTests {
         #expect(index.isUnique == true)
     }
 }
+#endif

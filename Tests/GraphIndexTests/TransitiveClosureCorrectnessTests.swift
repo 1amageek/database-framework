@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TransitiveClosureCorrectnessTests.swift
 // Tests for the Warshall-based transitive closure in ReasoningGraphQueryBuilder.
 //
@@ -1115,3 +1116,4 @@ struct TransitiveClosureCorrectnessTests {
         }
     }
 }
+#endif

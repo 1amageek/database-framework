@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import Core
@@ -266,3 +267,4 @@ struct SerializationBenchmark {
         Swift.print("")
     }
 }
+#endif

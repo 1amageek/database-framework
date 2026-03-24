@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TableauxReasonerTests.swift
 // Comprehensive tests for SHOIN(D) Tableaux reasoner implementation
 
@@ -1350,3 +1351,4 @@ struct TableauxReasonerRoleConstraintTests {
         #expect(!result.isSatisfiable)
     }
 }
+#endif

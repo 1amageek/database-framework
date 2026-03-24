@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -260,3 +261,4 @@ struct MinMaxBatchAPITests {
         #expect(elapsed < 0.1, "getAllMins should complete in < 100ms")
     }
 }
+#endif

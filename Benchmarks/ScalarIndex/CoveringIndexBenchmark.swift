@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import Core
@@ -219,3 +220,4 @@ struct CoveringIndexBenchmark {
         Swift.print("\n📝 Future optimization: Batch point queries to reduce transaction overhead\n")
     }
 }
+#endif

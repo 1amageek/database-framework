@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Foundation
 import Testing
 @testable import DatabaseEngine
@@ -255,3 +256,4 @@ struct AnyIndexDescriptorCodableTests {
         #expect(index.storedFieldNames == ["title", "content"])
     }
 }
+#endif

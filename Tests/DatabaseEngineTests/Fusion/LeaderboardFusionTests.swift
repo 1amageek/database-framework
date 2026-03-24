@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // LeaderboardFusionTests.swift
 // Tests for LeaderboardIndex Fusion query (Leaderboard)
 
@@ -430,3 +431,4 @@ struct LeaderboardErrorTests {
         #expect(error.description.contains("LeaderboardTestScore"))
     }
 }
+#endif

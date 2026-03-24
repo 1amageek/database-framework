@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // VersionIndexBehaviorTests.swift
 // Integration tests for VersionIndex behavior with FDB
 
@@ -457,3 +458,4 @@ struct VersionIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

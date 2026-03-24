@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // MaxIndexBehaviorTests.swift
 // Integration tests for MaxIndex behavior with FDB
 
@@ -410,3 +411,4 @@ struct MaxIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

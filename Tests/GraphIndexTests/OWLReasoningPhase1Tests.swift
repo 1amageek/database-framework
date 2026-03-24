@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OWLReasoningPhase1Tests.swift
 // Tests for OWL 2 RL Reasoning Phase 1 components
 //
@@ -611,3 +612,4 @@ struct InferenceStatisticsTests {
         #expect(stats.triplesExamined == 1000)
     }
 }
+#endif

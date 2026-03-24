@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // LiteralSPARQLTests.swift
 // Tests for Literal.toSPARQLFieldValue() - SPARQL-aware Literal → FieldValue conversion
 
@@ -258,3 +259,4 @@ struct LiteralSPARQLTests {
         }
     }
 }
+#endif

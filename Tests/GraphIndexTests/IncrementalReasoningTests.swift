@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // IncrementalReasoningTests.swift
 // GraphIndexTests - Tests for Incremental Reasoning (DRed Algorithm)
 
@@ -468,3 +469,4 @@ struct IncrementalReasoningTests {
         #expect(ruleSet.count == 12)
     }
 }
+#endif

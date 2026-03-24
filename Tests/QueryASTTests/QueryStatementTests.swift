@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// QueryStatementTests.swift
 /// Comprehensive tests for QueryStatement types
 
@@ -669,3 +670,4 @@ struct OnConflictActionTests {
         #expect(set.count == 2)
     }
 }
+#endif

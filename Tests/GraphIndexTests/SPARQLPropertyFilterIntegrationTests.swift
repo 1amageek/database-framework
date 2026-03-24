@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLPropertyFilterIntegrationTests.swift
 /// Integration tests for SPARQL property filter pushdown optimization
 
@@ -499,3 +500,4 @@ struct SPARQLPropertyFilterIntegrationTests {
         #expect(binding["?target"] == .string(bob))
     }
 }
+#endif

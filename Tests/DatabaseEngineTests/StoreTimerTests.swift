@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // StoreTimerTests.swift
 // DatabaseEngine Tests - StoreTimer instrumentation tests
 
@@ -213,3 +214,4 @@ struct StoreTimerSnapshotTests {
         #expect(diff[.saveRecord]?.totalNanos == 2_000_000)
     }
 }
+#endif

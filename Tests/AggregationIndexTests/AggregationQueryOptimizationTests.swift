@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // AggregationQueryOptimizationTests.swift
 // Integration tests for AggregationQuery index-backed execution
 
@@ -627,3 +628,4 @@ struct AggregationQueryOptimizationTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // NamedGraphKeyTests.swift
 // Key generation tests for Named Graph (Quad) support
 //
@@ -518,3 +519,4 @@ struct NamedGraphBackwardCompatibilityKeyTests {
         try await ctx.cleanup()
     }
 }
+#endif

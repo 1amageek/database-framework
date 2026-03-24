@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -295,3 +296,4 @@ struct MinMaxAggregationQueryTests {
         #expect(minByRegion["EU"] == 5, "EU min quantity should be 5")
     }
 }
+#endif

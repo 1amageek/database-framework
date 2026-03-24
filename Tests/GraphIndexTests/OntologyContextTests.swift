@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OntologyContextTests.swift
 // Tests for OntologyContext — the bridge between SPARQL executor and OWL ontology.
 
@@ -201,3 +202,4 @@ struct OntologyContextTests {
         #expect(subsOfP3 == Set(["ex:p1", "ex:p2"]))
     }
 }
+#endif

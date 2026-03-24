@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // MinIndexBehaviorTests.swift
 // Integration tests for MinIndex behavior with FDB
 
@@ -410,3 +411,4 @@ struct MinIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

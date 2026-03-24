@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import Core
@@ -249,3 +250,4 @@ struct MinMaxBatchBenchmark {
         Swift.print("\n📝 Combining aggregations in single query reduces overhead\n")
     }
 }
+#endif

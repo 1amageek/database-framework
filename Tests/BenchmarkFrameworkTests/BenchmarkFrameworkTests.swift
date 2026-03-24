@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 @testable import BenchmarkFramework
@@ -312,3 +313,4 @@ struct BenchmarkFrameworkTests {
         #expect(loaded.scenarios[0].name == original.scenarios[0].name)
     }
 }
+#endif

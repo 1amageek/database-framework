@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // BM25ScoringTests.swift
 // Tests for BM25 scoring functionality in FullTextIndex
 
@@ -471,3 +472,4 @@ struct BM25IntegrationTests {
         try await ctx.cleanup()
     }
 }
+#endif

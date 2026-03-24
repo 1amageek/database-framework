@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PermutedIndexBehaviorTests.swift
 // Integration tests for PermutedIndex behavior with FDB
 
@@ -548,3 +549,4 @@ struct PermutedIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

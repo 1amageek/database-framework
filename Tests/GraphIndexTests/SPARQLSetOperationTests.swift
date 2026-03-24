@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLSetOperationTests.swift
 // GraphIndexTests - Tests for SPARQL set operations (UNION, MINUS)
 //
@@ -791,3 +792,4 @@ struct SPARQLSetOperationTests {
         }
     }
 }
+#endif

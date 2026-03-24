@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // MutualOnlineIndexerTests.swift
 // Tests for MutualOnlineIndexer and SymmetricIndexBuilder implementations
 //
@@ -545,3 +546,4 @@ struct MutualIndexerPerformanceTests {
         #expect(transactionCount < totalItems)  // Much fewer than per-item transactions
     }
 }
+#endif

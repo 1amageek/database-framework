@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ExpansionRulesTests.swift
 // Tests for Tableaux expansion rules
 
@@ -572,3 +573,4 @@ struct ExpansionRulesOneOfTests {
         #expect(result.alternatives?.count == 2)
     }
 }
+#endif

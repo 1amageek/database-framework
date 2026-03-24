@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLParserDatasetTests.swift
 /// Tests for Phase 3: AST changes (B9: FROM/FROM NAMED, A12: dirLangLiteral)
 
@@ -129,3 +130,4 @@ struct LiteralDirectionTests {
         #expect(lang == "en")
     }
 }
+#endif

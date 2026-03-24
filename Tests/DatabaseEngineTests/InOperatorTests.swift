@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // InOperatorTests.swift
 // Tests for IN-Union and IN-Join plan operators
 
@@ -477,3 +478,4 @@ struct InOpTestUser: Persistable {
         return "\(keyPath)"
     }
 }
+#endif

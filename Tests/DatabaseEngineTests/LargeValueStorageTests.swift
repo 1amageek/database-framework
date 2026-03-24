@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // LargeValueStorageTests.swift
 // Tests for large value storage (>90KB) with automatic splitting
 
@@ -569,3 +570,4 @@ struct LargeValueStorageTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLFunctionDebugTest.swift
 // Debug test for SPARQL function integration
 
@@ -134,3 +135,4 @@ struct SPARQLFunctionDebugTest {
         #expect(result.count == 1)
     }
 }
+#endif

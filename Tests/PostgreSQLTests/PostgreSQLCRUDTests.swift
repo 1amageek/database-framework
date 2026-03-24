@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLCRUDTests.swift
 // Basic CRUD round-trip tests against PostgreSQL backend
 
@@ -288,3 +289,4 @@ struct PostgreSQLCRUDTests {
         }
     }
 }
+#endif

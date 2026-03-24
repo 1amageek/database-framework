@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import StorageKit
 import FDBStorage
@@ -48,3 +49,4 @@ struct TransactionBasicTests {
         #expect(results.count == 3)
     }
 }
+#endif

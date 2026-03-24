@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -239,3 +240,4 @@ private struct TestError: Error, CustomStringConvertible {
 
     var description: String { message }
 }
+#endif

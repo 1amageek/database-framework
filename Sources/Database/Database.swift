@@ -11,7 +11,9 @@
 
 // storage-kit (storage engine abstraction)
 @_exported import StorageKit
+#if FOUNDATION_DB
 @_exported import FDBStorage
+#endif
 
 // database-framework (server-side execution layer)
 @_exported import DatabaseEngine
@@ -27,5 +29,6 @@
 @_exported import BitmapIndex
 @_exported import LeaderboardIndex
 @_exported import RelationshipIndex
+@_exported import OntologyIndex
 @_exported import QueryIR
 @_exported import QueryAST

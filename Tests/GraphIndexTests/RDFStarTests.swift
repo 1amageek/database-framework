@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // RDFStarTests.swift
 // Tests for RDF-star implementation: QuotedTripleEncoding, ExecutionTerm, ExpressionEvaluator
 
@@ -724,3 +725,4 @@ struct RDFStarSPARQLIntegrationTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// GraphTableExecutorTests.swift
 /// Integration tests for SQL/PGQ GraphTableExecutor
 
@@ -469,3 +470,4 @@ struct GraphTableExecutorTests {
         }
     }
 }
+#endif

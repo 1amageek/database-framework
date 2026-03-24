@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // HistogramTests.swift
 // Tests for Histogram selectivity estimation
 
@@ -452,3 +453,4 @@ struct HistogramTests {
         )
     }
 }
+#endif

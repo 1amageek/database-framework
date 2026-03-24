@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLSPARQLTests.swift
 // SPARQL query tests against PostgreSQL backend
 //
@@ -272,3 +273,4 @@ struct PostgreSQLSPARQLTests {
         }
     }
 }
+#endif

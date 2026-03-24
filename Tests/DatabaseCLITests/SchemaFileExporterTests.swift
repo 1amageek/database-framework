@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SchemaFileExporterTests.swift
 // Tests for Schema.Entity to YAML export
 
@@ -314,3 +315,4 @@ struct SchemaFileExporterTests {
         #expect(yaml.contains("score: int64#leaderboard(name:global_ranking)"))
     }
 }
+#endif

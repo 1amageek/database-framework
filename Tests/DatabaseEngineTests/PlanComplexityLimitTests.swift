@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PlanComplexityLimitTests.swift
 // Tests for PlanComplexityLimit and QueryPlannerConfiguration
 
@@ -270,3 +271,4 @@ struct PlanComplexityLimitTests {
         }
     }
 }
+#endif

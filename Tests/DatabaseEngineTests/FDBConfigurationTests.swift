@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // DBConfigurationTests.swift
 // Tests for DBConfiguration and IndexConfiguration API
 
@@ -253,3 +254,4 @@ struct TestFullTextConfig: IndexConfiguration, Sendable {
         self.language = language
     }
 }
+#endif

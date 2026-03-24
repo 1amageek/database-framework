@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // IndexConfigurationTests.swift
 // FDBIndexingTests - Tests for IndexConfiguration propagation and application
 
@@ -392,3 +393,4 @@ final class MockMultiConfigIndexMaintainer<Item: Persistable>: IndexMaintainer, 
         // No-op for testing
     }
 }
+#endif

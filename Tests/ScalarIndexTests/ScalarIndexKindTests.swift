@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ScalarIndexKindTests.swift
 // FDBIndexing Tests - ScalarIndexKind tests
 
@@ -151,3 +152,4 @@ struct ScalarIndexKindTests {
         #expect(kind1.hashValue == kind2.hashValue)
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PlanExecutorTests.swift
 // Tests for PlanExecutor predicate evaluation, especially .in and isNil/isNotNil
 
@@ -336,3 +337,4 @@ struct PredicateEvaluationTests {
         }
     }
 }
+#endif

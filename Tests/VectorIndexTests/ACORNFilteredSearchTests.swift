@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ACORNFilteredSearchTests.swift
 // Tests for ACORN filtered vector search functionality
 
@@ -539,3 +540,4 @@ struct ACORNFilteredSearchTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Foundation
 import StorageKit
 import FDBStorage
@@ -17,3 +18,4 @@ public enum ClusterConnection {
         return (database, clusterFile)
     }
 }
+#endif

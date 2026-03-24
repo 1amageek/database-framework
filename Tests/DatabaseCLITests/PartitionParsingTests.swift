@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 @testable import DatabaseCLICore
 
@@ -64,3 +65,4 @@ struct PartitionParsingTests {
         #expect(result == ["find", "--partition"])
     }
 }
+#endif

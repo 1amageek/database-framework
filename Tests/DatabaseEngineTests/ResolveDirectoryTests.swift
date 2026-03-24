@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -256,3 +257,4 @@ struct ResolveDirectoryTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// FilterAnalyzerTests.swift
 /// Unit tests for SPARQL filter analysis and pushdown classification
 
@@ -296,3 +297,4 @@ struct FilterAnalyzerTests {
         #expect(remaining == nil)
     }
 }
+#endif

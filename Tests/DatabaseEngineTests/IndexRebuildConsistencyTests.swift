@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // IndexRebuildConsistencyTests.swift
 // Verifies that all IndexKind implementations produce identical subspace layouts
 // between save-time and rebuild-time, and that rebuilt indexes remain queryable.
@@ -546,3 +547,4 @@ struct IndexRebuildConsistencyTests {
         }
     }
 }
+#endif

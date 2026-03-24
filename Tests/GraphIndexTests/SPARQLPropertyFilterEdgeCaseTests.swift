@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLPropertyFilterEdgeCaseTests.swift
 /// Edge case and complex scenario tests for SPARQL property filtering
 
@@ -450,3 +451,4 @@ struct SPARQLPropertyFilterEdgeCaseTests {
         #expect(result.bindings.isEmpty)
     }
 }
+#endif

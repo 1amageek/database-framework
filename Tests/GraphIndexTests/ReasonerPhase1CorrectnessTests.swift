@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // ReasonerPhase1CorrectnessTests.swift
 // Phase 1 correctness tests for OWL Reasoner bug fixes:
 // - B-1: Nominal merge prohibition (UNA violation)
@@ -456,3 +457,4 @@ extension MergeResult: Equatable {
         }
     }
 }
+#endif

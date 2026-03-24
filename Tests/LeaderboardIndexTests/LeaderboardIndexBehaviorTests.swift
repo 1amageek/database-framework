@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // LeaderboardIndexBehaviorTests.swift
 // Comprehensive tests for LeaderboardIndex behavior with FDB
 
@@ -789,3 +790,4 @@ struct LeaderboardIndexEdgeCasesTests {
         }
     }
 }
+#endif

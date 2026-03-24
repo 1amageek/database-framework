@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLScalarIndexTests.swift
 // Scalar index tests against PostgreSQL backend
 
@@ -280,3 +281,4 @@ struct PostgreSQLScalarIndexTests {
         }
     }
 }
+#endif

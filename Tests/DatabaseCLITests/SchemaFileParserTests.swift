@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SchemaFileParserTests.swift
 // Tests for YAML schema parsing
 
@@ -378,3 +379,4 @@ struct SchemaFileParserTests {
         }
     }
 }
+#endif

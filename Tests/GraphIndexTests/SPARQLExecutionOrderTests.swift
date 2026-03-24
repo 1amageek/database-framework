@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLExecutionOrderTests.swift
 // GraphIndexTests - Tests for W3C SPARQL 1.1 Section 15 execution order
 //
@@ -479,3 +480,4 @@ struct SPARQLExecutionOrderTests {
         #expect(result.bindings.first?.string("?friend") == "Bob")
     }
 }
+#endif

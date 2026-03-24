@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLParserErrorTests.swift
 /// Tests for error handling and malformed input
 
@@ -338,3 +339,4 @@ struct ParserRobustnessTests {
         }
     }
 }
+#endif

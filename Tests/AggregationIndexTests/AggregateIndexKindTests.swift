@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // AggregateIndexKindTests.swift
 // FDBIndexing Tests - Aggregate index (Count, Sum, Min, Max) tests
 
@@ -227,3 +228,4 @@ struct MaxIndexKindTests {
         }
     }
 }
+#endif

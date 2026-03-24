@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OnlineIndexerAtomicityTests.swift
 // Tests for OnlineIndexer progress atomicity and resume behavior
 //
@@ -267,3 +268,4 @@ struct OnlineIndexerAtomicityTests {
         }
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SpatialAdvancedQueryTests.swift
 // Tests for Distance calculation, KNN, and Polygon validation features
 
@@ -572,3 +573,4 @@ struct KNNValidationTests {
         #expect(incompleteResult.limitReason != nil)
     }
 }
+#endif

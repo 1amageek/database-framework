@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphPropertyScannerTests.swift
 // Tests for GraphPropertyScanner - property-aware edge scanning
 
@@ -353,3 +354,4 @@ struct GraphPropertyScannerTests {
         }
     }
 }
+#endif

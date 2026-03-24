@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // PropertyPathAdvancedTests.swift
 // GraphIndexTests - Advanced tests for SPARQL Property Paths
 //
@@ -1015,3 +1016,4 @@ struct PropertyPathAdvancedTests {
         #expect(!result.isEmpty, "A should reach C via A→B→C")
     }
 }
+#endif

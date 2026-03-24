@@ -20,6 +20,7 @@ let package = Package(
         .library(name: "VersionIndex", targets: ["VersionIndex"]),
         .library(name: "BitmapIndex", targets: ["BitmapIndex"]),
         .library(name: "LeaderboardIndex", targets: ["LeaderboardIndex"]),
+        .library(name: "OntologyIndex", targets: ["OntologyIndex"]),
         .library(name: "RelationshipIndex", targets: ["RelationshipIndex"]),
         // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
@@ -33,12 +34,20 @@ let package = Package(
     traits: [
         .default(enabledTraits: ["FoundationDB"]),
         .trait(name: "FoundationDB"),
-        .trait(name: "FDBite"),
+        .trait(name: "SQLite"),
+        .trait(name: "PostgreSQL"),
     ],
     dependencies: [
         .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0222.1"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
-        .package(url: "https://github.com/1amageek/storage-kit.git", branch: "main"),
+        .package(
+            path: "/Users/1amageek/Desktop/storage-kit",
+            traits: [
+                .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
+                .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),
+                .trait(name: "PostgreSQL", condition: .when(traits: ["PostgreSQL"])),
+            ]
+        ),
         .package(url: "https://github.com/apple/swift-log.git", from: "1.7.0"),
         .package(url: "https://github.com/apple/swift-metrics.git", from: "2.7.0"),
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
@@ -54,13 +63,17 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDB"])),
                 .product(name: "Logging", package: "swift-log"),
                 .product(name: "Metrics", package: "swift-metrics"),
                 .product(name: "Crypto", package: "swift-crypto"),
                 .product(name: "Configuration", package: "swift-configuration"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md"],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ]
         ),
         .target(
             name: "ScalarIndex",
@@ -171,6 +184,15 @@ let package = Package(
             exclude: ["README.md"]
         ),
         .target(
+            name: "OntologyIndex",
+            dependencies: [
+                "DatabaseEngine",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+            ]
+        ),
+        .target(
             name: "RelationshipIndex",
             dependencies: [
                 "DatabaseEngine",
@@ -210,10 +232,17 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
+                "OntologyIndex",
                 .product(name: "QueryIR", package: "database-kit"),
                 "QueryAST",
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDB"])),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md"],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ]
         ),
         // FDBite: On-device database facade (SQLite backend)
         .target(
@@ -235,6 +264,7 @@ let package = Package(
                 "BitmapIndex",
                 "LeaderboardIndex",
                 "RelationshipIndex",
+                "OntologyIndex",
                 .product(name: "QueryIR", package: "database-kit"),
                 "QueryAST",
                 .product(name: "SQLiteStorage", package: "storage-kit"),
@@ -260,10 +290,14 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDB"])),
                 .product(name: "YAML", package: "swift-yaml"),
             ],
-            exclude: ["README.md"]
+            exclude: ["README.md"],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ]
         ),
         // DatabaseServer - Remote client endpoint library
         .target(
@@ -286,6 +320,9 @@ let package = Package(
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
             ],
             exclude: ["README.md"],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -299,10 +336,16 @@ let package = Package(
                 "ScalarIndex",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit"),
-                .product(name: "PostgreSQLStorage", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDB"])),
+                .product(name: "PostgreSQLStorage", package: "storage-kit",
+                         condition: .when(traits: ["PostgreSQL"])),
             ],
-            path: "Tests/Shared"
+            path: "Tests/Shared",
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
+            ]
         ),
         // Core engine tests
         .testTarget(
@@ -322,6 +365,9 @@ let package = Package(
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "Logging", package: "swift-log"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -334,6 +380,9 @@ let package = Package(
                 "ScalarIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -348,6 +397,9 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -364,6 +416,9 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -377,6 +432,9 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -389,6 +447,9 @@ let package = Package(
                 "VersionIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -404,6 +465,9 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Spatial", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -417,6 +481,9 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -432,6 +499,9 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -446,6 +516,9 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -458,6 +531,9 @@ let package = Package(
                 "BitmapIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -472,6 +548,9 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -484,6 +563,9 @@ let package = Package(
                 "DatabaseCLICore",
                 "Database",
                 "TestSupport",
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -498,6 +580,9 @@ let package = Package(
                 "DatabaseEngine",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -522,6 +607,9 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
             ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -534,6 +622,9 @@ let package = Package(
                 "BenchmarkFramework",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
             ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
@@ -554,6 +645,9 @@ let package = Package(
                 .product(name: "Rank", package: "database-kit"),
             ],
             path: "Benchmarks",
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
@@ -570,7 +664,11 @@ let package = Package(
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "PostgreSQLStorage", package: "storage-kit"),
+                .product(name: "PostgreSQLStorage", package: "storage-kit",
+                         condition: .when(traits: ["PostgreSQL"])),
+            ],
+            swiftSettings: [
+                .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
         // FDBite tests (no libfdb_c required)

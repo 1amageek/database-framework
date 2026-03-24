@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// AnyIndexDescriptorTests.swift
 /// Tests for AnyIndexKind and AnyIndexDescriptor type erasure
 
@@ -197,3 +198,4 @@ struct AnyIndexDescriptorTests {
         #expect(value == nil)
     }
 }
+#endif

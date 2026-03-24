@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 /// SPARQLParser12Tests.swift
 /// Tests for Phase 4: SPARQL 1.2 features (A4, A5, A6, A7, A8-A11)
 
@@ -881,3 +882,4 @@ struct LateralJoinTests {
         #expect(required.contains("name"))
     }
 }
+#endif

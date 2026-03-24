@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // FormatVersionTests.swift
 // Tests for FormatVersion and FormatVersionManager
 
@@ -165,3 +166,4 @@ struct FormatVersionTests {
         #expect(description.contains("Test failure"))
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // GraphIndexBehaviorTests.swift
 // Integration tests for GraphIndex behavior with FDB
 
@@ -527,3 +528,4 @@ struct GraphIndexHexastoreTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,6 +1,8 @@
 import Foundation
 import StorageKit
+#if FOUNDATION_DB
 import FDBStorage
+#endif
 import Core
 
 /// Database configuration
@@ -45,11 +47,13 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
 
     /// Storage backend specification
     public enum StorageBackend: Sendable {
-        /// FoundationDB (default)
+        #if FOUNDATION_DB
+        /// FoundationDB
         ///
         /// FDB client initialization is handled automatically.
         /// If no configuration is provided, connects to the default cluster.
         case fdb(FDBStorageEngine.Configuration = .init())
+        #endif
 
         /// Custom StorageEngine (e.g., SQLite, InMemory)
         ///
@@ -87,6 +91,7 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
     ///   - name: Configuration name for debugging (default: nil)
     ///   - backend: Storage backend (default: .fdb())
     ///   - indexConfigurations: Runtime index configurations (default: [])
+    #if FOUNDATION_DB
     public init(
         name: String? = nil,
         backend: StorageBackend = .fdb(),
@@ -96,6 +101,17 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
         self.backend = backend
         self.indexConfigurations = indexConfigurations
     }
+    #else
+    public init(
+        name: String? = nil,
+        backend: StorageBackend,
+        indexConfigurations: [any IndexConfiguration] = []
+    ) {
+        self.name = name
+        self.backend = backend
+        self.indexConfigurations = indexConfigurations
+    }
+    #endif
 }
 
 // MARK: - CustomDebugStringConvertible
@@ -105,8 +121,10 @@ extension DBConfiguration: CustomDebugStringConvertible {
         let nameDesc = name ?? "unnamed"
         let backendDesc: String
         switch backend {
+        #if FOUNDATION_DB
         case .fdb:
             backendDesc = "fdb"
+        #endif
         case .custom(let engine):
             backendDesc = "custom(\(type(of: engine)))"
         }

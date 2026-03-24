@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // OWLReasonerTests.swift
 // Comprehensive tests for high-level OWLReasoner API
 
@@ -622,3 +623,4 @@ struct OWLReasonerStatisticsTests {
         #expect(reasoner.statistics.subsumptionChecks >= 2)
     }
 }
+#endif

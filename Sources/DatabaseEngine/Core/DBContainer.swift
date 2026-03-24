@@ -1,6 +1,8 @@
 import Foundation
 import StorageKit
+#if FOUNDATION_DB
 import FDBStorage
+#endif
 import Core
 import Synchronization
 import Logging
@@ -130,9 +132,20 @@ public final class DBContainer: Sendable {
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
+    #if FOUNDATION_DB
+    /// Initialize with default FDB backend
+    public convenience init(
+        for schema: Schema,
+        security: SecurityConfiguration = .enabled()
+    ) async throws {
+        try await self.init(for: schema, configuration: DBConfiguration(), security: security)
+    }
+    #endif
+
+    /// Initialize with explicit configuration
     public init(
         for schema: Schema,
-        configuration: DBConfiguration = DBConfiguration(),
+        configuration: DBConfiguration,
         security: SecurityConfiguration = .enabled()
     ) async throws {
         guard !schema.entities.isEmpty else {
@@ -141,8 +154,10 @@ public final class DBContainer: Sendable {
 
         // Create engine based on backend configuration
         switch configuration.backend {
+        #if FOUNDATION_DB
         case .fdb(let fdbConfig):
             self.engine = try await FDBStorageEngine(configuration: fdbConfig)
+        #endif
         case .custom(let engine):
             self.engine = engine
         }
@@ -657,7 +672,7 @@ extension DBContainer {
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
         migrationPlan: P.Type,
-        configuration: DBConfiguration = DBConfiguration()
+        configuration: DBConfiguration
     ) async throws {
         try P.validate()
         let schemaInstance = S.makeSchema()

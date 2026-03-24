@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // NullSemanticsTests.swift
 // GraphIndex - SPARQL three-valued logic NULL semantics tests
 //
@@ -196,3 +197,4 @@ struct NullSemanticsTests {
         #expect(filter.evaluate(binding) == true)
     }
 }
+#endif

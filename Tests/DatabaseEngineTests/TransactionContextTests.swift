@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -400,3 +401,4 @@ struct TransactionContextTests {
         case userNotFound
     }
 }
+#endif

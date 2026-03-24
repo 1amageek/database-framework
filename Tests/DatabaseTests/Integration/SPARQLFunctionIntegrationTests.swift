@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SPARQLFunctionIntegrationTests.swift
 // DatabaseTests - Integration tests for SPARQL() SQL function
 
@@ -441,3 +442,4 @@ struct SPARQLFunctionIntegrationTests {
         #expect(users[1].name == "Alice")
     }
 }
+#endif

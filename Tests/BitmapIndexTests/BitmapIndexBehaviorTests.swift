@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // BitmapIndexBehaviorTests.swift
 // Comprehensive tests for BitmapIndex behavior with FDB
 
@@ -900,3 +901,4 @@ struct BitmapIndexEdgeCasesTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLConcurrencyTests.swift
 // PostgreSQL-specific concurrency and MVCC tests
 //
@@ -300,3 +301,4 @@ struct PostgreSQLConcurrencyTests {
         }
     }
 }
+#endif

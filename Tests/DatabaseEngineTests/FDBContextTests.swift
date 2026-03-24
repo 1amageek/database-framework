@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -392,3 +393,4 @@ struct FDBContextTests {
         #expect(Set(enumeratedNames) == Set(["User1", "User2"]))
     }
 }
+#endif

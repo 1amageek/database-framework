@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -227,3 +228,4 @@ struct StorageInvariantTests {
         #expect(bytes[5] == ItemEnvelope.Flags.inline.rawValue)
     }
 }
+#endif

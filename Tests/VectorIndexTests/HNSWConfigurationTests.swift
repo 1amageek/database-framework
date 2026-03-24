@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // HNSWConfigurationTests.swift
 // Tests for HNSW configuration selection and basic functionality
 
@@ -491,3 +492,4 @@ struct HNSWBasicBehaviorTests {
         }
     }
 }
+#endif

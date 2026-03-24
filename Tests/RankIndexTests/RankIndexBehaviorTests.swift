@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // RankIndexBehaviorTests.swift
 // Integration tests for RankIndex behavior with FDB
 
@@ -401,3 +402,4 @@ struct RankIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
+#endif

@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SkipListBasicTests.swift
 // Basic functionality tests for Skip List implementation
 
@@ -573,3 +574,4 @@ struct SkipListBasicTests {
         }
     }
 }
+#endif

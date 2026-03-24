@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TypeConversionTests.swift
 // DatabaseEngine - Tests for unified type conversion
 
@@ -235,3 +236,4 @@ struct TypeConversionTests {
         #expect(TypeConversion.asInt64(Int64.min) == Int64.min)
     }
 }
+#endif

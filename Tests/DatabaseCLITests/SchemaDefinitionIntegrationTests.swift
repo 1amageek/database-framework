@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // SchemaDefinitionIntegrationTests.swift
 // Integration tests for schema definition workflow
 
@@ -338,3 +339,4 @@ struct SchemaDefinitionIntegrationTests {
         try await registry.delete(typeName: "TestOverwrite")
     }
 }
+#endif

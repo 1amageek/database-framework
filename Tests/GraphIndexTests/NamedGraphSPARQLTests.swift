@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // NamedGraphSPARQLTests.swift
 // SPARQL integration tests for Named Graph (Quad) support
 //
@@ -444,3 +445,4 @@ struct NamedGraphSPARQLTests {
         try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
     }
 }
+#endif

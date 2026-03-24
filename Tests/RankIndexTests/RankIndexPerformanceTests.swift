@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // RankIndexPerformanceTests.swift
 // Performance benchmarks for RankIndex operations
 
@@ -665,3 +666,4 @@ struct RankIndexPerformanceTests {
         try await ctx.cleanup()
     }
 }
+#endif

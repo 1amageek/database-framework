@@ -1,3 +1,4 @@
+#if POSTGRESQL
 // PostgreSQLTestSetup.swift
 // Shared PostgreSQL initialization and serialization for all test targets
 //
@@ -233,3 +234,4 @@ public enum PostgreSQLTestError: Error, CustomStringConvertible {
         }
     }
 }
+#endif

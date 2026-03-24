@@ -22,6 +22,7 @@
 @_exported import BitmapIndex
 @_exported import LeaderboardIndex
 @_exported import RelationshipIndex
+@_exported import OntologyIndex
 @_exported import QueryIR
 @_exported import QueryAST
 

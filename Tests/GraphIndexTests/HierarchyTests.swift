@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // HierarchyTests.swift
 // Tests for ClassHierarchy and RoleHierarchy
 
@@ -407,3 +408,4 @@ struct CombinedHierarchyTests {
         #expect(roleHierarchy.isTransitive("ex:hasChild"))
     }
 }
+#endif

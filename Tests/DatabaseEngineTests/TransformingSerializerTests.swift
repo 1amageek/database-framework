@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // TransformingSerializerTests.swift
 // DatabaseEngine Tests - TransformingSerializer compression tests
 
@@ -251,3 +252,4 @@ struct TransformingSerializerTests {
         #expect(decompressed == original)
     }
 }
+#endif

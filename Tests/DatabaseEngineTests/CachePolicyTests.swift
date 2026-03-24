@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 import Testing
 import Foundation
 import StorageKit
@@ -454,3 +455,4 @@ struct CachePolicyTests {
         #Index(ScalarIndexKind<CachePolicyTestModel>(fields: [\.value]))
     }
 }
+#endif

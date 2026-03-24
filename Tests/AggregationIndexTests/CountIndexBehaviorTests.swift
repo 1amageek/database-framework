@@ -1,3 +1,4 @@
+#if FOUNDATION_DB
 // CountIndexBehaviorTests.swift
 // Integration tests for CountIndex behavior with FDB
 
@@ -511,3 +512,4 @@ struct CountIndexBehaviorTests {
         }
     }
 }
+#endif
