@@ -207,6 +207,30 @@ struct OWLTripleIndexMaintainerUnitTests {
         #expect(pKeys.count == 9)  // 3 triples × 3
         #expect(oKeys.count == 6)  // 2 triples × 3
     }
+
+    @Test("makeIndexMaintainer throws for non-OWLClassEntity type")
+    func makeIndexMaintainerErrorCase() {
+        let kind = OWLTripleIndexKind<OntoPerson>(graph: "default", prefix: "entity")
+
+        // PlainItem does not conform to OWLClassEntity
+        #expect(throws: OntologyIndexError.self) {
+            let _: any IndexMaintainer<PlainItem> = try kind.makeIndexMaintainer(
+                index: Index(
+                    name: "test",
+                    kind: kind,
+                    rootExpression: EmptyKeyExpression(),
+                    keyPaths: [],
+                    subspaceKey: "test",
+                    itemTypes: nil,
+                    isUnique: false,
+                    storedFieldNames: []
+                ),
+                subspace: Subspace("test"),
+                idExpression: FieldKeyExpression(fieldName: "id"),
+                configurations: []
+            )
+        }
+    }
 }
 
 // MARK: - Integration Tests: Full Pipeline
