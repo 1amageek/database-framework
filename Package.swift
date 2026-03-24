@@ -25,7 +25,6 @@ let package = Package(
         // QueryIR is provided by database-kit
         .library(name: "QueryAST", targets: ["QueryAST"]),
         .library(name: "Database", targets: ["Database"]),
-        .library(name: "FDBite", targets: ["FDBite"]),
         .library(name: "BenchmarkFramework", targets: ["BenchmarkFramework"]),
         .library(name: "DatabaseCLICore", targets: ["DatabaseCLICore"]),
         .library(name: "DatabaseServer", targets: ["DatabaseServer"]),
@@ -238,36 +237,13 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(traits: ["FoundationDB"])),
+                .product(name: "SQLiteStorage", package: "storage-kit",
+                         condition: .when(traits: ["SQLite"])),
             ],
             exclude: ["README.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
-            ]
-        ),
-        // FDBite: On-device database facade (SQLite backend)
-        .target(
-            name: "FDBite",
-            dependencies: [
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "Graph", package: "database-kit"),
-                .product(name: "Relationship", package: "database-kit"),
-                "DatabaseEngine",
-                "ScalarIndex",
-                "VectorIndex",
-                "FullTextIndex",
-                "SpatialIndex",
-                "RankIndex",
-                "PermutedIndex",
-                "GraphIndex",
-                "AggregationIndex",
-                "VersionIndex",
-                "BitmapIndex",
-                "LeaderboardIndex",
-                "RelationshipIndex",
-                "OntologyIndex",
-                .product(name: "QueryIR", package: "database-kit"),
-                "QueryAST",
-                .product(name: "SQLiteStorage", package: "storage-kit"),
+                .define("SQLITE", .when(traits: ["SQLite"])),
             ]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure
@@ -671,12 +647,13 @@ let package = Package(
                 .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
-        // FDBite tests (no libfdb_c required)
+        // SQLite backend tests (no libfdb_c required)
         .testTarget(
             name: "FDBiteTests",
             dependencies: [
-                "FDBite",
+                "Database",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
             ]
         ),
     ],

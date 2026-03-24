@@ -1,6 +1,6 @@
 import Testing
 import Foundation
-import FDBite
+import Database
 
 @Persistable
 struct FDBiteItem {

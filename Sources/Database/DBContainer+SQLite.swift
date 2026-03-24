@@ -1,3 +1,4 @@
+#if SQLITE
 import DatabaseEngine
 import SQLiteStorage
 import StorageKit
@@ -41,3 +42,4 @@ extension DBContainer {
         )
     }
 }
+#endif
