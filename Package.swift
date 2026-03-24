@@ -37,7 +37,7 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0222.1"),
+        .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
         .package(
             path: "/Users/1amageek/Desktop/storage-kit",
