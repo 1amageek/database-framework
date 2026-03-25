@@ -12,7 +12,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("SPARQL() Function Integration Tests", .serialized)
+@Suite("SPARQL() Function Integration Tests", .serialized, .heartbeat)
 struct SPARQLFunctionIntegrationTests {
 
     init() async throws {
@@ -56,6 +56,7 @@ struct SPARQLFunctionIntegrationTests {
 
         // Clean up previous test data
         try? await database.directoryService.remove(path: ["test", "sparql_func"])
+        try await container.ensureIndexesReady()
 
         // Set index to readable (required for SPARQL queries)
         let subspace = try await container.resolveDirectory(for: RDFTriple.self)

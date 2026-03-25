@@ -193,6 +193,48 @@ public final class IndexStateManager: Sendable {
         }
     }
 
+    // MARK: - Initialization (Declarative Convergence)
+
+    /// Ensure indexes are in readable state (idempotent, atomic)
+    ///
+    /// Declarative operation for container initialization, distinct from the
+    /// imperative `enable()` → `makeReadable()` lifecycle used by OnlineIndexer.
+    ///
+    /// Single transaction handles any starting state:
+    /// - `disabled` → `readable` (direct, no intermediate writeOnly)
+    /// - `writeOnly` → `readable` (recovery from abandoned build)
+    /// - `readable` → no-op
+    ///
+    /// Safe for concurrent execution from multiple DBContainer instances.
+    ///
+    /// - Parameter indexNames: Names of the indexes to ensure are readable
+    public func ensureReadable(_ indexNames: [String]) async throws {
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
+            try transaction.setOption(forOption: .accessSystemKeys)
+            for indexName in indexNames {
+                let stateKey = self.makeStateKey(for: indexName)
+                let currentState: IndexState
+                if let bytes = try await transaction.getValue(for: stateKey, snapshot: false),
+                   let stateValue = bytes.first,
+                   let state = IndexState(rawValue: stateValue) {
+                    currentState = state
+                } else {
+                    currentState = .disabled
+                }
+                switch currentState {
+                case .disabled, .writeOnly:
+                    transaction.setValue([IndexState.readable.rawValue], for: stateKey)
+                    self.cache.invalidate(indexName)
+                    self.logger.info("Initialized index '\(indexName)': \(currentState) → readable")
+                case .readable:
+                    break
+                }
+            }
+        }
+    }
+
+    // MARK: - Admin Operations
+
     /// Disable an index (transition to DISABLED state)
     ///
     /// This can be called from any state.

@@ -39,7 +39,7 @@ struct SPARQLQuadStatement {
 
 // MARK: - Test Suite
 
-@Suite("NamedGraph SPARQL Integration Tests", .serialized)
+@Suite("NamedGraph SPARQL Integration Tests", .serialized, .heartbeat)
 struct NamedGraphSPARQLTests {
 
     // MARK: - Setup Helpers
@@ -52,46 +52,8 @@ struct NamedGraphSPARQLTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        
         try? await container.engine.directoryService.remove(path: ["test", "sparql", "quads"])
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SPARQLQuadStatement.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SPARQLQuadStatement.indexDescriptors {
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break
-                }
-            }
-        }
+        try await container.ensureIndexesReady()
     }
 
     private func makeQuad(
@@ -131,7 +93,7 @@ struct NamedGraphSPARQLTests {
     func testQueryWithoutGraphReturnsAllGraphs() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -151,7 +113,7 @@ struct NamedGraphSPARQLTests {
     func testQueryWithGraphValueFiltersSingleGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -183,7 +145,7 @@ struct NamedGraphSPARQLTests {
     func testQueryWithGraphVariableBindsGraphName() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -221,7 +183,7 @@ struct NamedGraphSPARQLTests {
     func testQueryNonExistentGraphReturnsEmpty() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -251,7 +213,7 @@ struct NamedGraphSPARQLTests {
     func testJoinWithinSameGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -295,7 +257,7 @@ struct NamedGraphSPARQLTests {
     func testJoinGraphBoundSubstitutionRespectsGraphConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let quads = [
@@ -353,7 +315,7 @@ struct NamedGraphSPARQLTests {
     func testOptionalWithGraphConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
         try await insertTestData(context: context)
 
@@ -412,6 +374,7 @@ struct NamedGraphSPARQLTests {
 
         
         try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
+        try await container.ensureIndexesReady()
 
         let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)

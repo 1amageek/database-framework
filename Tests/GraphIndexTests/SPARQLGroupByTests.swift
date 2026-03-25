@@ -33,7 +33,7 @@ struct SocialEdgeForGroupBy {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL GROUP BY Tests", .serialized)
+@Suite("SPARQL GROUP BY Tests", .serialized, .heartbeat)
 struct SPARQLGroupByTests {
 
     init() async throws {
@@ -50,26 +50,6 @@ struct SPARQLGroupByTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SocialEdgeForGroupBy.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SocialEdgeForGroupBy.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SocialEdgeForGroupBy.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                // Already readable, no action needed
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [SocialEdgeForGroupBy], context: FDBContext) async throws {
@@ -93,7 +73,7 @@ struct SPARQLGroupByTests {
     @Test("GROUP BY with COUNT")
     func testGroupByCount() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let p1 = uniqueID("P1")
@@ -134,7 +114,7 @@ struct SPARQLGroupByTests {
     @Test("GROUP BY with multiple aggregates")
     func testGroupByMultipleAggregates() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let team1 = uniqueID("T1")
@@ -178,7 +158,7 @@ struct SPARQLGroupByTests {
     @Test("GROUP BY with HAVING filter")
     func testGroupByWithHaving() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let p1 = uniqueID("P1")
@@ -219,7 +199,7 @@ struct SPARQLGroupByTests {
     @Test("COUNT(*) aggregate")
     func testCountAll() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let person = uniqueID("P")
@@ -245,7 +225,7 @@ struct SPARQLGroupByTests {
     @Test("GROUP_CONCAT aggregate")
     func testGroupConcat() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let person = uniqueID("P")
@@ -279,7 +259,7 @@ struct SPARQLGroupByTests {
     @Test("SAMPLE aggregate")
     func testSampleAggregate() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let person = uniqueID("P")
@@ -308,7 +288,7 @@ struct SPARQLGroupByTests {
     @Test("COUNT DISTINCT aggregate")
     func testCountDistinct() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         // Test COUNT DISTINCT by grouping by tag and counting photos
@@ -359,7 +339,7 @@ struct SPARQLGroupByTests {
     @Test("Empty group results")
     func testEmptyGroupResults() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         // Query with no matching data
@@ -376,7 +356,7 @@ struct SPARQLGroupByTests {
     @Test("GROUP BY with LIMIT")
     func testGroupByWithLimit() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         // Create 5 different persons with varying friend counts
@@ -406,7 +386,7 @@ struct SPARQLGroupByTests {
     @Test("SUM aggregate with integer values")
     func testSumAggregateInteger() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let team1 = uniqueID("T1")
@@ -445,7 +425,7 @@ struct SPARQLGroupByTests {
     @Test("SUM aggregate with decimal values")
     func testSumAggregateDecimal() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let account = uniqueID("A")
@@ -483,7 +463,7 @@ struct SPARQLGroupByTests {
     @Test("SUM aggregate with mixed numeric and non-numeric values")
     func testSumAggregateMixedValues() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let group = uniqueID("G")
@@ -517,7 +497,7 @@ struct SPARQLGroupByTests {
     @Test("AVG aggregate with integer values")
     func testAvgAggregateInteger() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let class1 = uniqueID("C1")
@@ -567,7 +547,7 @@ struct SPARQLGroupByTests {
     @Test("AVG aggregate with decimal values")
     func testAvgAggregateDecimal() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let sensor = uniqueID("S")
@@ -605,7 +585,7 @@ struct SPARQLGroupByTests {
     @Test("AVG aggregate with single value")
     func testAvgAggregateSingleValue() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let item = uniqueID("I")
@@ -641,7 +621,7 @@ struct SPARQLGroupByTests {
     @Test("AVG aggregate returns nil for non-numeric values")
     func testAvgAggregateNonNumeric() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let group = uniqueID("G")
@@ -676,7 +656,7 @@ struct SPARQLGroupByTests {
     @Test("SUM and AVG combined in single query")
     func testSumAndAvgCombined() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let dept = uniqueID("D")
@@ -719,7 +699,7 @@ struct SPARQLGroupByTests {
     @Test("SUM aggregate with negative values")
     func testSumAggregateNegative() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let account = uniqueID("A")
@@ -750,7 +730,7 @@ struct SPARQLGroupByTests {
     @Test("AVG aggregate with zero values")
     func testAvgAggregateWithZeros() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let group = uniqueID("G")

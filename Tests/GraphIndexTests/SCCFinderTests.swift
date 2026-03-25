@@ -32,7 +32,7 @@ struct EdgeForSCC {
 
 // MARK: - Test Suite
 
-@Suite("SCC Finder Tests", .serialized)
+@Suite("SCC Finder Tests", .serialized, .heartbeat)
 struct SCCFinderTests {
 
     init() async throws {
@@ -49,46 +49,6 @@ struct SCCFinderTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: EdgeForSCC.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in EdgeForSCC.indexDescriptors {
-            // Use retry loop to handle concurrent state transitions from parallel tests
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        // Another test may have enabled it concurrently
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue  // Retry
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break  // Already readable, success
-                }
-            }
-        }
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
@@ -111,7 +71,6 @@ struct SCCFinderTests {
     @Test("Simple DAG - no SCCs")
     func testSimpleDAG() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -142,7 +101,6 @@ struct SCCFinderTests {
     @Test("Single SCC - simple cycle")
     func testSingleSCCSimpleCycle() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -178,7 +136,6 @@ struct SCCFinderTests {
     @Test("Multiple SCCs")
     func testMultipleSCCs() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -238,7 +195,6 @@ struct SCCFinderTests {
     @Test("Strongly connected check - same SCC")
     func testStronglyConnectedSameSCC() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -262,7 +218,6 @@ struct SCCFinderTests {
     @Test("Strongly connected check - different SCCs")
     func testStronglyConnectedDifferentSCCs() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -287,7 +242,6 @@ struct SCCFinderTests {
     @Test("Condensation graph")
     func testCondensationGraph() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -327,7 +281,6 @@ struct SCCFinderTests {
     @Test("Single node graph")
     func testSingleNodeGraph() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -351,7 +304,6 @@ struct SCCFinderTests {
     @Test("Complex graph with multiple SCC sizes")
     func testComplexGraphMultipleSCCSizes() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         // Create unique IDs
@@ -390,7 +342,6 @@ struct SCCFinderTests {
     @Test("Edge label filtering")
     func testEdgeLabelFiltering() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -427,7 +378,7 @@ struct SCCFinderTests {
 
 // MARK: - GraphEdgeScanner Batch Method Tests
 
-@Suite("GraphEdgeScanner Batch Tests", .serialized)
+@Suite("GraphEdgeScanner Batch Tests", .serialized, .heartbeat)
 struct GraphEdgeScannerBatchTests {
 
     init() async throws {
@@ -442,46 +393,6 @@ struct GraphEdgeScannerBatchTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: EdgeForSCC.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in EdgeForSCC.indexDescriptors {
-            // Use retry loop to handle concurrent state transitions from parallel tests
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        // Another test may have enabled it concurrently
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue  // Retry
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break  // Already readable, success
-                }
-            }
-        }
     }
 
     private func insertEdges(_ edges: [EdgeForSCC], context: FDBContext) async throws {
@@ -502,7 +413,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing groups edges by source")
     func testBatchScanAllOutgoingGrouping() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -558,7 +468,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllIncoming groups edges by target")
     func testBatchScanAllIncomingGrouping() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -614,7 +523,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing returns empty dict for empty sources")
     func testBatchScanAllOutgoingEmpty() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let predicate = uniqueID("edge")
@@ -651,7 +559,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllIncoming returns empty dict for empty targets")
     func testBatchScanAllIncomingEmpty() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let predicate = uniqueID("edge")
@@ -688,7 +595,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing with wildcard edge label")
     func testBatchScanAllOutgoingWildcard() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -734,7 +640,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing with single node batch")
     func testBatchScanAllOutgoingSingleNode() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -775,7 +680,6 @@ struct GraphEdgeScannerBatchTests {
     @Test("batchScanAllOutgoing includes nodes with no edges")
     func testBatchScanAllOutgoingNoEdges() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
         let context = container.newContext()
 
         let a = uniqueID("A")

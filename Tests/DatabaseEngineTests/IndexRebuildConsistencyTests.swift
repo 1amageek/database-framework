@@ -8,6 +8,7 @@
 // state visibility issues.
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -80,7 +81,7 @@ struct RebuildCountItem {
 
 // MARK: - Test Suite
 
-@Suite("Index Rebuild Consistency Tests", .serialized)
+@Suite("Index Rebuild Consistency Tests", .serialized, .heartbeat)
 struct IndexRebuildConsistencyTests {
 
     // MARK: - Setup
@@ -100,48 +101,9 @@ struct IndexRebuildConsistencyTests {
     }
 
     private func cleanup(container: DBContainer, path: [String]) async throws {
-        
         try? await container.engine.directoryService.remove(path: path)
-    }
-
-    private func setIndexStatesToReadable<T: Persistable>(
-        for type: T.Type,
-        container: DBContainer
-    ) async throws {
-        let subspace = try await container.resolveDirectory(for: type)
-        let stateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in type.indexDescriptors {
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await stateManager.state(of: descriptor.name)
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await stateManager.enable(descriptor.name)
-                        try await stateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await stateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break
-                }
-            }
-        }
+        // Re-initialize indexes after directory removal
+        try await container.ensureIndexesReady()
     }
 
     /// FDB range scan: [I]/[indexName] 以下の全キーを取得
@@ -176,7 +138,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildScalarUser.self])
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
-            try await setIndexStatesToReadable(for: RebuildScalarUser.self, container: container)
+
 
             let context = container.newContext()
             var u1 = RebuildScalarUser(); u1.email = "a@test.com"
@@ -205,7 +167,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildTripleStatement.self])
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
-            try await setIndexStatesToReadable(for: RebuildTripleStatement.self, container: container)
+
 
             let context = container.newContext()
             var s1 = RebuildTripleStatement(); s1.subject = "A"; s1.predicate = "p"; s1.object = "B"
@@ -233,7 +195,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildEdge.self])
             try await cleanup(container: container, path: ["test", "rebuild", "edge"])
-            try await setIndexStatesToReadable(for: RebuildEdge.self, container: container)
+
 
             let context = container.newContext()
             var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "knows"; e1.target = "Bob"
@@ -261,7 +223,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildArticle.self])
             try await cleanup(container: container, path: ["test", "rebuild", "fulltext"])
-            try await setIndexStatesToReadable(for: RebuildArticle.self, container: container)
+
 
             let context = container.newContext()
             var a1 = RebuildArticle(); a1.title = "T1"; a1.content = "hello world"
@@ -289,7 +251,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildCountItem.self])
             try await cleanup(container: container, path: ["test", "rebuild", "count"])
-            try await setIndexStatesToReadable(for: RebuildCountItem.self, container: container)
+
 
             let context = container.newContext()
             var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
@@ -320,7 +282,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildScalarUser.self])
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
-            try await setIndexStatesToReadable(for: RebuildScalarUser.self, container: container)
+
 
             let context = container.newContext()
             var u1 = RebuildScalarUser(); u1.email = "alice@test.com"; u1.city = "Tokyo"
@@ -343,7 +305,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildTripleStatement.self])
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
-            try await setIndexStatesToReadable(for: RebuildTripleStatement.self, container: container)
+
 
             let context = container.newContext()
             var s1 = RebuildTripleStatement()
@@ -389,7 +351,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildEdge.self])
             try await cleanup(container: container, path: ["test", "rebuild", "edge"])
-            try await setIndexStatesToReadable(for: RebuildEdge.self, container: container)
+
 
             let context = container.newContext()
             var e1 = RebuildEdge(); e1.source = "Alice"; e1.relation = "follows"; e1.target = "Bob"
@@ -420,7 +382,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildArticle.self])
             try await cleanup(container: container, path: ["test", "rebuild", "fulltext"])
-            try await setIndexStatesToReadable(for: RebuildArticle.self, container: container)
+
 
             let context = container.newContext()
             var a1 = RebuildArticle(); a1.title = "Swift Guide"; a1.content = "swift programming language"
@@ -456,7 +418,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildCountItem.self])
             try await cleanup(container: container, path: ["test", "rebuild", "count"])
-            try await setIndexStatesToReadable(for: RebuildCountItem.self, container: container)
+
 
             let context = container.newContext()
             var c1 = RebuildCountItem(); c1.category = "electronics"; c1.value = 100
@@ -483,7 +445,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildScalarUser.self])
             try await cleanup(container: container, path: ["test", "rebuild", "scalar"])
-            try await setIndexStatesToReadable(for: RebuildScalarUser.self, container: container)
+
 
             let context = container.newContext()
             var u1 = RebuildScalarUser(); u1.email = "test@test.com"
@@ -512,7 +474,7 @@ struct IndexRebuildConsistencyTests {
         try await FDBTestEnvironment.shared.withSerializedAccess {
             let container = try await setupContainer([RebuildTripleStatement.self])
             try await cleanup(container: container, path: ["test", "rebuild", "triple"])
-            try await setIndexStatesToReadable(for: RebuildTripleStatement.self, container: container)
+
 
             let context = container.newContext()
             var s1 = RebuildTripleStatement()

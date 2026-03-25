@@ -8,6 +8,7 @@
 // This is distinct from existing IndexBehaviorTests which test IndexMaintainer directly.
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -85,7 +86,7 @@ struct E2ECountItem {
 
 // MARK: - Test Suite
 
-@Suite("Index Maintenance E2E Tests", .serialized)
+@Suite("Index Maintenance E2E Tests", .serialized, .heartbeat)
 struct IndexMaintenanceE2ETests {
 
     // MARK: - Setup
@@ -107,52 +108,8 @@ struct IndexMaintenanceE2ETests {
         for path in paths {
             try? await container.engine.directoryService.remove(path: path)
         }
-    }
-
-    /// Helper to set index state to readable for testing
-    /// By default, indexes are DISABLED and won't be maintained.
-    /// For E2E tests, we need to set them to READABLE.
-    private func setIndexStatesToReadable<T: Persistable>(
-        for type: T.Type,
-        container: DBContainer
-    ) async throws {
-        let subspace = try await container.resolveDirectory(for: type)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in type.indexDescriptors {
-            // Use retry loop to handle concurrent state transitions from parallel tests
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        // Another test may have enabled it concurrently
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue  // Retry
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break  // Already readable, success
-                }
-            }
-        }
+        // Re-initialize indexes after directory removal
+        try await container.ensureIndexesReady()
     }
 
     /// Helper to count entries in a subspace
@@ -192,9 +149,6 @@ struct IndexMaintenanceE2ETests {
     func testScalarIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EScalarUser.self])
         try await cleanup(container: container, paths: [["test", "e2e", "scalar_users"]])
-
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2EScalarUser.self, container: container)
 
         let context = container.newContext()
 
@@ -240,9 +194,6 @@ struct IndexMaintenanceE2ETests {
     func testCountIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2ECountItem.self])
         try await cleanup(container: container, paths: [["test", "e2e", "count_items"]])
-
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2ECountItem.self, container: container)
 
         let context = container.newContext()
 
@@ -296,9 +247,6 @@ struct IndexMaintenanceE2ETests {
     func testFullTextIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EFullTextArticle.self])
         try await cleanup(container: container, paths: [["test", "e2e", "fulltext_articles"]])
-
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2EFullTextArticle.self, container: container)
 
         let context = container.newContext()
 
@@ -359,9 +307,6 @@ struct IndexMaintenanceE2ETests {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
 
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2EGraphEdge.self, container: container)
-
         let context = container.newContext()
 
         // Create and save edge
@@ -419,9 +364,6 @@ struct IndexMaintenanceE2ETests {
     func testGraphIndexDeleteViaSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
         try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
-
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2EGraphEdge.self, container: container)
 
         let context = container.newContext()
 
@@ -548,9 +490,6 @@ struct IndexMaintenanceE2ETests {
         }
 
         // Part 2: FDBContext.save() (may fail if IndexMaintenanceService is broken)
-        // Set index states to readable (indexes are disabled by default)
-        try await setIndexStatesToReadable(for: E2EGraphEdge.self, container: container)
-
         let context = container.newContext()
 
         var contextEdge = E2EGraphEdge()

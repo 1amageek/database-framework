@@ -35,7 +35,7 @@ struct SetOpTestEdge {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Set Operation Tests", .serialized)
+@Suite("SPARQL Set Operation Tests", .serialized, .heartbeat)
 struct SPARQLSetOperationTests {
 
     init() async throws {
@@ -52,25 +52,6 @@ struct SPARQLSetOperationTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([SetOpTestEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SetOpTestEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SetOpTestEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [SetOpTestEdge], context: FDBContext) async throws {
@@ -95,7 +76,7 @@ struct SPARQLSetOperationTests {
         // { ?s :knows ?o } UNION { ?s :follows ?o }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -149,7 +130,7 @@ struct SPARQLSetOperationTests {
         // { ?s :knows ?o } UNION { ?s :follows ?o } UNION { ?s :likes ?o }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -211,7 +192,7 @@ struct SPARQLSetOperationTests {
         // Both patterns project to ?name
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let person = uniqueID("Person")
@@ -268,7 +249,7 @@ struct SPARQLSetOperationTests {
         // }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let typePred = uniqueID("type")
@@ -309,7 +290,7 @@ struct SPARQLSetOperationTests {
     @Test("MINUS with no overlap")
     func testMinusNoOverlap() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predA = uniqueID("hasA")
@@ -346,7 +327,7 @@ struct SPARQLSetOperationTests {
     @Test("MINUS removes all matches")
     func testMinusRemovesAll() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predType = uniqueID("type")
@@ -388,7 +369,7 @@ struct SPARQLSetOperationTests {
         // { ?s :discount ?d . FILTER(?d > 0.5) }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pricePred = uniqueID("price")
@@ -438,7 +419,7 @@ struct SPARQLSetOperationTests {
     @Test("UNION with common FILTER applied after")
     func testUnionWithCommonFilter() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predA = uniqueID("valueA")
@@ -489,7 +470,7 @@ struct SPARQLSetOperationTests {
     @Test("UNION removes duplicates")
     func testUnionRemovesDuplicates() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("rel1")
@@ -531,7 +512,7 @@ struct SPARQLSetOperationTests {
     @Test("UNION with empty left branch")
     func testUnionEmptyLeft() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("emptyPred")
@@ -568,7 +549,7 @@ struct SPARQLSetOperationTests {
     @Test("UNION with empty right branch")
     func testUnionEmptyRight() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("hasSomething")
@@ -604,7 +585,7 @@ struct SPARQLSetOperationTests {
     @Test("UNION both branches empty")
     func testUnionBothEmpty() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("empty1")
@@ -629,7 +610,7 @@ struct SPARQLSetOperationTests {
     @Test("MINUS from empty set")
     func testMinusFromEmpty() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("empty")
@@ -662,7 +643,7 @@ struct SPARQLSetOperationTests {
     @Test("MINUS empty set")
     func testMinusEmptySet() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("something")

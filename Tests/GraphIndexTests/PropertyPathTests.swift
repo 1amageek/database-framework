@@ -32,7 +32,7 @@ struct EdgeForPropertyPath {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Property Path Tests", .serialized)
+@Suite("SPARQL Property Path Tests", .serialized, .heartbeat)
 struct PropertyPathTests {
 
     init() async throws {
@@ -49,25 +49,6 @@ struct PropertyPathTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([EdgeForPropertyPath.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: EdgeForPropertyPath.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in EdgeForPropertyPath.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [EdgeForPropertyPath], context: FDBContext) async throws {
@@ -90,7 +71,7 @@ struct PropertyPathTests {
     @Test("Simple IRI path")
     func testSimpleIRIPath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -123,7 +104,7 @@ struct PropertyPathTests {
     @Test("Inverse path (^)")
     func testInversePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -158,7 +139,7 @@ struct PropertyPathTests {
     @Test("Sequence path (/)")
     func testSequencePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -193,7 +174,7 @@ struct PropertyPathTests {
     @Test("Alternative path (|)")
     func testAlternativePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -226,7 +207,7 @@ struct PropertyPathTests {
     @Test("One or more path (+)")
     func testOneOrMorePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -261,7 +242,7 @@ struct PropertyPathTests {
     @Test("Zero or more path (*)")
     func testZeroOrMorePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -293,7 +274,7 @@ struct PropertyPathTests {
     @Test("Zero or one path (?)")
     func testZeroOrOnePath() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -324,7 +305,7 @@ struct PropertyPathTests {
     @Test("Transitive path with cycle")
     func testTransitivePathWithCycle() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -360,7 +341,7 @@ struct PropertyPathTests {
     @Test("Combined path: sequence of alternatives")
     func testCombinedSequenceAlternative() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")

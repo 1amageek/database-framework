@@ -190,50 +190,21 @@ public final class DBContainer: Sendable {
 
     /// Ensure all indexes are in `readable` state
     ///
-    /// This method transitions all indexes to `readable`:
-    /// - `disabled` → `writeOnly` → `readable`
-    /// - `writeOnly` → `readable`
-    /// - `readable` → no-op
+    /// Uses `IndexStateManager.ensureReadable()` to atomically set all indexes
+    /// to `readable` in a single transaction per entity. Idempotent and safe
+    /// for concurrent execution from multiple DBContainer instances.
     ///
-    /// Index state is persisted in the storage engine. Once indexes are `readable`,
-    /// subsequent calls are no-ops.
+    /// - `disabled` → `readable` (direct)
+    /// - `writeOnly` → `readable` (recovery from abandoned build)
+    /// - `readable` → no-op
     public func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
-
-            // Resolve directory for this entity
-            // Use root subspace (same as FDBDataStore) so state is consistent
             guard let persistableType = entity.persistableType else { continue }
             let subspace = try await resolveDirectory(for: persistableType)
             let stateManager = IndexStateManager(container: self, subspace: subspace)
-
-            // Get index names for this entity
             let indexNames = entity.indexDescriptors.map { $0.name }
-
-            // Get current states
-            let states = try await stateManager.states(of: indexNames)
-
-            // Transition each index to readable
-            for indexName in indexNames {
-                let currentState = states[indexName] ?? .disabled
-
-                switch currentState {
-                case .disabled:
-                    // disabled → writeOnly → readable
-                    try await stateManager.enable(indexName)
-                    try await stateManager.makeReadable(indexName)
-                    logger.info("Initialized index '\(indexName)': disabled → readable")
-
-                case .writeOnly:
-                    // writeOnly → readable
-                    try await stateManager.makeReadable(indexName)
-                    logger.info("Initialized index '\(indexName)': writeOnly → readable")
-
-                case .readable:
-                    // Already readable, nothing to do
-                    break
-                }
-            }
+            try await stateManager.ensureReadable(indexNames)
         }
     }
 

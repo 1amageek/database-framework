@@ -36,7 +36,7 @@ struct ExecOrderEdge {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Execution Order Tests", .serialized)
+@Suite("SPARQL Execution Order Tests", .serialized, .heartbeat)
 struct SPARQLExecutionOrderTests {
 
     init() async throws {
@@ -53,25 +53,6 @@ struct SPARQLExecutionOrderTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([ExecOrderEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: ExecOrderEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in ExecOrderEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [ExecOrderEdge], context: FDBContext) async throws {
@@ -94,7 +75,7 @@ struct SPARQLExecutionOrderTests {
     @Test("ORDER BY ascending sorts results correctly")
     func testOrderByAscending() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let agePred = uniqueID("age")
@@ -121,7 +102,7 @@ struct SPARQLExecutionOrderTests {
     @Test("ORDER BY descending sorts results correctly")
     func testOrderByDescending() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let scorePred = uniqueID("score")
@@ -147,7 +128,7 @@ struct SPARQLExecutionOrderTests {
     @Test("ORDER BY with LIMIT respects order before limiting")
     func testOrderByWithLimit() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let rankPred = uniqueID("rank")
@@ -178,7 +159,7 @@ struct SPARQLExecutionOrderTests {
     @Test("ORDER BY multiple keys")
     func testOrderByMultipleKeys() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let deptPred = uniqueID("department")
@@ -214,7 +195,7 @@ struct SPARQLExecutionOrderTests {
     @Test("MINUS execution removes matching bindings")
     func testMinusExecution() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let typePred = uniqueID("type")
@@ -252,7 +233,7 @@ struct SPARQLExecutionOrderTests {
     @Test("MINUS with no shared variables keeps all left bindings")
     func testMinusNoSharedVariables() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predA = uniqueID("hasA")
@@ -286,7 +267,7 @@ struct SPARQLExecutionOrderTests {
     @Test("MINUS removes all when fully compatible")
     func testMinusRemovesAllCompatible() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let typePred = uniqueID("type")
@@ -405,7 +386,7 @@ struct SPARQLExecutionOrderTests {
     @Test("GROUP BY with ORDER BY on aggregate")
     func testGroupByOrderByAggregate() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let memberPred = uniqueID("hasMember")
@@ -453,7 +434,7 @@ struct SPARQLExecutionOrderTests {
     @Test("Filter on joined variable works correctly")
     func testFilterOnJoinedVariable() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let knowsPred = uniqueID("knows")

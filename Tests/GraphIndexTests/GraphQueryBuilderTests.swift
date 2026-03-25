@@ -35,7 +35,7 @@ struct GraphQueryTestEdge: Equatable {
 
 // MARK: - Test Suite
 
-@Suite("GraphQueryBuilder Tests", .serialized)
+@Suite("GraphQueryBuilder Tests", .serialized, .heartbeat)
 struct GraphQueryBuilderTests {
 
     init() async throws {
@@ -53,48 +53,8 @@ struct GraphQueryBuilderTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        
         try? await container.engine.directoryService.remove(path: ["test", "graphquerybuilder", "edges"])
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: GraphQueryTestEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in GraphQueryTestEdge.indexDescriptors {
-            // Use retry loop to handle concurrent state transitions from parallel tests
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        // Another test may have enabled it concurrently
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue  // Retry
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break  // Already readable, success
-                }
-            }
-        }
+        try await container.ensureIndexesReady()
     }
 
     private func makeEdge(source: String, predicate: String, target: String) -> GraphQueryTestEdge {
@@ -112,7 +72,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 
@@ -149,7 +109,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 
@@ -182,7 +142,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 
@@ -216,7 +176,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 
@@ -247,7 +207,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 
@@ -274,7 +234,7 @@ struct GraphQueryBuilderTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
+
 
             let context = FDBContext(container: container)
 

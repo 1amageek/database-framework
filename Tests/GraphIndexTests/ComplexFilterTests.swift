@@ -35,7 +35,7 @@ struct FilterTestEdge {
 
 // MARK: - Test Suite
 
-@Suite("Complex FILTER Tests", .serialized)
+@Suite("Complex FILTER Tests", .serialized, .heartbeat)
 struct ComplexFilterTests {
 
     init() async throws {
@@ -52,25 +52,6 @@ struct ComplexFilterTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([FilterTestEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: FilterTestEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in FilterTestEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [FilterTestEdge], context: FDBContext) async throws {
@@ -95,7 +76,7 @@ struct ComplexFilterTests {
         // FILTER((?a > 10 AND ?b < 20) AND (?c = "x" AND ?d = "y"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let item = uniqueID("Item")
@@ -130,7 +111,7 @@ struct ComplexFilterTests {
         // FILTER((?a > 10 AND ?b < 20) OR (?c = "x" AND NOT(?d = "y")))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let item1 = uniqueID("I1")
@@ -161,7 +142,7 @@ struct ComplexFilterTests {
         // FILTER((((?a > 5) AND (?b < 10)) OR (?c = "ok")) AND (?d != "bad"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("score")
@@ -196,7 +177,7 @@ struct ComplexFilterTests {
         // FILTER(REGEX(?name, "^A"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predValue = uniqueID("value")
@@ -228,7 +209,7 @@ struct ComplexFilterTests {
     @Test("Three sequential numeric filters")
     func testThreeNumericFilters() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("num")
@@ -268,7 +249,7 @@ struct ComplexFilterTests {
         // FILTER(?price >= 100 AND ?price <= 500 AND ?status = "active")
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predPrice = uniqueID("price")
@@ -302,7 +283,7 @@ struct ComplexFilterTests {
         // FILTER(CONTAINS(?name, "Premium"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("name")
@@ -335,7 +316,7 @@ struct ComplexFilterTests {
         // FILTER(?status IN ("active", "pending", "review"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("status")
@@ -370,7 +351,7 @@ struct ComplexFilterTests {
     @Test("FILTER with single value IN list")
     func testFilterInSingleValue() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("type")
@@ -399,7 +380,7 @@ struct ComplexFilterTests {
         // FILTER(?category NOT IN ("deleted", "archived"))
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("category")
@@ -435,7 +416,7 @@ struct ComplexFilterTests {
     @Test("FILTER with equality")
     func testFilterEquality() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("color")
@@ -461,7 +442,7 @@ struct ComplexFilterTests {
     @Test("FILTER with inequality")
     func testFilterInequality() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("status")
@@ -488,7 +469,7 @@ struct ComplexFilterTests {
     @Test("FILTER with STRSTARTS")
     func testFilterStartsWith() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("name")
@@ -516,7 +497,7 @@ struct ComplexFilterTests {
     @Test("FILTER with STRENDS")
     func testFilterEndsWith() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("email")
@@ -543,7 +524,7 @@ struct ComplexFilterTests {
     @Test("FILTER with REGEX basic pattern")
     func testFilterRegexBasic() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("code")
@@ -571,7 +552,7 @@ struct ComplexFilterTests {
     @Test("FILTER with REGEX case insensitive")
     func testFilterRegexCaseInsensitive() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("label")
@@ -600,7 +581,7 @@ struct ComplexFilterTests {
     @Test("FILTER with BOUND check")
     func testFilterBound() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predName = uniqueID("name")
@@ -630,7 +611,7 @@ struct ComplexFilterTests {
     @Test("FILTER with empty string comparison")
     func testFilterEmptyString() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("note")
@@ -656,7 +637,7 @@ struct ComplexFilterTests {
     @Test("FILTER with numeric string comparison edge cases")
     func testFilterNumericStringEdgeCases() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("value")
@@ -685,7 +666,7 @@ struct ComplexFilterTests {
     @Test("FILTER that matches nothing")
     func testFilterMatchesNothing() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("score")
@@ -710,7 +691,7 @@ struct ComplexFilterTests {
     @Test("FILTER that matches everything")
     func testFilterMatchesEverything() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("value")

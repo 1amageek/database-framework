@@ -35,48 +35,6 @@ struct PerfOrder {
     var customerID: String? = nil
 }
 
-// MARK: - Test Helpers
-
-private func enableAllIndexes<T: Persistable>(container: DBContainer, for type: T.Type) async throws {
-    let store = try await container.store(for: type) as! FDBDataStore
-    for descriptor in T.indexDescriptors {
-        var attempts = 0
-        let maxAttempts = 3
-
-        while attempts < maxAttempts {
-            attempts += 1
-            let currentState = try await store.indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                do {
-                    try await store.indexStateManager.enable(descriptor.name)
-                    try await store.indexStateManager.makeReadable(descriptor.name)
-                    break
-                } catch let error as IndexStateError {
-                    if case .invalidTransition = error, attempts < maxAttempts {
-                        continue
-                    }
-                    throw error
-                }
-            case .writeOnly:
-                do {
-                    try await store.indexStateManager.makeReadable(descriptor.name)
-                    break
-                } catch let error as IndexStateError {
-                    if case .invalidTransition = error, attempts < maxAttempts {
-                        continue
-                    }
-                    throw error
-                }
-            case .readable:
-                break
-            }
-            break
-        }
-    }
-}
-
 // MARK: - Benchmark Helpers
 
 private struct BenchmarkResult {
@@ -114,7 +72,7 @@ private func benchmark<T>(
 
 // MARK: - Performance Tests
 
-@Suite("Relationship Index Performance Tests", .serialized)
+@Suite("Relationship Index Performance Tests", .serialized, .heartbeat)
 struct RelationshipIndexPerformanceTests {
 
     private func setupContainer() async throws -> DBContainer {
@@ -128,9 +86,6 @@ struct RelationshipIndexPerformanceTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        try await enableAllIndexes(container: container, for: PerfCustomer.self)
-        try await enableAllIndexes(container: container, for: PerfOrder.self)
 
         return container
     }

@@ -26,7 +26,7 @@ fileprivate struct NoGraphIndexType {
     #Index(ScalarIndexKind<NoGraphIndexType>(fieldNames: ["name"]), name: "name_index")
 }
 
-@Suite("GraphTable Executor Integration Tests", .serialized)
+@Suite("GraphTable Executor Integration Tests", .serialized, .heartbeat)
 struct GraphTableExecutorTests {
 
     // MARK: - Test Model
@@ -71,32 +71,11 @@ struct GraphTableExecutorTests {
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
-        
-        try? await database.directoryService.remove(path: ["test", "social_edges_executor"])
 
-        // Set index states to readable
-        try await setIndexStatesToReadable(container: container)
+        try? await database.directoryService.remove(path: ["test", "social_edges_executor"])
+        try await container.ensureIndexesReady()
 
         return container
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SocialEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SocialEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     // MARK: - Basic Execution Tests

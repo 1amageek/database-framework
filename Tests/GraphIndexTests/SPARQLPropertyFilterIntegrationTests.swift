@@ -55,7 +55,7 @@ fileprivate struct BasicEdge {
     ), name: "basic_graph")
 }
 
-@Suite("SPARQL Property Filter Integration Tests", .serialized)
+@Suite("SPARQL Property Filter Integration Tests", .serialized, .heartbeat)
 struct SPARQLPropertyFilterIntegrationTests {
 
     // MARK: - Setup
@@ -91,32 +91,11 @@ struct SPARQLPropertyFilterIntegrationTests {
         let schema = Schema([SocialConnection.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
 
-        
-        try? await database.directoryService.remove(path: ["test", "sparql_property"])
 
-        // Set index states to readable
-        try await setIndexStatesToReadable(container: container)
+        try? await database.directoryService.remove(path: ["test", "sparql_property"])
+        try await container.ensureIndexesReady()
 
         return container
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SocialConnection.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SocialConnection.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     // MARK: - Property Filter Pushdown Tests

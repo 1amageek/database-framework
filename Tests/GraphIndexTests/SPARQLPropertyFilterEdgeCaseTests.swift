@@ -34,7 +34,7 @@ fileprivate struct EdgeCaseConnection {
     ], name: "edge_case_graph")
 }
 
-@Suite("SPARQL Property Filter Edge Case Tests", .serialized)
+@Suite("SPARQL Property Filter Edge Case Tests", .serialized, .heartbeat)
 struct SPARQLPropertyFilterEdgeCaseTests {
 
     init() async throws {
@@ -52,6 +52,7 @@ struct SPARQLPropertyFilterEdgeCaseTests {
 
         
         try? await database.directoryService.remove(path: ["test", "edge_case"])
+        try await container.ensureIndexesReady()
 
         // Set index to readable
         let subspace = try await container.resolveDirectory(for: EdgeCaseConnection.self)

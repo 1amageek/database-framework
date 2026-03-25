@@ -37,7 +37,7 @@ struct SPARQLTestStatement {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Integration Tests", .serialized)
+@Suite("SPARQL Integration Tests", .serialized, .heartbeat)
 struct SPARQLIntegrationTests {
 
     // MARK: - Setup Helpers
@@ -49,48 +49,8 @@ struct SPARQLIntegrationTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        
         try? await container.engine.directoryService.remove(path: ["test", "sparql", "statements"])
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SPARQLTestStatement.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SPARQLTestStatement.indexDescriptors {
-            // Use retry loop to handle concurrent state transitions from parallel tests
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        // Another test may have enabled it concurrently
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue  // Retry
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break  // Success
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break  // Already readable, success
-                }
-            }
-        }
+        try await container.ensureIndexesReady()
     }
 
     private func insertStatements(_ statements: [SPARQLTestStatement], context: FDBContext) async throws {
@@ -115,7 +75,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -149,7 +108,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -181,7 +139,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -207,7 +164,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -255,7 +211,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -290,7 +245,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -328,7 +282,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -361,7 +314,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -394,7 +346,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -441,7 +392,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -487,7 +437,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -522,7 +471,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -554,7 +502,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -587,7 +534,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -622,7 +568,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -654,7 +599,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -696,7 +640,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -729,7 +672,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -751,7 +693,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 
@@ -792,7 +733,6 @@ struct SPARQLIntegrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let container = try await setupContainer()
             try await cleanup(container: container)
-            try await setIndexStatesToReadable(container: container)
 
             let context = container.newContext()
 

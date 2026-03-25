@@ -46,7 +46,7 @@ struct SHACLTestStatement {
 
 // MARK: - Test Suite
 
-@Suite("SHACL Validation Tests", .serialized)
+@Suite("SHACL Validation Tests", .serialized, .heartbeat)
 struct SHACLValidationTests {
 
     // MARK: - Setup Helpers
@@ -59,51 +59,13 @@ struct SHACLValidationTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        
         do {
             try await container.engine.directoryService.remove(path: ["test", "shacl", "statements"])
         } catch {
             // Directory may not exist on first run
         }
+        try await container.ensureIndexesReady()
         try await container.newContext().shacl.deleteAllShapesGraphs()
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: SHACLTestStatement.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in SHACLTestStatement.indexDescriptors {
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break
-                }
-            }
-        }
     }
 
     private func insertStatements(_ statements: [SHACLTestStatement], context: FDBContext) async throws {
@@ -165,7 +127,7 @@ struct SHACLValidationTests {
     func testLoadAndGetShapesGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
         let shapesGraph = makePersonShapesGraph()
@@ -194,7 +156,7 @@ struct SHACLValidationTests {
     func testListShapesGraphs() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -221,7 +183,7 @@ struct SHACLValidationTests {
     func testDeleteShapesGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -249,7 +211,7 @@ struct SHACLValidationTests {
     func testConformingDataGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -278,7 +240,7 @@ struct SHACLValidationTests {
     func testMinCountViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -311,7 +273,7 @@ struct SHACLValidationTests {
     func testMaxCountViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -361,7 +323,7 @@ struct SHACLValidationTests {
     func testClassConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -409,7 +371,7 @@ struct SHACLValidationTests {
     func testNodeKindConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -456,7 +418,7 @@ struct SHACLValidationTests {
     func testNodeKindIRIvsLiteral() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -530,7 +492,7 @@ struct SHACLValidationTests {
     func testDatatypeConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -608,7 +570,7 @@ struct SHACLValidationTests {
     func testDatatypeRejectsIRI() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -656,7 +618,7 @@ struct SHACLValidationTests {
     func testMinLengthViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -702,7 +664,7 @@ struct SHACLValidationTests {
     func testPatternViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -748,7 +710,7 @@ struct SHACLValidationTests {
     func testLanguageInConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -800,7 +762,7 @@ struct SHACLValidationTests {
     func testValueRangeConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -855,7 +817,7 @@ struct SHACLValidationTests {
     func testClosedShapeViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -913,7 +875,7 @@ struct SHACLValidationTests {
     func testClosedShapeWithIgnored() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -960,7 +922,7 @@ struct SHACLValidationTests {
     func testHasValueViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1005,7 +967,7 @@ struct SHACLValidationTests {
     func testInConstraintViolation() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1051,7 +1013,7 @@ struct SHACLValidationTests {
     func testHasValueWithLiteral() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1096,7 +1058,7 @@ struct SHACLValidationTests {
     func testTargetNode() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1142,7 +1104,7 @@ struct SHACLValidationTests {
     func testTargetClass() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1177,7 +1139,7 @@ struct SHACLValidationTests {
     func testTargetSubjectsOf() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1231,7 +1193,7 @@ struct SHACLValidationTests {
     func testDeactivatedShapeSkipped() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1277,7 +1239,7 @@ struct SHACLValidationTests {
     func testOrConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1342,7 +1304,7 @@ struct SHACLValidationTests {
     func testNotConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1398,7 +1360,7 @@ struct SHACLValidationTests {
     func testUniqueLangConstraint() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1452,7 +1414,7 @@ struct SHACLValidationTests {
     func testValidateNodeAgainstShape() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 
@@ -1497,7 +1459,7 @@ struct SHACLValidationTests {
     func testValidateNonexistentShapesGraph() async throws {
         let container = try await setupContainer()
         try await cleanup(container: container)
-        try await setIndexStatesToReadable(container: container)
+
 
         let context = container.newContext()
 

@@ -33,7 +33,7 @@ struct PGStatement {
     ))
 }
 
-@Suite("PostgreSQL SPARQL Tests", .serialized)
+@Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat)
 struct PostgreSQLSPARQLTests {
 
     // MARK: - Setup
@@ -47,47 +47,8 @@ struct PostgreSQLSPARQLTests {
         let container = try await setupContainer()
         try? await container.engine.directoryService.remove(path: ["test", "pg", "sparql", "statements"])
         let container2 = try await setupContainer()
-        try await setIndexStatesToReadable(container: container2)
         let context = container2.newContext()
         return (container2, context)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: PGStatement.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in PGStatement.indexDescriptors {
-            let maxAttempts = 3
-            for attempt in 1...maxAttempts {
-                let currentState = try await indexStateManager.state(of: descriptor.name)
-
-                switch currentState {
-                case .disabled:
-                    do {
-                        try await indexStateManager.enable(descriptor.name)
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .writeOnly:
-                    do {
-                        try await indexStateManager.makeReadable(descriptor.name)
-                        break
-                    } catch let error as IndexStateError {
-                        if case .invalidTransition = error, attempt < maxAttempts {
-                            continue
-                        }
-                        throw error
-                    }
-                case .readable:
-                    break
-                }
-            }
-        }
     }
 
     private func makeStatement(subject: String, predicate: String, object: String) -> PGStatement {

@@ -38,7 +38,7 @@ struct AdvancedPathEdge {
 
 // MARK: - Test Suite
 
-@Suite("Property Path Advanced Tests", .serialized)
+@Suite("Property Path Advanced Tests", .serialized, .heartbeat)
 struct PropertyPathAdvancedTests {
 
     init() async throws {
@@ -55,25 +55,6 @@ struct PropertyPathAdvancedTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([AdvancedPathEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: AdvancedPathEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in AdvancedPathEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [AdvancedPathEdge], context: FDBContext) async throws {
@@ -99,7 +80,7 @@ struct PropertyPathAdvancedTests {
         // Match any edge that is NOT knows or hates
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -136,7 +117,7 @@ struct PropertyPathAdvancedTests {
     @Test("Negated property set - empty result")
     func testNegatedPropertySetEmpty() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -170,7 +151,7 @@ struct PropertyPathAdvancedTests {
         // }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -207,7 +188,7 @@ struct PropertyPathAdvancedTests {
         // Path: (sequence of a then one-or-more b), repeated zero or more times
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let n1 = uniqueID("N1")
@@ -246,7 +227,7 @@ struct PropertyPathAdvancedTests {
     @Test("Transitive closure on linear chain (link+)")
     func testTransitiveClosureLinearChain() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let n0 = uniqueID("N0")
@@ -292,7 +273,7 @@ struct PropertyPathAdvancedTests {
         // Test that cycles don't cause infinite loops
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let n1 = uniqueID("N1")
@@ -327,7 +308,7 @@ struct PropertyPathAdvancedTests {
     @Test("Deep transitive closure without cycle")
     func testDeepTransitiveClosure() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let linkPred = uniqueID("link")
@@ -359,7 +340,7 @@ struct PropertyPathAdvancedTests {
         // Find all descendants (inverse of parent)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let root = uniqueID("Root")
@@ -393,7 +374,7 @@ struct PropertyPathAdvancedTests {
     @Test("Inverse with zero or more (^knows*)")
     func testInverseWithZeroOrMore() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let alice = uniqueID("Alice")
@@ -431,7 +412,7 @@ struct PropertyPathAdvancedTests {
         // SPARQL: SELECT ?x ?z WHERE { ?x (:a|:b)/(:c|:d) ?z }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let start = uniqueID("Start")
@@ -474,7 +455,7 @@ struct PropertyPathAdvancedTests {
         // SPARQL: SELECT ?x ?z WHERE { ?x ((:a/:b)|(:c/:d)) ?z }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let start = uniqueID("Start")
@@ -520,7 +501,7 @@ struct PropertyPathAdvancedTests {
         // :node itself should be in the result even if no edges exist
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let node = uniqueID("Node")
@@ -543,7 +524,7 @@ struct PropertyPathAdvancedTests {
     @Test("Zero-length path with existing edges")
     func testZeroLengthPathWithEdges() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let node = uniqueID("Node")
@@ -571,7 +552,7 @@ struct PropertyPathAdvancedTests {
     @Test("Property path performance on moderate graph (100 nodes)")
     func testPropertyPathPerformance100Nodes() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let linkPred = uniqueID("link")
@@ -612,7 +593,7 @@ struct PropertyPathAdvancedTests {
     @Test("Property path with branching factor")
     func testPropertyPathBranchingFactor() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let linkPred = uniqueID("link")
@@ -800,7 +781,7 @@ struct PropertyPathAdvancedTests {
         // (A reaches C via 2 hops, B reaches C via 1 hop)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -832,7 +813,7 @@ struct PropertyPathAdvancedTests {
         // Query: ?x (link)+ D → should return ?x=A, ?x=B, ?x=C
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -866,7 +847,7 @@ struct PropertyPathAdvancedTests {
         // Query: A (link)+ ?target → should return ?target=B and ?target=C
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -900,7 +881,7 @@ struct PropertyPathAdvancedTests {
         //   {?s=A, ?o=C} (depth 2 — C1 bug: before fix, ?s was missing or wrong)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -945,7 +926,7 @@ struct PropertyPathAdvancedTests {
         // Query: ?s (link)+ ?o → should include {?s=A, ?o=D} (reachable via both paths)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")
@@ -993,7 +974,7 @@ struct PropertyPathAdvancedTests {
         // Query: A (link)+ C → should match (A can reach C)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let a = uniqueID("A")

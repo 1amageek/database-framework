@@ -35,7 +35,7 @@ struct AdvAggTestEdge {
 
 // MARK: - Test Suite
 
-@Suite("SPARQL Advanced Aggregation Tests", .serialized)
+@Suite("SPARQL Advanced Aggregation Tests", .serialized, .heartbeat)
 struct SPARQLAdvancedAggregationTests {
 
     init() async throws {
@@ -52,25 +52,6 @@ struct SPARQLAdvancedAggregationTests {
         let database = try await FDBStorageEngine(configuration: .init())
         let schema = Schema([AdvAggTestEdge.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-    }
-
-    private func setIndexStatesToReadable(container: DBContainer) async throws {
-        let subspace = try await container.resolveDirectory(for: AdvAggTestEdge.self)
-        let indexStateManager = IndexStateManager(container: container, subspace: subspace)
-
-        for descriptor in AdvAggTestEdge.indexDescriptors {
-            let currentState = try await indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                try await indexStateManager.enable(descriptor.name)
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .writeOnly:
-                try await indexStateManager.makeReadable(descriptor.name)
-            case .readable:
-                break
-            }
-        }
     }
 
     private func insertEdges(_ edges: [AdvAggTestEdge], context: FDBContext) async throws {
@@ -98,7 +79,7 @@ struct SPARQLAdvancedAggregationTests {
         //         GROUP BY ?category ?status
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred1 = uniqueID("category")
@@ -152,7 +133,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with two variables from joined patterns")
     func testGroupByTwoVariables() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predDept = uniqueID("department")
@@ -208,7 +189,7 @@ struct SPARQLAdvancedAggregationTests {
         //         HAVING (COUNT(?book) > 5 AND SUM(?pages) > 1000)
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predAuthor = uniqueID("author")
@@ -261,7 +242,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("HAVING with equality condition")
     func testHavingEquality() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasItem")
@@ -306,7 +287,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("HAVING with less than condition")
     func testHavingLessThan() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasChild")
@@ -354,7 +335,7 @@ struct SPARQLAdvancedAggregationTests {
         //         GROUP BY ?dept
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("worksIn")
@@ -396,7 +377,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("Combined COUNT, SUM, AVG, MIN, MAX")
     func testAllAggregatesCombined() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let predScore = uniqueID("hasScore")
@@ -450,7 +431,7 @@ struct SPARQLAdvancedAggregationTests {
         //         }
 
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("inDept")
@@ -503,7 +484,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with no matching groups")
     func testGroupByNoMatches() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         // Query with no matching data
@@ -520,7 +501,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with single group")
     func testGroupBySingleGroup() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("type")
@@ -550,7 +531,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with many groups (100 groups)")
     func testGroupByManyGroups() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("belongsTo")
@@ -584,7 +565,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with ORDER BY on aggregate")
     func testGroupByWithOrderBy() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasMember")
@@ -622,7 +603,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("GROUP BY with LIMIT and OFFSET")
     func testGroupByWithLimitOffset() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("inCategory")
@@ -652,7 +633,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("HAVING that filters all groups")
     func testHavingFiltersAll() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasItem")
@@ -683,7 +664,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("HAVING that keeps all groups")
     func testHavingKeepsAll() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasValue")
@@ -716,7 +697,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("SUM with empty numeric strings")
     func testSumEmptyStrings() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasAmount")
@@ -746,7 +727,7 @@ struct SPARQLAdvancedAggregationTests {
     @Test("AVG with single numeric value")
     func testAvgSingleValue() async throws {
         let container = try await setupContainer()
-        try await setIndexStatesToReadable(container: container)
+
         let context = container.newContext()
 
         let pred = uniqueID("hasScore")

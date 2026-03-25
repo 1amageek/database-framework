@@ -40,55 +40,9 @@ struct RTestOrder {
     var customerID: String? = nil
 }
 
-// MARK: - Test Helpers
-
-/// Enable all indexes for a Persistable type to readable state
-/// Handles race conditions from parallel test suite execution
-private func enableAllIndexes<T: Persistable>(container: DBContainer, for type: T.Type) async throws {
-    let store = try await container.store(for: type) as! FDBDataStore
-    for descriptor in T.indexDescriptors {
-        // Retry loop to handle race conditions between parallel test suites
-        var attempts = 0
-        let maxAttempts = 3
-
-        while attempts < maxAttempts {
-            attempts += 1
-            let currentState = try await store.indexStateManager.state(of: descriptor.name)
-
-            switch currentState {
-            case .disabled:
-                do {
-                    try await store.indexStateManager.enable(descriptor.name)
-                    try await store.indexStateManager.makeReadable(descriptor.name)
-                    break // Success
-                } catch let error as IndexStateError {
-                    // Another test suite may have enabled it concurrently
-                    if case .invalidTransition = error, attempts < maxAttempts {
-                        continue // Retry with fresh state read
-                    }
-                    throw error
-                }
-            case .writeOnly:
-                do {
-                    try await store.indexStateManager.makeReadable(descriptor.name)
-                    break // Success
-                } catch let error as IndexStateError {
-                    if case .invalidTransition = error, attempts < maxAttempts {
-                        continue
-                    }
-                    throw error
-                }
-            case .readable:
-                break // Already enabled
-            }
-            break // Exit retry loop on success
-        }
-    }
-}
-
 // MARK: - Macro Generation Tests
 
-@Suite("Relationship Macro Generation Tests")
+@Suite("Relationship Macro Generation Tests", .heartbeat)
 struct RelationshipMacroGenerationTests {
 
     @Test("FK field is accessible as regular field")
@@ -217,7 +171,7 @@ struct RelationshipMacroGenerationTests {
 
 // MARK: - Index Update Tests (requires FDB)
 
-@Suite("Relationship Index Update Tests", .serialized)
+@Suite("Relationship Index Update Tests", .serialized, .heartbeat)
 struct RelationshipIndexUpdateTests {
 
     // MARK: - Helper Methods
@@ -233,10 +187,6 @@ struct RelationshipIndexUpdateTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        // Enable all indexes for testing
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
@@ -407,7 +357,7 @@ struct RelationshipIndexUpdateTests {
 
 // MARK: - related() Query Tests
 
-@Suite("Relationship Query Tests", .serialized)
+@Suite("Relationship Query Tests", .serialized, .heartbeat)
 struct RelationshipQueryTests {
 
     // MARK: - Helper Methods
@@ -423,10 +373,6 @@ struct RelationshipQueryTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        // Enable all indexes for testing
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
@@ -496,7 +442,7 @@ struct RelationshipQueryTests {
 
 // MARK: - Snapshot and get() Tests
 
-@Suite("Snapshot Tests", .serialized)
+@Suite("Snapshot Tests", .serialized, .heartbeat)
 struct SnapshotTests {
 
     // MARK: - Helper Methods
@@ -512,10 +458,6 @@ struct SnapshotTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        // Enable all indexes for testing
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
@@ -900,7 +842,7 @@ struct SnapshotTests {
 
 // MARK: - To-Many Index Update Tests
 
-@Suite("To-Many Relationship Index Update Tests", .serialized)
+@Suite("To-Many Relationship Index Update Tests", .serialized, .heartbeat)
 struct ToManyRelationshipIndexUpdateTests {
 
     // MARK: - Helper Methods
@@ -916,10 +858,6 @@ struct ToManyRelationshipIndexUpdateTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        // Enable all indexes for testing
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
@@ -1117,7 +1055,7 @@ struct ToManyRelationshipIndexUpdateTests {
 
 // MARK: - Relationship Edge Cases Tests
 
-@Suite("Relationship Edge Cases Tests", .serialized)
+@Suite("Relationship Edge Cases Tests", .serialized, .heartbeat)
 struct RelationshipEdgeCasesTests {
 
     // MARK: - Helper Methods
@@ -1133,9 +1071,6 @@ struct RelationshipEdgeCasesTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
@@ -1354,7 +1289,7 @@ struct RelationshipEdgeCasesTests {
 
 // MARK: - Relationship Consistency Tests
 
-@Suite("Relationship Consistency Tests", .serialized)
+@Suite("Relationship Consistency Tests", .serialized, .heartbeat)
 struct RelationshipConsistencyTests {
 
     private func setupContainer() async throws -> DBContainer {
@@ -1368,9 +1303,6 @@ struct RelationshipConsistencyTests {
             configuration: .init(backend: .custom(database)),
             security: .disabled
             )
-
-        try await enableAllIndexes(container: container, for: RTestOrder.self)
-        try await enableAllIndexes(container: container, for: RTestCustomer.self)
 
         return container
     }
