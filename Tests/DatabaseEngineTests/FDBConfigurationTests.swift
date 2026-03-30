@@ -3,6 +3,7 @@
 // Tests for DBConfiguration and IndexConfiguration API
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -12,7 +13,7 @@ import Synchronization
 @testable import DatabaseEngine
 
 /// Tests for DBConfiguration and IndexConfiguration API
-@Suite("DBConfiguration Tests")
+@Suite("DBConfiguration Tests", .heartbeat)
 struct DBConfigurationTests {
 
     // MARK: - Test Models
@@ -167,7 +168,7 @@ struct DBConfigurationTests {
 
 // MARK: - DBConfiguration Properties Tests
 
-@Suite("DBConfiguration Properties Tests")
+@Suite("DBConfiguration Properties Tests", .heartbeat)
 struct DBConfigurationPropertiesTests {
 
     @Persistable

@@ -3,10 +3,11 @@
 // DatabaseEngine Tests - TransformingSerializer compression tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("TransformingSerializer Tests")
+@Suite("TransformingSerializer Tests", .heartbeat)
 struct TransformingSerializerTests {
 
     // MARK: - Basic Compression Tests

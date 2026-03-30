@@ -3,13 +3,14 @@
 // DatabaseEngine Tests - Record encryption tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Crypto
 @testable import DatabaseEngine
 
 // MARK: - StaticKeyProvider Tests
 
-@Suite("StaticKeyProvider Tests")
+@Suite("StaticKeyProvider Tests", .heartbeat)
 struct StaticKeyProviderTests {
 
     @Test("Provider returns correct key")
@@ -59,7 +60,7 @@ struct StaticKeyProviderTests {
 
 // MARK: - RotatingKeyProvider Tests
 
-@Suite("RotatingKeyProvider Tests")
+@Suite("RotatingKeyProvider Tests", .heartbeat)
 struct RotatingKeyProviderTests {
 
     @Test("Add and retrieve key")
@@ -116,7 +117,7 @@ struct RotatingKeyProviderTests {
 
 // MARK: - DerivedKeyProvider Tests
 
-@Suite("DerivedKeyProvider Tests")
+@Suite("DerivedKeyProvider Tests", .heartbeat)
 struct DerivedKeyProviderTests {
 
     @Test("Derived keys are consistent")
@@ -153,7 +154,7 @@ struct DerivedKeyProviderTests {
 
 // MARK: - EncryptionKeyUtils Tests
 
-@Suite("EncryptionKeyUtils Tests")
+@Suite("EncryptionKeyUtils Tests", .heartbeat)
 struct EncryptionKeyUtilsTests {
 
     @Test("Generate random key")

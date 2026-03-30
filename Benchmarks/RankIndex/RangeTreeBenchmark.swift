@@ -22,7 +22,7 @@ struct Player {
     #Index(RankIndexKind<Player, Int64>(field: \.score), name: "score_rank")
 }
 
-@Suite("RankIndex: Range Tree Benchmark", .serialized)
+@Suite("RankIndex: Range Tree Benchmark", .serialized, .heartbeat)
 struct RangeTreeBenchmark {
     nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: DBContainer

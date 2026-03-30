@@ -3,10 +3,11 @@
 // Tests for FormatVersion and FormatVersionManager
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("FormatVersion Tests")
+@Suite("FormatVersion Tests", .heartbeat)
 struct FormatVersionTests {
 
     // MARK: - Version Creation Tests

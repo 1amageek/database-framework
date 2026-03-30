@@ -54,7 +54,7 @@ private struct TestAuth: AuthContext {
 
 // MARK: - Static Metadata Tests (Key Fix Verification)
 
-@Suite("Static Metadata Generation")
+@Suite("Static Metadata Generation", .heartbeat)
 struct StaticMetadataTests {
 
     @Test("@Persistable generates restrictedFieldsMetadata")
@@ -132,7 +132,7 @@ struct StaticMetadataTests {
 
 // MARK: - Masking Tests (Key Fix Verification)
 
-@Suite("Field Masking")
+@Suite("Field Masking", .heartbeat)
 struct FieldMaskingTests {
 
     @Test("masked(auth:) masks restricted fields")
@@ -223,7 +223,7 @@ struct FieldMaskingTests {
 
 // MARK: - FieldAccessLevel Tests
 
-@Suite("FieldAccessLevel")
+@Suite("FieldAccessLevel", .heartbeat)
 struct FieldAccessLevelTests {
 
     @Test("Public access allows everyone")
@@ -276,7 +276,7 @@ struct FieldAccessLevelTests {
 
 // MARK: - FieldSecurityEvaluator Tests
 
-@Suite("FieldSecurityEvaluator")
+@Suite("FieldSecurityEvaluator", .heartbeat)
 struct FieldSecurityEvaluatorTests {
 
     @Test("Extract restricted fields from type (static)")
@@ -423,7 +423,7 @@ struct FieldSecurityEvaluatorTests {
 
 // MARK: - FieldSecurityError Tests
 
-@Suite("FieldSecurityError")
+@Suite("FieldSecurityError", .heartbeat)
 struct FieldSecurityErrorTests {
 
     @Test("Error contains type and field info")
@@ -448,7 +448,7 @@ struct FieldSecurityErrorTests {
 
 // MARK: - RestrictedFieldMetadata Tests
 
-@Suite("RestrictedFieldMetadata")
+@Suite("RestrictedFieldMetadata", .heartbeat)
 struct RestrictedFieldMetadataTests {
 
     @Test("Metadata struct is equatable")

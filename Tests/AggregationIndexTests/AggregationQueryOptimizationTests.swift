@@ -201,7 +201,7 @@ private struct OptTestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("AggregationQuery Optimization Tests", .tags(.fdb), .serialized)
+@Suite("AggregationQuery Optimization Tests", .tags(.fdb), .serialized, .heartbeat)
 struct AggregationQueryOptimizationTests {
 
     // MARK: - Index Maintainer Direct Tests

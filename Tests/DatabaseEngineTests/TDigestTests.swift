@@ -3,10 +3,11 @@
 // Tests for TDigest streaming quantile estimation
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("TDigest Tests")
+@Suite("TDigest Tests", .heartbeat)
 struct TDigestTests {
 
     // MARK: - Basic Operations

@@ -11,10 +11,11 @@
 // but SPARQL layer must override this to return false.
 
 import Testing
+import TestHeartbeat
 @testable import GraphIndex
 import Core
 
-@Suite("SPARQL NULL Semantics")
+@Suite("SPARQL NULL Semantics", .heartbeat)
 struct NullSemanticsTests {
 
     // MARK: - equals

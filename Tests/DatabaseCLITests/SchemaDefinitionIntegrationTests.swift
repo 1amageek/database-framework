@@ -11,7 +11,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("Schema Definition Integration Tests", .serialized)
+@Suite("Schema Definition Integration Tests", .serialized, .heartbeat)
 struct SchemaDefinitionIntegrationTests {
 
     init() async throws {

@@ -3,10 +3,11 @@
 // Tests for InstrumentedTransaction and metrics collection
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("InstrumentedTransaction Tests")
+@Suite("InstrumentedTransaction Tests", .heartbeat)
 struct InstrumentedTransactionTests {
 
     // MARK: - TransactionMetrics Tests

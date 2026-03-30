@@ -3,6 +3,7 @@
 // FDBIndexing Tests - Aggregate index (Count, Sum, Min, Max) tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -20,7 +21,7 @@ private struct AggTestItem {
 
 // MARK: - CountIndexKind Tests
 
-@Suite("CountIndexKind Tests")
+@Suite("CountIndexKind Tests", .heartbeat)
 struct CountIndexKindTests {
 
     @Test("CountIndexKind has correct identifier")
@@ -62,7 +63,7 @@ struct CountIndexKindTests {
 
 // MARK: - SumIndexKind Tests
 
-@Suite("SumIndexKind Tests")
+@Suite("SumIndexKind Tests", .heartbeat)
 struct SumIndexKindTests {
 
     @Test("SumIndexKind has correct identifier")
@@ -123,7 +124,7 @@ struct SumIndexKindTests {
 
 // MARK: - MinIndexKind Tests
 
-@Suite("MinIndexKind Tests")
+@Suite("MinIndexKind Tests", .heartbeat)
 struct MinIndexKindTests {
 
     @Test("MinIndexKind has correct identifier")
@@ -177,7 +178,7 @@ struct MinIndexKindTests {
 
 // MARK: - MaxIndexKind Tests
 
-@Suite("MaxIndexKind Tests")
+@Suite("MaxIndexKind Tests", .heartbeat)
 struct MaxIndexKindTests {
 
     @Test("MaxIndexKind has correct identifier")

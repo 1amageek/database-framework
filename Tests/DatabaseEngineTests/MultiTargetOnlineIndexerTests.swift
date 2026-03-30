@@ -5,13 +5,14 @@
 // Reference: FDB Record Layer multi-target indexing strategy
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
 // MARK: - Index State Tests for Multi-Target
 
-@Suite("Index State Tests for Multi-Target")
+@Suite("Index State Tests for Multi-Target", .heartbeat)
 struct IndexStateMultiTargetTests {
 
     @Test("Index state enum values")
@@ -40,7 +41,7 @@ struct IndexStateMultiTargetTests {
 
 // MARK: - RangeSet Tests for Multi-Target Progress
 
-@Suite("RangeSet for Multi-Target Progress Tests")
+@Suite("RangeSet for Multi-Target Progress Tests", .heartbeat)
 struct RangeSetMultiTargetTests {
 
     @Test("RangeSet creation with initial range")
@@ -119,7 +120,7 @@ struct RangeSetMultiTargetTests {
 
 // MARK: - Metrics Tests
 
-@Suite("Multi-Target Indexer Metrics Tests")
+@Suite("Multi-Target Indexer Metrics Tests", .heartbeat)
 struct MultiTargetIndexerMetricsTests {
 
     @Test("Metric labels include item type and target count")
@@ -157,7 +158,7 @@ struct MultiTargetIndexerMetricsTests {
 
 // MARK: - Progress Key Generation Tests
 
-@Suite("Multi-Target Progress Key Generation Tests")
+@Suite("Multi-Target Progress Key Generation Tests", .heartbeat)
 struct MultiTargetProgressKeyTests {
 
     @Test("Progress key generation is deterministic for same indexes")
@@ -187,7 +188,7 @@ struct MultiTargetProgressKeyTests {
 
 // MARK: - Batch Configuration Tests
 
-@Suite("Multi-Target Batch Configuration Tests")
+@Suite("Multi-Target Batch Configuration Tests", .heartbeat)
 struct MultiTargetBatchConfigTests {
 
     @Test("Batch size configuration is respected")
@@ -212,7 +213,7 @@ struct MultiTargetBatchConfigTests {
 
 // MARK: - Concurrency Safety Tests
 
-@Suite("Multi-Target Indexer Concurrency Tests")
+@Suite("Multi-Target Indexer Concurrency Tests", .heartbeat)
 struct MultiTargetIndexerConcurrencyTests {
 
     @Test("IndexState is Sendable")
@@ -258,7 +259,7 @@ struct MultiTargetIndexerConcurrencyTests {
 
 // MARK: - Error Handling Tests
 
-@Suite("Multi-Target Indexer Error Handling Tests")
+@Suite("Multi-Target Indexer Error Handling Tests", .heartbeat)
 struct MultiTargetIndexerErrorHandlingTests {
 
     @Test("Index state errors are propagated")
@@ -293,7 +294,7 @@ struct MultiTargetIndexerErrorHandlingTests {
 
 // MARK: - Performance Tests
 
-@Suite("Multi-Target Efficiency Tests")
+@Suite("Multi-Target Efficiency Tests", .heartbeat)
 struct MultiTargetEfficiencyTests {
 
     @Test("Single scan for multiple indexes is more efficient")

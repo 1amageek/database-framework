@@ -3,6 +3,7 @@
 // Tests for QueryPlanner core functionality
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -114,7 +115,7 @@ struct QPTestUser: Persistable {
 
 // MARK: - QueryPlanner Tests
 
-@Suite("QueryPlanner Tests")
+@Suite("QueryPlanner Tests", .heartbeat)
 struct QueryPlannerTests {
 
     @Test("Plan simple equality query uses index")
@@ -184,7 +185,7 @@ struct QueryPlannerTests {
 
 // MARK: - PredicateNormalizer Tests
 
-@Suite("PredicateNormalizer Tests")
+@Suite("PredicateNormalizer Tests", .heartbeat)
 struct PredicateNormalizerTests {
 
     @Test("Combine predicates with AND")
@@ -206,7 +207,7 @@ struct PredicateNormalizerTests {
 
 // MARK: - QueryAnalyzer Tests
 
-@Suite("QueryAnalyzer Tests")
+@Suite("QueryAnalyzer Tests", .heartbeat)
 struct QueryAnalyzerTests {
 
     @Test("Analyze extracts field conditions")

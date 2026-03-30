@@ -3,6 +3,7 @@
 /// Tests for Phase 5: CONSTRUCT improvements (B10, B11) + SPARQL Update (B12)
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -15,7 +16,7 @@ private func parseStatement(_ sparql: String) throws -> QueryStatement {
 
 // MARK: - B10: CONSTRUCT WHERE
 
-@Suite("B10: CONSTRUCT WHERE")
+@Suite("B10: CONSTRUCT WHERE", .heartbeat)
 struct ConstructWhereTests {
 
     @Test("CONSTRUCT WHERE shortcut uses pattern as template")
@@ -48,7 +49,7 @@ struct ConstructWhereTests {
 
 // MARK: - B11: CONSTRUCT Modifiers
 
-@Suite("B11: CONSTRUCT Modifiers")
+@Suite("B11: CONSTRUCT Modifiers", .heartbeat)
 struct ConstructModifierTests {
 
     @Test("CONSTRUCT with ORDER BY")
@@ -108,7 +109,7 @@ struct ConstructModifierTests {
 
 // MARK: - B12: SPARQL Update
 
-@Suite("B12: INSERT DATA")
+@Suite("B12: INSERT DATA", .heartbeat)
 struct InsertDataTests {
 
     @Test("INSERT DATA with single triple")
@@ -143,7 +144,7 @@ struct InsertDataTests {
     }
 }
 
-@Suite("B12: DELETE DATA")
+@Suite("B12: DELETE DATA", .heartbeat)
 struct DeleteDataTests {
 
     @Test("DELETE DATA with single triple")
@@ -159,7 +160,7 @@ struct DeleteDataTests {
     }
 }
 
-@Suite("B12: DELETE/INSERT WHERE")
+@Suite("B12: DELETE/INSERT WHERE", .heartbeat)
 struct DeleteInsertTests {
 
     @Test("DELETE INSERT WHERE pattern")
@@ -206,7 +207,7 @@ struct DeleteInsertTests {
     }
 }
 
-@Suite("B12: LOAD")
+@Suite("B12: LOAD", .heartbeat)
 struct LoadTests {
 
     @Test("LOAD source IRI")
@@ -238,7 +239,7 @@ struct LoadTests {
     }
 }
 
-@Suite("B12: CLEAR")
+@Suite("B12: CLEAR", .heartbeat)
 struct ClearTests {
 
     @Test("CLEAR DEFAULT")
@@ -284,7 +285,7 @@ struct ClearTests {
     }
 }
 
-@Suite("B12: CREATE/DROP GRAPH")
+@Suite("B12: CREATE/DROP GRAPH", .heartbeat)
 struct CreateDropGraphTests {
 
     @Test("CREATE GRAPH")
@@ -333,7 +334,7 @@ struct CreateDropGraphTests {
 
 // MARK: - B12: Edge Cases
 
-@Suite("B12: INSERT DATA Edge Cases")
+@Suite("B12: INSERT DATA Edge Cases", .heartbeat)
 struct InsertDataEdgeCaseTests {
 
     @Test("INSERT DATA with multiple triples")
@@ -394,7 +395,7 @@ struct InsertDataEdgeCaseTests {
     }
 }
 
-@Suite("B12: DELETE/INSERT Edge Cases")
+@Suite("B12: DELETE/INSERT Edge Cases", .heartbeat)
 struct DeleteInsertEdgeCaseTests {
 
     @Test("DELETE with multiple patterns")
@@ -445,7 +446,7 @@ struct DeleteInsertEdgeCaseTests {
     }
 }
 
-@Suite("B10: CONSTRUCT WHERE Edge Cases")
+@Suite("B10: CONSTRUCT WHERE Edge Cases", .heartbeat)
 struct ConstructWhereEdgeCaseTests {
 
     @Test("CONSTRUCT WHERE with FILTER")

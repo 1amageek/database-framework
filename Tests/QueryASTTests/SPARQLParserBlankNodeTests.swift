@@ -3,6 +3,7 @@
 /// Tests for Phase 2: Parser infrastructure (B3: BASE IRI, B1: Blank nodes, B2: Collections)
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -25,7 +26,7 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
 
 // MARK: - B3: BASE IRI
 
-@Suite("B3: BASE IRI")
+@Suite("B3: BASE IRI", .heartbeat)
 struct BaseIRITests {
 
     @Test("BASE IRI resolves fragment reference")
@@ -83,7 +84,7 @@ struct BaseIRITests {
 
 // MARK: - B1: Anonymous Blank Nodes
 
-@Suite("B1: Anonymous Blank Nodes")
+@Suite("B1: Anonymous Blank Nodes", .heartbeat)
 struct AnonymousBlankNodeTests {
 
     @Test("Empty blank node [] as subject")
@@ -173,7 +174,7 @@ struct AnonymousBlankNodeTests {
 
 // MARK: - B2: RDF Collections
 
-@Suite("B2: RDF Collections")
+@Suite("B2: RDF Collections", .heartbeat)
 struct RDFCollectionTests {
 
     @Test("Empty collection () is rdf:nil")
@@ -273,7 +274,7 @@ struct RDFCollectionTests {
 
 // MARK: - B1: Nested Blank Nodes (Edge Cases)
 
-@Suite("B1: Blank Node Edge Cases")
+@Suite("B1: Blank Node Edge Cases", .heartbeat)
 struct BlankNodeEdgeCaseTests {
 
     @Test("Nested blank node [ :p [ :q :o ] ]")
@@ -360,7 +361,7 @@ struct BlankNodeEdgeCaseTests {
 
 // MARK: - B2: Collection Edge Cases
 
-@Suite("B2: Collection Edge Cases")
+@Suite("B2: Collection Edge Cases", .heartbeat)
 struct CollectionEdgeCaseTests {
 
     @Test("Collection in subject position")
@@ -419,7 +420,7 @@ struct CollectionEdgeCaseTests {
 
 // MARK: - B3: BASE Edge Cases
 
-@Suite("B3: BASE Edge Cases")
+@Suite("B3: BASE Edge Cases", .heartbeat)
 struct BaseEdgeCaseTests {
 
     @Test("Multiple BASE declarations — later overrides earlier")

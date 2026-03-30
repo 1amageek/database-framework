@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -14,7 +15,7 @@ import FDBStorage
 /// - Query.cachePolicy fluent API
 /// - QueryExecutor.cachePolicy fluent API
 /// - FDBContext.fetch() cache integration
-@Suite("CachePolicy Tests", .serialized)
+@Suite("CachePolicy Tests", .serialized, .heartbeat)
 struct CachePolicyTests {
 
     // MARK: - CachePolicy + ReadVersionCache Tests

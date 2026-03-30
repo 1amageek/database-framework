@@ -39,7 +39,7 @@ struct LeaderboardTestScore {
 
 // MARK: - Unit Tests (No FDB)
 
-@Suite("Leaderboard - Unit Tests")
+@Suite("Leaderboard - Unit Tests", .heartbeat)
 struct LeaderboardUnitTests {
 
     @Test("TimeWindowLeaderboardIndexKind identifier")
@@ -136,7 +136,7 @@ struct LeaderboardUnitTests {
 
 // MARK: - Edge Case Tests
 
-@Suite("Leaderboard - Edge Cases")
+@Suite("Leaderboard - Edge Cases", .heartbeat)
 struct LeaderboardEdgeCaseTests {
 
     @Test("Zero score")
@@ -204,7 +204,7 @@ struct LeaderboardEdgeCaseTests {
 
 // MARK: - Integration Tests
 
-@Suite("Leaderboard - Integration Tests", .tags(.fdb), .serialized)
+@Suite("Leaderboard - Integration Tests", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIntegrationTests {
 
     private func createContainer() async throws -> DBContainer {
@@ -369,7 +369,7 @@ struct LeaderboardIntegrationTests {
 
 // MARK: - Index Descriptor Tests
 
-@Suite("Leaderboard - Index Descriptors")
+@Suite("Leaderboard - Index Descriptors", .heartbeat)
 struct LeaderboardIndexDescriptorTests {
 
     @Test("Index descriptors are correctly defined")
@@ -415,7 +415,7 @@ struct LeaderboardIndexDescriptorTests {
 
 // MARK: - Error Tests
 
-@Suite("Leaderboard - Error Handling")
+@Suite("Leaderboard - Error Handling", .heartbeat)
 struct LeaderboardErrorTests {
 
     @Test("FusionQueryError descriptions")

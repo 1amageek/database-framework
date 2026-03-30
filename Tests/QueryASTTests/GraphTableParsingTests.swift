@@ -3,9 +3,10 @@
 /// Tests for GRAPH_TABLE SQL parsing (ISO/IEC 9075-16:2023 SQL/PGQ)
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
-@Suite("GRAPH_TABLE Parsing Tests")
+@Suite("GRAPH_TABLE Parsing Tests", .heartbeat)
 struct GraphTableParsingTests {
 
     @Test("Parse basic GRAPH_TABLE")
@@ -373,7 +374,7 @@ struct GraphTableParsingTests {
 
 // MARK: - Node Pattern Parsing Tests
 
-@Suite("Node Pattern Parsing Tests")
+@Suite("Node Pattern Parsing Tests", .heartbeat)
 struct NodePatternParsingTests {
 
     @Test("Parse simple node")
@@ -443,7 +444,7 @@ struct NodePatternParsingTests {
 
 // MARK: - Edge Pattern Parsing Tests
 
-@Suite("Edge Pattern Parsing Tests")
+@Suite("Edge Pattern Parsing Tests", .heartbeat)
 struct EdgePatternParsingTests {
 
     @Test("Parse simple outgoing edge")
@@ -513,7 +514,7 @@ struct EdgePatternParsingTests {
 
 // MARK: - Invalid Syntax Tests
 
-@Suite("Invalid Edge Pattern Syntax Tests")
+@Suite("Invalid Edge Pattern Syntax Tests", .heartbeat)
 struct InvalidEdgePatternSyntaxTests {
 
     @Test("Reject arrow before bracket: ->[r]")
@@ -702,7 +703,7 @@ struct InvalidEdgePatternSyntaxTests {
 
 // MARK: - Complex Query Tests
 
-@Suite("Complex GRAPH_TABLE Query Tests")
+@Suite("Complex GRAPH_TABLE Query Tests", .heartbeat)
 struct ComplexGraphTableQueryTests {
 
     @Test("Social graph: Friend of friend recommendation")

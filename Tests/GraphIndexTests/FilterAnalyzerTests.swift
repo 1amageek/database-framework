@@ -3,13 +3,14 @@
 /// Unit tests for SPARQL filter analysis and pushdown classification
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 import Graph
 import DatabaseEngine
 @testable import GraphIndex
 
-@Suite("FilterAnalyzer Unit Tests")
+@Suite("FilterAnalyzer Unit Tests", .heartbeat)
 struct FilterAnalyzerTests {
 
     // MARK: - Test Data

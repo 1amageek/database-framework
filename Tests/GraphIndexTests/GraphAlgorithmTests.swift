@@ -151,7 +151,7 @@ private struct TestContext {
 
 // MARK: - PathLength Tests
 
-@Suite("PathLength Tests", .serialized)
+@Suite("PathLength Tests", .serialized, .heartbeat)
 struct PathLengthTests {
 
     @Test("PathLength.exactly matches only specific length")
@@ -198,7 +198,7 @@ struct PathLengthTests {
 
 // MARK: - GraphPath Tests
 
-@Suite("GraphPath Tests", .serialized)
+@Suite("GraphPath Tests", .serialized, .heartbeat)
 struct GraphPathTests {
 
     @Test("GraphPath length is correct")
@@ -250,7 +250,7 @@ struct GraphPathTests {
 
 // MARK: - PageRankResult Tests
 
-@Suite("PageRankResult Tests", .serialized)
+@Suite("PageRankResult Tests", .serialized, .heartbeat)
 struct PageRankResultTests {
 
     @Test("PageRankResult topK returns sorted results")
@@ -287,7 +287,7 @@ struct PageRankResultTests {
 
 // MARK: - CommunityResult Tests
 
-@Suite("CommunityResult Tests", .serialized)
+@Suite("CommunityResult Tests", .serialized, .heartbeat)
 struct CommunityResultTests {
 
     @Test("CommunityResult community lookup")
@@ -339,7 +339,7 @@ struct CommunityResultTests {
 
 // MARK: - ShortestPathConfiguration Tests
 
-@Suite("ShortestPathConfiguration Tests", .serialized)
+@Suite("ShortestPathConfiguration Tests", .serialized, .heartbeat)
 struct ShortestPathConfigurationTests {
 
     @Test("Default configuration has expected values")
@@ -360,7 +360,7 @@ struct ShortestPathConfigurationTests {
 
 // MARK: - ShortestPathFinder Integration Tests
 
-@Suite("ShortestPathFinder Integration Tests", .serialized, .tags(.requiresFDB))
+@Suite("ShortestPathFinder Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
 struct ShortestPathFinderIntegrationTests {
 
     init() async throws {
@@ -484,7 +484,7 @@ struct ShortestPathFinderIntegrationTests {
 
 // MARK: - PageRankComputer Integration Tests
 
-@Suite("PageRankComputer Integration Tests", .serialized, .tags(.requiresFDB))
+@Suite("PageRankComputer Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
 struct PageRankComputerIntegrationTests {
 
     init() async throws {
@@ -658,7 +658,7 @@ struct PageRankComputerIntegrationTests {
 
 // MARK: - CommunityDetector Integration Tests
 
-@Suite("CommunityDetector Integration Tests", .serialized, .tags(.requiresFDB))
+@Suite("CommunityDetector Integration Tests", .serialized, .tags(.requiresFDB), .heartbeat)
 struct CommunityDetectorIntegrationTests {
 
     init() async throws {
@@ -985,7 +985,7 @@ struct CommunityDetectorIntegrationTests {
 
 // MARK: - PageRank Edge Case Tests
 
-@Suite("PageRank Edge Case Tests", .serialized, .tags(.requiresFDB))
+@Suite("PageRank Edge Case Tests", .serialized, .tags(.requiresFDB), .heartbeat)
 struct PageRankEdgeCaseTests {
 
     init() async throws {

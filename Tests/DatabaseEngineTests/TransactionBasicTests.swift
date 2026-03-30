@@ -5,7 +5,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("Transaction Basic Tests")
+@Suite("Transaction Basic Tests", .heartbeat)
 struct TransactionBasicTests {
 
     @Test func simpleReadWrite() async throws {

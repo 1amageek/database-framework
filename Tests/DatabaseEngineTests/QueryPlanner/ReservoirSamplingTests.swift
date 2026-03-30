@@ -3,11 +3,12 @@
 // Tests for Reservoir Sampling with Algorithm L
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
-@Suite("Reservoir Sampling Tests")
+@Suite("Reservoir Sampling Tests", .heartbeat)
 struct ReservoirSamplingTests {
 
     // MARK: - Basic Functionality

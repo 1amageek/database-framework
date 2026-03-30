@@ -20,7 +20,7 @@ struct PGDemoItem: Equatable {
     var tags: [String] = []
 }
 
-@Suite("PostgreSQL CRUD Tests", .serialized)
+@Suite("PostgreSQL CRUD Tests", .serialized, .heartbeat)
 struct PostgreSQLCRUDTests {
 
     private func uniqueID(_ prefix: String) -> String {

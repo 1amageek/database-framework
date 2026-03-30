@@ -127,7 +127,7 @@ private func benchmark(_ name: String, iterations: Int = 1, operation: () async 
 
 // MARK: - RoaringBitmap Performance Tests
 
-@Suite("RoaringBitmap Performance Tests")
+@Suite("RoaringBitmap Performance Tests", .heartbeat)
 struct RoaringBitmapPerformanceTests {
 
     @Test("Add performance - 10,000 values")
@@ -305,7 +305,7 @@ struct RoaringBitmapPerformanceTests {
 
 // MARK: - BitmapIndex FDB Performance Tests
 
-@Suite("BitmapIndex FDB Performance Tests", .tags(.fdb), .serialized)
+@Suite("BitmapIndex FDB Performance Tests", .tags(.fdb), .serialized, .heartbeat)
 struct BitmapIndexFDBPerformanceTests {
 
     @Test("Bulk insert performance - 100 records, 10 categories")

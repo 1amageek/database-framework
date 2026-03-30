@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Composite Primary Key Tests")
+@Suite("MIN/MAX Composite Primary Key Tests", .heartbeat)
 struct MinMaxCompositePrimaryKeyTests {
 
     init() async throws {

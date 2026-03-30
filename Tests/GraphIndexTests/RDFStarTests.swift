@@ -3,6 +3,7 @@
 // Tests for RDF-star implementation: QuotedTripleEncoding, ExecutionTerm, ExpressionEvaluator
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 import QueryIR
@@ -11,7 +12,7 @@ import QueryIR
 
 // MARK: - QuotedTripleEncoding Tests
 
-@Suite("QuotedTripleEncoding")
+@Suite("QuotedTripleEncoding", .heartbeat)
 struct QuotedTripleEncodingTests {
 
     // MARK: Roundtrip
@@ -236,7 +237,7 @@ struct QuotedTripleEncodingTests {
 
 // MARK: - ExecutionTerm QuotedTriple Tests
 
-@Suite("ExecutionTerm QuotedTriple")
+@Suite("ExecutionTerm QuotedTriple", .heartbeat)
 struct ExecutionTermQuotedTripleTests {
 
     @Test("quotedTriple isBound when all components bound")
@@ -322,7 +323,7 @@ struct ExecutionTermQuotedTripleTests {
 
 // MARK: - ExecutionTriple Variables Tests
 
-@Suite("ExecutionTriple QuotedTriple Variables")
+@Suite("ExecutionTriple QuotedTriple Variables", .heartbeat)
 struct ExecutionTripleQuotedTripleTests {
 
     @Test("Variables from quotedTriple in subject")
@@ -381,7 +382,7 @@ struct ExecutionTripleQuotedTripleTests {
 
 // MARK: - ExpressionEvaluator RDF-star Tests
 
-@Suite("ExpressionEvaluator RDF-star")
+@Suite("ExpressionEvaluator RDF-star", .heartbeat)
 struct ExpressionEvaluatorRDFStarTests {
 
     @Test("TRIPLE() constructs a quoted triple string")
@@ -526,7 +527,7 @@ struct ExpressionEvaluatorRDFStarTests {
 /// Tests that RDF-star functions in SPARQL strings are parsed into the correct
 /// Expression types AND produce correct values when evaluated.
 /// This validates the full path: SPARQL text → SPARQLParser → Expression → ExpressionEvaluator → result.
-@Suite("RDF-star SPARQL Integration")
+@Suite("RDF-star SPARQL Integration", .heartbeat)
 struct RDFStarSPARQLIntegrationTests {
 
     private let parser = SPARQLParser()

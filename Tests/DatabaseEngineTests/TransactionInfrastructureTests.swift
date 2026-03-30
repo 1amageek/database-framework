@@ -9,6 +9,7 @@
 // - TransactionConfiguration (ID, logging, tags)
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -75,7 +76,7 @@ final class AtomicArray<T: Sendable>: Sendable {
 
 // MARK: - CommitCheck Tests
 
-@Suite("CommitCheck Tests", .serialized)
+@Suite("CommitCheck Tests", .serialized, .heartbeat)
 struct CommitCheckTests {
 
     // MARK: - CommitCheckRegistry Basic Tests
@@ -297,7 +298,7 @@ struct CommitCheckTests {
 
 // MARK: - PostCommit Tests
 
-@Suite("PostCommit Tests", .serialized)
+@Suite("PostCommit Tests", .serialized, .heartbeat)
 struct PostCommitTests {
 
     // MARK: - PostCommitRegistry Basic Tests
@@ -503,7 +504,7 @@ struct PostCommitTests {
 
 // MARK: - TransactionListener Tests
 
-@Suite("TransactionListener Tests", .serialized)
+@Suite("TransactionListener Tests", .serialized, .heartbeat)
 struct TransactionListenerTests {
 
     // MARK: - TransactionListenerRegistry Basic Tests
@@ -826,7 +827,7 @@ struct TransactionListenerTests {
 
 // MARK: - TransactionConfiguration Tests
 
-@Suite("TransactionConfiguration Extended Tests", .serialized)
+@Suite("TransactionConfiguration Extended Tests", .serialized, .heartbeat)
 struct TransactionConfigurationExtendedTests {
 
     // MARK: - Tracing Tests

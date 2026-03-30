@@ -66,7 +66,7 @@ struct LargeDataModel: Persistable {
 
 // MARK: - Tests
 
-@Suite("Large Value Storage Tests", .serialized)
+@Suite("Large Value Storage Tests", .serialized, .heartbeat)
 struct LargeValueStorageTests {
 
     private func createContainer() async throws -> DBContainer {

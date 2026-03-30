@@ -3,6 +3,7 @@
 // Tests for PreparedPlan, PlanCache, and QueryFingerprint
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -10,7 +11,7 @@ import Foundation
 
 // Re-use QPTestUser from QueryPlannerTests.swift
 
-@Suite("PreparedPlan Tests")
+@Suite("PreparedPlan Tests", .heartbeat)
 struct PreparedPlanTests {
 
     // MARK: - QueryFingerprint Tests
@@ -318,7 +319,7 @@ struct PreparedPlanTests {
 
 // MARK: - ParameterBindingError Tests
 
-@Suite("ParameterBindingError Tests")
+@Suite("ParameterBindingError Tests", .heartbeat)
 struct ParameterBindingErrorTests {
 
     @Test("Error descriptions are informative")

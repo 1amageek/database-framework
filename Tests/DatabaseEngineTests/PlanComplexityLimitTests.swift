@@ -3,10 +3,11 @@
 // Tests for PlanComplexityLimit and QueryPlannerConfiguration
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("PlanComplexityLimit Tests")
+@Suite("PlanComplexityLimit Tests", .heartbeat)
 struct PlanComplexityLimitTests {
 
     // MARK: - QueryPlannerConfiguration Tests

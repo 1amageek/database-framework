@@ -10,6 +10,7 @@
 // not GraphIndex. They belong in a Database-level test target.
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 import Graph
@@ -18,7 +19,7 @@ import QueryIR
 
 // MARK: - ExecutionTriple Named Graph Tests
 
-@Suite("ExecutionTriple Named Graph Tests")
+@Suite("ExecutionTriple Named Graph Tests", .heartbeat)
 struct ExecutionTripleNamedGraphTests {
 
     @Test("Triple with graph stores graph term")
@@ -159,7 +160,7 @@ struct ExecutionTripleNamedGraphTests {
 
 // MARK: - ExecutionPattern withGraph Tests
 
-@Suite("ExecutionPattern Named Graph Tests")
+@Suite("ExecutionPattern Named Graph Tests", .heartbeat)
 struct ExecutionPatternNamedGraphTests {
 
     private let graphTerm: ExecutionTerm = .value("g1")
@@ -265,7 +266,7 @@ struct ExecutionPatternNamedGraphTests {
 
 // MARK: - GraphIndexKind Named Graph Tests
 
-@Suite("GraphIndexKind Named Graph Tests")
+@Suite("GraphIndexKind Named Graph Tests", .heartbeat)
 struct GraphIndexKindNamedGraphTests {
 
     @Test("fieldNames includes graph field when set")

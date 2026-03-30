@@ -5,13 +5,15 @@
 // Tests OntologyStorage, PersistentUnionFind, OWL2RLRules, and InferenceProvenance
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - OntologyMetadata Tests
 
-@Suite("OntologyMetadata")
+@Suite("OntologyMetadata", .heartbeat)
 struct OntologyMetadataTests {
 
     @Test("Schema version comparison")
@@ -94,7 +96,7 @@ struct OntologyMetadataTests {
 
 // MARK: - StoredClassDefinition Tests
 
-@Suite("StoredClassDefinition")
+@Suite("StoredClassDefinition", .heartbeat)
 struct StoredClassDefinitionTests {
 
     @Test("Basic class definition")
@@ -180,7 +182,7 @@ struct StoredClassDefinitionTests {
 
 // MARK: - StoredPropertyDefinition Tests
 
-@Suite("StoredPropertyDefinition")
+@Suite("StoredPropertyDefinition", .heartbeat)
 struct StoredPropertyDefinitionTests {
 
     @Test("Object property definition")
@@ -303,7 +305,7 @@ struct StoredPropertyDefinitionTests {
 
 // MARK: - OWL2RLRules Tests
 
-@Suite("OWL2RLRules")
+@Suite("OWL2RLRules", .heartbeat)
 struct OWL2RLRulesTests {
 
     @Test("Rule categories")
@@ -393,7 +395,7 @@ struct OWL2RLRulesTests {
 
 // MARK: - InferenceProvenance Tests
 
-@Suite("InferenceProvenance")
+@Suite("InferenceProvenance", .heartbeat)
 struct InferenceProvenanceTests {
 
     @Test("Triple key creation")
@@ -522,7 +524,7 @@ struct InferenceProvenanceTests {
 
 // MARK: - DependencyGraph Tests
 
-@Suite("DependencyGraph")
+@Suite("DependencyGraph", .heartbeat)
 struct DependencyGraphTests {
 
     @Test("Add dependency")
@@ -578,7 +580,7 @@ struct DependencyGraphTests {
 
 // MARK: - InferenceStatistics Tests
 
-@Suite("InferenceStatistics")
+@Suite("InferenceStatistics", .heartbeat)
 struct InferenceStatisticsTests {
 
     @Test("Default statistics")

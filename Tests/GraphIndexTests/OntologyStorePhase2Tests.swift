@@ -17,8 +17,9 @@ import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
+@testable import OntologyIndex
 
-@Suite("OntologyStore Phase 2 Fixes", .serialized)
+@Suite("OntologyStore Phase 2 Fixes", .serialized, .heartbeat)
 struct OntologyStorePhase2Tests {
 
     private static let testOntologyIRI = "http://test.org/phase2"

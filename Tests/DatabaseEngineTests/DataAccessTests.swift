@@ -3,6 +3,7 @@
 // FDBIndexing Tests - DataAccess tests for nested field extraction
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -50,7 +51,7 @@ struct TestSimpleUser {
 
 // MARK: - DataAccess Tests
 
-@Suite("DataAccess Tests")
+@Suite("DataAccess Tests", .heartbeat)
 struct DataAccessTests {
 
     // MARK: - Simple Field Extraction Tests

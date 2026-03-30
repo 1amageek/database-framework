@@ -7,7 +7,7 @@ import Core
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("Storage Invariant Tests", .tags(.requiresFDB), .serialized)
+@Suite("Storage Invariant Tests", .tags(.requiresFDB), .serialized, .heartbeat)
 struct StorageInvariantTests {
 
     private func openDB() async throws -> any StorageEngine {

@@ -3,6 +3,7 @@
 // Tests for RuntimeStatistics tracking and feedback
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -10,7 +11,7 @@ import Foundation
 
 // Re-use QPTestUser from QueryPlannerTests.swift
 
-@Suite("RuntimeStatistics Tests")
+@Suite("RuntimeStatistics Tests", .heartbeat)
 struct RuntimeStatisticsTests {
 
     // MARK: - ExecutionRecord Tests
@@ -324,7 +325,7 @@ struct RuntimeStatisticsTests {
 
 // MARK: - CollectedStatisticsProvider Integration Tests
 
-@Suite("CollectedStatisticsProvider Integration Tests")
+@Suite("CollectedStatisticsProvider Integration Tests", .heartbeat)
 struct CollectedStatisticsProviderTests {
 
     @Test("Provider integrates with tracker updates")

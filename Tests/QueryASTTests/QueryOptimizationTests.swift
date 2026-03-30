@@ -5,11 +5,12 @@
 /// Coverage: Join ordering, index selection, filter pushdown, projection pushdown, cost comparison
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - Query Optimization Tests
 
-@Suite("Query Optimization Tests")
+@Suite("Query Optimization Tests", .heartbeat)
 struct QueryOptimizationTests {
 
     // MARK: - Join Reordering Tests

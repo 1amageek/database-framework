@@ -214,7 +214,7 @@ private struct ACORNTestContext {
 
 // MARK: - ACORN Parameters Unit Tests
 
-@Suite("ACORN Parameters Unit Tests")
+@Suite("ACORN Parameters Unit Tests", .heartbeat)
 struct ACORNParametersUnitTests {
 
     @Test("Default parameters")
@@ -236,7 +236,7 @@ struct ACORNParametersUnitTests {
 
 // MARK: - ACORN Integration Tests
 
-@Suite("ACORN Filtered Search Tests", .tags(.fdb), .serialized)
+@Suite("ACORN Filtered Search Tests", .tags(.fdb), .serialized, .heartbeat)
 struct ACORNFilteredSearchTests {
 
     // Helper to create normalized unit vectors

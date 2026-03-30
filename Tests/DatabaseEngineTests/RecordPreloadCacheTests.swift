@@ -3,6 +3,7 @@
 // DatabaseEngine Tests - Record preload cache tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -18,7 +19,7 @@ struct CacheTestItem: Equatable {
 
 // MARK: - CacheConfiguration Tests
 
-@Suite("CacheConfiguration Tests")
+@Suite("CacheConfiguration Tests", .heartbeat)
 struct CacheConfigurationTests {
 
     @Test("Default configuration values")
@@ -61,7 +62,7 @@ struct CacheConfigurationTests {
 
 // MARK: - RecordPreloadCache Tests
 
-@Suite("RecordPreloadCache Tests")
+@Suite("RecordPreloadCache Tests", .heartbeat)
 struct RecordPreloadCacheTests {
 
     @Test("Put and get item")
@@ -138,7 +139,7 @@ struct RecordPreloadCacheTests {
 
 // MARK: - Preload Cache Statistics Tests
 
-@Suite("Preload Cache Statistics Tests")
+@Suite("Preload Cache Statistics Tests", .heartbeat)
 struct PreloadCacheStatisticsTests {
 
     @Test("Hit and miss tracking")
@@ -189,7 +190,7 @@ struct PreloadCacheStatisticsTests {
 
 // MARK: - Cache Eviction Tests
 
-@Suite("Cache Eviction Tests")
+@Suite("Cache Eviction Tests", .heartbeat)
 struct CacheEvictionTests {
 
     @Test("LRU eviction")
@@ -258,7 +259,7 @@ struct CacheEvictionTests {
 
 // MARK: - Bulk Operations Tests
 
-@Suite("Cache Bulk Operations Tests")
+@Suite("Cache Bulk Operations Tests", .heartbeat)
 struct CacheBulkOperationsTests {
 
     @Test("Preload multiple items")
@@ -296,7 +297,7 @@ struct CacheBulkOperationsTests {
 
 // MARK: - GetOrFetch Tests
 
-@Suite("Cache GetOrFetch Tests")
+@Suite("Cache GetOrFetch Tests", .heartbeat)
 struct CacheGetOrFetchTests {
 
     @Test("GetOrFetch returns cached item")
@@ -345,7 +346,7 @@ struct CacheGetOrFetchTests {
 
 // MARK: - ScopedCache Tests
 
-@Suite("ScopedCache Tests")
+@Suite("ScopedCache Tests", .heartbeat)
 struct ScopedCacheTests {
 
     @Test("Scoped key generation")
@@ -374,7 +375,7 @@ struct ScopedCacheTests {
 
 // MARK: - CacheWarmer Tests
 
-@Suite("CacheWarmer Tests")
+@Suite("CacheWarmer Tests", .heartbeat)
 struct CacheWarmerTests {
 
     @Test("Warm from array")

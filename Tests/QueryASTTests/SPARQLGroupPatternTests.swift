@@ -4,6 +4,7 @@
 /// Validates rules [54]-[67] per W3C SPARQL 1.1 specification
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - Helper
@@ -29,7 +30,7 @@ private func extractTriples(_ pattern: GraphPattern) -> [TriplePattern]? {
 
 // MARK: - Group 1: Bug Reproduction Tests
 
-@Suite("SPARQL GroupPattern - Bug Reproduction", .serialized)
+@Suite("SPARQL GroupPattern - Bug Reproduction", .serialized, .heartbeat)
 struct SPARQLGroupPatternBugTests {
 
     init() {
@@ -138,7 +139,7 @@ struct SPARQLGroupPatternBugTests {
 
 // MARK: - Group 2: TriplesBlock Recursion Tests
 
-@Suite("SPARQL GroupPattern - TriplesBlock", .serialized)
+@Suite("SPARQL GroupPattern - TriplesBlock", .serialized, .heartbeat)
 struct SPARQLTriplesBlockTests {
 
     init() {
@@ -246,7 +247,7 @@ struct SPARQLTriplesBlockTests {
 
 // MARK: - Group 3: UNION (GroupOrUnionGraphPattern [67])
 
-@Suite("SPARQL GroupPattern - UNION", .serialized)
+@Suite("SPARQL GroupPattern - UNION", .serialized, .heartbeat)
 struct SPARQLUnionTests {
 
     init() {
@@ -340,7 +341,7 @@ struct SPARQLUnionTests {
 
 // MARK: - Group 4: SubSelect Tests
 
-@Suite("SPARQL GroupPattern - SubSelect", .serialized)
+@Suite("SPARQL GroupPattern - SubSelect", .serialized, .heartbeat)
 struct SPARQLSubSelectTests {
 
     init() {
@@ -404,7 +405,7 @@ struct SPARQLSubSelectTests {
 
 // MARK: - Group 5: Complex Combination Tests
 
-@Suite("SPARQL GroupPattern - Complex Patterns", .serialized)
+@Suite("SPARQL GroupPattern - Complex Patterns", .serialized, .heartbeat)
 struct SPARQLComplexPatternTests {
 
     init() {
@@ -636,7 +637,7 @@ struct SPARQLComplexPatternTests {
 
 // MARK: - Group 6: Edge Cases and Regression Guards
 
-@Suite("SPARQL GroupPattern - Edge Cases", .serialized)
+@Suite("SPARQL GroupPattern - Edge Cases", .serialized, .heartbeat)
 struct SPARQLEdgeCaseTests {
 
     init() {

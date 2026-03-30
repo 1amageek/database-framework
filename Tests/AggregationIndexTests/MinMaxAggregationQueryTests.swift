@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX AggregationQuery Integration Tests", .serialized)
+@Suite("MIN/MAX AggregationQuery Integration Tests", .serialized, .heartbeat)
 struct MinMaxAggregationQueryTests {
 
     init() async throws {

@@ -22,7 +22,7 @@ struct Sale {
     #Index(MaxIndexKind<Sale, Double>(groupBy: [\.region], value: \.amount), name: "region_max")
 }
 
-@Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized)
+@Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized, .heartbeat)
 struct MinMaxBatchBenchmark {
     nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: DBContainer

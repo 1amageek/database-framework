@@ -198,7 +198,7 @@ private struct QuadTestContext {
 
 // MARK: - TripleStore Strategy Key Tests
 
-@Suite("NamedGraph TripleStore Key Tests", .tags(.fdb), .serialized)
+@Suite("NamedGraph TripleStore Key Tests", .tags(.fdb), .serialized, .heartbeat)
 struct NamedGraphTripleStoreKeyTests {
 
     @Test("TripleStore with graph produces 3 entries")
@@ -319,7 +319,7 @@ struct NamedGraphTripleStoreKeyTests {
 
 // MARK: - Hexastore Strategy Key Tests
 
-@Suite("NamedGraph Hexastore Key Tests", .tags(.fdb), .serialized)
+@Suite("NamedGraph Hexastore Key Tests", .tags(.fdb), .serialized, .heartbeat)
 struct NamedGraphHexastoreKeyTests {
 
     @Test("Hexastore with graph produces 6 entries")
@@ -390,7 +390,7 @@ struct NamedGraphHexastoreKeyTests {
 
 // MARK: - Adjacency Strategy Key Tests
 
-@Suite("NamedGraph Adjacency Key Tests", .tags(.fdb), .serialized)
+@Suite("NamedGraph Adjacency Key Tests", .tags(.fdb), .serialized, .heartbeat)
 struct NamedGraphAdjacencyKeyTests {
 
     @Test("Adjacency with graph produces 2 entries")
@@ -465,7 +465,7 @@ struct NamedGraphAdjacencyKeyTests {
 
 // MARK: - Backward Compatibility Tests
 
-@Suite("NamedGraph Backward Compatibility Key Tests", .tags(.fdb), .serialized)
+@Suite("NamedGraph Backward Compatibility Key Tests", .tags(.fdb), .serialized, .heartbeat)
 struct NamedGraphBackwardCompatibilityKeyTests {
 
     @Test("TripleStore without graph produces 3-element keys")

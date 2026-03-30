@@ -3,10 +3,11 @@
 // Tests for OntologyContext — the bridge between SPARQL executor and OWL ontology.
 
 import Testing
+import TestHeartbeat
 import Graph
 @testable import GraphIndex
 
-@Suite("OntologyContext")
+@Suite("OntologyContext", .heartbeat)
 struct OntologyContextTests {
 
     // MARK: - Helpers

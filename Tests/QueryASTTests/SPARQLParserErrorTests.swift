@@ -3,6 +3,7 @@
 /// Tests for error handling and malformed input
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -20,7 +21,7 @@ private func parseStatement(_ sparql: String) throws -> QueryStatement {
 
 // MARK: - Syntax Errors
 
-@Suite("Syntax Error Handling")
+@Suite("Syntax Error Handling", .heartbeat)
 struct SyntaxErrorTests {
 
     @Test("Unterminated string throws error")
@@ -112,7 +113,7 @@ struct SyntaxErrorTests {
 
 // MARK: - Unicode Escape Edge Cases
 
-@Suite("Unicode Escape Edge Cases")
+@Suite("Unicode Escape Edge Cases", .heartbeat)
 struct UnicodeEscapeEdgeCaseTests {
 
     @Test("Valid 4-digit \\u escape produces correct character")
@@ -160,7 +161,7 @@ struct UnicodeEscapeEdgeCaseTests {
 
 // MARK: - VERSION Errors
 
-@Suite("VERSION Error Handling")
+@Suite("VERSION Error Handling", .heartbeat)
 struct VersionErrorTests {
 
     @Test("VERSION without string throws error")
@@ -173,7 +174,7 @@ struct VersionErrorTests {
 
 // MARK: - SPARQL Update Errors
 
-@Suite("SPARQL Update Error Handling")
+@Suite("SPARQL Update Error Handling", .heartbeat)
 struct UpdateErrorTests {
 
     @Test("LOAD without IRI throws error")
@@ -209,7 +210,7 @@ struct UpdateErrorTests {
 
 // MARK: - Construct Error Cases
 
-@Suite("CONSTRUCT Error Handling")
+@Suite("CONSTRUCT Error Handling", .heartbeat)
 struct ConstructErrorTests {
 
     @Test("CONSTRUCT without template or WHERE throws error")
@@ -222,7 +223,7 @@ struct ConstructErrorTests {
 
 // MARK: - LATERAL Errors
 
-@Suite("LATERAL Error Handling")
+@Suite("LATERAL Error Handling", .heartbeat)
 struct LateralErrorTests {
 
     @Test("LATERAL without opening brace throws error")
@@ -242,7 +243,7 @@ struct LateralErrorTests {
 
 // MARK: - Robustness
 
-@Suite("Parser Robustness")
+@Suite("Parser Robustness", .heartbeat)
 struct ParserRobustnessTests {
 
     @Test("Very long variable name")

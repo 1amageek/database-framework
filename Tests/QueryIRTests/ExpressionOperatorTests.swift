@@ -2,9 +2,10 @@
 /// Tests for QueryIR Expression operators
 
 import Testing
+import TestHeartbeat
 @testable import QueryIR
 
-@Suite("Expression Operators")
+@Suite("Expression Operators", .heartbeat)
 struct ExpressionOperatorTests {
 
     // MARK: - Arithmetic Operators
@@ -268,7 +269,7 @@ struct ExpressionOperatorTests {
     }
 }
 
-@Suite("ColumnRef")
+@Suite("ColumnRef", .heartbeat)
 struct ColumnRefTests {
 
     @Test func unqualifiedColumn() {
@@ -304,7 +305,7 @@ struct ColumnRefTests {
     }
 }
 
-@Suite("Variable")
+@Suite("Variable", .heartbeat)
 struct VariableTests {
 
     @Test func variableWithoutPrefix() {

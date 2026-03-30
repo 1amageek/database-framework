@@ -25,7 +25,7 @@ struct User {
     #Index(ScalarIndexKind<User>(fields: [\.email]), storedFields: [\User.name, \User.age], name: "email_covering")
 }
 
-@Suite("ScalarIndex: Covering Index Benchmark", .serialized)
+@Suite("ScalarIndex: Covering Index Benchmark", .serialized, .heartbeat)
 struct CoveringIndexBenchmark {
     nonisolated(unsafe) private let database: any StorageEngine
     nonisolated(unsafe) private let container: DBContainer

@@ -166,7 +166,7 @@ private func measure<T>(_ operation: () async throws -> T) async throws -> (resu
 
 // MARK: - Performance Tests
 
-@Suite("PermutedIndex Performance Tests", .tags(.fdb, .performance), .serialized)
+@Suite("PermutedIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
 struct PermutedIndexPerformanceTests {
 
     // MARK: - Bulk Insert Tests

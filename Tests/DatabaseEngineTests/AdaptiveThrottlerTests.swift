@@ -3,10 +3,11 @@
 // Tests for AdaptiveThrottler
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("AdaptiveThrottler Tests")
+@Suite("AdaptiveThrottler Tests", .heartbeat)
 struct AdaptiveThrottlerTests {
 
     // MARK: - Configuration Tests

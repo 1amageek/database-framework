@@ -3,6 +3,7 @@
 // DatabaseEngine Tests - BatchFetcher configuration and result types
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -11,7 +12,7 @@ import Core
 
 // MARK: - BatchFetchConfiguration Tests
 
-@Suite("BatchFetchConfiguration Tests")
+@Suite("BatchFetchConfiguration Tests", .heartbeat)
 struct BatchFetchConfigurationTests {
 
     @Test("Default configuration values")
@@ -83,7 +84,7 @@ struct BatchFetchConfigurationTests {
 
 // MARK: - BatchFetchResult Tests
 
-@Suite("BatchFetchResult Tests")
+@Suite("BatchFetchResult Tests", .heartbeat)
 struct BatchFetchResultTests {
 
     // Test model
@@ -169,7 +170,7 @@ struct BatchFetchResultTests {
 
 // MARK: - BatchFetchStatistics Tests
 
-@Suite("BatchFetchStatistics Tests")
+@Suite("BatchFetchStatistics Tests", .heartbeat)
 struct BatchFetchStatisticsTests {
 
     @Test("Initial statistics are zero")
@@ -236,7 +237,7 @@ struct BatchFetchStatisticsTests {
 
 // MARK: - BatchFetcher Integration Tests
 
-@Suite("BatchFetcher Integration Tests", .serialized)
+@Suite("BatchFetcher Integration Tests", .serialized, .heartbeat)
 struct BatchFetcherIntegrationTests {
 
     @Persistable

@@ -146,7 +146,7 @@ private struct TestAuth: AuthContext {
 
 // MARK: - Tests
 
-@Suite("Security Strict Mode", .serialized)
+@Suite("Security Strict Mode", .serialized, .heartbeat)
 struct SecurityStrictModeTests {
 
     init() async throws {

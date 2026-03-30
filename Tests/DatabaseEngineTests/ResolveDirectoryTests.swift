@@ -14,7 +14,7 @@ import TestSupport
 /// - resolveDirectory(for type: any Persistable.Type) - Type-erased resolution
 /// - Directory caching behavior
 /// - Multiple types with independent directories
-@Suite("Resolve Directory Tests", .serialized)
+@Suite("Resolve Directory Tests", .serialized, .heartbeat)
 struct ResolveDirectoryTests {
 
     // MARK: - Helper Types

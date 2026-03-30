@@ -12,7 +12,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("SPARQL Function Debug", .serialized)
+@Suite("SPARQL Function Debug", .serialized, .heartbeat)
 struct SPARQLFunctionDebugTest {
 
     init() async throws {

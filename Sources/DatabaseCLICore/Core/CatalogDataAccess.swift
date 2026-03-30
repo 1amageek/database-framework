@@ -12,7 +12,7 @@ import Graph
 
 /// Direct FDB data access driven by Schema.Entity
 public struct CatalogDataAccess: Sendable {
-    nonisolated(unsafe) public let database: any StorageEngine
+    public let database: any StorageEngine
     private let entities: [String: Schema.Entity]
     private let transformer = TransformingSerializer(configuration: .default)
 

@@ -3,9 +3,10 @@
 /// Tests for the QueryAST module
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
-@Suite("QueryAST Tests")
+@Suite("QueryAST Tests", .heartbeat)
 struct QueryASTTests {
 
     // MARK: - Literal Tests
@@ -395,7 +396,7 @@ struct QueryASTTests {
 
 // MARK: - Parser Tests
 
-@Suite("SQL Parser Tests", .serialized)
+@Suite("SQL Parser Tests", .serialized, .heartbeat)
 struct SQLParserTests {
 
     @Test("Parse simple SELECT")
@@ -476,7 +477,7 @@ struct SQLParserTests {
     }
 }
 
-@Suite("SPARQL Parser Tests", .serialized)
+@Suite("SPARQL Parser Tests", .serialized, .heartbeat)
 struct SPARQLParserTests {
 
     init() {

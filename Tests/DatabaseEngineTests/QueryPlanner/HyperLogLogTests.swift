@@ -3,6 +3,7 @@
 // Tests for HyperLogLog++ cardinality estimation
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 import Core
@@ -10,7 +11,7 @@ import Core
 // Use type alias to disambiguate from Core.HyperLogLog
 typealias HyperLogLogPP = DatabaseEngine.HyperLogLog
 
-@Suite("HyperLogLog++ Tests")
+@Suite("HyperLogLog++ Tests", .heartbeat)
 struct HyperLogLogTests {
 
     // MARK: - Basic Functionality

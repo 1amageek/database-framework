@@ -3,11 +3,12 @@
 // FDBIndexing Tests - TypeValidation helper function tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
 
-@Suite("TypeValidation Tests")
+@Suite("TypeValidation Tests", .heartbeat)
 struct TypeValidationTests {
 
     // MARK: - isNumeric Tests

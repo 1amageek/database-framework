@@ -163,7 +163,7 @@ private struct TestContext {
 
 // MARK: - Performance Tests
 
-@Suite("VersionIndex Performance Tests", .tags(.fdb, .performance), .serialized)
+@Suite("VersionIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
 struct VersionIndexPerformanceTests {
 
     // MARK: - Insert Performance

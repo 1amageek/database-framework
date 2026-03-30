@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -14,7 +15,7 @@ import FDBStorage
 /// - FDBContext.withTransaction API
 /// - Snapshot vs transactional read semantics
 /// - Index updates within transactions
-@Suite("TransactionContext Tests", .serialized)
+@Suite("TransactionContext Tests", .serialized, .heartbeat)
 struct TransactionContextTests {
 
     // MARK: - Helper Types

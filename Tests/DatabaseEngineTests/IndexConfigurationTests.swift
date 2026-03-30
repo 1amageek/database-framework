@@ -3,6 +3,7 @@
 // FDBIndexingTests - Tests for IndexConfiguration propagation and application
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 @testable import Core
@@ -10,7 +11,7 @@ import StorageKit
 @testable import DatabaseEngine
 
 /// Tests for IndexConfiguration functionality
-@Suite("IndexConfiguration Tests")
+@Suite("IndexConfiguration Tests", .heartbeat)
 struct IndexConfigurationTests {
 
     // MARK: - IndexConfigurationApplicable Tests

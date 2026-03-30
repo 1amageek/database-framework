@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Edge Case Tests")
+@Suite("MIN/MAX Edge Case Tests", .heartbeat)
 struct MinMaxEdgeCaseTests {
 
     init() async throws {

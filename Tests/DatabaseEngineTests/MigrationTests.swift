@@ -12,7 +12,7 @@ import TestSupport
 /// **Coverage**:
 /// - Schema version operations
 /// - MigrationContext batch operations
-@Suite("Migration Tests", .serialized)
+@Suite("Migration Tests", .serialized, .heartbeat)
 struct MigrationTests {
 
     // MARK: - Helper Types

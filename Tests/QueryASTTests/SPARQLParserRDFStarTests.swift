@@ -3,9 +3,10 @@
 // Tests for RDF-star parsing in SPARQLParser
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
-@Suite("SPARQLParser RDF-star")
+@Suite("SPARQLParser RDF-star", .heartbeat)
 struct SPARQLParserRDFStarTests {
 
     private let parser = SPARQLParser()

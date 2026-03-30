@@ -3,6 +3,7 @@
 // FDBIndexing Tests - IndexDescriptor tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -21,7 +22,7 @@ struct TestUser {
     var category: String = ""
 }
 
-@Suite("IndexDescriptor Tests")
+@Suite("IndexDescriptor Tests", .heartbeat)
 struct IndexDescriptorTests {
 
     // MARK: - Initialization Tests

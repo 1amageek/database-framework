@@ -3,11 +3,12 @@
 /// Comprehensive tests for SPARQL GraphPattern types
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - GraphPattern Builder Tests
 
-@Suite("GraphPattern Builder Tests")
+@Suite("GraphPattern Builder Tests", .heartbeat)
 struct GraphPatternBuilderTests {
 
     @Test("GraphPattern.bgp with varargs")
@@ -197,7 +198,7 @@ struct GraphPatternBuilderTests {
 
 // MARK: - GraphPattern Analysis Tests
 
-@Suite("GraphPattern Analysis Tests")
+@Suite("GraphPattern Analysis Tests", .heartbeat)
 struct GraphPatternAnalysisTests {
 
     @Test("variables - basic pattern")
@@ -396,7 +397,7 @@ struct GraphPatternAnalysisTests {
 
 // MARK: - GraphPattern Transformation Tests
 
-@Suite("GraphPattern Transformation Tests")
+@Suite("GraphPattern Transformation Tests", .heartbeat)
 struct GraphPatternTransformationTests {
 
     @Test("flattened - nested joins")
@@ -470,7 +471,7 @@ struct GraphPatternTransformationTests {
 
 // MARK: - GraphPattern SPARQL Serialization Tests
 
-@Suite("GraphPattern SPARQL Serialization Tests")
+@Suite("GraphPattern SPARQL Serialization Tests", .heartbeat)
 struct GraphPatternSPARQLSerializationTests {
 
     @Test("toSPARQL - basic pattern")
@@ -605,7 +606,7 @@ struct GraphPatternSPARQLSerializationTests {
 
 // MARK: - SelectQuery SPARQL Serialization Tests
 
-@Suite("SelectQuery SPARQL Serialization Tests")
+@Suite("SelectQuery SPARQL Serialization Tests", .heartbeat)
 struct SelectQuerySPARQLSerializationTests {
 
     @Test("toSPARQL - basic SELECT")

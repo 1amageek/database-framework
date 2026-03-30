@@ -3,11 +3,12 @@
 /// Comprehensive tests for SQL/PGQ GRAPH_TABLE types
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - GraphTableSource Tests
 
-@Suite("GraphTableSource Tests")
+@Suite("GraphTableSource Tests", .heartbeat)
 struct GraphTableSourceTests {
 
     @Test("GraphTableSource basic construction")
@@ -193,7 +194,7 @@ struct GraphTableSourceTests {
 
 // MARK: - Shortest Path Tests
 
-@Suite("GraphTableSource Shortest Path Tests")
+@Suite("GraphTableSource Shortest Path Tests", .heartbeat)
 struct GraphTableSourceShortestPathTests {
 
     @Test("shortestPath builder")
@@ -262,7 +263,7 @@ struct GraphTableSourceShortestPathTests {
 
 // MARK: - Common Pattern Templates Tests
 
-@Suite("GraphTableSource Pattern Templates Tests")
+@Suite("GraphTableSource Pattern Templates Tests", .heartbeat)
 struct GraphTableSourcePatternTemplatesTests {
 
     @Test("friendOfFriend pattern")
@@ -306,7 +307,7 @@ struct GraphTableSourcePatternTemplatesTests {
 
 // MARK: - GraphTableValidationError Tests
 
-@Suite("GraphTableValidationError Tests")
+@Suite("GraphTableValidationError Tests", .heartbeat)
 struct GraphTableValidationErrorTests {
 
     @Test("patternError wrapping")
@@ -349,7 +350,7 @@ struct GraphTableValidationErrorTests {
 
 // MARK: - GraphTableColumn Tests
 
-@Suite("GraphTableColumn Tests")
+@Suite("GraphTableColumn Tests", .heartbeat)
 struct GraphTableColumnTests {
 
     @Test("GraphTableColumn construction")

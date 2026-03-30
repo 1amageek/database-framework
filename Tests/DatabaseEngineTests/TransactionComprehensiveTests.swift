@@ -8,7 +8,7 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("Transaction Comprehensive Tests", .serialized)
+@Suite("Transaction Comprehensive Tests", .serialized, .heartbeat)
 struct TransactionComprehensiveTests {
 
     // MARK: - Multiple getRange() Tests

@@ -3,6 +3,7 @@
 // Tests for LIST+GET filtering, index query security, and diagnostic improvements
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -144,7 +145,7 @@ private struct TestAuth: AuthContext {
 
 // MARK: - Category A: filterByGetAccess Tests
 
-@Suite("Security Filtering - filterByGetAccess", .serialized)
+@Suite("Security Filtering - filterByGetAccess", .serialized, .heartbeat)
 struct FilterByGetAccessTests {
 
     // A1: Only owner's items pass through
@@ -247,7 +248,7 @@ struct FilterByGetAccessTests {
 
 // MARK: - Category B: DefaultSecurityDelegate LIST+GET Integration Tests
 
-@Suite("Security Filtering - LIST+GET Integration", .serialized)
+@Suite("Security Filtering - LIST+GET Integration", .serialized, .heartbeat)
 struct ListGetIntegrationTests {
 
     // B1: evaluateList succeeds, then filterByGetAccess filters by owner
@@ -358,7 +359,7 @@ struct ListGetIntegrationTests {
 
 // MARK: - Category C: DisabledSecurityDelegate Tests
 
-@Suite("Security Filtering - DisabledSecurityDelegate")
+@Suite("Security Filtering - DisabledSecurityDelegate", .heartbeat)
 struct DisabledDelegateTests {
 
     // C1: DisabledSecurityDelegate filterByGetAccess passes all items
@@ -378,7 +379,7 @@ struct DisabledDelegateTests {
 
 // MARK: - Category D: SecurityError Diagnostic Tests
 
-@Suite("Security Filtering - SecurityError Diagnostics")
+@Suite("Security Filtering - SecurityError Diagnostics", .heartbeat)
 struct SecurityErrorDiagnosticTests {
 
     // D1: GET denial includes userID
@@ -489,7 +490,7 @@ struct SecurityErrorDiagnosticTests {
 
 // MARK: - Category E: Edge Case Tests
 
-@Suite("Security Filtering - Edge Cases")
+@Suite("Security Filtering - Edge Cases", .heartbeat)
 struct SecurityEdgeCaseTests {
 
     // E1: Security disabled → no filtering

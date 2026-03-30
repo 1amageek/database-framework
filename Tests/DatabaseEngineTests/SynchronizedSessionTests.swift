@@ -3,12 +3,13 @@
 // DatabaseEngine Tests - Synchronized session tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
 // MARK: - SessionConfiguration Tests
 
-@Suite("SessionConfiguration Tests")
+@Suite("SessionConfiguration Tests", .heartbeat)
 struct SessionConfigurationTests {
 
     @Test("Default configuration values")
@@ -62,7 +63,7 @@ struct SessionConfigurationTests {
 
 // MARK: - LockHolder Tests
 
-@Suite("LockHolder Tests")
+@Suite("LockHolder Tests", .heartbeat)
 struct LockHolderTests {
 
     @Test("Lock holder creation")
@@ -152,7 +153,7 @@ struct LockHolderTests {
 
 // MARK: - LockStatus Tests
 
-@Suite("LockStatus Tests")
+@Suite("LockStatus Tests", .heartbeat)
 struct LockStatusTests {
 
     @Test("Lock not held status")
@@ -215,7 +216,7 @@ struct LockStatusTests {
 
 // MARK: - SessionError Tests
 
-@Suite("SessionError Tests")
+@Suite("SessionError Tests", .heartbeat)
 struct SessionErrorTests {
 
     @Test("Lock not acquired error description")

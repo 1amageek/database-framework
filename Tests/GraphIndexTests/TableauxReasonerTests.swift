@@ -3,13 +3,15 @@
 // Comprehensive tests for SHOIN(D) Tableaux reasoner implementation
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Basic Satisfiability
 
-@Suite("TableauxReasoner Basic Satisfiability", .serialized)
+@Suite("TableauxReasoner Basic Satisfiability", .serialized, .heartbeat)
 struct TableauxReasonerBasicTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -101,7 +103,7 @@ struct TableauxReasonerBasicTests {
 
 // MARK: - Existential Restrictions
 
-@Suite("TableauxReasoner Existential Restrictions", .serialized)
+@Suite("TableauxReasoner Existential Restrictions", .serialized, .heartbeat)
 struct TableauxReasonerExistentialTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -149,7 +151,7 @@ struct TableauxReasonerExistentialTests {
 
 // MARK: - Universal Restrictions
 
-@Suite("TableauxReasoner Universal Restrictions", .serialized)
+@Suite("TableauxReasoner Universal Restrictions", .serialized, .heartbeat)
 struct TableauxReasonerUniversalTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -195,7 +197,7 @@ struct TableauxReasonerUniversalTests {
 
 // MARK: - Cardinality Restrictions
 
-@Suite("TableauxReasoner Cardinality Restrictions", .serialized)
+@Suite("TableauxReasoner Cardinality Restrictions", .serialized, .heartbeat)
 struct TableauxReasonerCardinalityTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -283,7 +285,7 @@ struct TableauxReasonerCardinalityTests {
 
 // MARK: - Subsumption
 
-@Suite("TableauxReasoner Subsumption", .serialized)
+@Suite("TableauxReasoner Subsumption", .serialized, .heartbeat)
 struct TableauxReasonerSubsumptionTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -360,7 +362,7 @@ struct TableauxReasonerSubsumptionTests {
 
 // MARK: - TBox Axioms
 
-@Suite("TableauxReasoner TBox Axioms", .serialized)
+@Suite("TableauxReasoner TBox Axioms", .serialized, .heartbeat)
 struct TableauxReasonerTBoxTests {
 
     @Test("SubClassOf axiom affects satisfiability")
@@ -428,7 +430,7 @@ struct TableauxReasonerTBoxTests {
 
 // MARK: - Nominals (OneOf)
 
-@Suite("TableauxReasoner Nominals", .serialized)
+@Suite("TableauxReasoner Nominals", .serialized, .heartbeat)
 struct TableauxReasonerNominalTests {
 
     private func minimalOntology() -> OWLOntology {
@@ -480,7 +482,7 @@ struct TableauxReasonerNominalTests {
 
 // MARK: - HasSelf
 
-@Suite("TableauxReasoner HasSelf", .serialized)
+@Suite("TableauxReasoner HasSelf", .serialized, .heartbeat)
 struct TableauxReasonerHasSelfTests {
 
     @Test("∃R.Self is satisfiable")
@@ -493,7 +495,7 @@ struct TableauxReasonerHasSelfTests {
 
 // MARK: - Transitive Roles
 
-@Suite("TableauxReasoner Transitive Roles", .serialized)
+@Suite("TableauxReasoner Transitive Roles", .serialized, .heartbeat)
 struct TableauxReasonerTransitiveRoleTests {
 
     private func transitiveOntology() -> OWLOntology {
@@ -535,7 +537,7 @@ struct TableauxReasonerTransitiveRoleTests {
 
 // MARK: - Role Hierarchy (H)
 
-@Suite("TableauxReasoner Role Hierarchy", .serialized)
+@Suite("TableauxReasoner Role Hierarchy", .serialized, .heartbeat)
 struct TableauxReasonerRoleHierarchyTests {
 
     @Test("Sub-property propagates universal restriction")
@@ -574,7 +576,7 @@ struct TableauxReasonerRoleHierarchyTests {
 
 // MARK: - Inverse Roles (I)
 
-@Suite("TableauxReasoner Inverse Roles", .serialized)
+@Suite("TableauxReasoner Inverse Roles", .serialized, .heartbeat)
 struct TableauxReasonerInverseRoleTests {
 
     @Test("Inverse role propagates concepts")
@@ -603,7 +605,7 @@ struct TableauxReasonerInverseRoleTests {
 
 // MARK: - Symmetric Roles
 
-@Suite("TableauxReasoner Symmetric Roles", .serialized)
+@Suite("TableauxReasoner Symmetric Roles", .serialized, .heartbeat)
 struct TableauxReasonerSymmetricRoleTests {
 
     @Test("Symmetric role creates bidirectional edges")
@@ -634,7 +636,7 @@ struct TableauxReasonerSymmetricRoleTests {
 
 // MARK: - Functional Roles
 
-@Suite("TableauxReasoner Functional Roles", .serialized)
+@Suite("TableauxReasoner Functional Roles", .serialized, .heartbeat)
 struct TableauxReasonerFunctionalRoleTests {
 
     @Test("Functional role limits to one successor")
@@ -679,7 +681,7 @@ struct TableauxReasonerFunctionalRoleTests {
 
 // MARK: - Domain and Range
 
-@Suite("TableauxReasoner Domain and Range", .serialized)
+@Suite("TableauxReasoner Domain and Range", .serialized, .heartbeat)
 struct TableauxReasonerDomainRangeTests {
 
     @Test("Domain constraint propagates to subject")
@@ -722,7 +724,7 @@ struct TableauxReasonerDomainRangeTests {
 
 // MARK: - Instance Checking (ABox)
 
-@Suite("TableauxReasoner Instance Checking", .serialized)
+@Suite("TableauxReasoner Instance Checking", .serialized, .heartbeat)
 struct TableauxReasonerInstanceTests {
 
     @Test("isInstanceOf with direct class assertion")
@@ -808,7 +810,7 @@ struct TableauxReasonerInstanceTests {
 
 // MARK: - types() Query
 
-@Suite("TableauxReasoner types() Query", .serialized)
+@Suite("TableauxReasoner types() Query", .serialized, .heartbeat)
 struct TableauxReasonerTypesTests {
 
     @Test("types() returns all inferred types")
@@ -845,7 +847,7 @@ struct TableauxReasonerTypesTests {
 
 // MARK: - instances() Query
 
-@Suite("TableauxReasoner instances() Query", .serialized)
+@Suite("TableauxReasoner instances() Query", .serialized, .heartbeat)
 struct TableauxReasonerInstancesTests {
 
     @Test("instances() returns direct and inferred instances")
@@ -886,7 +888,7 @@ struct TableauxReasonerInstancesTests {
 
 // MARK: - classify()
 
-@Suite("TableauxReasoner Classification", .serialized)
+@Suite("TableauxReasoner Classification", .serialized, .heartbeat)
 struct TableauxReasonerClassifyTests {
 
     @Test("classify() builds correct hierarchy from TBox")
@@ -923,7 +925,7 @@ struct TableauxReasonerClassifyTests {
 
 // MARK: - Property Chains
 
-@Suite("TableauxReasoner Property Chains", .serialized)
+@Suite("TableauxReasoner Property Chains", .serialized, .heartbeat)
 struct TableauxReasonerPropertyChainTests {
 
     @Test("Property chain R ∘ S ⊑ T")
@@ -953,7 +955,7 @@ struct TableauxReasonerPropertyChainTests {
 
 // MARK: - Backtracking
 
-@Suite("TableauxReasoner Backtracking", .serialized)
+@Suite("TableauxReasoner Backtracking", .serialized, .heartbeat)
 struct TableauxReasonerBacktrackingTests {
 
     private func disjointOntology() -> OWLOntology {
@@ -1012,7 +1014,7 @@ struct TableauxReasonerBacktrackingTests {
 
 // MARK: - Blocking (Termination)
 
-@Suite("TableauxReasoner Blocking Termination", .serialized)
+@Suite("TableauxReasoner Blocking Termination", .serialized, .heartbeat)
 struct TableauxReasonerBlockingTests {
 
     @Test("Cyclic concept terminates via blocking")
@@ -1050,7 +1052,7 @@ struct TableauxReasonerBlockingTests {
 
 // MARK: - Complex Expressions
 
-@Suite("TableauxReasoner Complex Expressions", .serialized)
+@Suite("TableauxReasoner Complex Expressions", .serialized, .heartbeat)
 struct TableauxReasonerComplexTests {
 
     @Test("Deeply nested expression is satisfiable")
@@ -1111,7 +1113,7 @@ struct TableauxReasonerComplexTests {
 
 // MARK: - Regularity Check
 
-@Suite("TableauxReasoner Regularity Check", .serialized)
+@Suite("TableauxReasoner Regularity Check", .serialized, .heartbeat)
 struct TableauxReasonerRegularityTests {
 
     @Test("Regular ontology passes check")
@@ -1199,7 +1201,7 @@ struct TableauxReasonerRegularityTests {
 
 // MARK: - Configuration
 
-@Suite("TableauxReasoner Configuration", .serialized)
+@Suite("TableauxReasoner Configuration", .serialized, .heartbeat)
 struct TableauxReasonerConfigurationTests {
 
     @Test("Custom maxExpansionSteps")
@@ -1285,7 +1287,7 @@ struct TableauxReasonerConfigurationTests {
 
 // MARK: - Data Properties
 
-@Suite("TableauxReasoner Data Properties", .serialized)
+@Suite("TableauxReasoner Data Properties", .serialized, .heartbeat)
 struct TableauxReasonerDataPropertyTests {
 
     @Test("dataHasValue is satisfiable")
@@ -1322,7 +1324,7 @@ struct TableauxReasonerDataPropertyTests {
 
 // MARK: - Irreflexive and Asymmetric Roles
 
-@Suite("TableauxReasoner Role Constraints", .serialized)
+@Suite("TableauxReasoner Role Constraints", .serialized, .heartbeat)
 struct TableauxReasonerRoleConstraintTests {
 
     @Test("Irreflexive role with hasSelf is unsatisfiable")

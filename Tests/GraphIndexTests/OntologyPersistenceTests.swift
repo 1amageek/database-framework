@@ -19,6 +19,7 @@ import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Dummy Entity (required by DBContainer)
 
@@ -43,7 +44,7 @@ struct OntologyTestDummy {
 
 // MARK: - Ontology Persistence Tests
 
-@Suite("Ontology Persistence", .serialized)
+@Suite("Ontology Persistence", .serialized, .heartbeat)
 struct OntologyPersistenceTests {
 
     private static let testOntologyIRI = "http://test.org/ontology"

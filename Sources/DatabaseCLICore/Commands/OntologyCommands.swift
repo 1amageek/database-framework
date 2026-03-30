@@ -15,7 +15,7 @@ import OntologyIndex
 
 public struct OntologyCommands: Sendable {
 
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let output: OutputFormatter
 
     public init(database: any StorageEngine, output: OutputFormatter) {

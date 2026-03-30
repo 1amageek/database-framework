@@ -3,11 +3,12 @@
 // Tests for CoveringValueBuilder bitmap encoding/decoding
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 import Core
 
-@Suite("CoveringValueBuilder Tests", .serialized)
+@Suite("CoveringValueBuilder Tests", .serialized, .heartbeat)
 struct CoveringValueBuilderTests {
 
     @Persistable

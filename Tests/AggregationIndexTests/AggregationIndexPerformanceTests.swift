@@ -115,7 +115,7 @@ private func benchmark<T>(
 
 // MARK: - Performance Tests
 
-@Suite("AggregationIndex Performance Tests", .tags(.fdb, .performance), .serialized)
+@Suite("AggregationIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
 struct AggregationIndexPerformanceTests {
 
     // MARK: - COUNT Index Performance

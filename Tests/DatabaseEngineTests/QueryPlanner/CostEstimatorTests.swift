@@ -3,6 +3,7 @@
 // Tests for CostEstimator and cost calculations
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -10,7 +11,7 @@ import Foundation
 
 // Re-use QPTestUser from QueryPlannerTests.swift
 
-@Suite("CostEstimator Tests")
+@Suite("CostEstimator Tests", .heartbeat)
 struct CostEstimatorTests {
 
     // MARK: - CostModel Tests
@@ -144,7 +145,7 @@ struct CostEstimatorTests {
 
 // MARK: - StatisticsProvider Tests
 
-@Suite("StatisticsProvider Tests")
+@Suite("StatisticsProvider Tests", .heartbeat)
 struct StatisticsProviderTests {
 
     @Test("DefaultStatisticsProvider returns reasonable defaults")

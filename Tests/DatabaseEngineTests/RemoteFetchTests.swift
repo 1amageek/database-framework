@@ -3,12 +3,13 @@
 // DatabaseEngine Tests - Remote fetch optimization tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
 // MARK: - RemoteFetchConfiguration Tests
 
-@Suite("RemoteFetchConfiguration Tests")
+@Suite("RemoteFetchConfiguration Tests", .heartbeat)
 struct RemoteFetchConfigurationTests {
 
     @Test("Default configuration values")
@@ -72,7 +73,7 @@ struct RemoteFetchConfigurationTests {
 
 // MARK: - RemoteFetchResult Tests
 
-@Suite("RemoteFetchResult Tests")
+@Suite("RemoteFetchResult Tests", .heartbeat)
 struct RemoteFetchResultTests {
 
     @Test("Hit rate calculation")
@@ -131,7 +132,7 @@ struct RemoteFetchResultTests {
 
 // MARK: - LocalityHints Tests
 
-@Suite("LocalityHints Tests")
+@Suite("LocalityHints Tests", .heartbeat)
 struct LocalityHintsTests {
 
     @Test("Default hints")
@@ -167,7 +168,7 @@ struct LocalityHintsTests {
 
 // MARK: - Array Chunking Tests
 
-@Suite("Array Chunking Tests")
+@Suite("Array Chunking Tests", .heartbeat)
 struct ArrayChunkingTests {
 
     @Test("Chunk array evenly")

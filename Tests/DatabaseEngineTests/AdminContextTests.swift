@@ -13,7 +13,7 @@ import TestSupport
 /// - Verifies AdminContext methods respect #Directory macro definitions
 /// - Tests indexStatistics, rebuildIndex, collectionStatistics, updateStatistics
 /// - Ensures correct directory paths are used (not entity.name)
-@Suite("AdminContext Tests", .serialized)
+@Suite("AdminContext Tests", .serialized, .heartbeat)
 struct AdminContextTests {
 
     // MARK: - Helper Types

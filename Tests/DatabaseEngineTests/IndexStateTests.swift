@@ -1,10 +1,11 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import DatabaseEngine
 @testable import DatabaseEngine
 
-@Suite("IndexState Tests")
+@Suite("IndexState Tests", .heartbeat)
 struct IndexStateTests {
 
     @Test("IndexState rawValue")

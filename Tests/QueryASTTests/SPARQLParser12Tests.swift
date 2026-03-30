@@ -3,6 +3,7 @@
 /// Tests for Phase 4: SPARQL 1.2 features (A4, A5, A6, A7, A8-A11)
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -30,7 +31,7 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
 
 // MARK: - A7: VERSION Declaration
 
-@Suite("A7: VERSION Declaration")
+@Suite("A7: VERSION Declaration", .heartbeat)
 struct VersionDeclarationTests {
 
     @Test("VERSION 1.2 parses without error")
@@ -67,7 +68,7 @@ struct VersionDeclarationTests {
 
 // MARK: - A8-A11: SPARQL 1.2 Functions
 
-@Suite("A8-A11: SPARQL 1.2 Functions")
+@Suite("A8-A11: SPARQL 1.2 Functions", .heartbeat)
 struct SPARQL12FunctionTests {
 
     @Test("LANGDIR function parses")
@@ -150,7 +151,7 @@ struct SPARQL12FunctionTests {
 
 // MARK: - A4: Triple Terms <<( s p o )>>
 
-@Suite("A4: Triple Terms")
+@Suite("A4: Triple Terms", .heartbeat)
 struct TripleTermTests {
 
     @Test("Triple term <<( s p o )>> in object position")
@@ -195,7 +196,7 @@ struct TripleTermTests {
 
 // MARK: - A5: Reified Triples
 
-@Suite("A5: Reified Triples")
+@Suite("A5: Reified Triples", .heartbeat)
 struct ReifiedTripleTests {
 
     @Test("Reified triple << s p o ~?r >> as subject")
@@ -250,7 +251,7 @@ struct ReifiedTripleTests {
 
 // MARK: - A6: Annotation Syntax
 
-@Suite("A6: Annotation Syntax")
+@Suite("A6: Annotation Syntax", .heartbeat)
 struct AnnotationTests {
 
     @Test("Simple annotation {| p o |}")
@@ -347,7 +348,7 @@ struct AnnotationTests {
 
 // MARK: - A5: Reified Triple Edge Cases
 
-@Suite("A5: Reified Triple Edge Cases")
+@Suite("A5: Reified Triple Edge Cases", .heartbeat)
 struct ReifiedTripleEdgeCaseTests {
 
     @Test("Reifier with IRI instead of variable")
@@ -405,7 +406,7 @@ struct ReifiedTripleEdgeCaseTests {
 
 // MARK: - A4: Triple Term Edge Cases
 
-@Suite("A4: Triple Term Edge Cases")
+@Suite("A4: Triple Term Edge Cases", .heartbeat)
 struct TripleTermEdgeCaseTests {
 
     @Test("Triple term in subject position")
@@ -456,7 +457,7 @@ struct TripleTermEdgeCaseTests {
 
 // MARK: - A7: VERSION Edge Cases
 
-@Suite("A7: VERSION Edge Cases")
+@Suite("A7: VERSION Edge Cases", .heartbeat)
 struct VersionEdgeCaseTests {
 
     @Test("VERSION before BASE and PREFIX")
@@ -482,7 +483,7 @@ struct VersionEdgeCaseTests {
 
 // MARK: - A8-A11: Function Edge Cases
 
-@Suite("A8-A11: Function Edge Cases")
+@Suite("A8-A11: Function Edge Cases", .heartbeat)
 struct FunctionEdgeCaseTests {
 
     @Test("LANGDIR in FILTER comparison")
@@ -544,7 +545,7 @@ struct FunctionEdgeCaseTests {
 
 // MARK: - Combined Features
 
-@Suite("Combined SPARQL 1.2 Features")
+@Suite("Combined SPARQL 1.2 Features", .heartbeat)
 struct CombinedFeatureTests {
 
     @Test("VERSION + PREFIX + FROM + direction literal")
@@ -615,7 +616,7 @@ struct CombinedFeatureTests {
 
 // MARK: - LATERAL Join (SPARQL 1.2)
 
-@Suite("SPARQL 1.2: LATERAL Join")
+@Suite("SPARQL 1.2: LATERAL Join", .heartbeat)
 struct LateralJoinTests {
 
     @Test("LATERAL with basic pattern")

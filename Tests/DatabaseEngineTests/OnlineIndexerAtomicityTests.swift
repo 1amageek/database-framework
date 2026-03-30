@@ -15,7 +15,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("OnlineIndexer Atomicity Tests", .tags(.requiresFDB), .serialized)
+@Suite("OnlineIndexer Atomicity Tests", .tags(.requiresFDB), .serialized, .heartbeat)
 struct OnlineIndexerAtomicityTests {
 
     init() async throws {

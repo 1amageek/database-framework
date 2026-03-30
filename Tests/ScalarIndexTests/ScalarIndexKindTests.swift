@@ -57,7 +57,7 @@ struct TestProduct: Persistable {
     }
 }
 
-@Suite("ScalarIndexKind Tests")
+@Suite("ScalarIndexKind Tests", .heartbeat)
 struct ScalarIndexKindTests {
 
     // MARK: - Metadata Tests

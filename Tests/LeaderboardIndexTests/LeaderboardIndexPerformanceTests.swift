@@ -138,7 +138,7 @@ private func benchmark(_ name: String, iterations: Int = 1, operation: () async 
 
 // MARK: - Insert Performance Tests
 
-@Suite("LeaderboardIndex Insert Performance", .tags(.fdb), .serialized)
+@Suite("LeaderboardIndex Insert Performance", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIndexInsertPerformanceTests {
 
     @Test("Bulk insert performance - 100 records")
@@ -245,7 +245,7 @@ struct LeaderboardIndexInsertPerformanceTests {
 
 // MARK: - Query Performance Tests
 
-@Suite("LeaderboardIndex Query Performance", .tags(.fdb), .serialized)
+@Suite("LeaderboardIndex Query Performance", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIndexQueryPerformanceTests {
 
     @Test("Top-K query performance")
@@ -410,7 +410,7 @@ struct LeaderboardIndexQueryPerformanceTests {
 
 // MARK: - Update Performance Tests
 
-@Suite("LeaderboardIndex Update Performance", .tags(.fdb), .serialized)
+@Suite("LeaderboardIndex Update Performance", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIndexUpdatePerformanceTests {
 
     @Test("Score update performance")
@@ -524,7 +524,7 @@ struct LeaderboardIndexUpdatePerformanceTests {
 
 // MARK: - Scale Tests
 
-@Suite("LeaderboardIndex Scale Tests", .tags(.fdb), .serialized)
+@Suite("LeaderboardIndex Scale Tests", .tags(.fdb), .serialized, .heartbeat)
 struct LeaderboardIndexScaleTests {
 
     @Test("Large leaderboard - 10000 entries")

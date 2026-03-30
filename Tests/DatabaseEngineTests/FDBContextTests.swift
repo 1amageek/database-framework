@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -13,7 +14,7 @@ import FDBStorage
 /// - Change tracking (insert, delete, save, rollback)
 /// - Fetch operations with Query DSL
 /// - Model retrieval by ID
-@Suite("FDBContext Tests", .serialized)
+@Suite("FDBContext Tests", .serialized, .heartbeat)
 struct FDBContextTests {
 
     // MARK: - Helper Types

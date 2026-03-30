@@ -3,13 +3,15 @@
 // Comprehensive tests for high-level OWLReasoner API
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Initialization
 
-@Suite("OWLReasoner Initialization", .serialized)
+@Suite("OWLReasoner Initialization", .serialized, .heartbeat)
 struct OWLReasonerInitTests {
 
     @Test("Create reasoner with empty ontology")
@@ -36,7 +38,7 @@ struct OWLReasonerInitTests {
 
 // MARK: - Consistency
 
-@Suite("OWLReasoner Consistency", .serialized)
+@Suite("OWLReasoner Consistency", .serialized, .heartbeat)
 struct OWLReasonerConsistencyTests {
 
     @Test("Consistent ontology with hierarchy")
@@ -65,7 +67,7 @@ struct OWLReasonerConsistencyTests {
 
 // MARK: - Satisfiability
 
-@Suite("OWLReasoner Satisfiability", .serialized)
+@Suite("OWLReasoner Satisfiability", .serialized, .heartbeat)
 struct OWLReasonerSatisfiabilityTests {
 
     @Test("Named class is satisfiable")
@@ -138,7 +140,7 @@ struct OWLReasonerSatisfiabilityTests {
 
 // MARK: - Subsumption
 
-@Suite("OWLReasoner Subsumption", .serialized)
+@Suite("OWLReasoner Subsumption", .serialized, .heartbeat)
 struct OWLReasonerSubsumptionTests {
 
     private func hierarchyOntology() -> OWLOntology {
@@ -187,7 +189,7 @@ struct OWLReasonerSubsumptionTests {
 
 // MARK: - Equivalence & Disjointness
 
-@Suite("OWLReasoner Equivalence and Disjointness", .serialized)
+@Suite("OWLReasoner Equivalence and Disjointness", .serialized, .heartbeat)
 struct OWLReasonerEquivDisjointTests {
 
     @Test("Equivalent classes via axiom")
@@ -227,7 +229,7 @@ struct OWLReasonerEquivDisjointTests {
 
 // MARK: - Instance Reasoning
 
-@Suite("OWLReasoner Instance Queries", .serialized)
+@Suite("OWLReasoner Instance Queries", .serialized, .heartbeat)
 struct OWLReasonerInstanceTests {
 
     private func instanceOntology() -> OWLOntology {
@@ -293,7 +295,7 @@ struct OWLReasonerInstanceTests {
 
 // MARK: - Defined Class (equivalentClasses) Instance Reasoning
 
-@Suite("OWLReasoner Defined Class Reasoning", .serialized)
+@Suite("OWLReasoner Defined Class Reasoning", .serialized, .heartbeat)
 struct OWLReasonerDefinedClassTests {
 
     @Test("Individual classified via defined class")
@@ -372,7 +374,7 @@ struct OWLReasonerDefinedClassTests {
 
 // MARK: - Classification
 
-@Suite("OWLReasoner Classification", .serialized)
+@Suite("OWLReasoner Classification", .serialized, .heartbeat)
 struct OWLReasonerClassificationTests {
 
     @Test("Classification computes hierarchy")
@@ -446,7 +448,7 @@ struct OWLReasonerClassificationTests {
 
 // MARK: - Property Reasoning
 
-@Suite("OWLReasoner Property Reasoning", .serialized)
+@Suite("OWLReasoner Property Reasoning", .serialized, .heartbeat)
 struct OWLReasonerPropertyTests {
 
     @Test("Transitive property reachability")
@@ -557,7 +559,7 @@ struct OWLReasonerPropertyTests {
 
 // MARK: - OWL DL Validation
 
-@Suite("OWLReasoner Validation", .serialized)
+@Suite("OWLReasoner Validation", .serialized, .heartbeat)
 struct OWLReasonerValidationTests {
 
     @Test("Valid ontology passes validation")
@@ -589,7 +591,7 @@ struct OWLReasonerValidationTests {
 
 // MARK: - Statistics
 
-@Suite("OWLReasoner Statistics", .serialized)
+@Suite("OWLReasoner Statistics", .serialized, .heartbeat)
 struct OWLReasonerStatisticsTests {
 
     @Test("Statistics are tracked")

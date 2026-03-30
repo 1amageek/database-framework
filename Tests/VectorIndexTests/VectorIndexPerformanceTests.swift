@@ -146,7 +146,7 @@ private func similarVector(to base: [Float], perturbation: Float = 0.1) -> [Floa
 
 // MARK: - Performance Tests
 
-@Suite("VectorIndex Performance Tests", .serialized)
+@Suite("VectorIndex Performance Tests", .serialized, .heartbeat)
 struct VectorIndexPerformanceTests {
 
     // MARK: - Setup

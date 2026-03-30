@@ -3,6 +3,7 @@
 // Tests for Most Common Values (MCV) implementation
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 import Core
@@ -10,7 +11,7 @@ import Core
 // Use type aliases to disambiguate from Core types
 typealias CV = Core.FieldValue
 
-@Suite("MCV Tests")
+@Suite("MCV Tests", .heartbeat)
 struct MCVTests {
 
     // MARK: - MCVBuilder Tests

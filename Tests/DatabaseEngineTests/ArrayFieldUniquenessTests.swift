@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -19,7 +20,7 @@ import FDBStorage
 /// **Fixed Behavior**:
 /// - Each array element is checked individually for uniqueness
 /// - Matches how ScalarIndexMaintainer creates index entries
-@Suite("Array Field Uniqueness Tests", .serialized)
+@Suite("Array Field Uniqueness Tests", .serialized, .heartbeat)
 struct ArrayFieldUniquenessTests {
 
     // MARK: - Test Models

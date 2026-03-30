@@ -3,11 +3,12 @@
 /// Comprehensive tests for QueryPlan types
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - QueryPlan Tests
 
-@Suite("QueryPlan Tests")
+@Suite("QueryPlan Tests", .heartbeat)
 struct QueryPlanTests {
 
     @Test("QueryPlan construction")
@@ -43,7 +44,7 @@ struct QueryPlanTests {
 
 // MARK: - Scan Plan Tests
 
-@Suite("Scan Plan Tests")
+@Suite("Scan Plan Tests", .heartbeat)
 struct ScanPlanTests {
 
     @Test("TableScanPlan construction")
@@ -112,7 +113,7 @@ struct ScanPlanTests {
 
 // MARK: - IndexBounds Tests
 
-@Suite("IndexBounds Tests")
+@Suite("IndexBounds Tests", .heartbeat)
 struct IndexBoundsTests {
 
     @Test("IndexBounds exact")
@@ -167,7 +168,7 @@ struct IndexBoundsTests {
 
 // MARK: - Join Plan Tests
 
-@Suite("Join Plan Tests")
+@Suite("Join Plan Tests", .heartbeat)
 struct JoinPlanTests {
 
     @Test("JoinPlan construction")
@@ -225,7 +226,7 @@ struct JoinPlanTests {
 
 // MARK: - Graph Plan Tests
 
-@Suite("Graph Plan Tests")
+@Suite("Graph Plan Tests", .heartbeat)
 struct GraphPlanTests {
 
     @Test("GraphTraversalPlan construction")
@@ -283,7 +284,7 @@ struct GraphPlanTests {
 
 // MARK: - Triple Pattern Plan Tests
 
-@Suite("Triple Pattern Plan Tests")
+@Suite("Triple Pattern Plan Tests", .heartbeat)
 struct TriplePatternPlanTests {
 
     @Test("TriplePatternScanPlan construction")
@@ -338,7 +339,7 @@ struct TriplePatternPlanTests {
 
 // MARK: - Transformation Plan Tests
 
-@Suite("Transformation Plan Tests")
+@Suite("Transformation Plan Tests", .heartbeat)
 struct TransformationPlanTests {
 
     @Test("FilterPlan construction")
@@ -425,7 +426,7 @@ struct TransformationPlanTests {
 
 // MARK: - Set Operation Plan Tests
 
-@Suite("Set Operation Plan Tests")
+@Suite("Set Operation Plan Tests", .heartbeat)
 struct SetOperationPlanTests {
 
     @Test("SetOperationPlan construction")
@@ -440,7 +441,7 @@ struct SetOperationPlanTests {
 
 // MARK: - Special Plan Tests
 
-@Suite("Special Plan Tests")
+@Suite("Special Plan Tests", .heartbeat)
 struct SpecialPlanTests {
 
     @Test("VectorSearchPlan construction")
@@ -559,7 +560,7 @@ struct SpecialPlanTests {
 
 // MARK: - QueryPlanNode Equality Tests
 
-@Suite("QueryPlanNode Equality Tests")
+@Suite("QueryPlanNode Equality Tests", .heartbeat)
 struct QueryPlanNodeEqualityTests {
 
     @Test("tableScan equality")

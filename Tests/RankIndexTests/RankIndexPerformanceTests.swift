@@ -132,7 +132,7 @@ private func measure<T>(_ operation: () async throws -> T) async throws -> (resu
 
 // MARK: - Performance Tests
 
-@Suite("RankIndex Performance Tests", .tags(.fdb, .performance), .serialized)
+@Suite("RankIndex Performance Tests", .tags(.fdb, .performance), .serialized, .heartbeat)
 struct RankIndexPerformanceTests {
 
     // MARK: - Bulk Insert Tests

@@ -3,12 +3,13 @@
 // Tests for Schema.Entity to YAML export
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseCLICore
 @testable import DatabaseEngine
 import Core
 
-@Suite("Schema File Exporter Tests")
+@Suite("Schema File Exporter Tests", .heartbeat)
 struct SchemaFileExporterTests {
 
     // MARK: - Helper

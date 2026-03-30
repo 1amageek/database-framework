@@ -3,12 +3,13 @@
 /// Tests for CatalogDataAccess catalog resolution (non-FDB tests)
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseCLICore
 @testable import DatabaseEngine
 @testable import Core
 
-@Suite("CatalogDataAccess")
+@Suite("CatalogDataAccess", .heartbeat)
 struct CatalogDataAccessTests {
 
     /// Create a minimal test Schema.Entity

@@ -29,7 +29,7 @@ struct EfficiencyTestProduct {
 
 // MARK: - Tests
 
-@Suite("Index Maintenance Efficiency Tests", .serialized)
+@Suite("Index Maintenance Efficiency Tests", .serialized, .heartbeat)
 struct IndexMaintenanceEfficiencyTests {
 
     private func createContainer() async throws -> DBContainer {

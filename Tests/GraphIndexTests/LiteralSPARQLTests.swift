@@ -3,12 +3,13 @@
 // Tests for Literal.toSPARQLFieldValue() - SPARQL-aware Literal → FieldValue conversion
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 import QueryIR
 @testable import GraphIndex
 
-@Suite("Literal toSPARQLFieldValue")
+@Suite("Literal toSPARQLFieldValue", .heartbeat)
 struct LiteralSPARQLTests {
 
     // MARK: - Common types (delegated to toFieldValue)

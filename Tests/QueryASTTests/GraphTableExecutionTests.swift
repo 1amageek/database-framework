@@ -5,11 +5,12 @@
 /// Coverage: Path patterns, variable length, property filters, path modes, label expressions
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - GRAPH_TABLE Execution Tests
 
-@Suite("GRAPH_TABLE Execution Tests")
+@Suite("GRAPH_TABLE Execution Tests", .heartbeat)
 struct GraphTableExecutionTests {
 
     // MARK: - Simple Path Pattern Tests

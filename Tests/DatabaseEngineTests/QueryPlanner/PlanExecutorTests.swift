@@ -3,6 +3,7 @@
 // Tests for PlanExecutor predicate evaluation, especially .in and isNil/isNotNil
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import ScalarIndex
@@ -83,7 +84,7 @@ struct PredicateTestUser: Persistable {
 
 // MARK: - Predicate Evaluation Tests
 
-@Suite("Predicate Evaluation Tests")
+@Suite("Predicate Evaluation Tests", .heartbeat)
 struct PredicateEvaluationTests {
 
     // MARK: - IN Predicate Tests

@@ -3,6 +3,7 @@
 // Test if @Reference macro allows circular type references
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 
@@ -46,7 +47,7 @@ struct RefOrder {
 
 // MARK: - Tests
 
-@Suite("Circular Reference Tests")
+@Suite("Circular Reference Tests", .heartbeat)
 struct CircularReferenceTests {
 
     @Test("Basic structs can reference each other via @Reference")

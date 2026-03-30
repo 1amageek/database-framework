@@ -2,9 +2,10 @@
 /// Tests for SQL and SPARQL escape utilities
 
 import Testing
+import TestHeartbeat
 @testable import QueryIR
 
-@Suite("SQLEscape")
+@Suite("SQLEscape", .heartbeat)
 struct SQLEscapeTests {
 
     // MARK: - identifier
@@ -112,7 +113,7 @@ struct SQLEscapeTests {
     }
 }
 
-@Suite("SPARQLEscape")
+@Suite("SPARQLEscape", .heartbeat)
 struct SPARQLEscapeTests {
 
     // MARK: - ncName

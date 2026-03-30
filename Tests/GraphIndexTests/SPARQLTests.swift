@@ -14,7 +14,7 @@ import TestSupport
 
 // MARK: - ExecutionTerm Tests
 
-@Suite("ExecutionTerm Tests")
+@Suite("ExecutionTerm Tests", .heartbeat)
 struct ExecutionTermTests {
 
     @Test("String literal to value term")
@@ -69,7 +69,7 @@ struct ExecutionTermTests {
 
 // MARK: - ExecutionTriple Tests
 
-@Suite("ExecutionTriple Tests")
+@Suite("ExecutionTriple Tests", .heartbeat)
 struct ExecutionTripleTests {
 
     @Test("Create triple pattern from strings")
@@ -120,7 +120,7 @@ struct ExecutionTripleTests {
 
 // MARK: - VariableBinding Tests
 
-@Suite("VariableBinding Tests")
+@Suite("VariableBinding Tests", .heartbeat)
 struct VariableBindingTests {
 
     @Test("Empty binding")
@@ -254,7 +254,7 @@ struct VariableBindingTests {
 
 // MARK: - ExecutionPattern Tests
 
-@Suite("ExecutionPattern Tests")
+@Suite("ExecutionPattern Tests", .heartbeat)
 struct ExecutionPatternTests {
 
     @Test("Basic pattern variables")
@@ -336,7 +336,7 @@ struct ExecutionPatternTests {
 
 // MARK: - FilterExpression Tests
 
-@Suite("FilterExpression Tests")
+@Suite("FilterExpression Tests", .heartbeat)
 struct FilterExpressionTests {
 
     @Test("Equals filter")
@@ -666,7 +666,7 @@ struct FilterExpressionTests {
 
 // MARK: - SPARQLResult Tests
 
-@Suite("SPARQLResult Tests")
+@Suite("SPARQLResult Tests", .heartbeat)
 struct SPARQLResultTests {
 
     @Test("Empty result")
@@ -828,7 +828,7 @@ struct SPARQLResultTests {
 
 // MARK: - SPARQLQueryBuilder Unit Tests
 
-@Suite("SPARQLQueryBuilder Unit Tests")
+@Suite("SPARQLQueryBuilder Unit Tests", .heartbeat)
 struct SPARQLQueryBuilderUnitTests {
 
     @Test("Query description")
@@ -868,7 +868,7 @@ struct SPARQLQueryBuilderUnitTests {
 
 // MARK: - ExpressionEvaluator Variable Resolution Tests
 
-@Suite("ExpressionEvaluator Variable Key Resolution")
+@Suite("ExpressionEvaluator Variable Key Resolution", .heartbeat)
 struct ExpressionEvaluatorVariableTests {
 
     /// VariableBinding keys use "?"-prefixed names.

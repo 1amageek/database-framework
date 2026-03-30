@@ -5,11 +5,12 @@
 /// Coverage: FROM subqueries, WHERE IN/EXISTS, correlated subqueries, scalar subqueries, CTEs
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - Nested Subquery Tests
 
-@Suite("Nested Subquery Tests")
+@Suite("Nested Subquery Tests", .heartbeat)
 struct SubqueryTests {
 
     // MARK: - FROM Clause Subquery Tests

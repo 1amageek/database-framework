@@ -149,7 +149,7 @@ private struct TestContext {
 
 // MARK: - RoaringBitmap Unit Tests
 
-@Suite("RoaringBitmap Unit Tests")
+@Suite("RoaringBitmap Unit Tests", .heartbeat)
 struct RoaringBitmapUnitTests {
 
     @Test("Add and contains single value")
@@ -343,7 +343,7 @@ struct RoaringBitmapUnitTests {
 
 // MARK: - BitmapIndexMaintainer Behavior Tests
 
-@Suite("BitmapIndex Maintainer Behavior Tests", .tags(.fdb), .serialized)
+@Suite("BitmapIndex Maintainer Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
 struct BitmapIndexMaintainerBehaviorTests {
 
     // MARK: - Insert Tests
@@ -799,7 +799,7 @@ struct BitmapIndexMaintainerBehaviorTests {
 
 // MARK: - Edge Cases Tests
 
-@Suite("BitmapIndex Edge Cases", .tags(.fdb), .serialized)
+@Suite("BitmapIndex Edge Cases", .tags(.fdb), .serialized, .heartbeat)
 struct BitmapIndexEdgeCasesTests {
 
     @Test("Empty bitmap query returns empty")

@@ -71,7 +71,7 @@ struct HNSWTestDocument: Persistable {
 
 // MARK: - Configuration Selection Tests
 
-@Suite("VectorIndexConfiguration Selection Tests")
+@Suite("VectorIndexConfiguration Selection Tests", .heartbeat)
 struct VectorIndexConfigurationSelectionTests {
 
     @Test("Default configuration returns FlatVectorIndexMaintainer")
@@ -195,7 +195,7 @@ struct VectorIndexConfigurationSelectionTests {
 
 // MARK: - VectorIndexConfiguration Tests
 
-@Suite("VectorIndexConfiguration Tests")
+@Suite("VectorIndexConfiguration Tests", .heartbeat)
 struct VectorIndexConfigurationTests {
 
     @Test("VectorIndexConfiguration has correct kindIdentifier")
@@ -244,7 +244,7 @@ struct VectorIndexConfigurationTests {
 
 // MARK: - HNSW Basic Behavior Tests
 
-@Suite("HNSW Basic Behavior Tests", .tags(.fdb), .serialized)
+@Suite("HNSW Basic Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
 struct HNSWBasicBehaviorTests {
 
     @Test("HNSW insert stores vector and creates graph entry")

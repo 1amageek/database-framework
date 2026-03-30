@@ -10,7 +10,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("Partitioned Directory Tests", .serialized)
+@Suite("Partitioned Directory Tests", .serialized, .heartbeat)
 struct PartitionedDirectoryTests {
 
     /// Generate unique test ID to avoid conflicts with parallel tests

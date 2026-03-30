@@ -5,13 +5,14 @@
 // Reference: Graefe, G. "The Cascades Framework for Query Optimization", 1995
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
 // MARK: - Memo Tests
 
-@Suite("Memo Tests")
+@Suite("Memo Tests", .heartbeat)
 struct MemoTests {
 
     @Test("Create new group returns unique ID")
@@ -131,7 +132,7 @@ struct MemoTests {
 
 // MARK: - Expression Tests
 
-@Suite("Expression Tests")
+@Suite("Expression Tests", .heartbeat)
 struct ExpressionTests {
 
     @Test("LogicalOperator child groups extraction")
@@ -208,7 +209,7 @@ struct ExpressionTests {
 
 // MARK: - Transformation Rule Tests
 
-@Suite("Transformation Rule Tests")
+@Suite("Transformation Rule Tests", .heartbeat)
 struct TransformationRuleTests {
 
     @Test("FilterPushDownRule pattern matches filter on project")
@@ -309,7 +310,7 @@ struct TransformationRuleTests {
 
 // MARK: - Implementation Rule Tests
 
-@Suite("Implementation Rule Tests")
+@Suite("Implementation Rule Tests", .heartbeat)
 struct ImplementationRuleTests {
 
     @Test("SeqScanImplementationRule generates physical scan")
@@ -420,7 +421,7 @@ struct ImplementationRuleTests {
 
 // MARK: - CascadesOptimizer Integration Tests
 
-@Suite("CascadesOptimizer Integration Tests")
+@Suite("CascadesOptimizer Integration Tests", .heartbeat)
 struct CascadesOptimizerIntegrationTests {
 
     @Test("Optimize simple scan query")
@@ -474,7 +475,7 @@ struct CascadesOptimizerIntegrationTests {
 
 // MARK: - PropertySet Tests
 
-@Suite("PropertySet Tests")
+@Suite("PropertySet Tests", .heartbeat)
 struct PropertySetTests {
 
     @Test("PropertySet none has no requirements")
@@ -511,7 +512,7 @@ struct PropertySetTests {
 
 // MARK: - CostModel Tests
 
-@Suite("CostModel Tests")
+@Suite("CostModel Tests", .heartbeat)
 struct CostModelTests {
 
     @Test("Default cost model uses PostgreSQL-like values")
@@ -542,7 +543,7 @@ struct CostModelTests {
 
 // MARK: - CascadesError Tests
 
-@Suite("CascadesError Tests")
+@Suite("CascadesError Tests", .heartbeat)
 struct CascadesErrorTests {
 
     @Test("Error descriptions")

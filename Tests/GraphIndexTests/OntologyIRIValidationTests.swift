@@ -14,6 +14,7 @@ import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Test Models
 
@@ -94,7 +95,7 @@ struct ValObjPropAsDataProp {
 
 // MARK: - Tests
 
-@Suite("Ontology IRI Validation", .serialized)
+@Suite("Ontology IRI Validation", .serialized, .heartbeat)
 struct OntologyIRIValidationTests {
 
     private static let ontologyIRI = "http://test.org/onto"

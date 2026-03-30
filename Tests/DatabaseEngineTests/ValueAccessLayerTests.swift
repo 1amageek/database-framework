@@ -6,6 +6,7 @@
 // Layer 3: DataAccess (tested elsewhere)
 
 import Testing
+import TestHeartbeat
 import Foundation
 import DatabaseEngine
 @testable import Core
@@ -149,7 +150,7 @@ struct VALNestedItem: Persistable {
 
 // MARK: - FieldReader Tests
 
-@Suite("FieldReader Tests")
+@Suite("FieldReader Tests", .heartbeat)
 struct FieldReaderTests {
 
     // MARK: - read(from:keyPath:fieldName:) — PartialKeyPath path
@@ -271,7 +272,7 @@ struct FieldReaderTests {
 
 // MARK: - FieldComparison.evaluate Tests
 
-@Suite("FieldComparison.evaluate Tests")
+@Suite("FieldComparison.evaluate Tests", .heartbeat)
 struct FieldComparisonEvaluateTests {
 
     let alice = VALTestItem(name: "Alice", age: 30, score: 95.5, isActive: true, tag: "vip")
@@ -614,7 +615,7 @@ struct FieldComparisonEvaluateTests {
 
 // MARK: - SortDescriptor.orderedComparison Tests
 
-@Suite("SortDescriptor.orderedComparison Tests")
+@Suite("SortDescriptor.orderedComparison Tests", .heartbeat)
 struct SortDescriptorOrderedComparisonTests {
 
     let alice = VALTestItem(name: "Alice", age: 30, score: 95.5)
@@ -713,7 +714,7 @@ struct SortDescriptorOrderedComparisonTests {
 
 // MARK: - SortDescriptor Fallback Path Tests (compareViaFieldReader)
 
-@Suite("SortDescriptor Fallback Path Tests")
+@Suite("SortDescriptor Fallback Path Tests", .heartbeat)
 struct SortDescriptorFallbackTests {
 
     /// Test null handling through FieldReader directly,
@@ -756,7 +757,7 @@ struct SortDescriptorFallbackTests {
 
 // MARK: - Optional String Extension Tests
 
-@Suite("Optional String Predicate Tests")
+@Suite("Optional String Predicate Tests", .heartbeat)
 struct OptionalStringPredicateTests {
 
     let withTag = VALTestItem(name: "Alice", tag: "premium_user")

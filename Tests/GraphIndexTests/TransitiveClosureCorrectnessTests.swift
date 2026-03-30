@@ -7,10 +7,12 @@
 // graph topologies.
 
 import Testing
+import TestHeartbeat
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
-@Suite("Transitive Closure Correctness")
+@Suite("Transitive Closure Correctness", .heartbeat)
 struct TransitiveClosureCorrectnessTests {
 
     // MARK: - RoleHierarchy closure tests

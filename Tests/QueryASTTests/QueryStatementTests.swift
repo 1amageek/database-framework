@@ -3,11 +3,12 @@
 /// Comprehensive tests for QueryStatement types
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - SQL DML Statement Tests
 
-@Suite("SQL DML Statement Tests")
+@Suite("SQL DML Statement Tests", .heartbeat)
 struct SQLDMLStatementTests {
 
     // MARK: - INSERT Tests
@@ -193,7 +194,7 @@ struct SQLDMLStatementTests {
 
 // MARK: - SQL/PGQ Graph Definition Tests
 
-@Suite("SQL/PGQ Graph Definition Tests")
+@Suite("SQL/PGQ Graph Definition Tests", .heartbeat)
 struct SQLPGQGraphDefinitionTests {
 
     @Test("CreateGraphStatement basic")
@@ -356,7 +357,7 @@ struct SQLPGQGraphDefinitionTests {
 
 // MARK: - SPARQL Update Statement Tests
 
-@Suite("SPARQL Update Statement Tests")
+@Suite("SPARQL Update Statement Tests", .heartbeat)
 struct SPARQLUpdateStatementTests {
 
     @Test("InsertDataQuery")
@@ -471,7 +472,7 @@ struct SPARQLUpdateStatementTests {
 
 // MARK: - SPARQL Query Form Tests
 
-@Suite("SPARQL Query Form Tests")
+@Suite("SPARQL Query Form Tests", .heartbeat)
 struct SPARQLQueryFormTests {
 
     @Test("ConstructQuery")
@@ -553,7 +554,7 @@ struct SPARQLQueryFormTests {
 
 // MARK: - QueryStatement Analysis Tests
 
-@Suite("QueryStatement Analysis Tests")
+@Suite("QueryStatement Analysis Tests", .heartbeat)
 struct QueryStatementAnalysisTests {
 
     @Test("isReadOnly")
@@ -633,7 +634,7 @@ struct QueryStatementAnalysisTests {
 
 // MARK: - OnConflictAction Tests
 
-@Suite("OnConflictAction Tests")
+@Suite("OnConflictAction Tests", .heartbeat)
 struct OnConflictActionTests {
 
     @Test("OnConflictAction equality")

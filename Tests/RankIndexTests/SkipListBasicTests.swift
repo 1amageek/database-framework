@@ -87,7 +87,7 @@ struct SkipListTestPlayer8 {
 
 // MARK: - Tests
 
-@Suite("Skip List Basic Tests", .serialized)
+@Suite("Skip List Basic Tests", .serialized, .heartbeat)
 struct SkipListBasicTests {
 
     init() async throws {

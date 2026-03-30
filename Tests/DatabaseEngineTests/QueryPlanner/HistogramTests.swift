@@ -3,15 +3,16 @@
 // Tests for Histogram selectivity estimation
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("Histogram Tests")
+@Suite("Histogram Tests", .heartbeat)
 struct HistogramTests {
 
     // MARK: - String Scalar Conversion Tests
 
-    @Suite("String to Scalar Conversion")
+    @Suite("String to Scalar Conversion", .heartbeat)
     struct StringScalarConversionTests {
 
         @Test("Empty string converts to 0.0")
@@ -120,7 +121,7 @@ struct HistogramTests {
 
     // MARK: - Numeric Interpolation Tests
 
-    @Suite("Numeric Interpolation")
+    @Suite("Numeric Interpolation", .heartbeat)
     struct NumericInterpolationTests {
 
         @Test("Integer range selectivity is accurate")
@@ -209,7 +210,7 @@ struct HistogramTests {
 
     // MARK: - Edge Cases
 
-    @Suite("Edge Cases")
+    @Suite("Edge Cases", .heartbeat)
     struct EdgeCaseTests {
 
         @Test("Empty histogram returns zero selectivity")
@@ -306,7 +307,7 @@ struct HistogramTests {
 
     // MARK: - Equality Selectivity Tests
 
-    @Suite("Equality Selectivity")
+    @Suite("Equality Selectivity", .heartbeat)
     struct EqualitySelectivityTests {
 
         @Test("Equality selectivity uses bucket distinct count")
@@ -354,7 +355,7 @@ struct HistogramTests {
 
     // MARK: - Multi-Bucket Tests
 
-    @Suite("Multi-Bucket Histograms")
+    @Suite("Multi-Bucket Histograms", .heartbeat)
     struct MultiBucketTests {
 
         @Test("Range spanning multiple buckets accumulates correctly")

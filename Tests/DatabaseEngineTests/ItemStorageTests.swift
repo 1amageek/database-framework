@@ -3,12 +3,13 @@
 // DatabaseEngine Tests - ItemStorage integration tests (compression + splitting)
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
 @testable import DatabaseEngine
 
-@Suite("ItemStorage Tests", .serialized)
+@Suite("ItemStorage Tests", .serialized, .heartbeat)
 struct ItemStorageTests {
 
     // MARK: - Setup

@@ -3,12 +3,13 @@
 // Tests for IN-Union and IN-Join plan operators
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 @testable import ScalarIndex
 
-@Suite("IN Operator Tests")
+@Suite("IN Operator Tests", .heartbeat)
 struct InOperatorTests {
 
     // MARK: - Helper

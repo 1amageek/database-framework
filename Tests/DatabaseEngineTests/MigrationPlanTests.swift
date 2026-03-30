@@ -1,5 +1,6 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
@@ -48,7 +49,7 @@ struct UserV3 {
 /// - SchemaMigrationPlan protocol
 /// - MigrationStage enum
 /// - DBContainer.migrateIfNeeded()
-@Suite("Migration Plan Tests")
+@Suite("Migration Plan Tests", .heartbeat)
 struct MigrationPlanTests {
 
     // MARK: - Test Schema Versions

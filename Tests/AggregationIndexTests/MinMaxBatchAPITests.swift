@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Batch API Tests")
+@Suite("MIN/MAX Batch API Tests", .heartbeat)
 struct MinMaxBatchAPITests {
 
     init() async throws {

@@ -3,9 +3,11 @@
 // Performance and correctness tests for OWLReasoner optimizations
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Ontology Builders
 
@@ -144,7 +146,7 @@ private enum OntologyBuilder {
 
 // MARK: - Performance Tests
 
-@Suite("OWLReasoner Benchmark", .serialized)
+@Suite("OWLReasoner Benchmark", .serialized, .heartbeat)
 struct OWLReasonerBenchmarkTests {
 
     @Test("types(of:) with 85-class tree hierarchy", .timeLimit(.minutes(1)))
@@ -333,7 +335,7 @@ struct OWLReasonerBenchmarkTests {
 
 // MARK: - Correctness Tests
 
-@Suite("OWLReasoner types(of:) Correctness", .serialized)
+@Suite("OWLReasoner types(of:) Correctness", .serialized, .heartbeat)
 struct OWLReasonerTypesCorrectnessTests {
 
     @Test("Defined Class classification is correct")
@@ -516,7 +518,7 @@ struct OWLReasonerTypesCorrectnessTests {
 
 // MARK: - Tableaux Benchmark
 
-@Suite("TableauxReasoner Benchmark", .serialized)
+@Suite("TableauxReasoner Benchmark", .serialized, .heartbeat)
 struct TableauxReasonerBenchmarkTests {
 
     @Test("Satisfiability with many disjunctions", .timeLimit(.minutes(1)))

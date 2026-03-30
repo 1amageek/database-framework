@@ -153,7 +153,7 @@ private struct AdvancedTestContext {
 
 // MARK: - Distance Calculation Tests
 
-@Suite("Distance Calculation Tests", .tags(.fdb), .serialized)
+@Suite("Distance Calculation Tests", .tags(.fdb), .serialized, .heartbeat)
 struct DistanceCalculationTests {
 
     @Test("Distance is calculated correctly using Haversine formula")
@@ -189,7 +189,7 @@ struct DistanceCalculationTests {
 
 // MARK: - Polygon Validation Tests
 
-@Suite("Polygon Validation Tests", .tags(.fdb), .serialized)
+@Suite("Polygon Validation Tests", .tags(.fdb), .serialized, .heartbeat)
 struct PolygonValidationTests {
 
     @Test("Polygon validation rejects less than 3 points")
@@ -243,7 +243,7 @@ struct PolygonValidationTests {
 
 // MARK: - KNN Result Tests
 
-@Suite("KNN Result Tests", .tags(.fdb), .serialized)
+@Suite("KNN Result Tests", .tags(.fdb), .serialized, .heartbeat)
 struct KNNResultTests {
 
     @Test("SpatialKNNResult stores correct values")
@@ -307,7 +307,7 @@ struct KNNResultTests {
 
 // MARK: - Point-in-Polygon Algorithm Tests
 
-@Suite("Point-in-Polygon Algorithm Tests", .serialized)
+@Suite("Point-in-Polygon Algorithm Tests", .serialized, .heartbeat)
 struct PointInPolygonAlgorithmTests {
 
     @Test("Square polygon contains center point")
@@ -422,7 +422,7 @@ struct PointInPolygonAlgorithmTests {
 
 // MARK: - Spatial Query Result Tests
 
-@Suite("Spatial Query Result Tests", .serialized)
+@Suite("Spatial Query Result Tests", .serialized, .heartbeat)
 struct SpatialQueryResultTests {
 
     @Test("SpatialQueryResult with items and distance")
@@ -456,7 +456,7 @@ struct SpatialQueryResultTests {
 
 // MARK: - Input Validation Tests
 
-@Suite("Input Validation Tests", .serialized)
+@Suite("Input Validation Tests", .serialized, .heartbeat)
 struct InputValidationTests {
 
     @Test("limit() ignores zero value")
@@ -497,7 +497,7 @@ struct InputValidationTests {
 
 // MARK: - KNN Validation Tests (Unit Tests)
 
-@Suite("KNN Validation Tests", .serialized)
+@Suite("KNN Validation Tests", .serialized, .heartbeat)
 struct KNNValidationTests {
 
     @Test("KNN error types are properly defined")

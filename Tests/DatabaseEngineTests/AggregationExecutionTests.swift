@@ -3,11 +3,12 @@
 // Tests for AggregationResult and aggregation execution
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
-@Suite("Aggregation Execution Tests")
+@Suite("Aggregation Execution Tests", .heartbeat)
 struct AggregationExecutionTests {
 
     // MARK: - AggregationResult Tests

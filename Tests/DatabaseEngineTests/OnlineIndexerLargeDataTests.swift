@@ -15,7 +15,7 @@ import StorageKit
 import FDBStorage
 import TestSupport
 
-@Suite("OnlineIndexer Large Data Tests", .tags(.requiresFDB), .serialized)
+@Suite("OnlineIndexer Large Data Tests", .tags(.requiresFDB), .serialized, .heartbeat)
 struct OnlineIndexerLargeDataTests {
 
     init() async throws {

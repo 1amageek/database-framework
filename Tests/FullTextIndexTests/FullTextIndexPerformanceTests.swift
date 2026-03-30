@@ -165,7 +165,7 @@ private func generateContentWithTerms(_ terms: [String], totalWords: Int) -> Str
 
 // MARK: - Performance Tests
 
-@Suite("FullTextIndex Performance Tests", .serialized)
+@Suite("FullTextIndex Performance Tests", .serialized, .heartbeat)
 struct FullTextIndexPerformanceTests {
 
     // MARK: - Setup

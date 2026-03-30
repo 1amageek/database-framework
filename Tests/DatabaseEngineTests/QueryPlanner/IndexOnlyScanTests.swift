@@ -3,6 +3,7 @@
 // Tests for Index-Only Scan (Covering Index) functionality
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 @testable import DatabaseEngine
@@ -77,7 +78,7 @@ struct IOSTestUser: Persistable, Codable, Sendable {
 
 // MARK: - CoveringIndexMetadata Tests
 
-@Suite("CoveringIndexMetadata Tests")
+@Suite("CoveringIndexMetadata Tests", .heartbeat)
 struct CoveringIndexMetadataTests {
 
     @Test("Build metadata for fully covering index")
@@ -136,7 +137,7 @@ struct CoveringIndexMetadataTests {
 
 // MARK: - IndexEntryDecoder Tests
 
-@Suite("IndexEntryDecoder Tests")
+@Suite("IndexEntryDecoder Tests", .heartbeat)
 struct IndexEntryDecoderTests {
 
     @Test("Decode record from index entry with all fields")
@@ -217,7 +218,7 @@ struct IndexEntryDecoderTests {
 
 // MARK: - IndexOnlyScanAnalyzer Tests
 
-@Suite("IndexOnlyScanAnalyzer Tests")
+@Suite("IndexOnlyScanAnalyzer Tests", .heartbeat)
 struct IndexOnlyScanAnalyzerTests {
 
     @Test("Analyzer detects fully covering index")
@@ -302,7 +303,7 @@ struct IndexOnlyScanAnalyzerTests {
 
 // MARK: - IndexOnlyScanOperator Tests
 
-@Suite("IndexOnlyScanOperator Tests")
+@Suite("IndexOnlyScanOperator Tests", .heartbeat)
 struct IndexOnlyScanOperatorTests {
 
     @Test("Operator stores metadata correctly")
@@ -342,7 +343,7 @@ struct IndexOnlyScanOperatorTests {
 
 // MARK: - CoveringIndexSuggester Tests
 
-@Suite("CoveringIndexSuggester Tests")
+@Suite("CoveringIndexSuggester Tests", .heartbeat)
 struct CoveringIndexSuggesterTests {
 
     @Test("Suggester returns nil when covering index exists")
@@ -422,7 +423,7 @@ struct CoveringIndexSuggesterTests {
 
 // MARK: - CostEstimator Index-Only Tests
 
-@Suite("CostEstimator Index-Only Scan Tests")
+@Suite("CostEstimator Index-Only Scan Tests", .heartbeat)
 struct CostEstimatorIndexOnlyTests {
 
     @Test("Index-only scan has zero record fetches")
@@ -531,7 +532,7 @@ struct CostEstimatorIndexOnlyTests {
 
 // MARK: - PlanEnumerator Index-Only Tests
 
-@Suite("PlanEnumerator Index-Only Scan Tests")
+@Suite("PlanEnumerator Index-Only Scan Tests", .heartbeat)
 struct PlanEnumeratorIndexOnlyTests {
 
     @Test("Enumerator generates index-only plan for covering index")

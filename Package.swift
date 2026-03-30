@@ -2,10 +2,10 @@
 import PackageDescription
 
 let package = Package(
-    name: "Database",
+    name: "database-framework",
     platforms: [
-        .macOS(.v15),
-        .iOS(.v18),
+        .macOS(.v26),
+        .iOS(.v26),
     ],
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
@@ -38,7 +38,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0324.0"),
-        .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.2.1"),
+        .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.4.0"),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
             from: "26.0324.0",
@@ -54,6 +54,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
         .package(url: "https://github.com/1amageek/swift-yaml.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
     ],
     targets: [
         .target(
@@ -319,6 +320,7 @@ let package = Package(
                          condition: .when(traits: ["FoundationDB"])),
                 .product(name: "PostgreSQLStorage", package: "storage-kit",
                          condition: .when(traits: ["PostgreSQL"])),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             path: "Tests/Shared",
             swiftSettings: [
@@ -343,6 +345,7 @@ let package = Package(
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
                 .product(name: "Logging", package: "swift-log"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -359,6 +362,7 @@ let package = Package(
                 "ScalarIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -376,6 +380,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -390,10 +395,12 @@ let package = Package(
             name: "GraphIndexTests",
             dependencies: [
                 "GraphIndex",
+                "OntologyIndex",
                 "QueryAST",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -410,6 +417,7 @@ let package = Package(
                 "AggregationIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -426,6 +434,7 @@ let package = Package(
                 "VersionIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -443,6 +452,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Spatial", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -460,6 +470,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -477,6 +488,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -494,6 +506,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -510,6 +523,7 @@ let package = Package(
                 "BitmapIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -526,6 +540,7 @@ let package = Package(
                 "LeaderboardIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -542,6 +557,7 @@ let package = Package(
                 "DatabaseCLICore",
                 "Database",
                 "TestSupport",
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -559,6 +575,7 @@ let package = Package(
                 "DatabaseEngine",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -573,6 +590,7 @@ let package = Package(
             name: "QueryIRTests",
             dependencies: [
                 .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ]
         ),
         // Database integration tests (SPARQL() function, etc.)
@@ -585,6 +603,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -601,6 +620,7 @@ let package = Package(
                 "BenchmarkFramework",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
@@ -622,6 +642,7 @@ let package = Package(
                 "BitmapIndex",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             path: "Benchmarks",
             swiftSettings: [
@@ -645,6 +666,7 @@ let package = Package(
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "PostgreSQLStorage", package: "storage-kit",
                          condition: .when(traits: ["PostgreSQL"])),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [
                 .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
@@ -657,6 +679,10 @@ let package = Package(
                 "Database",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ],
+            swiftSettings: [
+                .define("SQLITE", .when(traits: ["SQLite"])),
             ]
         ),
     ],

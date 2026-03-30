@@ -3,6 +3,7 @@
 // Tests for IndexSearcher implementations
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 @testable import DatabaseEngine
@@ -198,7 +199,7 @@ final class TestableStorageReader: StorageReader, @unchecked Sendable {
 
 // MARK: - Scalar Index Searcher Tests
 
-@Suite("ScalarIndexSearcher Tests")
+@Suite("ScalarIndexSearcher Tests", .heartbeat)
 struct ScalarIndexSearcherTests {
 
     @Test("Search with equals query returns matching entries")
@@ -331,7 +332,7 @@ struct ScalarIndexSearcherTests {
 
 // MARK: - FullText Index Searcher Tests
 
-@Suite("FullTextIndexSearcher Tests")
+@Suite("FullTextIndexSearcher Tests", .heartbeat)
 struct FullTextIndexSearcherTests {
 
     @Test("Search with single term returns matching documents")
@@ -469,7 +470,7 @@ struct FullTextIndexSearcherTests {
 
 // MARK: - Vector Index Searcher Tests
 
-@Suite("VectorIndexSearcher Tests")
+@Suite("VectorIndexSearcher Tests", .heartbeat)
 struct VectorIndexSearcherTests {
 
     @Test("Search returns k nearest neighbors")
@@ -571,7 +572,7 @@ struct VectorIndexSearcherTests {
 
 // MARK: - Spatial Index Searcher Tests
 
-@Suite("SpatialIndexSearcher Tests")
+@Suite("SpatialIndexSearcher Tests", .heartbeat)
 struct SpatialIndexSearcherTests {
 
     @Test("Search within bounds returns matching entries")

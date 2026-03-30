@@ -3,12 +3,13 @@
 // Tests for YAML schema parsing
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseCLICore
 @testable import DatabaseEngine
 import Core
 
-@Suite("Schema File Parser Tests")
+@Suite("Schema File Parser Tests", .heartbeat)
 struct SchemaFileParserTests {
 
     @Test("Parse simple schema with scalar index")

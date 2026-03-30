@@ -3,12 +3,13 @@
 // DatabaseEngine - Tests for unified type conversion
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 import Core
 import StorageKit
 
-@Suite("TypeConversion Tests")
+@Suite("TypeConversion Tests", .heartbeat)
 struct TypeConversionTests {
 
     // MARK: - asInt64 Tests

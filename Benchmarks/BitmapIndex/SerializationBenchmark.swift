@@ -7,7 +7,7 @@ import BitmapIndex
 import BenchmarkFramework
 @testable import TestSupport
 
-@Suite("BitmapIndex: Serialization Benchmark", .serialized)
+@Suite("BitmapIndex: Serialization Benchmark", .serialized, .heartbeat)
 struct SerializationBenchmark {
     init() async throws {
         try await FDBTestSetup.shared.initialize()

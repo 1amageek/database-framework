@@ -3,11 +3,12 @@
 /// Comprehensive tests for SQL/PGQ CREATE PROPERTY GRAPH types
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - CreateGraphStatement Builder Tests
 
-@Suite("CreateGraphStatement Builder Tests")
+@Suite("CreateGraphStatement Builder Tests", .heartbeat)
 struct CreateGraphStatementBuilderTests {
 
     @Test("CreateGraphStatement.simple builder")
@@ -99,7 +100,7 @@ struct CreateGraphStatementBuilderTests {
 
 // MARK: - VertexTableDefinition Builder Tests
 
-@Suite("VertexTableDefinition Builder Tests")
+@Suite("VertexTableDefinition Builder Tests", .heartbeat)
 struct VertexTableDefinitionBuilderTests {
 
     @Test("VertexTableDefinition.labeled builder")
@@ -164,7 +165,7 @@ struct VertexTableDefinitionBuilderTests {
 
 // MARK: - EdgeTableDefinition Builder Tests
 
-@Suite("EdgeTableDefinition Builder Tests")
+@Suite("EdgeTableDefinition Builder Tests", .heartbeat)
 struct EdgeTableDefinitionBuilderTests {
 
     @Test("EdgeTableDefinition.labeled builder")
@@ -210,7 +211,7 @@ struct EdgeTableDefinitionBuilderTests {
 
 // MARK: - VertexReference Builder Tests
 
-@Suite("VertexReference Builder Tests")
+@Suite("VertexReference Builder Tests", .heartbeat)
 struct VertexReferenceBuilderTests {
 
     @Test("VertexReference.simple builder")
@@ -243,7 +244,7 @@ struct VertexReferenceBuilderTests {
 
 // MARK: - SQL Generation Tests
 
-@Suite("CreateGraph SQL Generation Tests")
+@Suite("CreateGraph SQL Generation Tests", .heartbeat)
 struct CreateGraphSQLGenerationTests {
 
     @Test("CreateGraphStatement toSQL basic")
@@ -343,7 +344,7 @@ struct CreateGraphSQLGenerationTests {
 
 // MARK: - Graph Schema Validation Tests
 
-@Suite("Graph Schema Validation Tests")
+@Suite("Graph Schema Validation Tests", .heartbeat)
 struct GraphSchemaValidationTests {
 
     @Test("validate - valid schema")
@@ -467,7 +468,7 @@ struct GraphSchemaValidationTests {
 
 // MARK: - GraphSchemaError Tests
 
-@Suite("GraphSchemaError Tests")
+@Suite("GraphSchemaError Tests", .heartbeat)
 struct GraphSchemaErrorTests {
 
     @Test("GraphSchemaError equality")

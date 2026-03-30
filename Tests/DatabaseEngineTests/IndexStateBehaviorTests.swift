@@ -127,7 +127,7 @@ private struct TestContext {
 
 // MARK: - Integration Tests
 
-@Suite("Index State Behavior Tests", .tags(.fdb), .serialized)
+@Suite("Index State Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
 struct IndexStateBehaviorTests {
 
     // MARK: - Disabled Index Tests

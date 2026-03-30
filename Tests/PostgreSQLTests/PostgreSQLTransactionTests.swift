@@ -18,7 +18,7 @@ struct PGTxItem: Equatable {
     var counter: Int = 0
 }
 
-@Suite("PostgreSQL Transaction Tests", .serialized)
+@Suite("PostgreSQL Transaction Tests", .serialized, .heartbeat)
 struct PostgreSQLTransactionTests {
 
     private func uniqueID(_ prefix: String) -> String {

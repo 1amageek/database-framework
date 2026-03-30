@@ -163,7 +163,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("PermutedIndex Behavior Tests", .tags(.fdb), .serialized)
+@Suite("PermutedIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
 struct PermutedIndexBehaviorTests {
 
     // MARK: - Insert Tests

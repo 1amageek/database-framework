@@ -3,6 +3,7 @@
 /// Tests for SPARQL NOT IN operator and Property Path parsing
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -46,7 +47,7 @@ private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
 
 // MARK: - NOT IN Tests
 
-@Suite("SPARQL NOT IN")
+@Suite("SPARQL NOT IN", .heartbeat)
 struct SPARQLNotInTests {
 
     @Test("Basic NOT IN with IRI")
@@ -168,7 +169,7 @@ struct SPARQLNotInTests {
 
 // MARK: - Property Path Tests
 
-@Suite("SPARQL Property Paths")
+@Suite("SPARQL Property Paths", .heartbeat)
 struct SPARQLPropertyPathTests {
 
     @Test("ZeroOrMore: ?s rdfs:subClassOf* ?ancestor")

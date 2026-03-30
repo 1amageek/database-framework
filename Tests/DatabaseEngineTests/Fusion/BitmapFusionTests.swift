@@ -151,7 +151,7 @@ private struct BitmapTestContext {
 
 // MARK: - Unit Tests (API Pattern)
 
-@Suite("Bitmap Fusion - Unit Tests")
+@Suite("Bitmap Fusion - Unit Tests", .heartbeat)
 struct BitmapFusionUnitTests {
 
     @Test("BitmapIndexKind identifier is 'bitmap'")
@@ -229,7 +229,7 @@ struct BitmapFusionUnitTests {
 
 // MARK: - Initialization Tests
 
-@Suite("Bitmap Fusion - Initialization")
+@Suite("Bitmap Fusion - Initialization", .heartbeat)
 struct BitmapFusionInitializationTests {
 
     @Test("fieldName extraction from KeyPath")
@@ -254,7 +254,7 @@ struct BitmapFusionInitializationTests {
 
 // MARK: - Integration Tests
 
-@Suite("Bitmap Fusion - Integration Tests", .serialized)
+@Suite("Bitmap Fusion - Integration Tests", .serialized, .heartbeat)
 struct BitmapFusionIntegrationTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -324,7 +324,7 @@ struct BitmapFusionIntegrationTests {
 
 // MARK: - Predicate Tests
 
-@Suite("Bitmap Fusion - Predicates")
+@Suite("Bitmap Fusion - Predicates", .heartbeat)
 struct BitmapFusionPredicateTests {
 
     @Test("Equals predicate matching")
@@ -384,7 +384,7 @@ struct BitmapFusionPredicateTests {
 
 // MARK: - Candidates Filtering Tests
 
-@Suite("Bitmap Fusion - Candidates Filtering")
+@Suite("Bitmap Fusion - Candidates Filtering", .heartbeat)
 struct BitmapFusionCandidatesTests {
 
     @Test("Filter results by candidates set")
@@ -429,7 +429,7 @@ struct BitmapFusionCandidatesTests {
 
 // MARK: - Edge Case Tests
 
-@Suite("Bitmap Fusion - Edge Cases")
+@Suite("Bitmap Fusion - Edge Cases", .heartbeat)
 struct BitmapFusionEdgeCaseTests {
 
     @Test("Empty string field value")
@@ -490,7 +490,7 @@ struct BitmapFusionEdgeCaseTests {
 
 // MARK: - Deduplication Tests
 
-@Suite("Bitmap Fusion - Deduplication")
+@Suite("Bitmap Fusion - Deduplication", .heartbeat)
 struct BitmapFusionDeduplicationTests {
 
     @Test("OR query deduplicates results")

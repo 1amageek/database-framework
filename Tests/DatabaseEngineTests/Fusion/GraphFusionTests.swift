@@ -242,7 +242,7 @@ private struct GraphTestContext {
 
 // MARK: - Unit Tests (API Pattern)
 
-@Suite("Graph Fusion - Unit Tests")
+@Suite("Graph Fusion - Unit Tests", .heartbeat)
 struct GraphFusionUnitTests {
 
     @Test("GraphIndexKind identifier is 'graph'")
@@ -300,7 +300,7 @@ struct GraphFusionUnitTests {
 
 // MARK: - Scoring Tests
 
-@Suite("Graph Fusion - Scoring")
+@Suite("Graph Fusion - Scoring", .heartbeat)
 struct GraphFusionScoringTests {
 
     @Test("Hop-based scoring calculation")
@@ -350,7 +350,7 @@ struct GraphFusionScoringTests {
 
 // MARK: - BFS Traversal Tests
 
-@Suite("Graph Fusion - BFS Traversal")
+@Suite("Graph Fusion - BFS Traversal", .heartbeat)
 struct GraphFusionBFSTests {
 
     @Test("BFS finds direct neighbors")
@@ -545,7 +545,7 @@ struct GraphFusionBFSTests {
 
 // MARK: - Integration Tests
 
-@Suite("Graph Fusion - Integration Tests", .serialized)
+@Suite("Graph Fusion - Integration Tests", .serialized, .heartbeat)
 struct GraphFusionIntegrationTests {
 
     private func uniqueID(_ prefix: String) -> String {
@@ -647,7 +647,7 @@ struct GraphFusionIntegrationTests {
 
 // MARK: - Configuration Tests
 
-@Suite("Graph Fusion - Configuration")
+@Suite("Graph Fusion - Configuration", .heartbeat)
 struct GraphFusionConfigurationTests {
 
     @Test("maxHops configuration ensures minimum of 1")
@@ -676,7 +676,7 @@ struct GraphFusionConfigurationTests {
 
 // MARK: - Edge Case Tests
 
-@Suite("Graph Fusion - Edge Cases")
+@Suite("Graph Fusion - Edge Cases", .heartbeat)
 struct GraphFusionEdgeCaseTests {
 
     @Test("Self-referential edge")
@@ -734,7 +734,7 @@ struct GraphFusionEdgeCaseTests {
 
 // MARK: - Index Discovery Tests
 
-@Suite("Graph Fusion - Index Discovery")
+@Suite("Graph Fusion - Index Discovery", .heartbeat)
 struct GraphFusionIndexDiscoveryTests {
 
     @Test("findIndexDescriptor matches by kindIdentifier")

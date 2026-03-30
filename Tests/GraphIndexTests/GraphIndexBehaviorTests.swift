@@ -195,7 +195,7 @@ private struct TestContext {
 
 // MARK: - Adjacency Strategy Tests
 
-@Suite("GraphIndex Adjacency Strategy Tests", .tags(.fdb), .serialized)
+@Suite("GraphIndex Adjacency Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
 struct GraphIndexAdjacencyTests {
 
     @Test("Insert creates outgoing edge entry")
@@ -371,7 +371,7 @@ struct GraphIndexAdjacencyTests {
 
 // MARK: - TripleStore Strategy Tests
 
-@Suite("GraphIndex TripleStore Strategy Tests", .tags(.fdb), .serialized)
+@Suite("GraphIndex TripleStore Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
 struct GraphIndexTripleStoreTests {
 
     @Test("TripleStore creates 3 index entries")
@@ -451,7 +451,7 @@ struct GraphIndexTripleStoreTests {
 
 // MARK: - Hexastore Strategy Tests
 
-@Suite("GraphIndex Hexastore Strategy Tests", .tags(.fdb), .serialized)
+@Suite("GraphIndex Hexastore Strategy Tests", .tags(.fdb), .serialized, .heartbeat)
 struct GraphIndexHexastoreTests {
 
     @Test("Hexastore creates 6 index entries")

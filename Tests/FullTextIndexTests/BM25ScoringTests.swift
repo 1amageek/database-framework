@@ -157,7 +157,7 @@ private struct BM25TestContext {
 
 // MARK: - BM25 Scorer Unit Tests
 
-@Suite("BM25 Scorer Unit Tests")
+@Suite("BM25 Scorer Unit Tests", .heartbeat)
 struct BM25ScorerUnitTests {
 
     @Test("IDF calculation - standard formula")
@@ -253,7 +253,7 @@ struct BM25ScorerUnitTests {
 
 // MARK: - BM25 Integration Tests
 
-@Suite("BM25 Integration Tests", .tags(.fdb), .serialized)
+@Suite("BM25 Integration Tests", .tags(.fdb), .serialized, .heartbeat)
 struct BM25IntegrationTests {
 
     @Test("BM25 statistics are maintained")

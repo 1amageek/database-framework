@@ -3,6 +3,7 @@
 /// Tests for Phase 3: AST changes (B9: FROM/FROM NAMED, A12: dirLangLiteral)
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -25,7 +26,7 @@ private func parsePattern(_ sparql: String) throws -> GraphPattern {
 
 // MARK: - B9: FROM / FROM NAMED
 
-@Suite("B9: FROM / FROM NAMED")
+@Suite("B9: FROM / FROM NAMED", .heartbeat)
 struct DatasetClauseTests {
 
     @Test("FROM clause captures IRI")
@@ -73,7 +74,7 @@ struct DatasetClauseTests {
 
 // MARK: - A12: Literal Direction
 
-@Suite("A12: Literal Direction")
+@Suite("A12: Literal Direction", .heartbeat)
 struct LiteralDirectionTests {
 
     @Test("RTL direction literal")

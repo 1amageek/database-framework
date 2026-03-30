@@ -1,9 +1,10 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import BenchmarkFramework
 
-@Suite("BenchmarkFramework Tests")
+@Suite("BenchmarkFramework Tests", .heartbeat)
 struct BenchmarkFrameworkTests {
     // MARK: - LatencyMetrics Tests
 

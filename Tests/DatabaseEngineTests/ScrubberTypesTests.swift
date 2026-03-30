@@ -1,9 +1,10 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
-@Suite("ScrubberTypes Tests")
+@Suite("ScrubberTypes Tests", .heartbeat)
 struct ScrubberTypesTests {
 
     // MARK: - ScrubberConfiguration

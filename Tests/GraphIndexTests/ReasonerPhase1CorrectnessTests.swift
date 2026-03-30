@@ -7,14 +7,16 @@
 // - B-9: reachableIndividuals() property chain support
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 import StorageKit
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - B-1: Nominal Merge Tests
 
-@Suite("B-1: Nominal Merge Prohibition")
+@Suite("B-1: Nominal Merge Prohibition", .heartbeat)
 struct NominalMergeTests {
 
     private func createGraph() -> CompletionGraph {
@@ -136,7 +138,7 @@ struct NominalMergeTests {
 
 // MARK: - B-2: Signature Restoration Tests
 
-@Suite("B-2: conceptSignature Backtrack Restoration")
+@Suite("B-2: conceptSignature Backtrack Restoration", .heartbeat)
 struct SignatureRestorationTests {
 
     private func createGraph() -> CompletionGraph {
@@ -274,7 +276,7 @@ struct SignatureRestorationTests {
 
 // MARK: - B-6: Materializer Depth Limit Tests
 
-@Suite("B-6: OWL2RLMaterializer Depth Limit")
+@Suite("B-6: OWL2RLMaterializer Depth Limit", .heartbeat)
 struct MaterializerDepthLimitTests {
 
     @Test("Configuration maxInferenceDepth default value")
@@ -309,7 +311,7 @@ struct MaterializerDepthLimitTests {
 
 // MARK: - B-9: Property Chain Tests
 
-@Suite("B-9: reachableIndividuals Property Chain Support")
+@Suite("B-9: reachableIndividuals Property Chain Support", .heartbeat)
 struct PropertyChainReachabilityTests {
 
     @Test("Two-step property chain reachability")

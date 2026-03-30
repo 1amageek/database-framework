@@ -15,7 +15,7 @@ import TestSupport
 /// - UniquenessCheckMode
 /// - UniquenessViolationTracker operations
 /// - FDBContext violation API
-@Suite("Uniqueness Enforcement Tests", .serialized)
+@Suite("Uniqueness Enforcement Tests", .serialized, .heartbeat)
 struct UniquenessEnforcementTests {
 
     // MARK: - Helper Types

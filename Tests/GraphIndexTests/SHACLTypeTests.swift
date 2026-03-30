@@ -7,12 +7,13 @@
 // for the Graph module's SHACL types, PrefixMap, and RDFTerm.
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 
 // MARK: - RDFTerm Tests
 
-@Suite("RDFTerm Tests")
+@Suite("RDFTerm Tests", .heartbeat)
 struct RDFTermTests {
 
     // MARK: - Encoding
@@ -226,7 +227,7 @@ struct RDFTermTests {
 
 // MARK: - PrefixMap Tests
 
-@Suite("PrefixMap Tests")
+@Suite("PrefixMap Tests", .heartbeat)
 struct PrefixMapTests {
 
     @Test("Expand prefixed name to full IRI")
@@ -324,7 +325,7 @@ struct PrefixMapTests {
 
 // MARK: - SHACLPath Tests
 
-@Suite("SHACLPath Tests")
+@Suite("SHACLPath Tests", .heartbeat)
 struct SHACLPathTests {
 
     @Test("Predicate path reports isPredicatePath and predicateIRI")
@@ -377,7 +378,7 @@ struct SHACLPathTests {
 
 // MARK: - SHACLConstraint Tests
 
-@Suite("SHACLConstraint Tests")
+@Suite("SHACLConstraint Tests", .heartbeat)
 struct SHACLConstraintTests {
 
     @Test("Each constraint type returns correct W3C component IRI")
@@ -511,7 +512,7 @@ struct SHACLConstraintTests {
 
 // MARK: - SHACLShapesGraph Tests
 
-@Suite("SHACLShapesGraph Tests")
+@Suite("SHACLShapesGraph Tests", .heartbeat)
 struct SHACLShapesGraphTests {
 
     @Test("Active shapes excludes deactivated shapes")
@@ -667,7 +668,7 @@ struct SHACLShapesGraphTests {
 
 // MARK: - SHACLValidationReport Tests
 
-@Suite("SHACLValidationReport Tests")
+@Suite("SHACLValidationReport Tests", .heartbeat)
 struct SHACLValidationReportTests {
 
     @Test("No violations means conforms is true")

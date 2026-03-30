@@ -5,11 +5,12 @@
 /// Coverage: Empty results, NULL handling, large datasets, Unicode, date/time, precision
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - Query Edge Cases
 
-@Suite("Query Edge Cases")
+@Suite("Query Edge Cases", .heartbeat)
 struct EdgeCaseTests {
 
     // MARK: - Empty Result Tests

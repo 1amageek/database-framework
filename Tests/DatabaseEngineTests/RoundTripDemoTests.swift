@@ -3,6 +3,7 @@
 // Demonstrates Create -> Read -> Update -> Delete round-trip
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
@@ -19,7 +20,7 @@ struct DemoItem: Equatable {
     var tags: [String] = []
 }
 
-@Suite("Round Trip Demo", .serialized)
+@Suite("Round Trip Demo", .serialized, .heartbeat)
 struct RoundTripDemoTests {
 
     private func setupContainer() async throws -> DBContainer {

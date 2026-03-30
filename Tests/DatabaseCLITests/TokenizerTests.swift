@@ -1,8 +1,9 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 @testable import DatabaseCLICore
 
-@Suite("CommandRouter.tokenize")
+@Suite("CommandRouter.tokenize", .heartbeat)
 struct TokenizerTests {
 
     // MARK: - Basic

@@ -11,10 +11,11 @@ import Graph
 import TestSupport
 @testable import DatabaseEngine
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Test Suite
 
-@Suite("Incremental Reasoning Tests", .serialized)
+@Suite("Incremental Reasoning Tests", .serialized, .heartbeat)
 struct IncrementalReasoningTests {
 
     init() async throws {

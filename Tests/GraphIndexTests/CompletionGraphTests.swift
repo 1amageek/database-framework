@@ -3,13 +3,15 @@
 // Tests for CompletionGraph - trail-based state management
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Node Operations Tests
 
-@Suite("CompletionGraph Node Operations")
+@Suite("CompletionGraph Node Operations", .heartbeat)
 struct CompletionGraphNodeTests {
 
     private func createGraph() -> CompletionGraph {
@@ -86,7 +88,7 @@ struct CompletionGraphNodeTests {
 
 // MARK: - Concept Operations Tests
 
-@Suite("CompletionGraph Concept Operations")
+@Suite("CompletionGraph Concept Operations", .heartbeat)
 struct CompletionGraphConceptTests {
 
     private func createGraph() -> CompletionGraph {
@@ -152,7 +154,7 @@ struct CompletionGraphConceptTests {
 
 // MARK: - Edge Operations Tests
 
-@Suite("CompletionGraph Edge Operations")
+@Suite("CompletionGraph Edge Operations", .heartbeat)
 struct CompletionGraphEdgeTests {
 
     private func createGraph() -> CompletionGraph {
@@ -219,7 +221,7 @@ struct CompletionGraphEdgeTests {
 
 // MARK: - Role Characteristics Tests
 
-@Suite("CompletionGraph Role Characteristics")
+@Suite("CompletionGraph Role Characteristics", .heartbeat)
 struct CompletionGraphRoleCharacteristicsTests {
 
     @Test("Symmetric role creates inverse edge")
@@ -264,7 +266,7 @@ struct CompletionGraphRoleCharacteristicsTests {
 
 // MARK: - Backtracking Tests
 
-@Suite("CompletionGraph Backtracking")
+@Suite("CompletionGraph Backtracking", .heartbeat)
 struct CompletionGraphBacktrackingTests {
 
     private func createGraph() -> CompletionGraph {
@@ -361,7 +363,7 @@ struct CompletionGraphBacktrackingTests {
 
 // MARK: - Blocking Tests
 
-@Suite("CompletionGraph Blocking")
+@Suite("CompletionGraph Blocking", .heartbeat)
 struct CompletionGraphBlockingTests {
 
     private func createGraph() -> CompletionGraph {
@@ -447,7 +449,7 @@ struct CompletionGraphBlockingTests {
 
 // MARK: - Node Merging Tests
 
-@Suite("CompletionGraph Node Merging")
+@Suite("CompletionGraph Node Merging", .heartbeat)
 struct CompletionGraphMergingTests {
 
     private func createGraph() -> CompletionGraph {
@@ -477,7 +479,7 @@ struct CompletionGraphMergingTests {
 
 // MARK: - Transitive Role Tests
 
-@Suite("CompletionGraph Transitive Roles")
+@Suite("CompletionGraph Transitive Roles", .heartbeat)
 struct CompletionGraphTransitiveTests {
 
     @Test("Transitive role expansion")
@@ -508,7 +510,7 @@ struct CompletionGraphTransitiveTests {
 
 // MARK: - Property Chain Tests
 
-@Suite("CompletionGraph Property Chains")
+@Suite("CompletionGraph Property Chains", .heartbeat)
 struct CompletionGraphPropertyChainTests {
 
     @Test("Property chain inference")

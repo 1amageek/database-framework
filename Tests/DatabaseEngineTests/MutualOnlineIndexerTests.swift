@@ -5,13 +5,14 @@
 // Reference: FDB Record Layer mutual indexing strategy
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
 // MARK: - MutualIndexConfiguration Tests
 
-@Suite("MutualIndexConfiguration Tests")
+@Suite("MutualIndexConfiguration Tests", .heartbeat)
 struct MutualIndexConfigurationTests {
 
     @Test("Configuration stores forward and reverse index names")
@@ -77,7 +78,7 @@ struct MutualIndexConfigurationTests {
 
 // MARK: - MutualOnlineIndexer Unit Tests
 
-@Suite("MutualOnlineIndexer Unit Tests")
+@Suite("MutualOnlineIndexer Unit Tests", .heartbeat)
 struct MutualOnlineIndexerUnitTests {
 
     @Test("Description includes both index names and item type")
@@ -109,7 +110,7 @@ struct MutualOnlineIndexerUnitTests {
 
 // MARK: - SymmetricIndexBuilder Tests
 
-@Suite("SymmetricIndexBuilder Tests")
+@Suite("SymmetricIndexBuilder Tests", .heartbeat)
 struct SymmetricIndexBuilderTests {
 
     @Test("Symmetric key canonicalization - smaller ID first")
@@ -172,7 +173,7 @@ struct SymmetricIndexBuilderTests {
 
 // MARK: - Index Verification Tests
 
-@Suite("Mutual Index Verification Tests")
+@Suite("Mutual Index Verification Tests", .heartbeat)
 struct MutualIndexVerificationTests {
 
     @Test("Verification checks forward-reverse consistency")
@@ -243,7 +244,7 @@ struct MutualIndexVerificationTests {
 
 // MARK: - Bidirectional Relationship Tests
 
-@Suite("Bidirectional Relationship Tests")
+@Suite("Bidirectional Relationship Tests", .heartbeat)
 struct BidirectionalRelationshipTests {
 
     @Test("Follower/Following relationship structure")
@@ -316,7 +317,7 @@ struct BidirectionalRelationshipTests {
 
 // MARK: - Metrics Tests for Mutual Indexer
 
-@Suite("Mutual Indexer Metrics Tests")
+@Suite("Mutual Indexer Metrics Tests", .heartbeat)
 struct MutualIndexerMetricsTests {
 
     @Test("Metric labels include both index names")
@@ -358,7 +359,7 @@ struct MutualIndexerMetricsTests {
 
 // MARK: - Progress Management Tests
 
-@Suite("Mutual Indexer Progress Management Tests")
+@Suite("Mutual Indexer Progress Management Tests", .heartbeat)
 struct MutualIndexerProgressTests {
 
     @Test("Forward and reverse progress keys are different")
@@ -407,7 +408,7 @@ struct MutualIndexerProgressTests {
 
 // MARK: - State Transition Tests
 
-@Suite("Mutual Indexer State Transition Tests")
+@Suite("Mutual Indexer State Transition Tests", .heartbeat)
 struct MutualIndexerStateTransitionTests {
 
     @Test("Both indexes transition together")
@@ -443,7 +444,7 @@ struct MutualIndexerStateTransitionTests {
 
 // MARK: - Error Handling Tests
 
-@Suite("Mutual Indexer Error Handling Tests")
+@Suite("Mutual Indexer Error Handling Tests", .heartbeat)
 struct MutualIndexerErrorHandlingTests {
 
     @Test("Verification errors are logged but don't fail build")
@@ -480,7 +481,7 @@ struct MutualIndexerErrorHandlingTests {
 
 // MARK: - Tuple Operations Tests
 
-@Suite("Tuple Operations for Mutual Index Tests")
+@Suite("Tuple Operations for Mutual Index Tests", .heartbeat)
 struct TupleOperationsTests {
 
     @Test("Tuple element extraction")
@@ -516,7 +517,7 @@ struct TupleOperationsTests {
 
 // MARK: - Performance Characteristics Tests
 
-@Suite("Mutual Indexer Performance Tests")
+@Suite("Mutual Indexer Performance Tests", .heartbeat)
 struct MutualIndexerPerformanceTests {
 
     @Test("Single scan builds both indexes")

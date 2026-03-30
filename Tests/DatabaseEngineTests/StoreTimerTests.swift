@@ -3,12 +3,13 @@
 // DatabaseEngine Tests - StoreTimer instrumentation tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 
 // MARK: - StoreTimerEvent Tests
 
-@Suite("StoreTimerEvent Tests")
+@Suite("StoreTimerEvent Tests", .heartbeat)
 struct StoreTimerEventTests {
 
     @Test("Events have unique names")
@@ -45,7 +46,7 @@ struct StoreTimerEventTests {
 
 // MARK: - StoreTimer Tests
 
-@Suite("StoreTimer Tests")
+@Suite("StoreTimer Tests", .heartbeat)
 struct StoreTimerTests {
 
     @Test("Record timing event")
@@ -180,7 +181,7 @@ struct StoreTimerTests {
 
 // MARK: - StoreTimerSnapshot Tests
 
-@Suite("StoreTimerSnapshot Tests")
+@Suite("StoreTimerSnapshot Tests", .heartbeat)
 struct StoreTimerSnapshotTests {
 
     @Test("Snapshot captures current state")

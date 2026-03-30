@@ -1,6 +1,8 @@
+#if SQLITE
 import Testing
 import Foundation
 import Database
+import TestHeartbeat
 
 @Persistable
 struct FDBiteItem {
@@ -22,7 +24,7 @@ struct FDBiteNote {
     var body: String = ""
 }
 
-@Suite("FDBite Tests", .serialized)
+@Suite("FDBite Tests", .serialized, .heartbeat)
 struct FDBiteTests {
 
     // MARK: - Container Creation
@@ -316,3 +318,4 @@ struct FDBiteTests {
         #expect(results.isEmpty)
     }
 }
+#endif

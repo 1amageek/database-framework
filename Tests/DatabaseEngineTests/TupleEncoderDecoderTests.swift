@@ -3,13 +3,14 @@
 // DatabaseEngine Tests - TupleEncoder and TupleDecoder tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 @testable import DatabaseEngine
 
 // MARK: - TupleEncoder Tests
 
-@Suite("TupleEncoder Tests")
+@Suite("TupleEncoder Tests", .heartbeat)
 struct TupleEncoderTests {
 
     // MARK: - String Encoding
@@ -360,7 +361,7 @@ struct TupleEncoderTests {
 
 // MARK: - TupleDecoder Tests
 
-@Suite("TupleDecoder Tests")
+@Suite("TupleDecoder Tests", .heartbeat)
 struct TupleDecoderTests {
 
     // MARK: - Integer Decoding
@@ -609,7 +610,7 @@ struct TupleDecoderTests {
 
 // MARK: - Round-Trip Tests
 
-@Suite("TupleEncoder/Decoder Round-Trip Tests")
+@Suite("TupleEncoder/Decoder Round-Trip Tests", .heartbeat)
 struct TupleEncoderDecoderRoundTripTests {
 
     @Test("round-trip Int")

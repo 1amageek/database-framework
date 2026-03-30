@@ -1,10 +1,11 @@
 #if FOUNDATION_DB
 import Foundation
 import Testing
+import TestHeartbeat
 @testable import DatabaseEngine
 import Core
 
-@Suite("Schema.Entity directory resolution")
+@Suite("Schema.Entity directory resolution", .heartbeat)
 struct SchemaEntityTests {
 
     // MARK: - resolvedDirectoryPath
@@ -134,7 +135,7 @@ struct SchemaEntityTests {
 
 // MARK: - AnyIndexDescriptor Codable
 
-@Suite("AnyIndexDescriptor Codable")
+@Suite("AnyIndexDescriptor Codable", .heartbeat)
 struct AnyIndexDescriptorCodableTests {
 
     /// Create an AnyIndexDescriptor for testing

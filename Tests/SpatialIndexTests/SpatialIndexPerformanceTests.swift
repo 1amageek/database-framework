@@ -188,7 +188,7 @@ private func clusteredLocation(
 
 // MARK: - Performance Tests
 
-@Suite("SpatialIndex Performance Tests", .serialized)
+@Suite("SpatialIndex Performance Tests", .serialized, .heartbeat)
 struct SpatialIndexPerformanceTests {
 
     // MARK: - Setup

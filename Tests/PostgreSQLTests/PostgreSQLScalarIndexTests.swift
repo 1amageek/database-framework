@@ -36,7 +36,7 @@ struct PGProduct: Equatable {
     var name: String = ""
 }
 
-@Suite("PostgreSQL Scalar Index Tests", .serialized)
+@Suite("PostgreSQL Scalar Index Tests", .serialized, .heartbeat)
 struct PostgreSQLScalarIndexTests {
 
     private func uniqueID(_ prefix: String) -> String {

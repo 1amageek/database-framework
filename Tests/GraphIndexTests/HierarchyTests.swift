@@ -3,13 +3,15 @@
 // Tests for ClassHierarchy and RoleHierarchy
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - ClassHierarchy Tests
 
-@Suite("ClassHierarchy Basic Operations")
+@Suite("ClassHierarchy Basic Operations", .heartbeat)
 struct ClassHierarchyBasicTests {
 
     @Test("Add subsumption relationship")
@@ -89,7 +91,7 @@ struct ClassHierarchyBasicTests {
     }
 }
 
-@Suite("ClassHierarchy Subsumption Checking")
+@Suite("ClassHierarchy Subsumption Checking", .heartbeat)
 struct ClassHierarchySubsumptionTests {
 
     @Test("Direct subsumption holds")
@@ -130,7 +132,7 @@ struct ClassHierarchySubsumptionTests {
 
 // MARK: - RoleHierarchy Tests
 
-@Suite("RoleHierarchy Basic Operations")
+@Suite("RoleHierarchy Basic Operations", .heartbeat)
 struct RoleHierarchyBasicTests {
 
     @Test("Add sub-role relationship")
@@ -176,7 +178,7 @@ struct RoleHierarchyBasicTests {
     }
 }
 
-@Suite("RoleHierarchy Characteristics")
+@Suite("RoleHierarchy Characteristics", .heartbeat)
 struct RoleHierarchyCharacteristicsTests {
 
     @Test("Set transitive characteristic")
@@ -252,7 +254,7 @@ struct RoleHierarchyCharacteristicsTests {
     }
 }
 
-@Suite("RoleHierarchy Domain and Range")
+@Suite("RoleHierarchy Domain and Range", .heartbeat)
 struct RoleHierarchyDomainRangeTests {
 
     @Test("Set domain")
@@ -282,7 +284,7 @@ struct RoleHierarchyDomainRangeTests {
     }
 }
 
-@Suite("RoleHierarchy Property Chains")
+@Suite("RoleHierarchy Property Chains", .heartbeat)
 struct RoleHierarchyPropertyChainTests {
 
     @Test("Add property chain")
@@ -332,7 +334,7 @@ struct RoleHierarchyPropertyChainTests {
     }
 }
 
-@Suite("RoleHierarchy Sub-role Checking")
+@Suite("RoleHierarchy Sub-role Checking", .heartbeat)
 struct RoleHierarchySubRoleTests {
 
     @Test("Direct sub-role check")
@@ -373,7 +375,7 @@ struct RoleHierarchySubRoleTests {
 
 // MARK: - Combined Hierarchy Tests
 
-@Suite("Combined Hierarchy Operations")
+@Suite("Combined Hierarchy Operations", .heartbeat)
 struct CombinedHierarchyTests {
 
     @Test("Build from ontology")

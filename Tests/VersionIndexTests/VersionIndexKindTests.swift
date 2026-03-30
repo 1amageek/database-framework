@@ -3,6 +3,7 @@
 // FDBIndexing Tests - VersionIndexKind tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 @testable import DatabaseEngine
@@ -52,7 +53,7 @@ struct TestDoc: Persistable {
     }
 }
 
-@Suite("VersionIndexKind Tests")
+@Suite("VersionIndexKind Tests", .heartbeat)
 struct VersionIndexKindTests {
 
     // MARK: - Metadata Tests

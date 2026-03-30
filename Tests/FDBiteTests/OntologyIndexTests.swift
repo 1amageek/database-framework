@@ -1,3 +1,4 @@
+#if SQLITE
 // OntologyIndexTests.swift
 // Tests for OntologyIndex — automatic @OWLClass entity → SPO triple materialization
 //
@@ -9,6 +10,7 @@ import Testing
 import Foundation
 import Database
 import StorageKit
+import TestHeartbeat
 
 // MARK: - Test Models
 
@@ -79,7 +81,7 @@ private func findEntries(
 
 // MARK: - Macro Generation Tests
 
-@Suite("OWLClass Macro Descriptor Tests")
+@Suite("OWLClass Macro Descriptor Tests", .heartbeat)
 struct OWLClassMacroDescriptorTests {
 
     @Test("@OWLClass auto-generates _owlTripleDescriptors")
@@ -121,7 +123,7 @@ struct OWLClassMacroDescriptorTests {
 
 // MARK: - Unit Tests: Maintainer Key Generation
 
-@Suite("OWLTripleIndexMaintainer Unit Tests")
+@Suite("OWLTripleIndexMaintainer Unit Tests", .heartbeat)
 struct OWLTripleIndexMaintainerUnitTests {
 
     @Test("Generates correct SPO key count for insert")
@@ -235,7 +237,7 @@ struct OWLTripleIndexMaintainerUnitTests {
 
 // MARK: - Integration Tests: Full Pipeline
 
-@Suite("OntologyIndex Integration Tests")
+@Suite("OntologyIndex Integration Tests", .heartbeat)
 struct OntologyIndexIntegrationTests {
 
     private func makeContainer() async throws -> DBContainer {
@@ -365,3 +367,4 @@ struct OntologyIndexIntegrationTests {
         #expect(entries.isEmpty, "Non-OWL entity should not produce SPO entries")
     }
 }
+#endif

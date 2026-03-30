@@ -3,11 +3,12 @@
 /// Tests for AnyIndexKind and AnyIndexDescriptor type erasure
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import Core
 @testable import DatabaseEngine
 
-@Suite("AnyIndexDescriptor")
+@Suite("AnyIndexDescriptor", .heartbeat)
 struct AnyIndexDescriptorTests {
 
     // MARK: - Test Model

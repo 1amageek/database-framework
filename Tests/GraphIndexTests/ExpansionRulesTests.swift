@@ -3,13 +3,15 @@
 // Tests for Tableaux expansion rules
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Graph
 @testable import GraphIndex
+@testable import OntologyIndex
 
 // MARK: - Clash Detection Tests
 
-@Suite("ExpansionRules Clash Detection")
+@Suite("ExpansionRules Clash Detection", .heartbeat)
 struct ExpansionRulesClashDetectionTests {
 
     private func createGraph() -> CompletionGraph {
@@ -149,7 +151,7 @@ struct ExpansionRulesClashDetectionTests {
 
 // MARK: - Intersection Rule Tests
 
-@Suite("ExpansionRules Intersection Rule")
+@Suite("ExpansionRules Intersection Rule", .heartbeat)
 struct ExpansionRulesIntersectionTests {
 
     private func createGraph() -> CompletionGraph {
@@ -212,7 +214,7 @@ struct ExpansionRulesIntersectionTests {
 
 // MARK: - Union Rule Tests
 
-@Suite("ExpansionRules Union Rule")
+@Suite("ExpansionRules Union Rule", .heartbeat)
 struct ExpansionRulesUnionTests {
 
     private func createGraph() -> CompletionGraph {
@@ -260,7 +262,7 @@ struct ExpansionRulesUnionTests {
 
 // MARK: - Existential Rule Tests
 
-@Suite("ExpansionRules Existential Rule")
+@Suite("ExpansionRules Existential Rule", .heartbeat)
 struct ExpansionRulesExistentialTests {
 
     private func createGraph() -> CompletionGraph {
@@ -325,7 +327,7 @@ struct ExpansionRulesExistentialTests {
 
 // MARK: - Universal Rule Tests
 
-@Suite("ExpansionRules Universal Rule")
+@Suite("ExpansionRules Universal Rule", .heartbeat)
 struct ExpansionRulesUniversalTests {
 
     private func createGraph() -> CompletionGraph {
@@ -392,7 +394,7 @@ struct ExpansionRulesUniversalTests {
 
 // MARK: - Cardinality Rule Tests
 
-@Suite("ExpansionRules Cardinality Rules")
+@Suite("ExpansionRules Cardinality Rules", .heartbeat)
 struct ExpansionRulesCardinalityTests {
 
     private func createGraph() -> CompletionGraph {
@@ -471,7 +473,7 @@ struct ExpansionRulesCardinalityTests {
 
 // MARK: - Domain/Range Rule Tests
 
-@Suite("ExpansionRules Domain/Range Rules")
+@Suite("ExpansionRules Domain/Range Rules", .heartbeat)
 struct ExpansionRulesDomainRangeTests {
 
     @Test("Domain rule adds class to subject")
@@ -528,7 +530,7 @@ struct ExpansionRulesDomainRangeTests {
 
 // MARK: - Self Rule Tests
 
-@Suite("ExpansionRules Self Rule")
+@Suite("ExpansionRules Self Rule", .heartbeat)
 struct ExpansionRulesSelfTests {
 
     @Test("Self rule creates self-loop")
@@ -550,7 +552,7 @@ struct ExpansionRulesSelfTests {
 
 // MARK: - OneOf Rule Tests
 
-@Suite("ExpansionRules OneOf Rule")
+@Suite("ExpansionRules OneOf Rule", .heartbeat)
 struct ExpansionRulesOneOfTests {
 
     private func createGraph() -> CompletionGraph {

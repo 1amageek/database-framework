@@ -3,6 +3,7 @@
 /// Tests for Phase 1: Bug fixes and quick wins
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import QueryAST
 
@@ -42,7 +43,7 @@ private func parseExpression(_ sparql: String) throws -> QueryIR.Expression {
 
 // MARK: - C1: ABS/CEIL/FLOOR/ROUND
 
-@Suite("C1: Math Functions")
+@Suite("C1: Math Functions", .heartbeat)
 struct MathFunctionTests {
 
     @Test("ABS function parses correctly")
@@ -113,7 +114,7 @@ struct MathFunctionTests {
 
 // MARK: - B7: Unary Plus
 
-@Suite("B7: Unary Plus")
+@Suite("B7: Unary Plus", .heartbeat)
 struct UnaryPlusTests {
 
     @Test("Unary + in FILTER")
@@ -155,7 +156,7 @@ struct UnaryPlusTests {
 
 // MARK: - B6: Long String lang/datatype
 
-@Suite("B6: Long String Suffixes")
+@Suite("B6: Long String Suffixes", .heartbeat)
 struct LongStringSuffixTests {
 
     @Test("Long string with language tag")
@@ -213,7 +214,7 @@ struct LongStringSuffixTests {
 
 // MARK: - B8: Unicode Escapes
 
-@Suite("B8: Unicode Escapes")
+@Suite("B8: Unicode Escapes", .heartbeat)
 struct UnicodeEscapeTests {
 
     @Test("\\u escape in string literal")
@@ -267,7 +268,7 @@ struct UnicodeEscapeTests {
 
 // MARK: - B4: GROUP BY Bare Functions
 
-@Suite("B4: GROUP BY Bare Functions")
+@Suite("B4: GROUP BY Bare Functions", .heartbeat)
 struct GroupByBareFunctionTests {
 
     @Test("GROUP BY STR(?x) — bare function call")
@@ -316,7 +317,7 @@ struct GroupByBareFunctionTests {
 
 // MARK: - B5: ORDER BY Bare Functions
 
-@Suite("B5: ORDER BY Bare Functions")
+@Suite("B5: ORDER BY Bare Functions", .heartbeat)
 struct OrderByBareFunctionTests {
 
     @Test("ORDER BY STRLEN(?name) — bare function call")
@@ -378,7 +379,7 @@ struct OrderByBareFunctionTests {
 
 // MARK: - A13: Double Negation
 
-@Suite("A13: Double Negation")
+@Suite("A13: Double Negation", .heartbeat)
 struct DoubleNegationTests {
 
     @Test("!! double negation parses correctly")

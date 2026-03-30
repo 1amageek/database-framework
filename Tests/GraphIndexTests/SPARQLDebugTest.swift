@@ -30,7 +30,7 @@ fileprivate struct DebugEdge {
     ), storedFields: [\DebugEdge.score], name: "debug_graph")
 }
 
-@Suite("SPARQL Debug Test", .serialized)
+@Suite("SPARQL Debug Test", .serialized, .heartbeat)
 struct SPARQLDebugTest {
 
     init() async throws {

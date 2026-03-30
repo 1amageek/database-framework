@@ -13,7 +13,7 @@ import PostgreSQLStorage
 @testable import Core
 import TestSupport
 
-@Suite("PostgreSQL Partition Tests", .serialized)
+@Suite("PostgreSQL Partition Tests", .serialized, .heartbeat)
 struct PostgreSQLPartitionTests {
 
     private func uniqueID(_ prefix: String) -> String {

@@ -3,11 +3,12 @@
 // Tests for Bitmap data structure and operations
 
 import Testing
+import TestHeartbeat
 import Foundation
 @testable import DatabaseEngine
 @testable import Core
 
-@Suite("Bitmap Tests")
+@Suite("Bitmap Tests", .heartbeat)
 struct BitmapTests {
 
     // MARK: - Basic Operations Tests
@@ -375,7 +376,7 @@ struct BitmapTests {
 
 // MARK: - BitmapIndexKind Tests
 
-@Suite("BitmapIndexKind Tests")
+@Suite("BitmapIndexKind Tests", .heartbeat)
 struct BitmapIndexKindTests {
 
     @Test("BitmapIndexKind initialization")
@@ -416,7 +417,7 @@ struct BitmapIndexKindTests {
 
 // MARK: - BitmapCompression Tests
 
-@Suite("BitmapCompression Tests")
+@Suite("BitmapCompression Tests", .heartbeat)
 struct BitmapCompressionTests {
 
     @Test("All compression types are distinct")

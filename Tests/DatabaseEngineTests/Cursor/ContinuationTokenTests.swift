@@ -3,12 +3,13 @@
 // DatabaseEngine Tests - ContinuationToken serialization and deserialization tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
 import Core
 @testable import DatabaseEngine
 
-@Suite("ContinuationToken Tests", .serialized)
+@Suite("ContinuationToken Tests", .serialized, .heartbeat)
 struct ContinuationTokenTests {
 
     // MARK: - Token Creation Tests

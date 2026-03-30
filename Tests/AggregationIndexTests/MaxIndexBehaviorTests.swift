@@ -136,7 +136,7 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("MaxIndex Behavior Tests", .tags(.fdb), .serialized)
+@Suite("MaxIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
 struct MaxIndexBehaviorTests {
 
     // MARK: - Insert Tests

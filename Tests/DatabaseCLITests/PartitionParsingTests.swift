@@ -1,8 +1,9 @@
 #if FOUNDATION_DB
 import Testing
+import TestHeartbeat
 @testable import DatabaseCLICore
 
-@Suite("DataCommands.parsePartitionValues / removePartitionArgs")
+@Suite("DataCommands.parsePartitionValues / removePartitionArgs", .heartbeat)
 struct PartitionParsingTests {
 
     // MARK: - parsePartitionValues

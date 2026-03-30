@@ -5,11 +5,12 @@
 /// Coverage: 3-way JOINs, mixed JOIN types, self-joins, complex conditions, USING clause, LATERAL
 
 import Testing
+import TestHeartbeat
 @testable import QueryAST
 
 // MARK: - Multi-Table JOIN Tests
 
-@Suite("Multi-Table JOIN Tests")
+@Suite("Multi-Table JOIN Tests", .heartbeat)
 struct MultiJoinTests {
 
     // MARK: - 3-way INNER JOIN Tests

@@ -3,6 +3,7 @@
 // DatabaseEngine Tests - InPredicateOptimizer tests
 
 import Testing
+import TestHeartbeat
 import Foundation
 import Core
 import StorageKit
@@ -21,7 +22,7 @@ struct InOptTestModel {
 
 // MARK: - Configuration Tests
 
-@Suite("InPredicateOptimizer Configuration Tests")
+@Suite("InPredicateOptimizer Configuration Tests", .heartbeat)
 struct InPredicateOptimizerConfigurationTests {
 
     @Test("Default configuration values")
@@ -49,7 +50,7 @@ struct InPredicateOptimizerConfigurationTests {
 
 // MARK: - QueryCondition Extension Tests
 
-@Suite("QueryCondition IN Predicate Tests")
+@Suite("QueryCondition IN Predicate Tests", .heartbeat)
 struct QueryConditionInPredicateTests {
 
     @Test("containsInPredicate returns false for simple equals")
@@ -121,7 +122,7 @@ struct QueryConditionInPredicateTests {
 
 // MARK: - Extract IN Predicates Tests
 
-@Suite("InPredicateOptimizer Extract Tests")
+@Suite("InPredicateOptimizer Extract Tests", .heartbeat)
 struct InPredicateOptimizerExtractTests {
 
     @Test("Extract IN predicate from simple condition")
@@ -175,7 +176,7 @@ struct InPredicateOptimizerExtractTests {
 
 // MARK: - Optimization Strategy Tests
 
-@Suite("InPredicateOptimizer Strategy Tests")
+@Suite("InPredicateOptimizer Strategy Tests", .heartbeat)
 struct InPredicateOptimizerStrategyTests {
 
     @Test("No optimization for condition without IN")
