@@ -215,9 +215,18 @@ public struct ItemStorage: Sendable {
     /// Delete an item (handles external chunks with clearRange)
     ///
     /// - Parameter key: The item key to delete
-    public func delete(for key: Bytes) async throws {
-        // Always clear blob range (handles external storage and corrupted/non-envelope data)
-        clearAllBlobs(for: key)
+    /// Delete an item and its associated blob chunks
+    ///
+    /// - Parameters:
+    ///   - key: The item key
+    ///   - skipBlobCleanup: When true, skips clearing blob chunks.
+    ///     Safe when the item is known to use inline storage (< 90KB) and
+    ///     no external blob chunks exist.
+    public func delete(for key: Bytes, skipBlobCleanup: Bool = false) async throws {
+        // Clear blob range only when needed (handles external storage)
+        if !skipBlobCleanup {
+            clearAllBlobs(for: key)
+        }
 
         // Clear the item key
         transaction.clear(key: key)

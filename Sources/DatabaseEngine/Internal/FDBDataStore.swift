@@ -1487,7 +1487,16 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Process deletes
         for model in deletes {
-            try await deleteModelUntyped(model, transaction: transaction)
+            // Skip blob cleanup when security is disabled and no indexes:
+            // blob chunks only exist for >90KB items, and the clearRange DELETE
+            // query is unnecessary overhead for typical inline-sized records.
+            let hasIndexes = !type(of: model).indexDescriptors.isEmpty
+            let canSkipBlobs = skipExistingCheck && securityDelegate == nil && !hasIndexes
+            try await deleteModelUntyped(
+                model,
+                transaction: transaction,
+                skipBlobCleanup: canSkipBlobs
+            )
         }
 
         return serializedModels
@@ -1516,7 +1525,21 @@ internal final class FDBDataStore: DataStore, Sendable {
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
-        return try await container.engine.withTransaction(configuration: .default, body)
+        // Use StorageEngine.withTransaction directly for eager connection acquisition.
+        // This avoids the TransactionRunner → createTransaction → lazy connection path,
+        // which adds overhead from Task + withCheckedContinuation for deferred
+        // connection pool access.
+        return try await container.engine.withTransaction(body)
+    }
+
+    /// Execute an operation in auto-commit mode (no BEGIN/COMMIT).
+    ///
+    /// Delegates to StorageEngine.withAutoCommit() which skips BEGIN/COMMIT
+    /// for PostgreSQL, saving 2 SQL round-trips per operation.
+    func withAutoCommit<T: Sendable>(
+        _ body: @Sendable @escaping (any Transaction) async throws -> T
+    ) async throws -> T {
+        return try await container.engine.withAutoCommit(body)
     }
 
     /// Save model with security evaluation, returning serialized data for dual-write
@@ -1588,9 +1611,16 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Delete model without type parameter (for batch operations)
+    ///
+    /// - Parameters:
+    ///   - model: The model to delete
+    ///   - transaction: The transaction to use
+    ///   - skipBlobCleanup: When true, skips clearing blob chunks in storage.
+    ///     Safe when security is disabled and no indexes exist (inline-only data).
     private func deleteModelUntyped(
         _ model: any Persistable,
-        transaction: any Transaction
+        transaction: any Transaction,
+        skipBlobCleanup: Bool = false
     ) async throws {
         let persistableType = type(of: model).persistableType
         let validatedID = try validateID(model.id, for: persistableType)
@@ -1607,12 +1637,12 @@ internal final class FDBDataStore: DataStore, Sendable {
             transaction: transaction
         )
 
-        // Delete the record (handles external blob chunks)
+        // Delete the record (skip blob cleanup when caller guarantees inline-only data)
         let storage = ItemStorage(
             transaction: transaction,
             blobsSubspace: self.blobsSubspace
         )
-        try await storage.delete(for: key)
+        try await storage.delete(for: key, skipBlobCleanup: skipBlobCleanup)
     }
 
     // MARK: - Predicate Evaluation

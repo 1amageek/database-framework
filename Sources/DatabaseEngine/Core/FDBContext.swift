@@ -103,6 +103,9 @@ public final class FDBContext: Sendable {
     /// Logger
     private let logger: Logger
 
+    /// Cached DataStores keyed by (typeName, partitionPath) to avoid re-creation on every save()
+    private let storeCache: Mutex<[StoreKey: any DataStore]> = Mutex([:])
+
     /// Error handler for autosave failures
     ///
     /// When set, this handler is called if autosave fails. This allows the caller
@@ -164,6 +167,12 @@ public final class FDBContext: Sendable {
         init(autosaveEnabled: Bool = false) {
             self.autosaveEnabled = autosaveEnabled
         }
+    }
+
+    /// Key for grouping by (type, partition path) in save() and store caching
+    private struct StoreKey: Hashable, Sendable {
+        let typeName: String
+        let resolvedPath: String
     }
 
     /// Key for tracking models
@@ -586,16 +595,25 @@ public final class FDBContext: Sendable {
             )
         }
 
-        // Get store and execute fetch within transaction (uses ReadVersionCache)
         let store = try await container.store(for: type)
-        let config = TransactionConfiguration(cachePolicy: cachePolicy)
 
-        return try await self.withRawTransaction(configuration: config) { transaction in
-            guard let fdbStore = store as? FDBDataStore else {
-                // Fall back to standalone method if not FDBDataStore
-                return try await store.fetch(type, id: id)
+        // Auto-commit for default cache policy (single point read, no transaction needed).
+        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        if case .server = cachePolicy {
+            return try await store.withAutoCommit { transaction in
+                guard let fdbStore = store as? FDBDataStore else {
+                    return try await store.fetch(type, id: id)
+                }
+                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
-            return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+        } else {
+            let config = TransactionConfiguration(cachePolicy: cachePolicy)
+            return try await self.withRawTransaction(configuration: config) { transaction in
+                guard let fdbStore = store as? FDBDataStore else {
+                    return try await store.fetch(type, id: id)
+                }
+                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+            }
         }
     }
 
@@ -650,16 +668,25 @@ public final class FDBContext: Sendable {
             return nil
         }
 
-        // Get store and execute fetch within transaction (uses ReadVersionCache)
         let store = try await container.store(for: type, path: path)
-        let config = TransactionConfiguration(cachePolicy: cachePolicy)
 
-        return try await self.withRawTransaction(configuration: config) { transaction in
-            guard let fdbStore = store as? FDBDataStore else {
-                // Fall back to standalone method if not FDBDataStore
-                return try await store.fetch(type, id: id)
+        // Auto-commit for default cache policy (single point read, no transaction needed).
+        // Non-default cache policies require TransactionRunner for ReadVersionCache support.
+        if case .server = cachePolicy {
+            return try await store.withAutoCommit { transaction in
+                guard let fdbStore = store as? FDBDataStore else {
+                    return try await store.fetch(type, id: id)
+                }
+                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
-            return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+        } else {
+            let config = TransactionConfiguration(cachePolicy: cachePolicy)
+            return try await self.withRawTransaction(configuration: config) { transaction in
+                guard let fdbStore = store as? FDBDataStore else {
+                    return try await store.fetch(type, id: id)
+                }
+                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+            }
         }
     }
 
@@ -718,97 +745,18 @@ public final class FDBContext: Sendable {
         }
 
         do {
-            // Key for grouping by (type, partition path)
-            // For static directories, resolvedPath is empty
-            struct StoreKey: Hashable {
-                let typeName: String
-                let resolvedPath: String
-            }
-
-            // Group models by (type, partition) for partition-aware batching
-            var insertsByStore: [StoreKey: [any Persistable]] = [:]
-            var deletesByStore: [StoreKey: [any Persistable]] = [:]
-
-            for model in insertsSnapshot {
-                let modelType = type(of: model)
-                let typeName = modelType.persistableType
-                let resolvedPath = resolvePartitionPath(for: model)
-                let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
-                insertsByStore[key, default: []].append(model)
-            }
-
-            for model in deletesSnapshot {
-                let modelType = type(of: model)
-                let typeName = modelType.persistableType
-                let resolvedPath = resolvePartitionPath(for: model)
-                let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
-                deletesByStore[key, default: []].append(model)
-            }
-
-            let allStoreKeys = Set(insertsByStore.keys).union(deletesByStore.keys)
-
-            // Pre-resolve stores for each (type, partition) combination
-            var resolvedStores: [StoreKey: any DataStore] = [:]
-            for storeKey in allStoreKeys {
-                let sampleModel = insertsByStore[storeKey]?.first ?? deletesByStore[storeKey]?.first
-                guard let model = sampleModel else { continue }
-
-                let modelType = type(of: model)
-                let store: any DataStore
-
-                if hasDynamicDirectory(modelType) {
-                    let binding = buildAnyDirectoryPath(from: model)
-                    store = try await container.store(for: modelType, path: binding)
-                } else {
-                    store = try await container.store(for: modelType)
-                }
-                resolvedStores[storeKey] = store
-            }
-            let storesByKey = resolvedStores
-
-            // Make immutable copies for Sendable closure
-            let insertsForTransaction = insertsByStore
-            let deletesForTransaction = deletesByStore
-
-            // Get any store to provide the transaction (all stores share the same database)
-            guard let anyStore = storesByKey.values.first else {
-                stateLock.withLock { state in state.isSaving = false }
-                return
-            }
-
-            // Execute all operations in a single transaction via DataStore
-            try await anyStore.withRawTransaction { transaction in
-                var allSerializedModels: [SerializedModel] = []
-
-                // Batch process inserts per (type, partition)
-                // skipExistingCheck: inserts from FDBContext are known new records,
-                // so we can skip the storage.read() + clearAllBlobs() overhead
-                for (storeKey, models) in insertsForTransaction {
-                    guard let store = storesByKey[storeKey] else { continue }
-                    let serialized = try await store.executeBatchInTransaction(
-                        inserts: models,
-                        deletes: [],
-                        transaction: transaction,
-                        skipExistingCheck: true
-                    )
-                    allSerializedModels.append(contentsOf: serialized)
-                }
-
-                // Batch process deletes per (type, partition)
-                for (storeKey, models) in deletesForTransaction {
-                    guard let store = storesByKey[storeKey] else { continue }
-                    try await store.executeBatchInTransaction(
-                        inserts: [],
-                        deletes: models,
-                        transaction: transaction
-                    )
-                }
-
-                // Batch handle Polymorphable dual-write (reusing serialized data)
-                try await self.processDualWrites(
-                    serializedInserts: allSerializedModels,
-                    deletes: deletesSnapshot,
-                    transaction: transaction
+            // Fast path: single-model operations with static directory and no polymorphism.
+            // Skips StoreKey grouping, dictionary allocation, Set union, and processDualWrites.
+            if let fastResult = try await saveFastPathIfEligible(
+                inserts: insertsSnapshot,
+                deletes: deletesSnapshot
+            ) {
+                _ = fastResult
+            } else {
+                // General path: multi-model or dynamic-directory operations
+                try await saveGeneralPath(
+                    insertsSnapshot: insertsSnapshot,
+                    deletesSnapshot: deletesSnapshot
                 )
             }
 
@@ -829,6 +777,175 @@ public final class FDBContext: Sendable {
                 state.isSaving = false
             }
             throw error
+        }
+    }
+
+    // MARK: - Save Fast Path
+
+    /// Attempt fast path for single-model save with static directory.
+    ///
+    /// Returns `true` if the fast path was taken, `nil` if not eligible.
+    /// Eligible when: exactly 1 insert + 0 deletes (or vice versa),
+    /// static directory (no dynamic partition), and not Polymorphable.
+    private func saveFastPathIfEligible(
+        inserts: [any Persistable],
+        deletes: [any Persistable]
+    ) async throws -> Bool? {
+        // Only handle single-model operations
+        let isSingleInsert = inserts.count == 1 && deletes.isEmpty
+        let isSingleDelete = inserts.isEmpty && deletes.count == 1
+
+        guard isSingleInsert || isSingleDelete else { return nil }
+
+        let model = isSingleInsert ? inserts[0] : deletes[0]
+        let modelType = type(of: model)
+
+        // Not eligible if dynamic directory (needs partition path resolution)
+        guard !hasDynamicDirectory(modelType) else { return nil }
+
+        // Not eligible if Polymorphable (needs dual-write processing)
+        guard !(modelType is any Polymorphable.Type) else { return nil }
+
+        // Not eligible if model has indexes (index updates need atomicity with data write)
+        guard modelType.indexDescriptors.isEmpty else { return nil }
+
+        // Not eligible if security is enabled (CREATE/UPDATE evaluation needs existing record check)
+        guard container.securityDelegate == nil else { return nil }
+
+        // Resolve store (with cache)
+        let typeName = modelType.persistableType
+        let storeKey = StoreKey(typeName: typeName, resolvedPath: "")
+
+        let store: any DataStore
+        if let cached = storeCache.withLock({ $0[storeKey] }) {
+            store = cached
+        } else {
+            store = try await container.store(for: modelType)
+            storeCache.withLock { $0[storeKey] = store }
+        }
+
+        // Execute in auto-commit mode (no BEGIN/COMMIT for single operations)
+        if isSingleInsert {
+            _ = try await store.withAutoCommit { transaction in
+                try await store.executeBatchInTransaction(
+                    inserts: inserts,
+                    deletes: [],
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+            }
+        } else {
+            _ = try await store.withAutoCommit { transaction in
+                try await store.executeBatchInTransaction(
+                    inserts: [],
+                    deletes: deletes,
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+            }
+        }
+
+        return true
+    }
+
+    /// General path for multi-model or dynamic-directory save operations.
+    private func saveGeneralPath(
+        insertsSnapshot: [any Persistable],
+        deletesSnapshot: [any Persistable]
+    ) async throws {
+        // Group models by (type, partition) for partition-aware batching
+        var insertsByStore: [StoreKey: [any Persistable]] = [:]
+        var deletesByStore: [StoreKey: [any Persistable]] = [:]
+
+        for model in insertsSnapshot {
+            let modelType = type(of: model)
+            let typeName = modelType.persistableType
+            let resolvedPath = resolvePartitionPath(for: model)
+            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+            insertsByStore[key, default: []].append(model)
+        }
+
+        for model in deletesSnapshot {
+            let modelType = type(of: model)
+            let typeName = modelType.persistableType
+            let resolvedPath = resolvePartitionPath(for: model)
+            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+            deletesByStore[key, default: []].append(model)
+        }
+
+        let allStoreKeys = Set(insertsByStore.keys).union(deletesByStore.keys)
+
+        // Resolve stores with caching (avoids FDBDataStore re-creation across save() calls)
+        var resolvedStores: [StoreKey: any DataStore] = [:]
+        for storeKey in allStoreKeys {
+            // Check cache first
+            if let cached = storeCache.withLock({ $0[storeKey] }) {
+                resolvedStores[storeKey] = cached
+                continue
+            }
+
+            let sampleModel = insertsByStore[storeKey]?.first ?? deletesByStore[storeKey]?.first
+            guard let model = sampleModel else { continue }
+
+            let modelType = type(of: model)
+            let store: any DataStore
+
+            if hasDynamicDirectory(modelType) {
+                let binding = buildAnyDirectoryPath(from: model)
+                store = try await container.store(for: modelType, path: binding)
+            } else {
+                store = try await container.store(for: modelType)
+            }
+            resolvedStores[storeKey] = store
+            storeCache.withLock { $0[storeKey] = store }
+        }
+        let storesByKey = resolvedStores
+
+        // Make immutable copies for Sendable closure
+        let insertsForTransaction = insertsByStore
+        let deletesForTransaction = deletesByStore
+
+        // Get any store to provide the transaction (all stores share the same database)
+        guard let anyStore = storesByKey.values.first else {
+            return
+        }
+
+        // Execute all operations in a single transaction via DataStore
+        try await anyStore.withRawTransaction { transaction in
+            var allSerializedModels: [SerializedModel] = []
+
+            // Batch process inserts per (type, partition)
+            // skipExistingCheck: inserts from FDBContext are known new records,
+            // so we can skip the storage.read() + clearAllBlobs() overhead
+            for (storeKey, models) in insertsForTransaction {
+                guard let store = storesByKey[storeKey] else { continue }
+                let serialized = try await store.executeBatchInTransaction(
+                    inserts: models,
+                    deletes: [],
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+                allSerializedModels.append(contentsOf: serialized)
+            }
+
+            // Batch process deletes per (type, partition)
+            // skipExistingCheck: enables blob cleanup skip for no-index, no-security types
+            for (storeKey, models) in deletesForTransaction {
+                guard let store = storesByKey[storeKey] else { continue }
+                try await store.executeBatchInTransaction(
+                    inserts: [],
+                    deletes: models,
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+            }
+
+            // Batch handle Polymorphable dual-write (reusing serialized data)
+            try await self.processDualWrites(
+                serializedInserts: allSerializedModels,
+                deletes: deletesSnapshot,
+                transaction: transaction
+            )
         }
     }
 
