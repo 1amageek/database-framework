@@ -191,13 +191,16 @@ public protocol DataStore: AnyObject, Sendable {
     ///   - inserts: Models to insert or update
     ///   - deletes: Models to delete
     ///   - transaction: The transaction to use
+    ///   - skipExistingCheck: When true, skips reading existing records for inserts.
+    ///     Safe when security is disabled and inserts are known new records.
     /// - Returns: Serialized data for inserted models (for dual-write optimization)
     /// - Throws: SecurityError if operation not allowed, or other errors on failure
     @discardableResult
     func executeBatchInTransaction(
         inserts: [any Persistable],
         deletes: [any Persistable],
-        transaction: any Transaction
+        transaction: any Transaction,
+        skipExistingCheck: Bool
     ) async throws -> [SerializedModel]
 
     /// Execute operations within a raw transaction
@@ -225,6 +228,25 @@ public protocol DataStore: AnyObject, Sendable {
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T
+}
+
+// MARK: - DataStore Default Implementations
+
+extension DataStore {
+    /// Convenience overload without skipExistingCheck (defaults to false)
+    @discardableResult
+    public func executeBatchInTransaction(
+        inserts: [any Persistable],
+        deletes: [any Persistable],
+        transaction: any Transaction
+    ) async throws -> [SerializedModel] {
+        try await executeBatchInTransaction(
+            inserts: inserts,
+            deletes: deletes,
+            transaction: transaction,
+            skipExistingCheck: false
+        )
+    }
 }
 
 // MARK: - SerializedModel

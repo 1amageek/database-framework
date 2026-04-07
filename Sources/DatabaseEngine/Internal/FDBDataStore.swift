@@ -1455,7 +1455,8 @@ internal final class FDBDataStore: DataStore, Sendable {
     func executeBatchInTransaction(
         inserts: [any Persistable],
         deletes: [any Persistable],
-        transaction: any Transaction
+        transaction: any Transaction,
+        skipExistingCheck: Bool = false
     ) async throws -> [SerializedModel] {
         let encoder = ProtobufEncoder()
         var serializedModels: [SerializedModel] = []
@@ -1467,10 +1468,19 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Process inserts with single encoder
         for model in inserts {
+            // Determine if we can skip reading existing records per model type:
+            // Safe only when ALL of:
+            // 1. Caller signals known inserts (skipExistingCheck)
+            // 2. Security is disabled (no CREATE/UPDATE evaluation needed)
+            // 3. Model type has no indexes (no oldModel needed for diff-based index update)
+            let hasIndexes = !type(of: model).indexDescriptors.isEmpty
+            let canSkip = skipExistingCheck && securityDelegate == nil && !hasIndexes
+
             let serialized = try await saveModelUntypedWithSecurityReturningData(
                 model,
                 transaction: transaction,
-                encoder: encoder
+                encoder: encoder,
+                skipExistingCheck: canSkip
             )
             serializedModels.append(serialized)
         }
@@ -1510,10 +1520,21 @@ internal final class FDBDataStore: DataStore, Sendable {
     }
 
     /// Save model with security evaluation, returning serialized data for dual-write
+    ///
+    /// - Parameters:
+    ///   - model: The model to save
+    ///   - transaction: The transaction to use
+    ///   - encoder: Reusable Protobuf encoder
+    ///   - skipExistingCheck: When true, skips reading existing record from storage.
+    ///     The caller (executeBatchInTransaction) ensures this is only true when ALL of:
+    ///     (1) security is disabled, (2) model type has no indexes, and
+    ///     (3) the operation is from FDBContext's insert path.
+    ///     This eliminates one storage read round-trip per insert.
     private func saveModelUntypedWithSecurityReturningData(
         _ model: any Persistable,
         transaction: any Transaction,
-        encoder: ProtobufEncoder
+        encoder: ProtobufEncoder,
+        skipExistingCheck: Bool = false
     ) async throws -> SerializedModel {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
@@ -1531,20 +1552,28 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Check for existing record and deserialize for security evaluation and index update
         var oldModel: (any Persistable)?
-        if let oldData = try await storage.read(for: key) {
+        let isNewRecord: Bool
+
+        if skipExistingCheck {
+            // Fast path: caller guarantees this is a new insert with no security checks needed
+            isNewRecord = true
+        } else if let oldData = try await storage.read(for: key) {
             // Update - deserialize old model (used for both security and index update)
             oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
             try securityDelegate?.evaluateUpdate(oldModel!, newResource: model)
+            isNewRecord = false
         } else {
             // Create
             try securityDelegate?.evaluateCreate(model)
+            isNewRecord = true
         }
 
         // Serialize using Protobuf (encoder reused across all models)
         let data = Array(try encoder.encode(model))
 
         // Save the record (handles compression + external storage for >90KB)
-        try await storage.write(data, for: key)
+        // Skip blob cleanup for known new records (no old blobs to clear)
+        try await storage.write(data, for: key, isNewRecord: isNewRecord)
 
         // Update indexes via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(

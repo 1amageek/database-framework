@@ -101,9 +101,12 @@ public struct ItemStorage: Sendable {
     /// - Parameters:
     ///   - data: The raw data to write
     ///   - key: The item key (in items subspace)
-    public func write(_ data: Bytes, for key: Bytes) async throws {
-        // Step 1: Always clear any existing blobs (handles overwrite and corrupted data)
-        clearAllBlobs(for: key)
+    ///   - isNewRecord: When true, skips clearing old blobs (optimization for known new inserts)
+    public func write(_ data: Bytes, for key: Bytes, isNewRecord: Bool = false) async throws {
+        // Step 1: Clear existing blobs only when overwriting (skip for known new records)
+        if !isNewRecord {
+            clearAllBlobs(for: key)
+        }
 
         // Step 2: Compress
         let compressed = try compress(data)

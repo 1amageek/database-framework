@@ -781,12 +781,15 @@ public final class FDBContext: Sendable {
                 var allSerializedModels: [SerializedModel] = []
 
                 // Batch process inserts per (type, partition)
+                // skipExistingCheck: inserts from FDBContext are known new records,
+                // so we can skip the storage.read() + clearAllBlobs() overhead
                 for (storeKey, models) in insertsForTransaction {
                     guard let store = storesByKey[storeKey] else { continue }
                     let serialized = try await store.executeBatchInTransaction(
                         inserts: models,
                         deletes: [],
-                        transaction: transaction
+                        transaction: transaction,
+                        skipExistingCheck: true
                     )
                     allSerializedModels.append(contentsOf: serialized)
                 }
