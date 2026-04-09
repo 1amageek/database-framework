@@ -103,8 +103,8 @@ public final class FDBContext: Sendable {
     /// Logger
     private let logger: Logger
 
-    /// Cached DataStores keyed by (typeName, partitionPath) to avoid re-creation on every save()
-    private let storeCache: Mutex<[StoreKey: any DataStore]> = Mutex([:])
+    /// Cached stores keyed by (typeName, partitionPath) to avoid re-creation on every save()
+    private let storeCache: Mutex<[StoreKey: FDBDataStore]> = Mutex([:])
 
     /// Error handler for autosave failures
     ///
@@ -173,6 +173,84 @@ public final class FDBContext: Sendable {
     private struct StoreKey: Hashable, Sendable {
         let typeName: String
         let resolvedPath: String
+    }
+
+    private func cachedStore<T: Persistable>(
+        for type: T.Type
+    ) async throws -> FDBDataStore {
+        let storeKey = StoreKey(typeName: T.persistableType, resolvedPath: "")
+        if let cached = storeCache.withLock({ $0[storeKey] }) {
+            return cached
+        }
+
+        let store = try await container.fdbStore(for: type)
+        storeCache.withLock { $0[storeKey] = store }
+        return store
+    }
+
+    /// Point reads with `.server` consistency do not benefit from per-context store caching.
+    ///
+    /// Fresh contexts used by one-shot reads would otherwise pay local cache bookkeeping
+    /// every time, even though DBContainer already shares resolved stores globally.
+    private func pointReadStore<T: Persistable>(
+        for type: T.Type
+    ) async throws -> FDBDataStore {
+        try await container.fdbStore(for: type)
+    }
+
+    private func cachedStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T>
+    ) async throws -> FDBDataStore {
+        let resolvedPath = AnyDirectoryPath(path).resolve().joined(separator: "/")
+        let storeKey = StoreKey(typeName: T.persistableType, resolvedPath: resolvedPath)
+        if let cached = storeCache.withLock({ $0[storeKey] }) {
+            return cached
+        }
+
+        let store = try await container.fdbStore(for: type, path: path)
+        storeCache.withLock { $0[storeKey] = store }
+        return store
+    }
+
+    private func pointReadStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T>
+    ) async throws -> FDBDataStore {
+        try await container.fdbStore(for: type, path: path)
+    }
+
+    /// Single-model write/delete fast paths do not benefit from per-context store caching.
+    ///
+    /// One-shot contexts used by insert/update/delete benchmarks would otherwise pay local
+    /// cache mutex and dictionary overhead even though DBContainer already shares stores.
+    private func singleOperationStore(
+        for type: any Persistable.Type
+    ) async throws -> FDBDataStore {
+        try await container.fdbStore(for: type)
+    }
+
+    private func pendingModelLookup<T: Persistable>(
+        for id: any TupleElement,
+        as type: T.Type
+    ) -> (inserted: T?, isDeleted: Bool) {
+        stateLock.withLock { state in
+            guard state.hasChanges else {
+                return (nil, false)
+            }
+
+            let insertKey = ModelKey(persistableType: T.persistableType, id: id)
+            if let inserted = state.insertedModels[insertKey] as? T {
+                return (inserted, false)
+            }
+
+            let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
+            if state.deletedModels[deleteKey] != nil {
+                return (nil, true)
+            }
+
+            return (nil, false)
+        }
     }
 
     /// Key for tracking models
@@ -362,7 +440,7 @@ public final class FDBContext: Sendable {
         }
 
         // Use DataStore.clearAll() which evaluates admin security
-        let store = try await container.store(for: type)
+        let store = try await cachedStore(for: type)
         try await store.clearAll(type)
 
         // Also clear polymorphic directory data if applicable
@@ -399,7 +477,7 @@ public final class FDBContext: Sendable {
     ) async throws {
         var binding = DirectoryPath<T>()
         binding.set(keyPath, to: value)
-        let store = try await container.store(for: type, path: binding)
+        let store = try await cachedStore(for: type, path: binding)
         try await store.clearAll(type)
     }
 
@@ -472,9 +550,9 @@ public final class FDBContext: Sendable {
         // Get store for this type (partition-aware if needed)
         let store: any DataStore
         if let binding = query.partitionBinding {
-            store = try await container.store(for: T.self, path: binding)
+            store = try await cachedStore(for: T.self, path: binding)
         } else {
-            store = try await container.store(for: T.self)
+            store = try await cachedStore(for: T.self)
         }
 
         // Create TransactionConfiguration with CachePolicy
@@ -515,9 +593,9 @@ public final class FDBContext: Sendable {
         // Get store (partition-aware if needed)
         let store: any DataStore
         if let binding = query.partitionBinding {
-            store = try await container.store(for: T.self, path: binding)
+            store = try await cachedStore(for: T.self, path: binding)
         } else {
-            store = try await container.store(for: T.self)
+            store = try await cachedStore(for: T.self)
         }
 
         // Create TransactionConfiguration with CachePolicy
@@ -563,19 +641,7 @@ public final class FDBContext: Sendable {
         as type: T.Type,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
-            let insertKey = ModelKey(persistableType: T.persistableType, id: id)
-            if let inserted = state.insertedModels[insertKey] as? T {
-                return (inserted, false)
-            }
-
-            let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
-            if state.deletedModels[deleteKey] != nil {
-                return (nil, true)
-            }
-
-            return (nil, false)
-        }
+        let pendingResult = pendingModelLookup(for: id, as: type)
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
@@ -595,24 +661,18 @@ public final class FDBContext: Sendable {
             )
         }
 
-        let store = try await container.store(for: type)
-
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type)
             return try await store.withAutoCommit { transaction in
-                guard let fdbStore = store as? FDBDataStore else {
-                    return try await store.fetch(type, id: id)
-                }
-                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
         } else {
+            let store = try await cachedStore(for: type)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withRawTransaction(configuration: config) { transaction in
-                guard let fdbStore = store as? FDBDataStore else {
-                    return try await store.fetch(type, id: id)
-                }
-                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
         }
     }
@@ -644,19 +704,7 @@ public final class FDBContext: Sendable {
         partition path: DirectoryPath<T>,
         cachePolicy: CachePolicy = .server
     ) async throws -> T? {
-        let pendingResult = stateLock.withLock { state -> (inserted: T?, isDeleted: Bool) in
-            let insertKey = ModelKey(persistableType: T.persistableType, id: id)
-            if let inserted = state.insertedModels[insertKey] as? T {
-                return (inserted, false)
-            }
-
-            let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
-            if state.deletedModels[deleteKey] != nil {
-                return (nil, true)
-            }
-
-            return (nil, false)
-        }
+        let pendingResult = pendingModelLookup(for: id, as: type)
 
         if let inserted = pendingResult.inserted {
             // Evaluate GET security for pending insert (not via DataStore)
@@ -668,24 +716,18 @@ public final class FDBContext: Sendable {
             return nil
         }
 
-        let store = try await container.store(for: type, path: path)
-
         // Auto-commit for default cache policy (single point read, no transaction needed).
         // Non-default cache policies require TransactionRunner for ReadVersionCache support.
         if case .server = cachePolicy {
+            let store = try await pointReadStore(for: type, path: path)
             return try await store.withAutoCommit { transaction in
-                guard let fdbStore = store as? FDBDataStore else {
-                    return try await store.fetch(type, id: id)
-                }
-                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
         } else {
+            let store = try await cachedStore(for: type, path: path)
             let config = TransactionConfiguration(cachePolicy: cachePolicy)
             return try await self.withRawTransaction(configuration: config) { transaction in
-                guard let fdbStore = store as? FDBDataStore else {
-                    return try await store.fetch(type, id: id)
-                }
-                return try await fdbStore.fetchByIdInTransaction(type, id: id, transaction: transaction)
+                try await store.fetchByIdInTransaction(type, id: id, transaction: transaction)
             }
         }
     }
@@ -700,6 +742,8 @@ public final class FDBContext: Sendable {
         enum SaveCheckResult {
             case noChanges
             case alreadySaving
+            case singleInsert(any Persistable)
+            case singleDelete(any Persistable)
             case proceed(inserts: [any Persistable], deletes: [any Persistable])
         }
 
@@ -713,6 +757,22 @@ public final class FDBContext: Sendable {
                 return .noChanges
             }
 
+            if state.insertedModels.count == 1, state.deletedModels.isEmpty,
+               let model = state.insertedModels.values.first {
+                state.insertedModels.removeAll()
+                state.isSaving = true
+                state.autosaveScheduled = false
+                return .singleInsert(model)
+            }
+
+            if state.insertedModels.isEmpty, state.deletedModels.count == 1,
+               let model = state.deletedModels.values.first {
+                state.deletedModels.removeAll()
+                state.isSaving = true
+                state.autosaveScheduled = false
+                return .singleDelete(model)
+            }
+
             let inserts = Array(state.insertedModels.values)
             let deletes = Array(state.deletedModels.values)
 
@@ -724,59 +784,86 @@ public final class FDBContext: Sendable {
             return .proceed(inserts: inserts, deletes: deletes)
         }
 
-        let insertsSnapshot: [any Persistable]
-        let deletesSnapshot: [any Persistable]
-
         switch checkResult {
         case .noChanges:
             return
         case .alreadySaving:
             throw FDBContextError.concurrentSaveNotAllowed
-        case .proceed(let inserts, let deletes):
-            insertsSnapshot = inserts
-            deletesSnapshot = deletes
-        }
+        case .singleInsert(let model):
+            do {
+                if let fastResult = try await saveSingleOperationFastPathIfEligible(
+                    model,
+                    isDelete: false
+                ) {
+                    _ = fastResult
+                } else {
+                    try await saveGeneralPath(
+                        insertsSnapshot: [model],
+                        deletesSnapshot: []
+                    )
+                }
 
-        guard !insertsSnapshot.isEmpty || !deletesSnapshot.isEmpty else {
-            stateLock.withLock { state in
-                state.isSaving = false
+                stateLock.withLock { state in
+                    state.isSaving = false
+                }
+            } catch {
+                restoreSingleOperation(model, isDelete: false)
+                throw error
             }
             return
-        }
+        case .singleDelete(let model):
+            do {
+                if let fastResult = try await saveSingleOperationFastPathIfEligible(
+                    model,
+                    isDelete: true
+                ) {
+                    _ = fastResult
+                } else {
+                    try await saveGeneralPath(
+                        insertsSnapshot: [],
+                        deletesSnapshot: [model]
+                    )
+                }
 
-        do {
-            // Fast path: single-model operations with static directory and no polymorphism.
-            // Skips StoreKey grouping, dictionary allocation, Set union, and processDualWrites.
-            if let fastResult = try await saveFastPathIfEligible(
-                inserts: insertsSnapshot,
-                deletes: deletesSnapshot
-            ) {
-                _ = fastResult
-            } else {
-                // General path: multi-model or dynamic-directory operations
+                stateLock.withLock { state in
+                    state.isSaving = false
+                }
+            } catch {
+                restoreSingleOperation(model, isDelete: true)
+                throw error
+            }
+            return
+        case .proceed(let inserts, let deletes):
+            guard !inserts.isEmpty || !deletes.isEmpty else {
+                stateLock.withLock { state in
+                    state.isSaving = false
+                }
+                return
+            }
+
+            do {
                 try await saveGeneralPath(
-                    insertsSnapshot: insertsSnapshot,
-                    deletesSnapshot: deletesSnapshot
+                    insertsSnapshot: inserts,
+                    deletesSnapshot: deletes
                 )
-            }
 
-            stateLock.withLock { state in
-                state.isSaving = false
-            }
-        } catch {
-            // Restore changes on error
-            stateLock.withLock { state in
-                for model in insertsSnapshot {
-                    let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
-                    state.insertedModels[key] = model
+                stateLock.withLock { state in
+                    state.isSaving = false
                 }
-                for model in deletesSnapshot {
-                    let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
-                    state.deletedModels[key] = model
+            } catch {
+                stateLock.withLock { state in
+                    for model in inserts {
+                        let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
+                        state.insertedModels[key] = model
+                    }
+                    for model in deletes {
+                        let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
+                        state.deletedModels[key] = model
+                    }
+                    state.isSaving = false
                 }
-                state.isSaving = false
+                throw error
             }
-            throw error
         }
     }
 
@@ -787,17 +874,10 @@ public final class FDBContext: Sendable {
     /// Returns `true` if the fast path was taken, `nil` if not eligible.
     /// Eligible when: exactly 1 insert + 0 deletes (or vice versa),
     /// static directory (no dynamic partition), and not Polymorphable.
-    private func saveFastPathIfEligible(
-        inserts: [any Persistable],
-        deletes: [any Persistable]
+    private func saveSingleOperationFastPathIfEligible(
+        _ model: any Persistable,
+        isDelete: Bool
     ) async throws -> Bool? {
-        // Only handle single-model operations
-        let isSingleInsert = inserts.count == 1 && deletes.isEmpty
-        let isSingleDelete = inserts.isEmpty && deletes.count == 1
-
-        guard isSingleInsert || isSingleDelete else { return nil }
-
-        let model = isSingleInsert ? inserts[0] : deletes[0]
         let modelType = type(of: model)
 
         // Not eligible if dynamic directory (needs partition path resolution)
@@ -812,23 +892,14 @@ public final class FDBContext: Sendable {
         // Not eligible if security is enabled (CREATE/UPDATE evaluation needs existing record check)
         guard container.securityDelegate == nil else { return nil }
 
-        // Resolve store (with cache)
-        let typeName = modelType.persistableType
-        let storeKey = StoreKey(typeName: typeName, resolvedPath: "")
-
-        let store: any DataStore
-        if let cached = storeCache.withLock({ $0[storeKey] }) {
-            store = cached
-        } else {
-            store = try await container.store(for: modelType)
-            storeCache.withLock { $0[storeKey] = store }
-        }
+        // Reuse the container-wide store cache directly for single-operation contexts.
+        let store = try await singleOperationStore(for: modelType)
 
         // Execute in auto-commit mode (no BEGIN/COMMIT for single operations)
-        if isSingleInsert {
+        if !isDelete {
             _ = try await store.withAutoCommit { transaction in
                 try await store.executeBatchInTransaction(
-                    inserts: inserts,
+                    inserts: [model],
                     deletes: [],
                     transaction: transaction,
                     skipExistingCheck: true
@@ -838,7 +909,7 @@ public final class FDBContext: Sendable {
             _ = try await store.withAutoCommit { transaction in
                 try await store.executeBatchInTransaction(
                     inserts: [],
-                    deletes: deletes,
+                    deletes: [model],
                     transaction: transaction,
                     skipExistingCheck: true
                 )
@@ -846,6 +917,21 @@ public final class FDBContext: Sendable {
         }
 
         return true
+    }
+
+    private func restoreSingleOperation(
+        _ model: any Persistable,
+        isDelete: Bool
+    ) {
+        stateLock.withLock { state in
+            let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
+            if isDelete {
+                state.deletedModels[key] = model
+            } else {
+                state.insertedModels[key] = model
+            }
+            state.isSaving = false
+        }
     }
 
     /// General path for multi-model or dynamic-directory save operations.
@@ -876,7 +962,7 @@ public final class FDBContext: Sendable {
         let allStoreKeys = Set(insertsByStore.keys).union(deletesByStore.keys)
 
         // Resolve stores with caching (avoids FDBDataStore re-creation across save() calls)
-        var resolvedStores: [StoreKey: any DataStore] = [:]
+        var resolvedStores: [StoreKey: FDBDataStore] = [:]
         for storeKey in allStoreKeys {
             // Check cache first
             if let cached = storeCache.withLock({ $0[storeKey] }) {
@@ -888,13 +974,13 @@ public final class FDBContext: Sendable {
             guard let model = sampleModel else { continue }
 
             let modelType = type(of: model)
-            let store: any DataStore
+            let store: FDBDataStore
 
             if hasDynamicDirectory(modelType) {
                 let binding = buildAnyDirectoryPath(from: model)
-                store = try await container.store(for: modelType, path: binding)
+                store = try await container.fdbStore(for: modelType, path: binding)
             } else {
-                store = try await container.store(for: modelType)
+                store = try await container.fdbStore(for: modelType)
             }
             resolvedStores[storeKey] = store
             storeCache.withLock { $0[storeKey] = store }
@@ -1185,7 +1271,7 @@ public final class FDBContext: Sendable {
                 fields: T.directoryFieldNames
             )
         }
-        let store = try await container.store(for: type)
+        let store = try await cachedStore(for: type)
         let models = try await store.fetchAll(type)
         for model in models {
             try block(model)
@@ -1210,7 +1296,7 @@ public final class FDBContext: Sendable {
     ) async throws {
         var binding = DirectoryPath<T>()
         binding.set(keyPath, to: value)
-        let store = try await container.store(for: type, path: binding)
+        let store = try await cachedStore(for: type, path: binding)
         let models = try await store.fetchAll(type)
         for model in models {
             try block(model)
@@ -1697,4 +1783,3 @@ extension FDBContext {
         }
     }
 }
-

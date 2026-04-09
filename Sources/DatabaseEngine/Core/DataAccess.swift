@@ -37,6 +37,10 @@ public struct DataAccess: Sendable {
     // Private init to prevent instantiation
     private init() {}
 
+    // Stateless codecs are safe to reuse across calls.
+    private static let protobufEncoder = ProtobufEncoder()
+    private static let protobufDecoder = ProtobufDecoder()
+
     // MARK: - KeyExpression Evaluation
 
     /// Evaluate a KeyExpression to extract field values
@@ -321,8 +325,7 @@ public struct DataAccess: Sendable {
     /// - Returns: Serialized bytes
     /// - Throws: Error if serialization fails
     public static func serialize<Item: Persistable>(_ item: Item) throws -> Bytes {
-        let encoder = ProtobufEncoder()
-        let data = try encoder.encode(item)
+        let data = try protobufEncoder.encode(item)
         return Array(data)
     }
 
@@ -332,8 +335,9 @@ public struct DataAccess: Sendable {
     /// - Returns: Deserialized item
     /// - Throws: Error if deserialization fails
     public static func deserialize<Item: Persistable>(_ bytes: Bytes) throws -> Item {
-        let decoder = ProtobufDecoder()
-        return try decoder.decode(Item.self, from: Data(bytes))
+        try withBorrowedData(bytes) { data in
+            try protobufDecoder.decode(Item.self, from: data)
+        }
     }
 
     /// Deserialize bytes to a type-erased Persistable using runtime type
@@ -349,12 +353,38 @@ public struct DataAccess: Sendable {
         _ bytes: Bytes,
         as type: any (Persistable & Codable).Type
     ) throws -> any Persistable {
-        let decoder = ProtobufDecoder()
-        let decoded = try decoder.decodeAny(type, from: Data(bytes))
+        let decoded = try withBorrowedData(bytes) { data in
+            try protobufDecoder.decodeAny(type, from: data)
+        }
         guard let persistable = decoded as? any Persistable else {
             throw FDBRuntimeError.internalError("Decoded value is not Persistable")
         }
         return persistable
+    }
+
+    /// Build a temporary `Data` view over borrowed bytes without copying.
+    ///
+    /// The `Data` instance must not escape the closure.
+    private static func withBorrowedData<T>(
+        _ bytes: Bytes,
+        _ body: (Data) throws -> T
+    ) throws -> T {
+        if bytes.isEmpty {
+            return try body(Data())
+        }
+
+        return try bytes.withUnsafeBytes { rawBuffer in
+            guard let baseAddress = rawBuffer.baseAddress else {
+                return try body(Data())
+            }
+
+            let data = Data(
+                bytesNoCopy: UnsafeMutableRawPointer(mutating: baseAddress),
+                count: rawBuffer.count,
+                deallocator: .none
+            )
+            return try body(data)
+        }
     }
 
     // MARK: - Covering Index Support (Optional)

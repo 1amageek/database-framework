@@ -47,6 +47,14 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// Metadata subspace: [subspace]/_metadata/
     let metadataSubspace: Subspace
 
+    /// Precomputed point-read prefix for the store's default type, when known.
+    ///
+    /// `DBContainer` creates and caches stores by `(type, path)`, so the default type
+    /// is stable for hot point-read paths. Keeping the fully encoded prefix avoids
+    /// repeated tuple encoding of the type name on every read.
+    private let defaultPersistableType: String?
+    private let defaultPointReadPrefix: Bytes?
+
     /// Index state manager for checking index readability
     let indexStateManager: IndexStateManager
 
@@ -64,6 +72,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     init(
         container: DBContainer,
         subspace: Subspace,
+        persistableType: String? = nil,
         logger: Logger? = nil,
         metricsDelegate: DataStoreDelegate? = nil,
         securityDelegate: (any DataStoreSecurityDelegate)? = nil,
@@ -79,6 +88,16 @@ internal final class FDBDataStore: DataStore, Sendable {
         self.indexSubspace = subspace.subspace(SubspaceKey.indexes)
         self.blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         self.metadataSubspace = subspace.subspace(SubspaceKey.metadata)
+        self.defaultPersistableType = persistableType
+        if let persistableType {
+            var prefix = self.itemSubspace.prefix
+            let encodedType = persistableType.encodeTuple()
+            prefix.reserveCapacity(prefix.count + encodedType.count)
+            prefix.append(contentsOf: encodedType)
+            self.defaultPointReadPrefix = prefix
+        } else {
+            self.defaultPointReadPrefix = nil
+        }
         self.indexStateManager = IndexStateManager(
             container: container,
             subspace: subspace,
@@ -165,26 +184,8 @@ internal final class FDBDataStore: DataStore, Sendable {
 
     /// Fetch a single model by ID
     func fetch<T: Persistable>(_ type: T.Type, id: any TupleElement) async throws -> T? {
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let keyTuple = (id as? Tuple) ?? Tuple([id])
-        let key = typeSubspace.pack(keyTuple)
-
-        let result: T? = try await container.engine.withTransaction(configuration: .default) { transaction in
-            let storage = ItemStorage(
-                transaction: transaction,
-                blobsSubspace: self.blobsSubspace
-            )
-            guard let bytes = try await storage.read(for: key) else {
-                return nil
-            }
-
-            // Use Protobuf deserialization via DataAccess
-            return try DataAccess.deserialize(bytes)
-        }
-
-        // Evaluate GET security via delegate after fetch
-        if let r = result {
-            try securityDelegate?.evaluateGet(r)
+        let result: T? = try await withAutoCommit { [self] transaction in
+            try await self.fetchByIdInTransaction(type, id: id, transaction: transaction)
         }
 
         return result
@@ -1033,16 +1034,13 @@ internal final class FDBDataStore: DataStore, Sendable {
         id: any TupleElement,
         transaction: any Transaction
     ) async throws -> T? {
-        let typeSubspace = itemSubspace.subspace(T.persistableType)
-        let keyTuple = (id as? Tuple) ?? Tuple([id])
-        let key = typeSubspace.pack(keyTuple)
+        let key = pointReadKey(for: T.persistableType, id: id)
 
-        let storage = ItemStorage(
+        guard let bytes = try await ItemStorage.read(
             transaction: transaction,
-            blobsSubspace: self.blobsSubspace
-        )
-
-        guard let bytes = try await storage.read(for: key) else {
+            blobsSubspace: self.blobsSubspace,
+            for: key
+        ) else {
             return nil
         }
 
@@ -1053,6 +1051,34 @@ internal final class FDBDataStore: DataStore, Sendable {
         try securityDelegate?.evaluateGet(result)
 
         return result
+    }
+
+    private func pointReadKey(
+        for persistableType: String,
+        id: any TupleElement
+    ) -> Bytes {
+        let encodedID: Bytes
+        if let tuple = id as? Tuple {
+            encodedID = tuple.pack()
+        } else {
+            encodedID = id.encodeTuple()
+        }
+
+        let keyPrefix: Bytes
+        if persistableType == defaultPersistableType, let defaultPointReadPrefix {
+            keyPrefix = defaultPointReadPrefix
+        } else {
+            let encodedType = persistableType.encodeTuple()
+            var prefix = itemSubspace.prefix
+            prefix.reserveCapacity(prefix.count + encodedType.count)
+            prefix.append(contentsOf: encodedType)
+            keyPrefix = prefix
+        }
+
+        var key = keyPrefix
+        key.reserveCapacity(key.count + encodedID.count)
+        key.append(contentsOf: encodedID)
+        return key
     }
 
     /// Count all models with an existing transaction
@@ -1416,12 +1442,19 @@ internal final class FDBDataStore: DataStore, Sendable {
         let startTime = DispatchTime.now()
 
         do {
-            _ = try await container.engine.withTransaction(configuration: .default) { transaction in
-                try await self.executeBatchInTransaction(
-                    inserts: inserts,
-                    deletes: deletes,
-                    transaction: transaction
-                )
+            if let fastPath = try await executeBatchFastPathIfEligible(
+                inserts: inserts,
+                deletes: deletes
+            ) {
+                _ = fastPath
+            } else {
+                _ = try await container.engine.withTransaction(configuration: .default) { transaction in
+                    try await self.executeBatchInTransaction(
+                        inserts: inserts,
+                        deletes: deletes,
+                        transaction: transaction
+                    )
+                }
             }
 
             let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
@@ -1436,6 +1469,47 @@ internal final class FDBDataStore: DataStore, Sendable {
             metricsDelegate.didFailBatch(error: error, duration: duration)
             throw error
         }
+    }
+
+    /// Attempt a single-model fast path for direct DataStore callers.
+    ///
+    /// Mirrors the FDBContext fast path for the same safe subset:
+    /// exactly one insert or delete, security disabled, and no indexes.
+    /// In that case, we can use auto-commit and skip the existing-record read,
+    /// because overwrite semantics are identical for no-index/no-security types.
+    private func executeBatchFastPathIfEligible(
+        inserts: [any Persistable],
+        deletes: [any Persistable]
+    ) async throws -> Bool? {
+        let isSingleInsert = inserts.count == 1 && deletes.isEmpty
+        let isSingleDelete = inserts.isEmpty && deletes.count == 1
+        guard isSingleInsert || isSingleDelete else { return nil }
+
+        let model = isSingleInsert ? inserts[0] : deletes[0]
+        guard securityDelegate == nil else { return nil }
+        guard type(of: model).indexDescriptors.isEmpty else { return nil }
+
+        if isSingleInsert {
+            _ = try await withAutoCommit { transaction in
+                try await self.executeBatchInTransaction(
+                    inserts: inserts,
+                    deletes: [],
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+            }
+        } else {
+            _ = try await withAutoCommit { transaction in
+                try await self.executeBatchInTransaction(
+                    inserts: [],
+                    deletes: deletes,
+                    transaction: transaction,
+                    skipExistingCheck: true
+                )
+            }
+        }
+
+        return true
     }
 
     // MARK: - Transaction-Scoped Operations (DataStore Protocol)

@@ -300,6 +300,90 @@ public struct TransformingSerializer: Sendable {
         return payload
     }
 
+    /// Serialize bytes synchronously without Data conversion for small values.
+    ///
+    /// For values below `compressionMinSize`, this avoids all `Data↔[UInt8]`
+    /// round-trips by working directly with byte arrays.
+    /// For larger values, falls back to `Data`-based compression (required by
+    /// Apple's Compression framework).
+    ///
+    /// - Parameter value: The raw bytes to transform
+    /// - Returns: Transformed bytes with header
+    /// - Throws: `TransformError.asyncRequired` if encryption is enabled
+    public func serializeSyncBytes(_ value: [UInt8]) throws -> [UInt8] {
+        if configuration.encryptionEnabled {
+            throw TransformError.asyncRequired
+        }
+
+        // Below compression threshold: prepend flags byte only (zero-copy path)
+        if !configuration.compressionEnabled || value.count < configuration.compressionMinSize {
+            var output = [UInt8]()
+            output.reserveCapacity(1 + value.count)
+            output.append(TransformationType.none.rawValue)
+            output.append(contentsOf: value)
+            return output
+        }
+
+        // Above threshold: compress via Data (Compression framework requires Data)
+        let data = Data(value)
+        if let compressed = compress(data, algorithm: configuration.compressionAlgorithm) {
+            if !configuration.skipIneffectiveCompression || compressed.count < data.count {
+                var output = [UInt8]()
+                output.reserveCapacity(2 + compressed.count)
+                output.append(TransformationType.compressed.rawValue)
+                output.append(configuration.compressionAlgorithm.rawValue)
+                output.append(contentsOf: compressed)
+                return output
+            }
+        }
+
+        // Compression ineffective or failed: store uncompressed
+        var output = [UInt8]()
+        output.reserveCapacity(1 + value.count)
+        output.append(TransformationType.none.rawValue)
+        output.append(contentsOf: value)
+        return output
+    }
+
+    /// Deserialize bytes synchronously without Data conversion for uncompressed values.
+    ///
+    /// For uncompressed data (the common case for small values), this strips
+    /// the flags byte directly without any `Data` allocation.
+    /// For compressed data, falls back to `Data`-based decompression.
+    ///
+    /// - Parameter value: The transformed bytes
+    /// - Returns: Original bytes
+    /// - Throws: `TransformError.asyncRequired` if encrypted
+    public func deserializeSyncBytes(_ value: [UInt8]) throws -> [UInt8] {
+        guard !value.isEmpty else { return value }
+
+        let flags = TransformationType(rawValue: value[0])
+
+        if flags.contains(.encrypted) {
+            throw TransformError.asyncRequired
+        }
+
+        if !flags.contains(.compressed) {
+            // Uncompressed: strip flags byte only (no Data allocation)
+            return Array(value[1...])
+        }
+
+        // Compressed: read algorithm byte
+        guard value.count >= 2 else {
+            throw TransformError.invalidFormat("Missing compression algorithm byte")
+        }
+        guard let algo = CompressionAlgorithm(rawValue: value[1]) else {
+            throw TransformError.invalidFormat("Unknown compression algorithm")
+        }
+
+        // Decompress via Data (Compression framework requires Data)
+        let payload = Data(value[2...])
+        guard let decompressed = decompress(payload, algorithm: algo) else {
+            throw TransformError.decompressionFailed
+        }
+        return Array(decompressed)
+    }
+
     /// Deserialize data synchronously (for cases where encryption is not used)
     ///
     /// - Parameter data: The transformed data

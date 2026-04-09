@@ -44,6 +44,8 @@ import Core
 /// }
 /// ```
 public struct ItemStorage: Sendable {
+    private static let defaultTransformer = TransformingSerializer(configuration: .default)
+
     // MARK: - Properties
 
     /// Underlying FDB transaction
@@ -200,6 +202,44 @@ public struct ItemStorage: Sendable {
         return try decompress(compressed)
     }
 
+    /// Direct point-read helper that avoids building a temporary ItemStorage instance.
+    ///
+    /// Used by single-item fetch paths where the storage configuration is the default one.
+    static func read(
+        transaction: any Transaction,
+        blobsSubspace: Subspace,
+        for key: Bytes,
+        snapshot: Bool = false
+    ) async throws -> Bytes? {
+        guard let envelopeBytes = try await transaction.getValue(for: key, snapshot: snapshot) else {
+            return nil
+        }
+
+        guard ItemEnvelope.isEnvelope(envelopeBytes) else {
+            throw ItemStorageError.notEnvelopeFormat
+        }
+
+        let compressed: Bytes
+        switch envelopeBytes[5] {
+        case ItemEnvelope.Flags.inline.rawValue:
+            compressed = Array(envelopeBytes.dropFirst(ItemEnvelope.headerSize))
+        case ItemEnvelope.Flags.external.rawValue:
+            let payloadBytes = Array(envelopeBytes.dropFirst(ItemEnvelope.headerSize))
+            let ref = try ItemEnvelope.ExternalRef.deserialize(payloadBytes)
+            compressed = try await loadChunks(
+                transaction: transaction,
+                blobsSubspace: blobsSubspace,
+                for: key,
+                ref: ref,
+                snapshot: snapshot
+            )
+        default:
+            throw ItemEnvelopeError.invalidFlags(envelopeBytes[5])
+        }
+
+        return try decompress(compressed, transformer: defaultTransformer)
+    }
+
     /// Check if an item exists (without loading full data)
     ///
     /// - Parameters:
@@ -270,7 +310,47 @@ public struct ItemStorage: Sendable {
         ref: ItemEnvelope.ExternalRef,
         snapshot: Bool
     ) async throws -> Bytes {
-        let blobBase = blobPrefix(for: key)
+        try await Self.loadChunks(
+            transaction: transaction,
+            blobsSubspace: blobsSubspace,
+            for: key,
+            ref: ref,
+            snapshot: snapshot
+        )
+    }
+
+    // MARK: - Internal: Compression
+
+    private func compress(_ value: Bytes) throws -> Bytes {
+        try transformer.serializeSyncBytes(value)
+    }
+
+    func decompress(_ value: Bytes) throws -> Bytes {
+        try Self.decompress(value, transformer: transformer)
+    }
+
+    // MARK: - Direct Transaction Access
+
+    /// Access the underlying transaction for non-item operations
+    public var underlying: any Transaction {
+        transaction
+    }
+
+    private static func blobPrefix(
+        blobsSubspace: Subspace,
+        for key: Bytes
+    ) -> Subspace {
+        blobsSubspace.subspace(Tuple([key]))
+    }
+
+    private static func loadChunks(
+        transaction: any Transaction,
+        blobsSubspace: Subspace,
+        for key: Bytes,
+        ref: ItemEnvelope.ExternalRef,
+        snapshot: Bool
+    ) async throws -> Bytes {
+        let blobBase = blobPrefix(blobsSubspace: blobsSubspace, for: key)
 
         var result: [UInt8] = []
         result.reserveCapacity(Int(ref.totalSize))
@@ -293,26 +373,12 @@ public struct ItemStorage: Sendable {
         return result
     }
 
-    // MARK: - Internal: Compression
-
-    private func compress(_ value: Bytes) throws -> Bytes {
-        let data = Data(value)
-        let compressed = try transformer.serializeSync(data)
-        return Array(compressed)
-    }
-
-    func decompress(_ value: Bytes) throws -> Bytes {
+    private static func decompress(
+        _ value: Bytes,
+        transformer: TransformingSerializer
+    ) throws -> Bytes {
         guard !value.isEmpty else { return value }
-        let data = Data(value)
-        let decompressed = try transformer.deserializeSync(data)
-        return Array(decompressed)
-    }
-
-    // MARK: - Direct Transaction Access
-
-    /// Access the underlying transaction for non-item operations
-    public var underlying: any Transaction {
-        transaction
+        return try transformer.deserializeSyncBytes(value)
     }
 }
 

@@ -93,6 +93,12 @@ public final class DBContainer: Sendable {
     /// Directory cache for performance
     private let directoryCache: Mutex<[String: Subspace]>
 
+    /// DataStore cache keyed by resolved directory path
+    ///
+    /// Stores are immutable wrappers around a resolved subspace, so sharing them
+    /// avoids rebuilding helper services on repeated point reads and saves.
+    private let dataStoreCache: Mutex<[String: FDBDataStore]>
+
     /// Migration plan
     nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
 
@@ -177,6 +183,7 @@ public final class DBContainer: Sendable {
         self._migrationPlan = nil
         self.logger = Logger(label: "com.db.runtime.container")
         self.directoryCache = Mutex([:])
+        self.dataStoreCache = Mutex([:])
 
         // Initialize all indexes to readable state
         try await ensureIndexesReady()
@@ -296,13 +303,28 @@ public final class DBContainer: Sendable {
         for type: T.Type,
         path: DirectoryPath<T> = DirectoryPath()
     ) async throws -> any DataStore {
+        try await fdbStore(for: type, path: path)
+    }
+
+    internal func fdbStore<T: Persistable>(
+        for type: T.Type,
+        path: DirectoryPath<T> = DirectoryPath()
+    ) async throws -> FDBDataStore {
+        let cacheKey = storeCacheKey(for: type, path: AnyDirectoryPath(path))
+        if let cached = dataStoreCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
         let subspace = try await resolveDirectory(for: type, path: path)
-        return FDBDataStore(
+        let store = FDBDataStore(
             container: self,
             subspace: subspace,
+            persistableType: type.persistableType,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
+        dataStoreCache.withLock { $0[cacheKey] = store }
+        return store
     }
 
     /// Get DataStore (type-erased version)
@@ -310,13 +332,36 @@ public final class DBContainer: Sendable {
         for type: any Persistable.Type,
         path: AnyDirectoryPath? = nil
     ) async throws -> any DataStore {
+        try await fdbStore(for: type, path: path)
+    }
+
+    internal func fdbStore(
+        for type: any Persistable.Type,
+        path: AnyDirectoryPath? = nil
+    ) async throws -> FDBDataStore {
+        let cacheKey = storeCacheKey(for: type, path: path)
+        if let cached = dataStoreCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
         let subspace = try await resolveDirectory(for: type, path: path)
-        return FDBDataStore(
+        let store = FDBDataStore(
             container: self,
             subspace: subspace,
+            persistableType: type.persistableType,
             securityDelegate: securityDelegate,
             indexConfigurations: indexConfigurations.values.flatMap { $0 }
         )
+        dataStoreCache.withLock { $0[cacheKey] = store }
+        return store
+    }
+
+    private func storeCacheKey(
+        for type: any Persistable.Type,
+        path: AnyDirectoryPath?
+    ) -> String {
+        let components = (path ?? AnyDirectoryPath(for: type)).resolve()
+        return components.joined(separator: "/")
     }
 
     // MARK: - Polymorphic Directory Resolution

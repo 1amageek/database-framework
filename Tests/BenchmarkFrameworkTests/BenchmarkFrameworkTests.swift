@@ -227,6 +227,37 @@ struct BenchmarkFrameworkTests {
 
         #expect(result.name == "Multiple Strategies")
         #expect(result.strategies.count == 3)
+        #expect(result.strategies.map(\.name) == ["Fast", "Medium", "Slow"])
+        #expect(result.strategies.allSatisfy { $0.metrics.throughput != nil })
+    }
+
+    @Test("BenchmarkRunner: compareStrategies() uses configured comparison rounds")
+    func runnerCompareStrategiesUsesConfiguredRounds() async throws {
+        let runner = BenchmarkRunner(config: .init(
+            warmupIterations: 0,
+            measurementIterations: 1,
+            throughputDuration: 0.01,
+            comparisonRounds: 4,
+            measureMemory: false
+        ))
+
+        let counter = LockedCounter()
+        _ = try await runner.compareStrategies(
+            name: "Round Counting",
+            strategies: [
+                ("A", { @Sendable () async throws -> Int in
+                    await counter.increment()
+                    return 1
+                }),
+                ("B", { @Sendable () async throws -> Int in
+                    await counter.increment()
+                    return 2
+                }),
+            ]
+        )
+
+        let totalCalls = await counter.value
+        #expect(totalCalls >= 8)
     }
 
     @Test("BenchmarkRunner: scale() 実行")
@@ -312,6 +343,14 @@ struct BenchmarkFrameworkTests {
         #expect(loaded.name == original.name)
         #expect(loaded.scenarios.count == original.scenarios.count)
         #expect(loaded.scenarios[0].name == original.scenarios[0].name)
+    }
+}
+
+private actor LockedCounter {
+    private(set) var value: Int = 0
+
+    func increment() {
+        value += 1
     }
 }
 #endif
