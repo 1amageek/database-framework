@@ -46,7 +46,7 @@ brew services start foundationdb
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0223.0")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0411.1")
 ]
 ```
 
