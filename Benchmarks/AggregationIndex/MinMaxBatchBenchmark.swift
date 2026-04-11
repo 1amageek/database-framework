@@ -6,7 +6,6 @@ import DatabaseEngine
 import AggregationIndex
 import BenchmarkFramework
 import StorageKit
-import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -24,31 +23,32 @@ struct Sale {
 
 @Suite("AggregationIndex: MIN/MAX Batch Benchmark", .serialized, .heartbeat)
 struct MinMaxBatchBenchmark {
-    nonisolated(unsafe) private let database: any StorageEngine
-    nonisolated(unsafe) private let container: DBContainer
-    nonisolated(unsafe) private let context: FDBContext
+    private let database: any StorageEngine
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let db = try await FDBStorageEngine(configuration: .init())
-        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(db)), security: .disabled)
+        self.database = try await FDBTestSetup.shared.makeEngine()
+    }
 
-        self.database = db
-        self.container = cont
-        self.context = FDBContext(container: cont)
+    private func makeContext() async throws -> FDBContext {
+        do {
+            try await database.directoryService.remove(path: ["benchmarks", "sales"])
+        } catch {
+            // Ignore missing benchmark directories so each benchmark starts clean.
+        }
+
+        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled
+        )
+        try await container.ensureIndexesReady()
+        return FDBContext(container: container)
     }
 
     @Test("MIN/MAX Index vs Full Scan")
     func minMaxIndexedVsScan() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
-
-        // Re-create context after directory cleanup
-        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Setup: Create test data with 50 regions
         let regions = (0..<50).map { "region_\($0)" }
@@ -125,14 +125,7 @@ struct MinMaxBatchBenchmark {
 
     @Test("Aggregation Scalability Test")
     func aggregationScalability() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
-
-        // Re-create context and insert test data
-        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Create test data: 50 regions x 50 sales each
         let regions = (0..<50).map { "region_\($0)" }
@@ -178,14 +171,7 @@ struct MinMaxBatchBenchmark {
 
     @Test("Multiple Aggregations Performance")
     func multipleAggregations() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "sales"])
-
-        // Re-create context after directory cleanup
-        let schema = Schema([Sale.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Setup: Create test data
         let regions = (0..<30).map { "region_\($0)" }

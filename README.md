@@ -341,6 +341,38 @@ swift test                                     # All tests (requires FoundationD
 swift test --filter DatabaseEngineTests        # Engine tests only
 ```
 
+## Benchmarks
+
+Performance benchmarks live in the `PerformanceBenchmarks` test target and require a healthy FoundationDB cluster.
+
+```bash
+swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
+swift test --filter 'PerformanceBenchmarks.MinMaxBatchBenchmark'
+swift test --filter 'PerformanceBenchmarks.RangeTreeBenchmark'
+swift test --filter 'PerformanceBenchmarks.SerializationBenchmark'
+```
+
+### Latest Snapshot (2026-04-11)
+
+**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
+
+| Module | Scenario | Result |
+|--------|----------|--------|
+| `ScalarIndex` | Fetch all users (300 records) | p95 `3.60ms`, `293 ops/s` |
+| `ScalarIndex` | Scan scalability (200 records) | p95 `6.45ms`, `184 ops/s` |
+| `AggregationIndex` | MIN/MAX grouped query | p95 `2.64ms`, `377 ops/s` |
+| `AggregationIndex` | Combined MIN+MAX vs separate queries | p95 `2.33ms`, throughput `+29.05%` |
+| `RankIndex` | Top-100 from 1,000 players | p95 `10.61ms`, `97 ops/s` |
+| `RankIndex` | Top-K scaling | p95 stayed near `10.72-11.02ms` |
+| `BitmapIndex` | JSON serialization | p95 `0.07ms`, `14,910 ops/s` |
+| `BitmapIndex` | JSON round-trip (10,000 values) | p95 `1148.92ms` |
+
+Detailed benchmark reports:
+- `ScalarIndex`: `Sources/ScalarIndex/README.md`
+- `AggregationIndex`: `Sources/AggregationIndex/README.md`
+- `RankIndex`: `Sources/RankIndex/README.md`
+- `BitmapIndex`: `Sources/BitmapIndex/README.md`
+
 ## Platform Support
 
 | Platform | Support |

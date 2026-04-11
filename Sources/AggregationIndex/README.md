@@ -786,9 +786,13 @@ They don't have batch APIs (`getAllMins()`/`getAllMaxs()`) because:
 
 ## Benchmark Results
 
-Run with: `swift test --filter "MinMaxBatchBenchmark"`
+Run with: `swift test --filter "PerformanceBenchmarks.MinMaxBatchBenchmark"`
 
-### MIN/MAX Index-Backed Aggregation
+### Latest Results (2026-04-11)
+
+**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
+
+### MIN/MAX Query Cost (Current Implementation)
 
 **Test Configuration**:
 - Groups: 50 regions
@@ -799,14 +803,12 @@ Run with: `swift test --filter "MinMaxBatchBenchmark"`
 
 | Metric | Baseline | Optimized | Notes |
 |--------|----------|-----------|-------|
-| **Latency (p50)** | 23.15ms | 22.85ms | 10 regions queried |
-| **Latency (p95)** | 24.18ms | 24.29ms | Index-backed |
-| **Latency (p99)** | 24.37ms | 24.49ms | Consistent |
-| **Throughput** | 43 ops/s | 42 ops/s | MIN/MAX queries |
+| **Latency (p50)** | 2.42ms | 3.16ms | Same index-backed query path |
+| **Latency (p95)** | 2.64ms | 3.45ms | Repeated run for variance check |
+| **Latency (p99)** | 2.74ms | 3.47ms | Low jitter |
+| **Throughput** | 377 ops/s | 358 ops/s | 10 grouped results |
 
-**Note**: Index-backed aggregation provides O(1) lookup.
-Full scan aggregation requires O(n) where n = records per group.
-**Expected improvement**: 10-50× depending on group size.
+**Note**: This benchmark currently runs the same index-backed query in both slots to capture current cost and run-to-run variance. It does not compare against a separate full-scan implementation.
 
 ### Aggregation Scalability (Number of Groups)
 
@@ -814,33 +816,33 @@ Full scan aggregation requires O(n) where n = records per group.
 
 | Groups | Latency (p50) | Latency (p95) | Throughput |
 |--------|---------------|---------------|------------|
-| 5 groups | 23.36ms | 24.17ms | 44 ops/s |
-| 10 groups | 22.08ms | 23.00ms | 45 ops/s |
-| 25 groups | 22.15ms | 22.49ms | 45 ops/s |
+| 5 groups | 2.45ms | 2.65ms | 360 ops/s |
+| 10 groups | 2.40ms | 2.95ms | 422 ops/s |
+| 25 groups | 2.19ms | 2.50ms | 445 ops/s |
 
-**Observation**: Performance scales linearly with number of groups.
+**Observation**: At this scale, p95 stayed in a tight 2.50-2.95ms band.
 
 ### Multiple Aggregations Performance 🌟
 
 **Test Setup**: 30 regions, 30 sales/region
 
 **Single Aggregations** (2 separate queries: MIN then MAX):
-- Latency (p50): 57.62ms
-- Latency (p95): **58.75ms**
-- Throughput: 17 ops/s
+- Latency (p50): 2.19ms
+- Latency (p95): **2.44ms**
+- Throughput: 364 ops/s
 
 **Combined Aggregations** (1 query: MIN + MAX together):
-- Latency (p50): 30.30ms
-- Latency (p95): **30.96ms**
-- Throughput: 33 ops/s
+- Latency (p50): 2.08ms
+- Latency (p95): **2.33ms**
+- Throughput: 470 ops/s
 
 **💡 Key Finding**:
-- **Latency reduction: 47.29%** (58.75ms → 30.96ms)
-- **Throughput improvement: 92.71%** (17 ops/s → 33 ops/s)
+- **Latency reduction: 4.67%** (2.44ms → 2.33ms)
+- **Throughput improvement: 29.05%** (364 ops/s → 470 ops/s)
 
 **Recommendation**: Combine multiple aggregations in a single query to eliminate transaction overhead.
 
-*Benchmarks run on Apple Silicon Mac with local FoundationDB cluster.*
+*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
 
 ## Migration Guide
 

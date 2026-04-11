@@ -7,7 +7,6 @@ import DatabaseEngine
 import RankIndex
 import BenchmarkFramework
 import StorageKit
-import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -24,23 +23,33 @@ struct Player {
 
 @Suite("RankIndex: Range Tree Benchmark", .serialized, .heartbeat)
 struct RangeTreeBenchmark {
-    nonisolated(unsafe) private let database: any StorageEngine
-    nonisolated(unsafe) private let container: DBContainer
-    nonisolated(unsafe) private let context: FDBContext
+    private let database: any StorageEngine
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let db = try await FDBStorageEngine(configuration: .init())
-        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(db)), security: .disabled)
+        self.database = try await FDBTestSetup.shared.makeEngine()
+    }
 
-        self.database = db
-        self.container = cont
-        self.context = FDBContext(container: cont)
+    private func makeContext() async throws -> FDBContext {
+        do {
+            try await database.directoryService.remove(path: ["benchmarks", "players"])
+        } catch {
+            // Ignore missing benchmark directories so each benchmark starts clean.
+        }
+
+        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled
+        )
+        try await container.ensureIndexesReady()
+        return FDBContext(container: container)
     }
 
     @Test("TopKHeap Current Implementation")
     func topKHeapBaseline() async throws {
+        let context = try await makeContext()
+
         // Setup: Create test players with scores
         let playerCount = 1000  // Reduced for faster benchmarks
         var players: [Player] = []
@@ -58,7 +67,7 @@ struct RangeTreeBenchmark {
         }
         try await context.save()
 
-        nonisolated(unsafe) let ctx = context
+        let ctx = context
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 3,
@@ -104,6 +113,18 @@ struct RangeTreeBenchmark {
 
     @Test("Rank Query Scalability")
     func rankScalability() async throws {
+        let context = try await makeContext()
+
+        // Setup: Create fixed dataset for query scaling.
+        let playerCount = 1000
+        for i in 0..<playerCount {
+            context.insert(Player(
+                name: "Scalability Player \(i)",
+                score: Int64.random(in: 0...100000)
+            ))
+        }
+        try await context.save()
+
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,
             measurementIterations: 20,
@@ -111,7 +132,7 @@ struct RangeTreeBenchmark {
             measureMemory: false
         ))
 
-        nonisolated(unsafe) let ctx = context
+        let ctx = context
 
         // Test different K values
         let result = try await runner.scale(
@@ -140,6 +161,8 @@ struct RangeTreeBenchmark {
 
     @Test("Different K Values Performance")
     func differentKValues() async throws {
+        let context = try await makeContext()
+
         // Setup: Create fixed dataset
         let playerCount = 1000
         var players: [Player] = []
@@ -156,7 +179,7 @@ struct RangeTreeBenchmark {
         }
         try await context.save()
 
-        nonisolated(unsafe) let ctx = context
+        let ctx = context
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 2,

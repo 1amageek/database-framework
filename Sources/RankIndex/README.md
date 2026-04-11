@@ -303,77 +303,43 @@ Reference: FoundationDB Record Layer RankedSet
 
 ## Benchmark Results
 
-Run with: `swift test --filter "RankIndexPerformanceTests"`
+Run with: `swift test --filter "PerformanceBenchmarks.RangeTreeBenchmark"`
 
-### Latest Results (2026-02-05)
+### Latest Results (2026-04-11)
 
-**Environment**: macOS (Darwin 25.2.0), Apple Silicon, local FoundationDB
+**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
 
-#### Insert/Update/Delete Operations
+#### Top-K Current Implementation
 
-| Operation | Items | Duration | Throughput |
-|-----------|-------|----------|------------|
-| Bulk insert | 100 | 10.78 ms | 9,273 ops/s |
-| Bulk insert | 1,000 | 72.37 ms | 13,819 ops/s |
-| Bulk insert | 2,000 | 163.66 ms | 12,221 ops/s |
-| Update | 100 | 8.22 ms | 12,171 ops/s |
-| Delete | 100 | 7.82 ms | 12,796 ops/s |
+| Metric | Baseline | Optimized | Notes |
+|--------|----------|-----------|-------|
+| **Latency (p50)** | 10.19ms | 10.08ms | Top 100 from 1,000 players |
+| **Latency (p95)** | 10.61ms | 10.61ms | Same current implementation rerun |
+| **Latency (p99)** | 10.77ms | 10.78ms | Stable under repetition |
+| **Throughput** | 97 ops/s | 98 ops/s | Top-K query throughput |
 
-#### Top-K Query Performance
+**Note**: Range Tree optimization is not implemented yet. This benchmark captures the current TopKHeap cost and run-to-run variance.
 
-| Query | Dataset | Duration | Results |
-|-------|---------|----------|---------|
-| Top-10 | 500 players | 8.95 ms | 10 |
-| Top-50 | 500 players | 8.45 ms | 50 |
-| Top-100 | 500 players | 7.95 ms | 100 |
-| Top-250 | 500 players | 8.25 ms | 250 |
-| Top-100 | 2,000 players | 31.92 ms | 100 |
+#### Rank Query Scalability
 
-**Observation**: Query time remains stable regardless of K value due to efficient heap-based algorithm.
+| Query | Latency (p50) | Latency (p95) | Throughput |
+|-------|---------------|---------------|------------|
+| Top-10 | 10.23ms | 10.72ms | 96 ops/s |
+| Top-50 | 10.65ms | 11.02ms | 94 ops/s |
+| Top-100 | 10.50ms | 10.92ms | 93 ops/s |
 
-#### Rank Lookup Performance
+**Observation**: p95 remained near 11ms across the tested K values.
 
-| Score | Expected Rank | Duration |
-|-------|---------------|----------|
-| 5000 (highest) | 0 | 0.89 ms |
-| 2500 (middle) | 250 | 2.15 ms |
-| 10 (lowest) | 499 | 3.33 ms |
+#### Different K Values
 
-**Analysis**: Rank lookup is O(n - rank), faster for high-ranked entries.
+| Query | Latency (p50) | Latency (p95) | Throughput |
+|-------|---------------|---------------|------------|
+| Top-10 | 10.59ms | 11.84ms | 96 ops/s |
+| Top-50 | 10.12ms | 10.33ms | 98 ops/s |
+| Top-100 | 10.19ms | 10.44ms | 94 ops/s |
+| Top-200 | 10.49ms | 10.88ms | 97 ops/s |
 
-#### Percentile Queries
-
-| Percentile | Duration | Returned Score |
-|------------|----------|----------------|
-| 50% (median) | 7.63 ms | 250 |
-| 75% | 7.20 ms | 375 |
-| 90% | 7.10 ms | 451 |
-| 95% | 6.31 ms | 475 |
-| 99% | 6.30 ms | 495 |
-
-#### Count Query (O(1))
-
-| Metric | Value |
-|--------|-------|
-| Average latency | 0.51 ms |
-| 2,000 players | 0.55 ms |
-
-#### Ties Handling
-
-| Query | Duration |
-|-------|----------|
-| Top-20 with ties (score=1000, 10 entries) | 1.92 ms |
-| Rank lookup for tied score | 0.74 ms |
-
-### Comparison with Baseline
-
-| Operation | Baseline (2026-02-05) | Current |
-|-----------|----------------------|---------|
-| Bulk insert 100 | 7.59 ms (13,176 ops/s) | 10.78 ms (9,273 ops/s) |
-| Top-10 query (1000) | 6.87 ms | ~8.95 ms |
-| Delete 100 | 2.17 ms (46,051 ops/s) | 7.82 ms (12,796 ops/s) |
-
-**Note**: Variations are within expected range due to system load and FDB cluster state.
+These measurements are the current baseline to compare against once Range Tree or span-counter support is added.
 
 ### Future Optimization: Skip List with Span Counters
 
@@ -387,7 +353,7 @@ Expected improvements for 100K+ entries:
 - Reference: FoundationDB Record Layer RankedSet
 ```
 
-*Benchmarks run on Apple Silicon Mac with local FoundationDB cluster.*
+*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
 
 ## References
 

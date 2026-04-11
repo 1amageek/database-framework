@@ -6,7 +6,6 @@ import DatabaseEngine
 import ScalarIndex
 import BenchmarkFramework
 import StorageKit
-import FDBStorage
 @testable import TestSupport
 
 @Persistable
@@ -27,26 +26,31 @@ struct User {
 
 @Suite("ScalarIndex: Covering Index Benchmark", .serialized, .heartbeat)
 struct CoveringIndexBenchmark {
-    nonisolated(unsafe) private let database: any StorageEngine
-    nonisolated(unsafe) private let container: DBContainer
-    nonisolated(unsafe) private let context: FDBContext
+    private let database: any StorageEngine
 
     init() async throws {
-        try await FDBTestSetup.shared.initialize()
-        let db = try await FDBStorageEngine(configuration: .init())
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(db)), security: .disabled)
+        self.database = try await FDBTestSetup.shared.makeEngine()
+    }
 
-        self.database = db
-        self.container = cont
-        self.context = FDBContext(container: cont)
+    private func makeContext() async throws -> FDBContext {
+        do {
+            try await database.directoryService.remove(path: ["benchmarks", "users"])
+        } catch {
+            // Ignore missing benchmark directories so each benchmark starts clean.
+        }
+
+        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled
+        )
+        try await container.ensureIndexesReady()
+        return FDBContext(container: container)
     }
 
     @Test("Covering Index Baseline")
     func coveringIndexBaseline() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "users"])
-
         // Setup: Create test users
         let userCount = 300
         var users: [User] = []
@@ -60,10 +64,7 @@ struct CoveringIndexBenchmark {
         }
 
         // Re-create context after directory cleanup
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Insert all users
         for user in users {
@@ -108,14 +109,7 @@ struct CoveringIndexBenchmark {
 
     @Test("Index Scan Scalability")
     func indexScanScalability() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "users"])
-
-        // Re-create context after directory cleanup
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Setup: Create test users
         let userCount = 500
@@ -159,14 +153,7 @@ struct CoveringIndexBenchmark {
 
     @Test("Batch Fetch Performance")
     func batchFetchPerformance() async throws {
-        // Clean up previous test data to ensure isolation
-        try? await database.directoryService.remove(path: ["benchmarks", "users"])
-
-        // Re-create context after directory cleanup
-        let schema = Schema([User.self], version: Schema.Version(1, 0, 0))
-        let cont = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
-        try await cont.ensureIndexesReady()
-        let ctx = FDBContext(container: cont)
+        let ctx = try await makeContext()
 
         // Setup: Create test dataset
         let userCount = 300

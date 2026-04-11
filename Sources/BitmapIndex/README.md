@@ -392,7 +392,11 @@ struct Article {
 
 ## Benchmark Results
 
-Run with: `swift test --filter "SerializationBenchmark"`
+Run with: `swift test --filter "PerformanceBenchmarks.SerializationBenchmark"`
+
+### Latest Results (2026-04-11)
+
+**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
 
 ### JSON Serialization Performance (Current Implementation)
 
@@ -404,10 +408,10 @@ Run with: `swift test --filter "SerializationBenchmark"`
 
 | Metric | Baseline | Optimized | Notes |
 |--------|----------|-----------|-------|
-| **Latency (p50)** | 0.06ms | 0.06ms | JSON encoding |
-| **Latency (p95)** | 0.07ms | 0.07ms | Consistent performance |
-| **Latency (p99)** | 0.10ms | 0.07ms | Low variance |
-| **Throughput** | 15,541 ops/s | 15,566 ops/s | 3 bitmap serializations |
+| **Latency (p50)** | 0.06ms | 0.07ms | JSON encoding |
+| **Latency (p95)** | 0.07ms | 0.08ms | Current implementation rerun |
+| **Latency (p99)** | 0.07ms | 0.08ms | Low variance |
+| **Throughput** | 14,910 ops/s | 14,818 ops/s | 3 bitmap serializations |
 
 **Serialization Sizes** (JSON Format):
 - Sparse bitmap (100 values): **532 bytes**
@@ -423,11 +427,11 @@ Run with: `swift test --filter "SerializationBenchmark"`
 
 | Data Size | Latency (p50) | Latency (p95) | Throughput |
 |-----------|---------------|---------------|------------|
-| 100 values | 0.57ms | 0.61ms | 1,702 ops/s |
-| 500 values | 13.03ms | 13.48ms | 76 ops/s |
-| 1,000 values | 50.82ms | 51.99ms | 19 ops/s |
-| 5,000 values | 841.59ms | 864.15ms | 1 ops/s |
-| 10,000 values | 841.30ms | 850.26ms | 1 ops/s |
+| 100 values | 0.81ms | 0.87ms | 1,300 ops/s |
+| 500 values | 17.33ms | 17.73ms | 57 ops/s |
+| 1,000 values | 68.44ms | 69.22ms | 14 ops/s |
+| 5,000 values | 1132.74ms | 1208.72ms | <1 ops/s |
+| 10,000 values | 1136.59ms | 1148.92ms | <1 ops/s |
 
 ### Bitmap Operations (In-Memory)
 
@@ -435,15 +439,15 @@ Run with: `swift test --filter "SerializationBenchmark"`
 
 | Operation | Latency (p50) | Latency (p95) | Throughput |
 |-----------|---------------|---------------|------------|
-| **AND** | 0.20ms | 0.23ms | 4,884 ops/s |
-| **OR** | 0.20ms | 0.23ms | 4,757 ops/s |
+| **AND** | 0.24ms | 0.25ms | 4,096 ops/s |
+| **OR** | 0.26ms | 0.31ms | 3,640 ops/s |
 
 **Memory Efficiency**:
 - Container auto-selection (Array vs Bitmap vs Run)
 - Sparse bitmaps: 2 bytes per value
 - Dense bitmaps: 8KB fixed per 65,536 value range
 
-*Benchmarks run on Apple Silicon Mac with local FoundationDB cluster.*
+*Benchmarks run with Swift Testing `PerformanceBenchmarks` on Apple Silicon Mac and local Docker FoundationDB cluster.*
 
 ## References
 
