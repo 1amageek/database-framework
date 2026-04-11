@@ -1290,6 +1290,125 @@ struct CanonicalQueryRPCTests {
         #expect(response.rows.first?.fields["id"]?.stringValue == article.id)
     }
 
+    @Test("canonical query RPC executes built-in polymorphic permuted access paths")
+    func polymorphicBuiltInPermutedAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-permuted-article"
+        article.ownerID = "user-1"
+        article.title = "Tokyo architecture"
+        article.body = "Body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-permuted-report"
+        report.ownerID = "user-2"
+        report.title = "Osaka operations"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicPermutedEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_location",
+            type: RPCArticle.self,
+            id: article.id,
+            permutedValues: ["tokyo", "jp"]
+        )
+        try await writePolymorphicPermutedEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_location",
+            type: RPCReport.self,
+            id: report.id,
+            permutedValues: ["osaka", "jp"]
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_location",
+                    kindIdentifier: "permuted",
+                    parameters: [
+                        "queryType": .string("prefix"),
+                        "values": .array([try DatabaseEngine.CanonicalTupleElementCodec.encode("tokyo")]),
+                        "permutation": .array([.int(1), .int(0)])
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["id"]?.stringValue == article.id)
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == RPCArticle.persistableType)
+    }
+
+    @Test("canonical query RPC executes built-in polymorphic version access paths")
+    func polymorphicBuiltInVersionAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+
+        var article = RPCArticle()
+        article.id = "poly-version-article"
+        article.ownerID = "user-1"
+        article.title = "Versioned article"
+        article.body = "Body"
+
+        try await writePolymorphicVersionEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_version_id",
+            type: RPCArticle.self,
+            id: article.id,
+            versionBytes: [0, 0, 0, 0, 0, 0, 0, 1, 0, 1],
+            item: article
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_version_id",
+                    kindIdentifier: "version",
+                    parameters: [
+                        "primaryKey": .array([
+                            try DatabaseEngine.CanonicalTupleElementCodec.encode(
+                                RPCArticle.typeCode(for: RPCArticle.persistableType)
+                            ),
+                            try DatabaseEngine.CanonicalTupleElementCodec.encode(article.id)
+                        ]),
+                        "limit": .int(5)
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["id"]?.stringValue == article.id)
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == RPCArticle.persistableType)
+        #expect(response.rows.first?.annotations["version"]?.dataValue == Data([0, 0, 0, 0, 0, 0, 0, 1, 0, 1]))
+    }
+
     private func makeHarness() async throws -> (DBContainer, DatabaseEndpoint) {
         let schema = Schema(
             [RPCPerson.self, RPCNote.self, RPCEdge.self, RPCTenantOrder.self],
@@ -1412,6 +1531,56 @@ struct CanonicalQueryRPCTests {
             transaction.setValue(Array(bitmapData), for: indexSubspace.subspace("data").pack(Tuple(fieldValue)))
             transaction.setValue(tupleID.pack(), for: indexSubspace.subspace("ids").pack(Tuple(Int(seqID))))
             transaction.setValue(ByteConversion.int64ToBytes(Int64(seqID)), for: indexSubspace.subspace("pks").pack(tupleID))
+        }
+    }
+
+    private func writePolymorphicPermutedEntry<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        type: T.Type,
+        id: String,
+        permutedValues: [String]
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
+        let tupleID = polymorphicID(type: type, id: id)
+        let key = indexSubspace.pack(
+            Tuple(
+                permutedValues.map { $0 as any TupleElement } +
+                (0..<tupleID.count).compactMap { tupleID[$0] }
+            )
+        )
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue([], for: key)
+        }
+    }
+
+    private func writePolymorphicVersionEntry<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        type: T.Type,
+        id: String,
+        versionBytes: [UInt8],
+        item: T
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
+        let primaryKey = polymorphicID(type: type, id: id)
+        let key = indexSubspace.pack(primaryKey) + versionBytes
+
+        let itemData = try DataAccess.serialize(item)
+        let timestamp = Date().timeIntervalSince1970
+        let value: [UInt8] = {
+            var bytes = withUnsafeBytes(of: timestamp.bitPattern) { Array($0) }
+            bytes.append(contentsOf: itemData)
+            return bytes
+        }()
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue(value, for: key)
         }
     }
 

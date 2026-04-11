@@ -50,6 +50,8 @@ struct CanonicalReadRegistryTests {
         #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "fulltext") != nil)
         #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "rank") != nil)
         #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "bitmap") != nil)
+        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "permuted") != nil)
+        #expect(ReadExecutorRegistry.shared.polymorphicIndexExecutor(for: "version") != nil)
         #expect(LogicalSourceExecutorRegistry.shared.graphTableExecutor != nil)
         #expect(LogicalSourceExecutorRegistry.shared.sparqlExecutor != nil)
     }
