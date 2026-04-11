@@ -104,7 +104,7 @@ struct OntologyIRIValidationTests {
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema(
             [ValEmployee.self, ValAssignment.self, ValBadClass.self,
              ValBadRelation.self, ValDataPropAsObjectProp.self,

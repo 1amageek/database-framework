@@ -12,7 +12,7 @@ struct StorageInvariantTests {
 
     private func openDB() async throws -> any StorageEngine {
         try await FDBTestSetup.shared.initialize()
-        return try await FDBStorageEngine(configuration: .init())
+        return try await FDBTestSetup.shared.makeEngine()
     }
 
     @Test("OnlineIndexer.clearFirst clears uniqueness violations stored under metadata subspace")

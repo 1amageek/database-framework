@@ -5,6 +5,7 @@
 
 import Foundation
 import Core
+import DatabaseEngine
 
 /// Filter expression for FILTER clauses
 ///
@@ -88,6 +89,9 @@ public indirect enum FilterExpression: Sendable {
 
     /// Variable ends with suffix: STRENDS(?var, "suffix")
     case endsWith(String, String)
+
+    /// Trigram similarity: sim(?var, "pattern") >= threshold
+    case similarTo(String, String, Double)
 
     // MARK: - Logical Operations
 
@@ -215,6 +219,10 @@ public indirect enum FilterExpression: Sendable {
             guard let value = binding.string(variable) else { return false }
             return value.hasSuffix(suffix)
 
+        case .similarTo(let variable, let pattern, let threshold):
+            guard let value = binding.string(variable) else { return false }
+            return TrigramSimilarity.score(value, pattern) >= threshold
+
         // Logical operations
         case .and(let left, let right):
             return left.evaluate(binding) && right.evaluate(binding)
@@ -317,7 +325,8 @@ public indirect enum FilterExpression: Sendable {
              .greaterThan(let v, _), .greaterThanOrEqual(let v, _),
              .bound(let v), .notBound(let v),
              .regex(let v, _), .regexWithFlags(let v, _, _),
-             .contains(let v, _), .startsWith(let v, _), .endsWith(let v, _):
+             .contains(let v, _), .startsWith(let v, _), .endsWith(let v, _),
+             .similarTo(let v, _, _):
             return [v]
 
         case .variableEquals(let v1, let v2), .variableNotEquals(let v1, let v2):
@@ -412,6 +421,8 @@ extension FilterExpression: CustomStringConvertible {
             return "STRSTARTS(\(v), \"\(p)\")"
         case .endsWith(let v, let s):
             return "STRENDS(\(v), \"\(s)\")"
+        case .similarTo(let v, let p, let t):
+            return "TRIGRAM_SIM(\(v), \"\(p)\") >= \(t)"
         case .and(let l, let r):
             return "(\(l)) && (\(r))"
         case .or(let l, let r):
@@ -465,6 +476,8 @@ extension FilterExpression: Equatable {
             return l1 == r1 && l2 == r2
         case (.endsWith(let l1, let l2), .endsWith(let r1, let r2)):
             return l1 == r1 && l2 == r2
+        case (.similarTo(let l1, let l2, let l3), .similarTo(let r1, let r2, let r3)):
+            return l1 == r1 && l2 == r2 && l3 == r3
         case (.and(let ll, let lr), .and(let rl, let rr)):
             return ll == rl && lr == rr
         case (.or(let ll, let lr), .or(let rl, let rr)):

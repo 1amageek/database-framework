@@ -33,7 +33,7 @@ struct OnlineIndexerLargeDataTests {
         let blobsSubspace: Subspace
 
         init() async throws {
-            self.database = try await FDBStorageEngine(configuration: .init())
+            self.database = try await FDBTestSetup.shared.makeEngine()
             let testId = UUID().uuidString.prefix(8)
             self.testSubspace = Subspace(prefix: Tuple("test", "largedata", String(testId)).pack())
             self.itemSubspace = testSubspace.subspace("R")

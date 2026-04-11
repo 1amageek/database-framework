@@ -4,6 +4,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
+import TestSupport
 @testable import DatabaseEngine
 @testable import Core
 
@@ -43,7 +44,7 @@ struct FDBContextTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))

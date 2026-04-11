@@ -22,7 +22,7 @@ private struct BenchmarkContext {
     let permutation: Permutation
 
     init(permutation: Permutation? = nil) async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "permuted", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("compound")

@@ -21,7 +21,7 @@ private struct BenchmarkContext {
     let maintainer: RankIndexMaintainer<BenchmarkPlayer, Int64>
 
     init() async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "rank", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("score_rank")

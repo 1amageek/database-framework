@@ -15,6 +15,7 @@ import FDBStorage
 import Core
 import FullText
 import Graph
+import TestSupport
 @testable import DatabaseEngine
 @testable import FullTextIndex
 @testable import GraphIndex
@@ -93,7 +94,7 @@ struct IndexMaintenanceE2ETests {
 
     private func setupContainer<T: Persistable>(_ types: [T.Type]) async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
 

@@ -87,7 +87,7 @@ private struct TestContext {
     let container: DBContainer
 
     init() async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "indexstate", String(testId)).pack())
 

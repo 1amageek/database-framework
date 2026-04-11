@@ -7,6 +7,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
+import TestSupport
 @testable import DatabaseEngine
 
 @Suite("ItemStorage Tests", .serialized, .heartbeat)
@@ -16,7 +17,7 @@ struct ItemStorageTests {
 
     private func setupDatabase() async throws -> any StorageEngine {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        return try await FDBStorageEngine(configuration: .init())
+        return try await FDBTestSetup.shared.makeEngine()
     }
 
     /// Create isolated test subspaces - returns both items and blobs subspaces

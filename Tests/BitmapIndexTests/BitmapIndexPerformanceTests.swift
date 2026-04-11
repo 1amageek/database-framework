@@ -82,7 +82,7 @@ private struct PerfTestContext {
     let indexName: String
 
     init(testName: String) async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.indexName = "PerfProduct_bitmap_category"
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), testName).pack())
@@ -486,7 +486,7 @@ struct BitmapIndexFDBPerformanceTests {
     @Test("Query performance - AND query across indexes")
     func testQueryPerformanceAndQuery() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap_perf", String(testId), "query_and").pack())
 

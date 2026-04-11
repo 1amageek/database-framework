@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Batch API Tests", .heartbeat)
+@Suite("MIN/MAX Batch API Tests", .serialized, .heartbeat)
 struct MinMaxBatchAPITests {
 
     init() async throws {
@@ -81,7 +81,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMins returns all groups")
     func testGetAllMinsReturnsAllGroups() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch", testId).pack())
 
@@ -142,7 +142,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMaxs returns all groups")
     func testGetAllMaxsReturnsAllGroups() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch", testId).pack())
 
@@ -203,7 +203,7 @@ struct MinMaxBatchAPITests {
 
     @Test("getAllMins performance with large dataset")
     func testGetAllMinsPerformance() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_perf", testId).pack())
 

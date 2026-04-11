@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Edge Case Tests", .heartbeat)
+@Suite("MIN/MAX Edge Case Tests", .serialized, .heartbeat)
 struct MinMaxEdgeCaseTests {
 
     init() async throws {
@@ -81,7 +81,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MIN with composite grouping keys")
     func testMinCompositeGrouping() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_grouping", testId).pack())
 
@@ -146,7 +146,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX with composite grouping keys")
     func testMaxCompositeGrouping() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_grouping", testId).pack())
 
@@ -211,7 +211,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMins with composite grouping")
     func testGetAllMinsCompositeGrouping() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_composite", testId).pack())
 
@@ -282,7 +282,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMaxs with composite grouping")
     func testGetAllMaxsCompositeGrouping() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_batch_composite", testId).pack())
 
@@ -355,7 +355,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MIN with empty group after deleting all items")
     func testMinEmptyGroupAfterDelete() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_empty_group", testId).pack())
 
@@ -412,7 +412,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX with empty group after deleting all items")
     func testMaxEmptyGroupAfterDelete() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_empty_group", testId).pack())
 
@@ -469,7 +469,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("getAllMins excludes empty groups")
     func testGetAllMinsExcludesEmptyGroups() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_batch_empty", testId).pack())
 
@@ -538,7 +538,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MIN: Update that moves item to different group updates both groups")
     func testMinGroupMovement() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_group_move", testId).pack())
 
@@ -629,7 +629,7 @@ struct MinMaxEdgeCaseTests {
 
     @Test("MAX: Update that moves item to different group updates both groups")
     func testMaxGroupMovement() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_group_move", testId).pack())
 

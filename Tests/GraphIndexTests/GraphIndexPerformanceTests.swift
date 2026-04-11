@@ -22,7 +22,7 @@ private struct BenchmarkContext {
     let strategy: GraphIndexStrategy
 
     init(strategy: GraphIndexStrategy = .adjacency) async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("bench", "graph", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace("edges")

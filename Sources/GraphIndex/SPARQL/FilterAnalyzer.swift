@@ -120,7 +120,7 @@ struct FilterAnalyzer: Sendable {
             // Existence checks - handled by structure matching
             return ([], expr)
 
-        case .regex, .regexWithFlags:
+        case .regex, .regexWithFlags, .similarTo:
             // Pattern matching - too complex for early filtering
             return ([], expr)
 

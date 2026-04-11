@@ -8,7 +8,7 @@ import TestSupport
 @testable import DatabaseEngine
 @testable import AggregationIndex
 
-@Suite("MIN/MAX Composite Primary Key Tests", .heartbeat)
+@Suite("MIN/MAX Composite Primary Key Tests", .serialized, .heartbeat)
 struct MinMaxCompositePrimaryKeyTests {
 
     init() async throws {
@@ -86,7 +86,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MIN with composite primary key")
     func testMinWithCompositePrimaryKey() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "min_composite_pk", testId).pack())
 
@@ -169,7 +169,7 @@ struct MinMaxCompositePrimaryKeyTests {
 
     @Test("MAX with composite primary key")
     func testMaxWithCompositePrimaryKey() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString
         let indexSubspace = Subspace(prefix: Tuple("test", "max_composite_pk", testId).pack())
 

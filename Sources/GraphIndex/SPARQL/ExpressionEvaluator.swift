@@ -372,6 +372,13 @@ public struct ExpressionEvaluator: Sendable {
             guard args.count == 1 else { return nil }
             return .bool(false)
 
+        // Trigram similarity: TRIGRAM_SIM(str, pattern) → Double [0,1]
+        case "TRIGRAM_SIM":
+            guard args.count == 2,
+                  let str = evaluateAsString(args[0], binding: binding),
+                  let pattern = evaluateAsString(args[1], binding: binding) else { return nil }
+            return .double(TrigramSimilarity.score(str, pattern))
+
         // SPARQL 1.2: STRLANGDIR(string, lang, dir) — constructs direction-tagged literal
         case "STRLANGDIR":
             guard args.count == 3,

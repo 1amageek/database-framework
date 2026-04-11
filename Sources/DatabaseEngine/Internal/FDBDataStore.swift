@@ -1034,7 +1034,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         id: any TupleElement,
         transaction: any Transaction
     ) async throws -> T? {
-        let key = pointReadKey(for: T.persistableType, id: id)
+        let key = itemKey(for: T.persistableType, id: id)
 
         guard let bytes = try await ItemStorage.read(
             transaction: transaction,
@@ -1053,7 +1053,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         return result
     }
 
-    private func pointReadKey(
+    private func itemKey(
         for persistableType: String,
         id: any TupleElement
     ) -> Bytes {
@@ -1638,8 +1638,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        let typeSubspace = itemSubspace.subspace(persistableType)
-        let key = typeSubspace.pack(idTuple)
+        let key = itemKey(for: persistableType, id: idTuple)
 
         // Use ItemStorage for large value handling (stores chunks in blobs subspace)
         let storage = ItemStorage(
@@ -1700,8 +1699,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
-        let typeSubspace = itemSubspace.subspace(persistableType)
-        let key = typeSubspace.pack(idTuple)
+        let key = itemKey(for: persistableType, id: idTuple)
 
         // Remove index entries first via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(

@@ -46,7 +46,7 @@ struct PropertyPathTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([EdgeForPropertyPath.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }

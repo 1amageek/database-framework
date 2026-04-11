@@ -82,7 +82,7 @@ private struct TestContext {
     let maintainer: BitmapIndexMaintainer<TestProduct>
 
     init(indexName: String = "TestProduct_category") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)
@@ -582,7 +582,7 @@ struct BitmapIndexMaintainerBehaviorTests {
     func testAndQueryReturnsIntersection() async throws {
         try await FDBTestSetup.shared.initialize()
         // Create separate maintainers for category and brand
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "bitmap", String(testId)).pack())
 

@@ -4,6 +4,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
+import TestSupport
 @testable import DatabaseEngine
 @testable import Core
 
@@ -42,7 +43,7 @@ struct TransactionContextTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema(
             [TransactionTestUser.self, TransactionTestProduct.self],

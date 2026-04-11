@@ -39,7 +39,7 @@ struct SPARQLDebugTest {
 
     @Test("Debug: Check storedFieldNames propagation")
     func testStoredFieldNamesPropagation() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
@@ -115,7 +115,7 @@ struct SPARQLDebugTest {
 
     @Test("Debug: Direct GraphPropertyScanner test")
     func testDirectGraphPropertyScanner() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([DebugEdge.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state

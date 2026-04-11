@@ -20,7 +20,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Apply and retrieve schema")
     func testApplyAndRetrieve() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Clean up
         try? await database.directoryService.remove(path: ["_schema"])
@@ -57,7 +57,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Export schema to YAML")
     func testExportSchema() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Create catalog
         let catalog = Schema.Entity(
@@ -108,7 +108,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Round-trip: YAML -> Catalog -> FDB -> Catalog -> YAML")
     func testFullRoundTrip() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         let originalYAML = """
@@ -148,7 +148,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Apply schema with graph index")
     func testApplyGraphSchema() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         let yaml = """
@@ -186,7 +186,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Apply schema with dynamic directory")
     func testApplyDynamicDirectory() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         let yaml = """
@@ -215,7 +215,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Apply multiple schemas")
     func testApplyMultipleSchemas() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         // Use unique type names to avoid conflicts with old format data
@@ -294,7 +294,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Delete non-existent schema")
     func testDeleteNonExistent() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         // Should not throw, just no-op
@@ -303,7 +303,7 @@ struct SchemaDefinitionIntegrationTests {
 
     @Test("Overwrite existing schema")
     func testOverwriteSchema() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
 
         let yaml1 = """

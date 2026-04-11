@@ -44,7 +44,7 @@ struct SPARQLFunctionDebugTest {
 
     @Test("Debug: Check data insertion and graph index")
     func testDataInsertionAndIndex() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state
@@ -98,7 +98,7 @@ struct SPARQLFunctionDebugTest {
 
     @Test("Debug: Check executeSPARQL string method")
     func testExecuteSPARQLString() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([TestUser.self, TestTriple.self], version: Schema.Version(1, 0, 0))
 
         // Clean up directory BEFORE creating container to avoid stale state

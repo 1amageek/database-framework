@@ -178,7 +178,7 @@ struct RelationshipIndexUpdateTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
@@ -364,7 +364,7 @@ struct RelationshipQueryTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
@@ -449,7 +449,7 @@ struct SnapshotTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
@@ -849,7 +849,7 @@ struct ToManyRelationshipIndexUpdateTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
@@ -1062,7 +1062,7 @@ struct RelationshipEdgeCasesTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 
@@ -1294,7 +1294,7 @@ struct RelationshipConsistencyTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([RTestCustomer.self, RTestOrder.self], version: Schema.Version(1, 0, 0))
 

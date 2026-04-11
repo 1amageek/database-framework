@@ -9,11 +9,12 @@ import StorageKit
 import FDBStorage
 import Logging
 import Synchronization
+import TestSupport
 @testable import Core
 @testable import DatabaseEngine
 
 /// Tests for DBConfiguration and IndexConfiguration API
-@Suite("DBConfiguration Tests", .heartbeat)
+@Suite("DBConfiguration Tests", .serialized, .heartbeat)
 struct DBConfigurationTests {
 
     // MARK: - Test Models
@@ -34,7 +35,7 @@ struct DBConfigurationTests {
     func singleConfigurationAPI() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
@@ -62,7 +63,7 @@ struct DBConfigurationTests {
     func multipleConfigurationsGroupedByIndexName() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
@@ -88,7 +89,7 @@ struct DBConfigurationTests {
     func emptyIndexConfigurations() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
@@ -106,7 +107,7 @@ struct DBConfigurationTests {
     func indexConfigurationTypedAccess() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
@@ -139,7 +140,7 @@ struct DBConfigurationTests {
     func indexConfigurationsTypedAccess() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(

@@ -99,7 +99,7 @@ private struct BitmapTestContext {
     let maintainer: BitmapIndexMaintainer<BitmapTestUser>
 
     init(indexName: String = "BitmapTestUser_bitmap_status") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "bitmap_fusion", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

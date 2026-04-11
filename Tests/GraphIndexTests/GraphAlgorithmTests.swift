@@ -90,7 +90,7 @@ private struct TestContext {
     let indexName: String
 
     init(strategy: GraphIndexStrategy = .adjacency, indexName: String = "GraphAlgoEdge_graph") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "graphalgo", String(testId)).pack())
         self.indexName = indexName

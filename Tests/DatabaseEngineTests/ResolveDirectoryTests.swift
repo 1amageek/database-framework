@@ -49,7 +49,7 @@ struct ResolveDirectoryTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([
@@ -219,7 +219,7 @@ struct ResolveDirectoryTests {
     func multipleContainersShareDirectory() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             // Clean up first
             

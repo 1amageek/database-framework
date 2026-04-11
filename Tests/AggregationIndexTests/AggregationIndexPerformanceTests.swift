@@ -123,7 +123,7 @@ struct AggregationIndexPerformanceTests {
     @Test("COUNT index bulk insert performance")
     func testCountBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "count", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region")
@@ -192,7 +192,7 @@ struct AggregationIndexPerformanceTests {
     @Test("COUNT index query performance")
     func testCountQueryPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "count", "query", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region")
@@ -269,7 +269,7 @@ struct AggregationIndexPerformanceTests {
     @Test("SUM index bulk insert performance")
     func testSumBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "sum", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("sum_region_amount")
@@ -340,7 +340,7 @@ struct AggregationIndexPerformanceTests {
     @Test("SUM index update performance (same group)")
     func testSumUpdateSameGroupPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "sum", "update", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("sum_region_amount")
@@ -421,7 +421,7 @@ struct AggregationIndexPerformanceTests {
     @Test("MIN index bulk insert performance")
     func testMinBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "min", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("min_region_amount")
@@ -504,7 +504,7 @@ struct AggregationIndexPerformanceTests {
     @Test("MAX index bulk insert performance")
     func testMaxBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "max", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("max_region_amount")
@@ -583,7 +583,7 @@ struct AggregationIndexPerformanceTests {
     @Test("AVERAGE index bulk insert performance")
     func testAverageBulkInsertPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "avg", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("avg_region_amount")
@@ -681,7 +681,7 @@ struct AggregationIndexPerformanceTests {
     @Test("Composite grouping performance")
     func testCompositeGroupingPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "composite", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_region_category")
@@ -771,7 +771,7 @@ struct AggregationIndexPerformanceTests {
     @Test("Large scale COUNT performance")
     func testLargeScaleCountPerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "scale", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_scale")
@@ -847,7 +847,7 @@ struct AggregationIndexPerformanceTests {
     @Test("Delete performance")
     func testDeletePerformance() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "perf", "delete", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("count_delete")

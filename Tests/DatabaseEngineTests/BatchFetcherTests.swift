@@ -8,6 +8,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import TestSupport
 @testable import DatabaseEngine
 
 // MARK: - BatchFetchConfiguration Tests
@@ -250,7 +251,7 @@ struct BatchFetcherIntegrationTests {
 
     private func setupDatabase() async throws -> any StorageEngine {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        return try await FDBStorageEngine(configuration: .init())
+        return try await FDBTestSetup.shared.makeEngine()
     }
 
     private func testSubspace() -> Subspace {

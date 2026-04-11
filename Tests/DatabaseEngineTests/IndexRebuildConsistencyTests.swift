@@ -15,6 +15,7 @@ import FDBStorage
 import Core
 import FullText
 import Graph
+import TestSupport
 @testable import DatabaseEngine
 @testable import FullTextIndex
 @testable import GraphIndex
@@ -88,7 +89,7 @@ struct IndexRebuildConsistencyTests {
 
     private func setupContainer(_ types: [any Persistable.Type]) async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema(types, version: Schema.Version(1, 0, 0))
         for type in types {
             IndexBuilderRegistry.shared.register(type)

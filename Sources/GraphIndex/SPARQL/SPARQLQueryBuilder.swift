@@ -294,6 +294,11 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         filter(.endsWith(variable, suffix))
     }
 
+    /// Filter: variable is similar to pattern (trigram Jaccard similarity >= threshold)
+    public func filter(_ variable: String, similarTo pattern: String, threshold: Double = 0.45) -> Self {
+        filter(.similarTo(variable, pattern, threshold))
+    }
+
     /// Filter: variable is bound
     public func filterBound(_ variable: String) -> Self {
         filter(.bound(variable))

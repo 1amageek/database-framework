@@ -83,7 +83,7 @@ private struct TestContext {
     let kind: VersionIndexKind<TestDocument>
 
     init(strategy: VersionHistoryStrategy = .keepAll, indexName: String = "TestDocument_version") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "version", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

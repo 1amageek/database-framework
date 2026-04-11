@@ -5,12 +5,12 @@ import FDBStorage
 import TestSupport
 @testable import DatabaseEngine
 
-@Suite("Transaction Basic Tests", .heartbeat)
+@Suite("Transaction Basic Tests", .serialized, .heartbeat)
 struct TransactionBasicTests {
 
     @Test func simpleReadWrite() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let runner = TransactionRunner(database: database)
         
         // Simple write
@@ -28,7 +28,7 @@ struct TransactionBasicTests {
     
     @Test func simpleGetRange() async throws {
         try await FDBTestSetup.shared.initialize()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let runner = TransactionRunner(database: database)
         
         // Write multiple keys

@@ -82,7 +82,7 @@ private struct TestContext {
     let maintainer: MaxIndexMaintainer<MaxTestScore, Int64>
 
     init(indexName: String = "MaxTestScore_subject_score") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "max", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

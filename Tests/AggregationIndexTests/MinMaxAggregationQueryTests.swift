@@ -86,7 +86,7 @@ struct MinMaxAggregationQueryTests {
     func testMinAggregationEndToEnd() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMinTest.self])
-        let engine = try await FDBStorageEngine(configuration: .init())
+        let engine = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
         let context = container.newContext()
 
@@ -133,7 +133,7 @@ struct MinMaxAggregationQueryTests {
     func testMaxAggregationEndToEnd() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMaxTest.self])
-        let engine = try await FDBStorageEngine(configuration: .init())
+        let engine = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
         let context = container.newContext()
 
@@ -180,7 +180,7 @@ struct MinMaxAggregationQueryTests {
     func testMixedMinMaxCountAggregation() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderMixedTest.self])
-        let engine = try await FDBStorageEngine(configuration: .init())
+        let engine = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
         let context = container.newContext()
 
@@ -256,7 +256,7 @@ struct MinMaxAggregationQueryTests {
     func testMinAggregationWithInt64() async throws {
         // Create schema from Persistable type
         let schema = Schema([OrderInt64Test.self])
-        let engine = try await FDBStorageEngine(configuration: .init())
+        let engine = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(engine)), security: .disabled)
         let context = container.newContext()
 

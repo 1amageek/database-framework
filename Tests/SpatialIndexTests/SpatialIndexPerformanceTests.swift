@@ -84,7 +84,7 @@ private struct BenchmarkContext {
     let level: Int
 
     init(encoding: SpatialEncoding = .s2, level: Int = 12, indexName: String = "BenchmarkLocation_location") async throws {
-        self.database = try await FDBStorageEngine(configuration: .init())
+        self.database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("benchmark", "spatial", String(testId)).pack())
         self.indexSubspace = subspace.subspace("I").subspace(indexName)

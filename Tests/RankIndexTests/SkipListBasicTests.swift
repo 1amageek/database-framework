@@ -97,7 +97,7 @@ struct SkipListBasicTests {
     @Test("Insert creates entries at all levels")
     func testInsertCreatesEntries() async throws {
         let schema = Schema([SkipListTestPlayer1.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -125,7 +125,7 @@ struct SkipListBasicTests {
     @Test("getTopK returns highest scores")
     func testGetTopK() async throws {
         let schema = Schema([SkipListTestPlayer2.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -166,7 +166,7 @@ struct SkipListBasicTests {
     @Test("Update changes rank correctly")
     func testUpdate() async throws {
         let schema = Schema([SkipListTestPlayer3.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -208,7 +208,7 @@ struct SkipListBasicTests {
     @Test("Delete removes entry completely")
     func testDelete() async throws {
         let schema = Schema([SkipListTestPlayer4.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -245,7 +245,7 @@ struct SkipListBasicTests {
     @Test("Empty index returns empty results")
     func testEmptyIndex() async throws {
         let schema = Schema([SkipListTestPlayer5.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -260,7 +260,7 @@ struct SkipListBasicTests {
     @Test("Handles duplicate scores correctly")
     func testDuplicateScores() async throws {
         let schema = Schema([SkipListTestPlayer6.self])
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
         let context = container.newContext()
 
@@ -297,7 +297,7 @@ struct SkipListBasicTests {
     @Test("getRank single entry")
     func testGetRankSingleEntry() async throws {
         // Simplified test: insert one entry and get its rank
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "skiplist_single", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("single_rank")
@@ -349,7 +349,7 @@ struct SkipListBasicTests {
     @Test("getRank with two entries")
     func testGetRankTwoEntries() async throws {
         // Simplified test: two entries to debug span accumulation
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "skiplist_two", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("two_rank")
@@ -410,7 +410,7 @@ struct SkipListBasicTests {
     @Test("getRank returns correct descending rank")
     func testGetRankDescendingOrder() async throws {
         // Setup: Create SkipListIndexMaintainer directly
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "skiplist_rank", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("SkipListTestPlayer7_rank_score")
@@ -503,7 +503,7 @@ struct SkipListBasicTests {
 
     @Test("Span counter accuracy with 100 entries")
     func testSpanCounterAccuracy() async throws {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "skiplist_span", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("span_rank")

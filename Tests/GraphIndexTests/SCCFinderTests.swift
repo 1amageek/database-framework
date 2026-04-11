@@ -46,7 +46,7 @@ struct SCCFinderTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
@@ -390,7 +390,7 @@ struct GraphEdgeScannerBatchTests {
     }
 
     private func setupContainer() async throws -> DBContainer {
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([EdgeForSCC.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
     }
@@ -442,7 +442,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllOutgoing(
                 from: [a, b, c],
@@ -497,7 +497,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllIncoming(
                 to: [a, c, d],
@@ -544,7 +544,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllOutgoing(
                 from: [],  // Empty sources
@@ -580,7 +580,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllIncoming(
                 to: [],  // Empty targets
@@ -621,7 +621,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllOutgoing(
                 from: [a],
@@ -664,7 +664,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllOutgoing(
                 from: [a],  // Single node
@@ -704,7 +704,7 @@ struct GraphEdgeScannerBatchTests {
         let graphSubspace = typeSubspace.subspace(descriptor.name)
         let scanner = GraphEdgeScanner(indexSubspace: graphSubspace, strategy: kind.strategy)
 
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         let grouped = try await database.withTransaction(configuration: .default) { transaction in
             try await scanner.batchScanAllOutgoing(
                 from: [a, c],  // Include node with no edges

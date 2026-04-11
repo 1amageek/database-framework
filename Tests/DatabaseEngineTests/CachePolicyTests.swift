@@ -4,6 +4,7 @@ import TestHeartbeat
 import Foundation
 import StorageKit
 import FDBStorage
+import TestSupport
 @testable import DatabaseEngine
 @testable import Core
 
@@ -128,7 +129,7 @@ struct CachePolicyTests {
     @Test("QueryExecutor.cachePolicy() propagates to query")
     func executorCachePolicyPropagates() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema(
             [CachePolicyTestModel.self],
@@ -148,7 +149,7 @@ struct CachePolicyTests {
     @Test("QueryExecutor.cachePolicy() can be chained with filters")
     func executorCachePolicyChainingWithFilters() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema(
             [CachePolicyTestModel.self],
@@ -173,7 +174,7 @@ struct CachePolicyTests {
     @Test("fetch() with .cached uses ReadVersionCache")
     func fetchWithCachedUsesCache() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -211,7 +212,7 @@ struct CachePolicyTests {
     @Test("fetch() with .server bypasses cache")
     func fetchWithServerBypassesCache() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -244,7 +245,7 @@ struct CachePolicyTests {
     @Test("count() respects cachePolicy")
     func countRespectsCache() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -279,7 +280,7 @@ struct CachePolicyTests {
     @Test("fetch() executes correctly with all CachePolicy values")
     func fetchWithAllPolicyValues() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -322,7 +323,7 @@ struct CachePolicyTests {
     @Test("model(for:as:) with default cachePolicy uses .server")
     func modelDefaultCachePolicy() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -347,7 +348,7 @@ struct CachePolicyTests {
     @Test("model(for:as:) with .cached uses ReadVersionCache")
     func modelWithCachedPolicy() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -388,7 +389,7 @@ struct CachePolicyTests {
     @Test("model(for:as:) with .stale uses cache within window")
     func modelWithStalePolicy() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],
@@ -417,7 +418,7 @@ struct CachePolicyTests {
     @Test("model(for:as:) returns nil for non-existent ID")
     func modelReturnsNilForNonExistent() async throws {
         try await FDBTestEnvironment.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema(
                 [CachePolicyTestModel.self],

@@ -14,6 +14,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Synchronization
+import TestSupport
 @testable import DatabaseEngine
 @testable import Core
 
@@ -121,7 +122,7 @@ struct CommitCheckTests {
 
         // Execute to verify closure works
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
         try await database.withTransaction { tx in
             try await registry.executeAll(transaction: tx)
         }
@@ -133,7 +134,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll runs all passing checks")
     func executeAllRunsPassingChecks() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -159,7 +160,7 @@ struct CommitCheckTests {
     @Test("CommitCheckRegistry.executeAll throws on first failure")
     func executeAllThrowsOnFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let registry = CommitCheckRegistry()
         let executionOrder = AtomicArray<String>()
@@ -191,7 +192,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=true stops on first failure")
     func compositeFailFastStopsOnFirstFailure() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let executed = AtomicArray<Int>()
 
@@ -214,7 +215,7 @@ struct CommitCheckTests {
     @Test("CompositeCommitCheck failFast=false collects all failures")
     func compositeNoFailFastCollectsAllFailures() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let executed = AtomicArray<Int>()
 
@@ -247,7 +248,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck executes when condition is true")
     func conditionalExecutesWhenTrue() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)
@@ -263,7 +264,7 @@ struct CommitCheckTests {
     @Test("ConditionalCommitCheck skips when condition is false")
     func conditionalSkipsWhenFalse() async throws {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         let innerExecuted = AtomicBool(false)
         let inner = SettingCommitCheck(flag: innerExecuted)

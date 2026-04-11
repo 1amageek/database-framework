@@ -46,7 +46,7 @@ struct MigrationTests {
 
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([MigrationTestUser.self], version: Schema.Version(1, 0, 0))
@@ -60,7 +60,7 @@ struct MigrationTests {
 
     private func setupBatchTestContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBStorageEngine(configuration: .init())
+        let database = try await FDBTestSetup.shared.makeEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([BatchTestRecord.self], version: Schema.Version(1, 0, 0))
@@ -129,7 +129,7 @@ struct MigrationTests {
     @Test("Schema version persists across container instances")
     func schemaVersionPersistsAcrossContainers() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let database = try await FDBStorageEngine(configuration: .init())
+            let database = try await FDBTestSetup.shared.makeEngine()
 
             let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
 
