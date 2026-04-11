@@ -276,6 +276,76 @@ struct CanonicalQueryRPCTests {
         #expect(since == [2020, 2021])
     }
 
+    @Test("canonical query RPC executes graph table path constraints")
+    func graphTablePathConstraints() async throws {
+        let (container, endpoint) = try await makeHarness()
+        let context = container.newContext()
+
+        var edge1 = RPCEdge()
+        edge1.id = "path-edge-1"
+        edge1.from = "alice"
+        edge1.target = "bob"
+        edge1.label = "KNOWS"
+        edge1.since = 2020
+        context.insert(edge1)
+
+        var edge2 = RPCEdge()
+        edge2.id = "path-edge-2"
+        edge2.from = "bob"
+        edge2.target = "carol"
+        edge2.label = "KNOWS"
+        edge2.since = 2021
+        context.insert(edge2)
+
+        var edge3 = RPCEdge()
+        edge3.id = "path-edge-3"
+        edge3.from = "alice"
+        edge3.target = "dave"
+        edge3.label = "KNOWS"
+        edge3.since = 2022
+        context.insert(edge3)
+
+        var edge4 = RPCEdge()
+        edge4.id = "path-edge-4"
+        edge4.from = "dave"
+        edge4.target = "erin"
+        edge4.label = "KNOWS"
+        edge4.since = 2023
+        context.insert(edge4)
+
+        try await context.save()
+
+        let graphSource = GraphTableSource(
+            graphName: "SocialGraph",
+            matchPattern: MatchPattern(paths: [
+                PathPattern(elements: [
+                    .node(NodePattern(variable: "a", properties: [
+                        PropertyBinding(key: "id", value: .literal(.string("alice")))
+                    ])),
+                    .edge(EdgePattern(labels: ["KNOWS"], direction: .outgoing)),
+                    .node(NodePattern(variable: "b", properties: [
+                        PropertyBinding(key: "id", value: .literal(.string("bob")))
+                    ])),
+                    .edge(EdgePattern(labels: ["KNOWS"], direction: .outgoing)),
+                    .node(NodePattern(variable: "c")),
+                ])
+            ])
+        )
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "a", column: "id")), alias: "source"),
+                ProjectionItem(.column(ColumnRef(table: "c", column: "id")), alias: "target"),
+            ]),
+            source: .graphTable(graphSource)
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["source"]?.stringValue == "alice")
+        #expect(response.rows.first?.fields["target"]?.stringValue == "carol")
+    }
+
     @Test("canonical query RPC executes graph pattern sources")
     func graphPatternSource() async throws {
         let (container, endpoint) = try await makeHarness()
@@ -332,6 +402,265 @@ struct CanonicalQueryRPCTests {
 
         #expect(targets == ["bob", "carol"])
         #expect(sources == ["alice"])
+    }
+
+    @Test("canonical query RPC executes nested graph pattern sources")
+    func nestedGraphPatternSource() async throws {
+        let (container, endpoint) = try await makeHarness()
+        let context = container.newContext()
+
+        var edge1 = RPCEdge()
+        edge1.id = "nested-pattern-edge-1"
+        edge1.from = "alice"
+        edge1.target = "bob"
+        edge1.label = "KNOWS"
+        edge1.since = 2020
+        context.insert(edge1)
+
+        var edge2 = RPCEdge()
+        edge2.id = "nested-pattern-edge-2"
+        edge2.from = "alice"
+        edge2.target = "carol"
+        edge2.label = "KNOWS"
+        edge2.since = 2021
+        context.insert(edge2)
+
+        try await context.save()
+
+        let pattern = GraphPattern.basic([
+            TriplePattern(
+                subject: .variable("source"),
+                predicate: .iri("KNOWS"),
+                object: .variable("target")
+            )
+        ])
+
+        let inner = SelectQuery(
+            projection: .items([
+                ProjectionItem(.variable(Variable("target")), alias: "target"),
+            ]),
+            source: .graphPattern(pattern)
+        )
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "g", column: "target")), alias: "target"),
+            ]),
+            source: .subquery(inner, alias: "g"),
+            orderBy: [
+                SortKey(.column(ColumnRef(table: "g", column: "target")))
+            ]
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let targets = response.rows.compactMap { $0.fields["target"]?.stringValue }
+
+        #expect(targets == ["bob", "carol"])
+    }
+
+    @Test("canonical query RPC executes graph pattern sources inside joins")
+    func graphPatternJoinSource() async throws {
+        let (container, endpoint) = try await makeHarness()
+        let context = container.newContext()
+
+        var alice = RPCPerson()
+        alice.id = "graph-join-alice"
+        alice.name = "Alice"
+        alice.age = 42
+        context.insert(alice)
+
+        var bob = RPCPerson()
+        bob.id = "graph-join-bob"
+        bob.name = "Bob"
+        bob.age = 29
+        context.insert(bob)
+
+        var edge1 = RPCEdge()
+        edge1.id = "graph-join-edge-1"
+        edge1.from = alice.id
+        edge1.target = bob.id
+        edge1.label = "KNOWS"
+        edge1.since = 2020
+        context.insert(edge1)
+
+        try await context.save()
+
+        let pattern = GraphPattern.basic([
+            TriplePattern(
+                subject: .variable("source"),
+                predicate: .iri("KNOWS"),
+                object: .variable("target")
+            )
+        ])
+
+        let join = JoinClause(
+            type: .inner,
+            left: .subquery(
+                SelectQuery(
+                    projection: .items([
+                        ProjectionItem(.variable(Variable("source")), alias: "source"),
+                        ProjectionItem(.variable(Variable("target")), alias: "target"),
+                    ]),
+                    source: .graphPattern(pattern)
+                ),
+                alias: "g"
+            ),
+            right: .table(TableRef(table: "RPCPerson", alias: "p")),
+            condition: .on(
+                .equal(
+                    .column(ColumnRef(table: "g", column: "target")),
+                    .column(ColumnRef(table: "p", column: "id"))
+                )
+            )
+        )
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "p", column: "name")), alias: "name"),
+            ]),
+            source: .join(join)
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let names = response.rows.compactMap { $0.fields["name"]?.stringValue }
+
+        #expect(names == ["Bob"])
+    }
+
+    @Test("canonical query RPC executes graph pattern sources inside unions")
+    func graphPatternUnionSource() async throws {
+        let (container, endpoint) = try await makeHarness()
+        let context = container.newContext()
+
+        var edge1 = RPCEdge()
+        edge1.id = "graph-union-edge-1"
+        edge1.from = "alice"
+        edge1.target = "bob"
+        edge1.label = "KNOWS"
+        edge1.since = 2020
+        context.insert(edge1)
+
+        var edge2 = RPCEdge()
+        edge2.id = "graph-union-edge-2"
+        edge2.from = "dave"
+        edge2.target = "erin"
+        edge2.label = "FOLLOWS"
+        edge2.since = 2021
+        context.insert(edge2)
+
+        try await context.save()
+
+        let knowsPattern = GraphPattern.basic([
+            TriplePattern(
+                subject: .variable("source"),
+                predicate: .iri("KNOWS"),
+                object: .variable("target")
+            )
+        ])
+        let followsPattern = GraphPattern.basic([
+            TriplePattern(
+                subject: .variable("source"),
+                predicate: .iri("FOLLOWS"),
+                object: .variable("target")
+            )
+        ])
+
+        let knowsQuery = SelectQuery(
+            projection: .items([
+                ProjectionItem(.variable(Variable("target")), alias: "target"),
+            ]),
+            source: .graphPattern(knowsPattern)
+        )
+        let followsQuery = SelectQuery(
+            projection: .items([
+                ProjectionItem(.variable(Variable("target")), alias: "target"),
+            ]),
+            source: .graphPattern(followsPattern)
+        )
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "g", column: "target")), alias: "target"),
+            ]),
+            source: .subquery(
+                SelectQuery(
+                    projection: .items([
+                        ProjectionItem(.column(ColumnRef("target")), alias: "target"),
+                    ]),
+                    source: .union([
+                        .subquery(knowsQuery, alias: "knows"),
+                        .subquery(followsQuery, alias: "follows"),
+                    ])
+                ),
+                alias: "g"
+            ),
+            orderBy: [
+                SortKey(.column(ColumnRef(table: "g", column: "target")))
+            ]
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let targets = response.rows.compactMap { $0.fields["target"]?.stringValue }
+
+        #expect(targets == ["bob", "erin"])
+    }
+
+    @Test("canonical query RPC executes graph pattern named subqueries")
+    func graphPatternNamedSubquerySource() async throws {
+        let (container, endpoint) = try await makeHarness()
+        let context = container.newContext()
+
+        var edge1 = RPCEdge()
+        edge1.id = "graph-named-edge-1"
+        edge1.from = "alice"
+        edge1.target = "bob"
+        edge1.label = "KNOWS"
+        edge1.since = 2020
+        context.insert(edge1)
+
+        var edge2 = RPCEdge()
+        edge2.id = "graph-named-edge-2"
+        edge2.from = "alice"
+        edge2.target = "carol"
+        edge2.label = "KNOWS"
+        edge2.since = 2021
+        context.insert(edge2)
+
+        try await context.save()
+
+        let pattern = GraphPattern.basic([
+            TriplePattern(
+                subject: .variable("source"),
+                predicate: .iri("KNOWS"),
+                object: .variable("target")
+            )
+        ])
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "g", column: "target")), alias: "target"),
+            ]),
+            source: .table(TableRef(table: "graph_hits", alias: "g")),
+            orderBy: [
+                SortKey(.column(ColumnRef(table: "g", column: "target")))
+            ],
+            subqueries: [
+                NamedSubquery(
+                    name: "graph_hits",
+                    query: SelectQuery(
+                        projection: .items([
+                            ProjectionItem(.variable(Variable("target")), alias: "target"),
+                        ]),
+                        source: .graphPattern(pattern)
+                    )
+                )
+            ]
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let targets = response.rows.compactMap { $0.fields["target"]?.stringValue }
+
+        #expect(targets == ["bob", "carol"])
     }
 
     @Test("canonical query RPC routes partition values through subquery sources")

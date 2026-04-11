@@ -37,7 +37,7 @@ public protocol FusionReadExecutor: Sendable {
     ) async throws -> QueryResponse
 }
 
-public final class ReadExecutorRegistry: @unchecked Sendable {
+public final class ReadExecutorRegistry: Sendable {
     public static let shared = ReadExecutorRegistry()
 
     private struct State: Sendable {

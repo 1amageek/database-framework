@@ -12,27 +12,6 @@ public enum QueryBridgeError: Error, Sendable {
     case invalidPartitionField(String)
 }
 
-private struct OffsetContinuationPayload: Codable, Sendable {
-    let offset: Int
-}
-
-private enum OffsetContinuationCodec {
-    static func decode(_ continuation: QueryContinuation?) throws -> Int {
-        guard let continuation else { return 0 }
-        guard let data = Data(base64Encoded: continuation.token) else {
-            throw CanonicalReadError.invalidContinuation
-        }
-        let payload = try JSONDecoder().decode(OffsetContinuationPayload.self, from: data)
-        return payload.offset
-    }
-
-    static func encode(offset: Int) throws -> QueryContinuation {
-        let payload = OffsetContinuationPayload(offset: offset)
-        let data = try JSONEncoder().encode(payload)
-        return QueryContinuation(data.base64EncodedString())
-    }
-}
-
 enum CanonicalPartitionBinding {
     static func makeBinding<T: Persistable>(
         for type: T.Type,
@@ -210,25 +189,13 @@ extension FDBContext {
         let predicate = try makePredicate(from: selectQuery.filter, as: type)
         let sortKeys = try makeSortKeys(from: selectQuery.orderBy, as: type)
 
-        let continuationOffset = try OffsetContinuationCodec.decode(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
+        let pagination = try CanonicalOffsetPagination.context(
+            selectQuery: selectQuery,
+            options: options
+        )
+        if pagination.isExhausted {
             return QueryResponse(rows: [])
         }
-
-        let effectivePageSize: Int? = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(remaining)):
-                return min(pageSize, remaining)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(remaining)):
-                return remaining
-            case (.none, .none):
-                return nil
-            }
-        }()
 
         var query = Query<T>()
         if let predicate {
@@ -245,23 +212,21 @@ extension FDBContext {
             usesProjectedRows(selectQuery.projection)
 
         if !needsMaterialization {
-            if baseOffset > 0 {
-                query.fetchOffset = baseOffset
+            if pagination.baseOffset > 0 {
+                query.fetchOffset = pagination.baseOffset
             }
-            if let effectivePageSize {
+            if let effectivePageSize = pagination.effectivePageSize {
                 query.fetchLimit = effectivePageSize + 1
-            } else if let remainingLimit {
-                query.fetchLimit = remainingLimit
             }
 
             let models = try await fetch(query)
             let rows = try models.map { try QueryRowCodec.encode($0) }
-            return try makePagedResponse(
-                rows: rows,
-                baseOffset: 0,
-                continuationOffset: continuationOffset,
-                effectivePageSize: effectivePageSize
+            let page = try CanonicalOffsetPagination.window(
+                items: rows,
+                context: pagination,
+                baseOffsetAlreadyApplied: true
             )
+            return QueryResponse(rows: page.items, continuation: page.continuation)
         }
 
         var models = try await fetch(query)
@@ -286,12 +251,8 @@ extension FDBContext {
             rows = uniqueRows(rows)
         }
 
-        return try makePagedResponse(
-            rows: rows,
-            baseOffset: baseOffset,
-            continuationOffset: continuationOffset,
-            effectivePageSize: effectivePageSize
-        )
+        let page = try CanonicalOffsetPagination.window(items: rows, context: pagination)
+        return QueryResponse(rows: page.items, continuation: page.continuation)
     }
 
     private func executeCountProjection<T: Persistable>(
@@ -448,25 +409,4 @@ extension FDBContext {
         return unique
     }
 
-    private func makePagedResponse(
-        rows: [QueryRow],
-        baseOffset: Int,
-        continuationOffset: Int,
-        effectivePageSize: Int?
-    ) throws -> QueryResponse {
-        let offsetRows = baseOffset > 0 ? Array(rows.dropFirst(baseOffset)) : rows
-
-        guard let effectivePageSize else {
-            return QueryResponse(rows: offsetRows)
-        }
-
-        let window = Array(offsetRows.prefix(effectivePageSize + 1))
-        let hasMore = window.count > effectivePageSize
-        let visibleRows = hasMore ? Array(window.prefix(effectivePageSize)) : window
-        let continuation = hasMore
-            ? try OffsetContinuationCodec.encode(offset: continuationOffset + visibleRows.count)
-            : nil
-
-        return QueryResponse(rows: visibleRows, continuation: continuation)
-    }
 }

@@ -6,7 +6,9 @@ import DatabaseClientProtocol
 public protocol GraphTableSourceExecutor: Sendable {
     func execute(
         context: FDBContext,
-        graphTableSource: GraphTableSource
+        graphTableSource: GraphTableSource,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?
     ) async throws -> [QueryRow]
 }
 
@@ -19,7 +21,7 @@ public protocol SPARQLSourceExecutor: Sendable {
     ) async throws -> QueryResponse
 }
 
-public final class LogicalSourceExecutorRegistry: @unchecked Sendable {
+public final class LogicalSourceExecutorRegistry: Sendable {
     public static let shared = LogicalSourceExecutorRegistry()
 
     private struct State: Sendable {

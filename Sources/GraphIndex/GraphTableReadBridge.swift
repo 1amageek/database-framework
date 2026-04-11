@@ -13,7 +13,9 @@ public enum GraphTableReadBridge {
 private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
     func execute(
         context: FDBContext,
-        graphTableSource: GraphTableSource
+        graphTableSource: GraphTableSource,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?
     ) async throws -> [QueryRow] {
         guard let resolution = GraphReadResolver.resolve(
             graphName: graphTableSource.graphName,
@@ -32,43 +34,48 @@ private struct RuntimeGraphTableSourceExecutor: GraphTableSourceExecutor {
         return try await execute(
             context: context,
             type: type,
-            graphTableSource: graphTableSource
+            graphTableSource: graphTableSource,
+            options: options,
+            partitionValues: partitionValues
         )
     }
 
     private func execute(
         context: FDBContext,
         type: any Persistable.Type,
-        graphTableSource: GraphTableSource
+        graphTableSource: GraphTableSource,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?
     ) async throws -> [QueryRow] {
         try await _execute(
             context: context,
             type: type,
-            graphTableSource: graphTableSource
+            graphTableSource: graphTableSource,
+            options: options,
+            partitionValues: partitionValues
         )
     }
 
     private func _execute<T: Persistable>(
         context: FDBContext,
         type: T.Type,
-        graphTableSource: GraphTableSource
+        graphTableSource: GraphTableSource,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?
     ) async throws -> [QueryRow] {
+        let execution = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .snapshot
+        )
+        let queryContext = try context.indexQueryContext.withPartitionValues(partitionValues, for: type)
         let executor = GraphTableExecutor<T>(
-            container: context.container,
-            schema: context.container.schema,
-            graphTableSource: graphTableSource
+            queryContext: queryContext,
+            graphTableSource: graphTableSource,
+            transactionConfiguration: execution.transactionConfiguration
         )
 
         return try await executor.execute().map { row in
-            var fields: [String: FieldValue] = [
-                "source": .string(row.source),
-                "target": .string(row.target),
-                "edgeLabel": .string(row.edgeLabel)
-            ]
-            for (key, value) in row.properties {
-                fields[key] = FieldValue(value) ?? .string(String(describing: value))
-            }
-            return QueryRow(fields: fields)
+            QueryRow(fields: row.fields)
         }
     }
 }

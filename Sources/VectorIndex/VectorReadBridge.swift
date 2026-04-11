@@ -19,10 +19,6 @@ public enum VectorReadBridge {
     }
 }
 
-private struct VectorContinuationPayload: Codable, Sendable {
-    let offset: Int
-}
-
 private enum VectorReadBridgeError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
@@ -87,31 +83,13 @@ private struct VectorReadExecutor: IndexReadExecutor {
             throw CanonicalReadError.unsupportedAccessPath("count() is not supported for vector access paths")
         }
 
-        let continuationOffset = try decodeOffset(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
-            return QueryResponse(rows: [])
-        }
+        let page = try CanonicalOffsetPagination.window(
+            items: results,
+            selectQuery: selectQuery,
+            options: options
+        )
 
-        let requestedPageSize: Int = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return results.count
-            }
-        }()
-
-        let window = Array(results.dropFirst(baseOffset).prefix(requestedPageSize + 1))
-        let hasMore = window.count > requestedPageSize
-        let visible = hasMore ? Array(window.prefix(requestedPageSize)) : window
-
-        let rows = try visible.map { result in
+        let rows = try page.items.map { result in
             let fields = try encodeFields(result.item)
             return QueryRow(
                 fields: fields,
@@ -119,14 +97,7 @@ private struct VectorReadExecutor: IndexReadExecutor {
             )
         }
 
-        let continuation: QueryContinuation?
-        if hasMore {
-            continuation = try encodeOffset(continuationOffset + visible.count)
-        } else {
-            continuation = nil
-        }
-
-        return QueryResponse(rows: rows, continuation: continuation)
+        return QueryResponse(rows: rows, continuation: page.continuation)
     }
 
     private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
@@ -138,20 +109,6 @@ private struct VectorReadExecutor: IndexReadExecutor {
             return false
         }
         return true
-    }
-
-    private func decodeOffset(_ continuation: QueryContinuation?) throws -> Int {
-        guard let continuation else { return 0 }
-        guard let data = Data(base64Encoded: continuation.token) else {
-            throw CanonicalReadError.invalidContinuation
-        }
-        let payload = try JSONDecoder().decode(VectorContinuationPayload.self, from: data)
-        return payload.offset
-    }
-
-    private func encodeOffset(_ offset: Int) throws -> QueryContinuation {
-        let data = try JSONEncoder().encode(VectorContinuationPayload(offset: offset))
-        return QueryContinuation(data.base64EncodedString())
     }
 
     private func encodeFields<T: Persistable>(_ item: T) throws -> [String: FieldValue] {

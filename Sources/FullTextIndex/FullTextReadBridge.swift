@@ -26,10 +26,6 @@ public enum FullTextReadBridge {
     }
 }
 
-private struct FullTextContinuationPayload: Codable, Sendable {
-    let offset: Int
-}
-
 private enum FullTextReadBridgeError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
@@ -106,32 +102,13 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
         }
 
-        let continuationOffset = try decodeOffset(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
-            return QueryResponse(rows: [])
-        }
-
-        let requestedPageSize: Int = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return results.count
-            }
-        }()
-
-        let window = Array(results.dropFirst(baseOffset).prefix(requestedPageSize + 1))
-        let hasMore = window.count > requestedPageSize
-        let visible = hasMore ? Array(window.prefix(requestedPageSize)) : window
-        let rows = try visible.map { QueryRow(fields: try encodeFields($0)) }
-        let continuation = hasMore ? try encodeOffset(continuationOffset + visible.count) : nil
-        return QueryResponse(rows: rows, continuation: continuation)
+        let page = try CanonicalOffsetPagination.window(
+            items: results,
+            selectQuery: selectQuery,
+            options: options
+        )
+        let rows = try page.items.map { QueryRow(fields: try encodeFields($0)) }
+        return QueryResponse(rows: rows, continuation: page.continuation)
     }
 
     private func makeScoredResponse<T: Persistable>(
@@ -143,37 +120,18 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
         }
 
-        let continuationOffset = try decodeOffset(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
-            return QueryResponse(rows: [])
-        }
-
-        let requestedPageSize: Int = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return results.count
-            }
-        }()
-
-        let window = Array(results.dropFirst(baseOffset).prefix(requestedPageSize + 1))
-        let hasMore = window.count > requestedPageSize
-        let visible = hasMore ? Array(window.prefix(requestedPageSize)) : window
-        let rows = try visible.map { result in
+        let page = try CanonicalOffsetPagination.window(
+            items: results,
+            selectQuery: selectQuery,
+            options: options
+        )
+        let rows = try page.items.map { result in
             QueryRow(
                 fields: try encodeFields(result.item),
                 annotations: ["score": .double(result.score)]
             )
         }
-        let continuation = hasMore ? try encodeOffset(continuationOffset + visible.count) : nil
-        return QueryResponse(rows: rows, continuation: continuation)
+        return QueryResponse(rows: rows, continuation: page.continuation)
     }
 
     private func makeFacetedResponse<T: Persistable>(
@@ -185,34 +143,21 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
         }
 
-        let continuationOffset = try decodeOffset(options.continuation)
-        let baseOffset = (selectQuery.offset ?? 0) + continuationOffset
-        let remainingLimit = selectQuery.limit.map { max($0 - continuationOffset, 0) }
-        if let remainingLimit, remainingLimit == 0 {
+        let pagination = try CanonicalOffsetPagination.context(
+            selectQuery: selectQuery,
+            options: options
+        )
+        if pagination.isExhausted {
             return QueryResponse(
                 rows: [],
                 metadata: [FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))]
             )
         }
-
-        let requestedPageSize: Int = {
-            switch (options.pageSize, remainingLimit) {
-            case let (.some(pageSize), .some(limit)):
-                return min(pageSize, limit)
-            case let (.some(pageSize), .none):
-                return pageSize
-            case let (.none, .some(limit)):
-                return limit
-            case (.none, .none):
-                return result.items.count
-            }
-        }()
-
-        let window = Array(result.items.dropFirst(baseOffset).prefix(requestedPageSize + 1))
-        let hasMore = window.count > requestedPageSize
-        let visible = hasMore ? Array(window.prefix(requestedPageSize)) : window
-        let rows = try visible.map { QueryRow(fields: try encodeFields($0)) }
-        let continuation = hasMore ? try encodeOffset(continuationOffset + visible.count) : nil
+        let page = try CanonicalOffsetPagination.window(
+            items: result.items,
+            context: pagination
+        )
+        let rows = try page.items.map { QueryRow(fields: try encodeFields($0)) }
 
         var metadata: [String: FieldValue] = [
             FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))
@@ -225,7 +170,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             )
         }
 
-        return QueryResponse(rows: rows, continuation: continuation, metadata: metadata)
+        return QueryResponse(rows: rows, continuation: page.continuation, metadata: metadata)
     }
 
     private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
@@ -237,20 +182,6 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             return false
         }
         return true
-    }
-
-    private func decodeOffset(_ continuation: QueryContinuation?) throws -> Int {
-        guard let continuation else { return 0 }
-        guard let data = Data(base64Encoded: continuation.token) else {
-            throw CanonicalReadError.invalidContinuation
-        }
-        let payload = try JSONDecoder().decode(FullTextContinuationPayload.self, from: data)
-        return payload.offset
-    }
-
-    private func encodeOffset(_ offset: Int) throws -> QueryContinuation {
-        let data = try JSONEncoder().encode(FullTextContinuationPayload(offset: offset))
-        return QueryContinuation(data.base64EncodedString())
     }
 
     private func encodeFields<T: Persistable>(_ item: T) throws -> [String: FieldValue] {

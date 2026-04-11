@@ -139,13 +139,14 @@ extension FDBContext {
               selectQuery.fromNamed == nil,
               selectQuery.reduced == false else {
             throw QueryBridgeError.unsupportedSelectQuery(
-                "Row-source executor does not yet support grouping or SPARQL dataset clauses"
+                "Canonical logical-source execution does not yet support grouping or SPARQL dataset clauses"
             )
         }
 
         let sourceRows = try await materializeRows(
             for: selectQuery.source,
             namedSubqueries: selectQuery.subqueries ?? [],
+            options: options,
             partitionValues: partitionValues,
             partitionMode: .routed
         )
@@ -299,6 +300,7 @@ extension FDBContext {
     private func materializeRows(
         for source: DataSource,
         namedSubqueries: [NamedSubquery],
+        options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
@@ -307,7 +309,7 @@ extension FDBContext {
             if let named = namedSubqueries.first(where: { $0.name == tableRef.table }) {
                 let response = try await queryCanonical(
                     named.query,
-                    options: .default,
+                    options: options,
                     partitionValues: partitionValues,
                     partitionMode: partitionMode
                 )
@@ -323,7 +325,7 @@ extension FDBContext {
             )
             let response = try await executeSingleTableRows(
                 select,
-                options: .default,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -335,7 +337,7 @@ extension FDBContext {
         case .subquery(let query, let alias):
             let response = try await queryCanonical(
                 query,
-                options: .default,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -347,6 +349,7 @@ extension FDBContext {
             return try await materializeJoinRows(
                 clause,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -356,6 +359,7 @@ extension FDBContext {
                 sources,
                 deduplicate: true,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -365,6 +369,7 @@ extension FDBContext {
                 sources,
                 deduplicate: false,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -373,6 +378,7 @@ extension FDBContext {
             return try await materializeIntersectRows(
                 sources,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -382,6 +388,7 @@ extension FDBContext {
                 lhs,
                 rhs,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -405,9 +412,14 @@ extension FDBContext {
             guard let executor = LogicalSourceExecutorRegistry.shared.graphTableExecutor else {
                 throw CanonicalReadError.unsupportedSource("graphTable executor is not registered")
             }
-            let rows = try await executor.execute(context: self, graphTableSource: graphTableSource)
+            let rows = try await executor.execute(
+                context: self,
+                graphTableSource: graphTableSource,
+                options: options,
+                partitionValues: partitionValues
+            )
             let sourceRows = rows.map {
-                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: graphTableSource.graphName)
+                canonicalGraphTableSourceRow(from: $0.fields, graphName: graphTableSource.graphName)
             }
             guard let columns = graphTableSource.columns, !columns.isEmpty else {
                 return sourceRows
@@ -420,14 +432,29 @@ extension FDBContext {
                 return CanonicalSourceRow(fields: fields)
             }
 
-        case .graphPattern, .namedGraph, .service:
-            throw CanonicalReadError.unsupportedSource("SPARQL row sources are not yet supported on the canonical RPC")
+        case .graphPattern, .namedGraph:
+            guard let executor = LogicalSourceExecutorRegistry.shared.sparqlExecutor else {
+                throw CanonicalReadError.unsupportedSource("SPARQL source executor is not registered")
+            }
+            let response = try await executor.execute(
+                context: self,
+                selectQuery: SelectQuery(projection: .all, source: source),
+                options: options,
+                partitionValues: partitionValues
+            )
+            return response.rows.map { CanonicalSourceRow(fields: $0.fields) }
+
+        case .service(let endpoint, _, _):
+            throw CanonicalReadError.unsupportedSource(
+                "SERVICE source '\(endpoint)' is not supported on the canonical RPC"
+            )
         }
     }
 
     private func materializeJoinRows(
         _ clause: JoinClause,
         namedSubqueries: [NamedSubquery],
+        options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
@@ -438,12 +465,14 @@ extension FDBContext {
             let leftRows = try await materializeRows(
                 for: clause.left,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
             let rightRows = try await materializeRows(
                 for: clause.right,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -458,12 +487,14 @@ extension FDBContext {
             let leftRows = try await materializeRows(
                 for: clause.left,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
             let rightRows = try await materializeRows(
                 for: clause.right,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -482,6 +513,10 @@ extension FDBContext {
         type: QueryIR.JoinType,
         condition: JoinCondition?
     ) throws -> [CanonicalSourceRow] {
+        if type == .cross {
+            return leftRows.flatMap { left in rightRows.map { left.merged(with: $0) } }
+        }
+
         let emptyLeft = CanonicalSourceRow(
             fields: CanonicalSourceRow.flatten(scopedFields: inferredEmptyScopes(from: leftRows)),
             scopedFields: inferredEmptyScopes(from: leftRows)
@@ -513,10 +548,6 @@ extension FDBContext {
             for (rightIndex, rightRow) in rightRows.enumerated() where !matchedRightIndexes.contains(rightIndex) {
                 results.append(emptyLeft.merged(with: rightRow))
             }
-        }
-
-        if type == .cross {
-            return leftRows.flatMap { left in rightRows.map { left.merged(with: $0) } }
         }
 
         return results
@@ -591,6 +622,7 @@ extension FDBContext {
         _ sources: [DataSource],
         deduplicate: Bool,
         namedSubqueries: [NamedSubquery],
+        options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
@@ -600,6 +632,7 @@ extension FDBContext {
                 contentsOf: try await materializeRows(
                     for: source,
                     namedSubqueries: namedSubqueries,
+                    options: options,
                     partitionValues: partitionValues,
                     partitionMode: partitionMode
                 )
@@ -611,6 +644,7 @@ extension FDBContext {
     private func materializeIntersectRows(
         _ sources: [DataSource],
         namedSubqueries: [NamedSubquery],
+        options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
@@ -618,6 +652,7 @@ extension FDBContext {
         var accumulator = try await materializeRows(
             for: first,
             namedSubqueries: namedSubqueries,
+            options: options,
             partitionValues: partitionValues,
             partitionMode: partitionMode
         )
@@ -625,6 +660,7 @@ extension FDBContext {
             let next = try await materializeRows(
                 for: source,
                 namedSubqueries: namedSubqueries,
+                options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
             )
@@ -638,18 +674,21 @@ extension FDBContext {
         _ lhs: DataSource,
         _ rhs: DataSource,
         namedSubqueries: [NamedSubquery],
+        options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> [CanonicalSourceRow] {
         let leftRows = try await materializeRows(
             for: lhs,
             namedSubqueries: namedSubqueries,
+            options: options,
             partitionValues: partitionValues,
             partitionMode: partitionMode
         )
         let rightRows = try await materializeRows(
             for: rhs,
             namedSubqueries: namedSubqueries,
+            options: options,
             partitionValues: partitionValues,
             partitionMode: partitionMode
         )
@@ -671,6 +710,32 @@ extension FDBContext {
 
     private func identityRow(_ row: CanonicalSourceRow) -> QueryRow {
         QueryRow(fields: row.fields)
+    }
+
+    private func canonicalGraphTableSourceRow(
+        from fields: [String: FieldValue],
+        graphName: String
+    ) -> CanonicalSourceRow {
+        var baseFields: [String: FieldValue] = [:]
+        var scopedFields: [String: [String: FieldValue]] = [graphName: [:]]
+
+        for (key, value) in fields {
+            if let dotIndex = key.firstIndex(of: ".") {
+                let scope = String(key[..<dotIndex])
+                let fieldName = String(key[key.index(after: dotIndex)...])
+                scopedFields[scope, default: [:]][fieldName] = value
+                baseFields[key] = value
+                continue
+            }
+
+            baseFields[key] = value
+            scopedFields[graphName, default: [:]][key] = value
+        }
+
+        return CanonicalSourceRow(
+            fields: baseFields,
+            scopedFields: scopedFields.filter { !$0.value.isEmpty }
+        )
     }
 
     private func applyFilter(
@@ -751,11 +816,18 @@ extension FDBContext {
         rows: [CanonicalSourceRow]
     ) throws -> QueryResponse? {
         guard case .items(let projectionItems) = selectQuery.projection,
-              projectionItems.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = projectionItems[0].expression,
-              expression == nil,
-              distinct == false else {
+              projectionItems.count == 1 else {
             return nil
+        }
+
+        guard case .aggregate(.count(let expression, let distinct)) = projectionItems[0].expression else {
+            return nil
+        }
+
+        guard expression == nil, distinct == false else {
+            throw QueryBridgeError.unsupportedSelectQuery(
+                "Canonical logical-source execution currently supports only COUNT(*) projections"
+            )
         }
 
         return QueryResponse(
@@ -772,6 +844,12 @@ extension FDBContext {
         on row: CanonicalSourceRow
     ) throws -> Bool {
         switch expression {
+        case .column:
+            let value = try evaluateExpression(expression, on: row)
+            guard let boolValue = value.boolValue else {
+                throw QueryBridgeError.unsupportedExpression
+            }
+            return boolValue
         case .literal(let literal):
             guard let value = literal.toFieldValue()?.boolValue else {
                 throw QueryBridgeError.incompatibleLiteralType
@@ -845,6 +923,8 @@ extension FDBContext {
             }
             return value
         default:
+            // Canonical logical-source evaluation intentionally supports only
+            // column and literal operands plus the boolean/comparison forms above.
             throw QueryBridgeError.unsupportedExpression
         }
     }
