@@ -4,6 +4,8 @@
 import Foundation
 import DatabaseEngine
 import Core
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 import FullText
 
@@ -114,6 +116,27 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return []
         }
 
+        FullTextReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            return try JSONDecoder().decode(T.self, from: data)
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [T] {
+        guard !searchTerms.isEmpty else {
+            return []
+        }
+
         let indexName = buildIndexName()
 
         // Get index subspace
@@ -121,7 +144,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = typeSubspace.subspace(indexName)
 
         // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
+        let matchingIds: [Tuple] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             if self.matchMode == .phrase {
                 // Phrase search requires position-verified matching via maintainer
                 return try await self.searchPhrase(
@@ -139,7 +162,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Fetch items by primary keys
-        var items = try await queryContext.fetchItems(ids: matchingIds, type: T.self)
+        var items = try await queryContext.fetchItems(ids: matchingIds, type: T.self, cachePolicy: cachePolicy)
 
         // Apply limit if specified
         if let limit = fetchLimit, items.count > limit {
@@ -179,6 +202,33 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
         }
 
+        FullTextReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            toSelectQuery(includeFacets: true),
+            as: T.self,
+            options: .default
+        )
+
+        let items: [T] = try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            return try JSONDecoder().decode(T.self, from: data)
+        }
+
+        return FacetedSearchResult(
+            items: items,
+            facets: decodeFacetMetadata(response.metadata),
+            totalCount: Int(response.metadata[FullTextReadParameter.totalCount]?.int64Value ?? Int64(items.count))
+        )
+    }
+
+    internal func executeFacetedDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> FacetedSearchResult<T> {
+        guard !searchTerms.isEmpty else {
+            return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
+        }
+
         let indexName = buildIndexName()
 
         // Get index subspace
@@ -186,7 +236,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         let indexSubspace = typeSubspace.subspace(indexName)
 
         // Execute search within transaction
-        let matchingIds: [Tuple] = try await queryContext.withTransaction { transaction in
+        let matchingIds: [Tuple] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             if self.matchMode == .phrase {
                 return try await self.searchPhrase(
                     indexName: indexName,
@@ -203,7 +253,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Fetch all matching items
-        let allItems = try await queryContext.fetchItems(ids: matchingIds, type: T.self)
+        let allItems = try await queryContext.fetchItems(ids: matchingIds, type: T.self, cachePolicy: cachePolicy)
         let totalCount = allItems.count
 
         // Compute facet counts from items
@@ -497,6 +547,29 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return []
         }
 
+        FullTextReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            toSelectQuery(returnScores: true),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            let item = try JSONDecoder().decode(T.self, from: data)
+            let score = row.annotations["score"]?.doubleValue ?? 0
+            return (item: item, score: score)
+        }
+    }
+
+    internal func executeScoredDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [(item: T, score: Double)] {
+        guard !searchTerms.isEmpty else {
+            return []
+        }
+
         let indexName = buildIndexName()
 
         // Find the index descriptor to get configuration
@@ -508,7 +581,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        return try await queryContext.withTransaction { transaction in
+        return try await queryContext.withTransaction(configuration: configuration) { transaction in
             // Create maintainer using makeIndexMaintainer
             let index = Index(
                 name: indexName,
@@ -538,7 +611,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
 
             // Fetch items
             let ids = scoredResults.map { $0.id }
-            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self)
+            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
             // Create a map of id -> score for efficient lookup
             var idToScore: [String: Double] = [:]
@@ -564,6 +637,44 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
+    internal func toSelectQuery(
+        returnScores: Bool = false,
+        includeFacets: Bool = false
+    ) -> SelectQuery {
+        var parameters: [String: QueryParameterValue] = [
+            FullTextReadParameter.fieldName: .string(fieldName),
+            FullTextReadParameter.terms: .array(searchTerms.map(QueryParameterValue.string)),
+            FullTextReadParameter.matchMode: .string(matchMode.accessPathIdentifier),
+            FullTextReadParameter.returnScores: .bool(returnScores),
+            FullTextReadParameter.includeFacets: .bool(includeFacets)
+        ]
+
+        if let fetchLimit {
+            parameters[FullTextReadParameter.limit] = .int(Int64(fetchLimit))
+        }
+        if returnScores {
+            parameters[FullTextReadParameter.bm25K1] = .double(Double(bm25Params.k1))
+            parameters[FullTextReadParameter.bm25B] = .double(Double(bm25Params.b))
+        }
+        if includeFacets, !facetFields.isEmpty {
+            parameters[FullTextReadParameter.facetFields] = .array(facetFields.map(QueryParameterValue.string))
+            parameters[FullTextReadParameter.facetLimit] = .int(Int64(facetLimit))
+        }
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: buildIndexName(),
+                    kindIdentifier: FullTextIndexKind<T>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: fetchLimit
+        )
+    }
+
     /// Find the index descriptor using kindIdentifier and fieldName
     private func findIndexDescriptor() -> IndexDescriptor? {
         T.indexDescriptors.first { descriptor in
@@ -586,6 +697,30 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
         // Fallback to conventional format
         return "\(T.persistableType)_fulltext_\(fieldName)"
+    }
+
+    private func decodeFacetMetadata(_ metadata: [String: FieldValue]) -> [String: [(value: String, count: Int64)]] {
+        var facets: [String: [(value: String, count: Int64)]] = [:]
+
+        for (key, value) in metadata {
+            guard key.hasPrefix(FullTextReadParameter.facetMetadataPrefix),
+                  let buckets = value.arrayValue else {
+                continue
+            }
+
+            let fieldName = String(key.dropFirst(FullTextReadParameter.facetMetadataPrefix.count))
+            facets[fieldName] = buckets.compactMap { bucket in
+                guard let elements = bucket.arrayValue,
+                      elements.count == 2,
+                      let facetValue = elements[0].stringValue,
+                      let count = elements[1].int64Value else {
+                    return nil
+                }
+                return (value: facetValue, count: count)
+            }
+        }
+
+        return facets
     }
 }
 
@@ -664,6 +799,19 @@ public enum FullTextQueryError: Error, CustomStringConvertible {
             return "No search terms provided for full-text search"
         case .indexNotFound(let name):
             return "Full-text index not found: \(name)"
+        }
+    }
+}
+
+private extension TextMatchMode {
+    var accessPathIdentifier: String {
+        switch self {
+        case .all:
+            return "all"
+        case .any:
+            return "any"
+        case .phrase:
+            return "phrase"
         }
     }
 }

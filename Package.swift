@@ -9,6 +9,7 @@ let package = Package(
     ],
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
+        .library(name: "DatabaseRuntime", targets: ["DatabaseRuntime"]),
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
         .library(name: "FullTextIndex", targets: ["FullTextIndex"]),
@@ -37,7 +38,7 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0411.0"),
+        .package(path: "../database-kit"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.4.0"),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
@@ -90,6 +91,8 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Vector", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "Logging", package: "swift-log"),
@@ -102,10 +105,25 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
+        ),
+        .target(
+            name: "DatabaseRuntime",
+            dependencies: [
+                "DatabaseEngine",
+                "VectorIndex",
+                "FullTextIndex",
+                "RankIndex",
+                "BitmapIndex",
+                "VersionIndex",
+                "PermutedIndex",
+                "GraphIndex",
+            ]
         ),
         .target(
             name: "SpatialIndex",
@@ -122,6 +140,8 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -132,6 +152,8 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -144,6 +166,7 @@ let package = Package(
                 "DatabaseEngine",
                 "OntologyIndex",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
@@ -163,6 +186,8 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -172,6 +197,8 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -222,6 +249,7 @@ let package = Package(
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "Relationship", package: "database-kit"),
                 "DatabaseEngine",
+                "DatabaseRuntime",
                 "ScalarIndex",
                 "VectorIndex",
                 "FullTextIndex",
@@ -284,6 +312,7 @@ let package = Package(
             name: "DatabaseServer",
             dependencies: [
                 "DatabaseEngine",
+                "DatabaseRuntime",
                 .product(name: "Core", package: "database-kit"),
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
@@ -353,6 +382,14 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        .testTarget(
+            name: "DatabaseRuntimeTests",
+            dependencies: [
+                "DatabaseRuntime",
+                "DatabaseEngine",
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ]
         ),
         // ScalarIndex tests
@@ -548,6 +585,19 @@ let package = Package(
             linkerSettings: [
                 .unsafeFlags(["-L/usr/local/lib"]),
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
+        // DatabaseServer tests
+        .testTarget(
+            name: "DatabaseServerTests",
+            dependencies: [
+                "DatabaseServer",
+                "Database",
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
+            ],
+            swiftSettings: [
+                .define("SQLITE", .when(traits: ["SQLite"])),
             ]
         ),
         // CLI tests

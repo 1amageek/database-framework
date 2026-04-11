@@ -4,6 +4,8 @@
 import Foundation
 import DatabaseEngine
 import Core
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 import Vector
 
@@ -163,6 +165,29 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, distance) tuples sorted by distance
     /// - Throws: Error if search fails or query vector not set
     public func execute() async throws -> [(item: T, distance: Double)] {
+        if filterPredicate != nil {
+            throw VectorQueryError.closureFilterUnsupported
+        }
+
+        VectorReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            let item = try JSONDecoder().decode(T.self, from: data)
+            let distance = row.annotations["distance"]?.doubleValue ?? 0
+            return (item: item, distance: distance)
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [(item: T, distance: Double)] {
         guard let vector = queryVector else {
             throw VectorQueryError.noQueryVector
         }
@@ -178,7 +203,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             return try await executeWithFilter(
                 indexName: indexName,
                 queryVector: vector,
-                predicate: predicate
+                predicate: predicate,
+                configuration: configuration,
+                cachePolicy: cachePolicy
             )
         }
 
@@ -186,7 +213,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return try await executeVectorSearch(
             indexName: indexName,
             queryVector: vector,
-            k: k
+            k: k,
+            configuration: configuration,
+            cachePolicy: cachePolicy
         )
     }
 
@@ -200,7 +229,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private func executeVectorSearch(
         indexName: String,
         queryVector: [Float],
-        k: Int
+        k: Int,
+        configuration: TransactionConfiguration,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
         // Find the index descriptor to get VectorIndexKind
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
@@ -224,7 +255,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         }
 
         // Execute search using appropriate maintainer
-        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] = try await queryContext.withTransaction { transaction in
+        let primaryKeysWithDistances: [(primaryKey: [any TupleElement], distance: Double)] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             // Create index for maintainer
             let index = Index(
                 name: indexName,
@@ -358,7 +389,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         let tuples = primaryKeysWithDistances.map { Tuple($0.primaryKey) }
 
         // Fetch items by primary keys
-        let items = try await queryContext.fetchItems(ids: tuples, type: T.self)
+        let items = try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
 
         // Match items with distances
         var results: [(item: T, distance: Double)] = []
@@ -375,6 +406,37 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         }
 
         return results.sorted { $0.distance < $1.distance }
+    }
+
+    internal func toSelectQuery() throws -> SelectQuery {
+        guard let vector = queryVector else {
+            throw VectorQueryError.noQueryVector
+        }
+
+        guard vector.count == dimensions else {
+            throw VectorQueryError.dimensionMismatch(expected: dimensions, actual: vector.count)
+        }
+
+        let parameters: [String: QueryParameterValue] = [
+            VectorReadParameter.fieldName: .string(fieldName),
+            VectorReadParameter.dimensions: .int(Int64(dimensions)),
+            VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
+            VectorReadParameter.k: .int(Int64(k)),
+            VectorReadParameter.metric: .string(distanceMetric.rawValue)
+        ]
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: buildIndexName(),
+                    kindIdentifier: VectorIndexKind<T>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: k
+        )
     }
 
     /// Count vectors in the index for auto algorithm selection
@@ -405,7 +467,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private func executeWithFilter(
         indexName: String,
         queryVector: [Float],
-        predicate: @escaping @Sendable (T) async throws -> Bool
+        predicate: @escaping @Sendable (T) async throws -> Bool,
+        configuration: TransactionConfiguration,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, distance: Double)] {
         // Find the index descriptor to get configuration
         guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
@@ -451,7 +515,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             indexSubspace = typeSubspace.subspace(indexName)
         }
 
-        return try await queryContext.withTransaction { transaction in
+        return try await queryContext.withTransaction(configuration: configuration) { transaction in
             // Create the HNSW maintainer
             let index = Index(
                 name: indexName,
@@ -476,7 +540,11 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Create fetch function for ACORN
             let fetchItem: @Sendable (Tuple, any Transaction) async throws -> T? = { primaryKey, tx in
                 // Fetch item using IndexQueryContext
-                let items = try await self.queryContext.fetchItems(ids: [primaryKey], type: T.self)
+                let items = try await self.queryContext.fetchItems(
+                    ids: [primaryKey],
+                    type: T.self,
+                    cachePolicy: cachePolicy
+                )
                 return items.first
             }
 
@@ -492,7 +560,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
 
             // Fetch items for results
             let ids = results.map { Tuple($0.primaryKey) }
-            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self)
+            let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
             // Create ID to item map for efficient lookup
             var idToItem: [String: T] = [:]
@@ -630,6 +698,9 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Filter not supported for this index type
     case filterNotSupported(String)
 
+    /// Closure-based filters cannot be lowered into QueryIR.
+    case closureFilterUnsupported
+
     public var description: String {
         switch self {
         case .noQueryVector:
@@ -640,6 +711,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Vector index not found: \(name)"
         case .filterNotSupported(let reason):
             return "Filter not supported: \(reason)"
+        case .closureFilterUnsupported:
+            return "Closure-based vector filters are not supported on the canonical read path"
         }
     }
 }

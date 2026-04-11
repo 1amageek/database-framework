@@ -38,6 +38,7 @@ extension Query {
         return QueryIR.SelectQuery(
             projection: .all,
             source: .table(QueryIR.TableRef(table: typeName)),
+            accessPath: nil,
             filter: filter,
             orderBy: orderBy,
             limit: fetchLimit,
@@ -55,52 +56,5 @@ extension SortDescriptor {
             .column(QueryIR.ColumnRef(column: fieldName)),
             direction: order.toSortDirection
         )
-    }
-}
-
-// MARK: - SelectQuery → Query<T> (Reverse: partial)
-
-extension QueryIR.SelectQuery {
-    /// Attempt to convert a QueryIR SelectQuery back to a type-safe Query.
-    ///
-    /// Returns `nil` when the SelectQuery cannot be represented as a Query<T>:
-    /// - Source is not a single table matching T's type name
-    /// - Filter contains unsupported expression patterns
-    /// - GroupBy, having, subqueries, or SPARQL-specific features are used
-    /// - ORDER BY is present (field name → KeyPath resolution is not available)
-    /// - Column names don't match any field in the target type
-    ///
-    /// Successfully converted queries use `FieldReader`-based evaluation
-    /// via `dynamicMember` subscript. They do NOT have zero-copy KeyPath closures.
-    ///
-    /// - Note: ORDER BY conversion requires `keyPath(for: String)` which is not
-    ///   available on `Persistable`. Queries with sort keys return nil.
-    ///   Use the forward direction (`Query.toSelectQuery()`) for serialization.
-    public func toQuery<T: Persistable>(for type: T.Type) -> Query<T>? {
-        // Source must be a single table
-        guard case .table(let tableRef) = source else { return nil }
-        let expectedName = String(describing: T.self)
-        guard tableRef.table == expectedName else { return nil }
-
-        // Must not use advanced features
-        guard groupBy == nil, having == nil, subqueries == nil else { return nil }
-
-        // ORDER BY requires KeyPath resolution which is not available
-        guard orderBy == nil || orderBy!.isEmpty else { return nil }
-
-        var query = Query<T>()
-
-        // Convert filter
-        if let filterExpr = filter {
-            guard let predicate: Predicate<T> = filterExpr.toPredicate(for: type) else {
-                return nil
-            }
-            query.predicates = [predicate]
-        }
-
-        query.fetchLimit = limit
-        query.fetchOffset = offset
-
-        return query
     }
 }

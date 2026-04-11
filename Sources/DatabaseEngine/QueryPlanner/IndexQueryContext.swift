@@ -79,6 +79,20 @@ public struct IndexQueryContext: Sendable {
         return IndexQueryContext(context: context, partitionBinding: binding)
     }
 
+    /// Create a partition-scoped query context from canonical wire values.
+    ///
+    /// The wire layer carries directory fields as strings keyed by field name.
+    /// DatabaseEngine owns the binding to concrete directory path components.
+    public func withPartitionValues<T: Persistable>(
+        _ partitionValues: [String: String]?,
+        for type: T.Type
+    ) throws -> IndexQueryContext {
+        guard let binding = try CanonicalPartitionBinding.makeBinding(for: type, partitionValues: partitionValues) else {
+            return self
+        }
+        return IndexQueryContext(context: context, partitionBinding: binding)
+    }
+
     /// Get the partition binding for a specific type (if set)
     public func partitionBinding<T: Persistable>(for type: T.Type) -> DirectoryPath<T>? {
         return _partitionBinding as? DirectoryPath<T>
@@ -149,9 +163,10 @@ public struct IndexQueryContext: Sendable {
     /// - Parameter body: Closure that takes a transaction
     /// - Returns: Result of the closure
     public func withTransaction<R: Sendable>(
+        configuration: TransactionConfiguration = .default,
         _ body: @Sendable @escaping (any Transaction) async throws -> R
     ) async throws -> R {
-        return try await context.withRawTransaction(configuration: .default) { transaction in
+        return try await context.withRawTransaction(configuration: configuration) { transaction in
             try await body(transaction)
         }
     }
@@ -168,7 +183,8 @@ public struct IndexQueryContext: Sendable {
     /// - Returns: Array of fetched items (in same order as IDs, skipping not found)
     public func fetchItems<T: Persistable>(
         ids: [Tuple],
-        type: T.Type
+        type: T.Type,
+        cachePolicy: CachePolicy = .server
     ) async throws -> [T] {
         // Security: Evaluate LIST before fetching
         try context.container.securityDelegate?.evaluateList(
@@ -185,7 +201,12 @@ public struct IndexQueryContext: Sendable {
         if let binding = partitionBinding(for: type) {
             for id in ids {
                 if let idElement = id[0] {
-                    if let item = try await context.model(for: idElement, as: type, partition: binding) {
+                    if let item = try await context.model(
+                        for: idElement,
+                        as: type,
+                        partition: binding,
+                        cachePolicy: cachePolicy
+                    ) {
                         results.append(item)
                     }
                 }
@@ -193,7 +214,11 @@ public struct IndexQueryContext: Sendable {
         } else {
             for id in ids {
                 if let idElement = id[0] {
-                    if let item = try await context.model(for: idElement, as: type) {
+                    if let item = try await context.model(
+                        for: idElement,
+                        as: type,
+                        cachePolicy: cachePolicy
+                    ) {
                         results.append(item)
                     }
                 }
@@ -213,15 +238,25 @@ public struct IndexQueryContext: Sendable {
     /// - Returns: The item if found
     public func fetchItem<T: Persistable>(
         id: Tuple,
-        type: T.Type
+        type: T.Type,
+        cachePolicy: CachePolicy = .server
     ) async throws -> T? {
         guard let idElement = id[0] else { return nil }
 
         // Use partition binding if available
         if let binding = partitionBinding(for: type) {
-            return try await context.model(for: idElement, as: type, partition: binding)
+            return try await context.model(
+                for: idElement,
+                as: type,
+                partition: binding,
+                cachePolicy: cachePolicy
+            )
         } else {
-            return try await context.model(for: idElement, as: type)
+            return try await context.model(
+                for: idElement,
+                as: type,
+                cachePolicy: cachePolicy
+            )
         }
     }
 

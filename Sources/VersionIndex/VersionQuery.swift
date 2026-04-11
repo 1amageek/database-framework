@@ -6,6 +6,8 @@
 import Foundation
 import Core
 import DatabaseEngine
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 
 // MARK: - Version Entry Point
@@ -113,11 +115,31 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (version, item) tuples
     public func execute() async throws -> [(version: Version, item: T)] {
+        VersionReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            try toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            let item = try JSONDecoder().decode(T.self, from: data)
+            guard let versionData = row.annotations["version"]?.dataValue else {
+                throw VersionQueryError.invalidResponse("Missing version annotation")
+            }
+            return (version: Version(bytes: Array(versionData)), item: item)
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default
+    ) async throws -> [(version: Version, item: T)] {
         let indexName = self.indexName ?? buildDefaultIndexName()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        let rawResults: [(version: Version, data: [UInt8])] = try await queryContext.withTransaction { transaction in
+        let rawResults: [(version: Version, data: [UInt8])] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             let maintainer = self.createMaintainer(indexSubspace: indexSubspace, indexName: indexName)
             let pk = self.primaryKey.map { $0 as any TupleElement }
             return try await maintainer.getVersionHistory(
@@ -148,24 +170,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: The latest version of the item, or nil if not found
     public func latest() async throws -> T? {
-        let indexName = self.indexName ?? buildDefaultIndexName()
-        let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
-
-        let data: [UInt8]? = try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace, indexName: indexName)
-            let pk = self.primaryKey.map { $0 as any TupleElement }
-            return try await maintainer.getLatestVersion(
-                primaryKey: pk,
-                transaction: transaction
-            )
-        }
-
-        guard let itemData = data, !itemData.isEmpty else {
-            return nil
-        }
-
-        return try DataAccess.deserialize(itemData)
+        try await limit(1).execute().first?.item
     }
 
     /// Get version at a specific version marker
@@ -183,6 +188,33 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         }
 
         return nil
+    }
+
+    internal func toSelectQuery() throws -> SelectQuery {
+        var parameters: [String: QueryParameterValue] = [
+            VersionReadParameter.primaryKey: .array(
+                try primaryKey.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
+            )
+        ]
+        if let limitCount {
+            parameters[VersionReadParameter.limit] = .int(Int64(limitCount))
+        }
+        if let indexName {
+            parameters[VersionReadParameter.indexName] = .string(indexName)
+        }
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: self.indexName ?? buildDefaultIndexName(),
+                    kindIdentifier: VersionIndexKind<T>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: limitCount
+        )
     }
 
     // MARK: - Private Methods
@@ -269,6 +301,9 @@ public enum VersionQueryError: Error, CustomStringConvertible {
     /// Deserialization failed
     case deserializationFailed
 
+    /// Canonical query response is missing required metadata
+    case invalidResponse(String)
+
     public var description: String {
         switch self {
         case .indexNotFound(let name):
@@ -277,6 +312,8 @@ public enum VersionQueryError: Error, CustomStringConvertible {
             return "Item not found in version history"
         case .deserializationFailed:
             return "Failed to deserialize version data"
+        case .invalidResponse(let reason):
+            return "Invalid version query response: \(reason)"
         }
     }
 }

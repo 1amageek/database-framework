@@ -7,6 +7,8 @@ import Foundation
 import Core
 import Permuted
 import DatabaseEngine
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 
 // MARK: - Permuted Entry Point
@@ -140,6 +142,23 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching items
     public func execute() async throws -> [T] {
+        PermutedReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            try toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            return try JSONDecoder().decode(T.self, from: data)
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [T] {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
@@ -154,7 +173,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
             throw PermutedQueryError.indexNotFound(indexName)
         }
 
-        let primaryKeys: [[any TupleElement]] = try await queryContext.withTransaction { transaction in
+        let primaryKeys: [[any TupleElement]] = try await queryContext.withTransaction(configuration: configuration) { transaction in
             // Generate dummy field names based on permutation size
             let fieldNames = (0..<perm.size).map { "field\($0)" }
 
@@ -200,7 +219,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
 
         // Convert to Tuples and fetch items
         let tuples = primaryKeys.map { Tuple($0) }
-        return try await queryContext.fetchItems(ids: tuples, type: T.self)
+        return try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
     }
 
     /// Execute the query and return raw results with permuted fields
@@ -266,6 +285,44 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         }
 
         return finalResults
+    }
+
+    internal func toSelectQuery() throws -> SelectQuery {
+        var parameters: [String: QueryParameterValue] = [:]
+        if let permutation {
+            parameters[PermutedReadParameter.permutation] = .array(permutation.indices.map { .int(Int64($0)) })
+        }
+        if let limitCount {
+            parameters[PermutedReadParameter.limit] = .int(Int64(limitCount))
+        }
+
+        switch queryType {
+        case .prefix(let values):
+            parameters[PermutedReadParameter.queryType] = .string(PermutedReadParameter.prefixQuery)
+            parameters[PermutedReadParameter.values] = .array(
+                try values.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
+            )
+        case .exact(let values):
+            parameters[PermutedReadParameter.queryType] = .string(PermutedReadParameter.exactQuery)
+            parameters[PermutedReadParameter.values] = .array(
+                try values.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
+            )
+        case .all:
+            parameters[PermutedReadParameter.queryType] = .string(PermutedReadParameter.allQuery)
+        }
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: indexName,
+                    kindIdentifier: PermutedIndexKind<T>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: limitCount
+        )
     }
 }
 

@@ -1,10 +1,9 @@
 // GraphPatternConverter.swift
-// Database - Converts QueryIR graph types to GraphIndex execution types
+// GraphIndex - Converts QueryIR graph types to GraphIndex execution types
 //
 // Bridges the parsed SPARQL AST (QueryIR) to the GraphIndex execution engine.
 
 import QueryIR
-import GraphIndex
 import Core
 
 /// Converts QueryIR graph types to GraphIndex execution types.

@@ -2,6 +2,7 @@ import Foundation
 import Core
 import QueryIR
 import DatabaseEngine
+import DatabaseRuntime
 import DatabaseClientProtocol
 
 /// Routes ServiceEnvelope requests to the appropriate entity handler
@@ -15,6 +16,7 @@ final class OperationRouter: Sendable {
 
     init(container: DBContainer) {
         self.container = container
+        BuiltinReadRuntime.registerBuiltins()
 
         // Build handlers for each entity type in the schema
         var handlers: [String: EntityHandler] = [:]
@@ -36,7 +38,7 @@ final class OperationRouter: Sendable {
         EntityHandler.build(for: type)
     }
 
-    /// Handle a QueryRequest by translating QueryStatement to a FetchRequest
+    /// Handle a canonical QueryRequest.
     private func handleQuery(_ request: QueryRequest) async throws -> QueryResponse {
         guard case .select(let select) = request.statement else {
             throw ServiceError(
@@ -45,36 +47,11 @@ final class OperationRouter: Sendable {
             )
         }
 
-        // Extract entity name from source DataSource
-        guard case .table(let tableRef) = select.source else {
-            throw ServiceError(
-                code: "INVALID_QUERY",
-                message: "Query must have a single table source"
-            )
-        }
-
-        let entityName = tableRef.table
-        guard let handler = handlers[entityName] else {
-            throw ServiceError(
-                code: "UNKNOWN_ENTITY",
-                message: "Entity '\(entityName)' not found in schema"
-            )
-        }
-
-        // Convert SelectQuery to FetchRequest
-        let fetchRequest = FetchRequest(
-            entityName: entityName,
-            predicate: select.filter,
-            sortDescriptors: select.orderBy ?? [],
-            limit: select.limit,
-            partitionValues: request.partitionValues
-        )
-
         let context = container.newContext()
-        let fetchResponse = try await handler.fetch(context, fetchRequest)
-        return QueryResponse(
-            records: fetchResponse.records,
-            continuation: fetchResponse.continuation
+        return try await context.query(
+            select,
+            options: request.options,
+            partitionValues: request.partitionValues
         )
     }
 
@@ -83,44 +60,6 @@ final class OperationRouter: Sendable {
         let decoder = JSONDecoder()
 
         switch envelope.operationID {
-        case "fetch":
-            let request = try decoder.decode(FetchRequest.self, from: envelope.payload)
-            guard let handler = handlers[request.entityName] else {
-                return ServiceEnvelope(
-                    responseTo: envelope.requestID,
-                    operationID: envelope.operationID,
-                    errorCode: "UNKNOWN_ENTITY",
-                    errorMessage: "Entity '\(request.entityName)' not found in schema"
-                )
-            }
-            let context = container.newContext()
-            let response = try await handler.fetch(context, request)
-            let payload = try JSONEncoder().encode(response)
-            return ServiceEnvelope(
-                responseTo: envelope.requestID,
-                operationID: envelope.operationID,
-                payload: payload
-            )
-
-        case "get":
-            let request = try decoder.decode(GetRequest.self, from: envelope.payload)
-            guard let handler = handlers[request.entityName] else {
-                return ServiceEnvelope(
-                    responseTo: envelope.requestID,
-                    operationID: envelope.operationID,
-                    errorCode: "UNKNOWN_ENTITY",
-                    errorMessage: "Entity '\(request.entityName)' not found in schema"
-                )
-            }
-            let context = container.newContext()
-            let response = try await handler.get(context, request)
-            let payload = try JSONEncoder().encode(response)
-            return ServiceEnvelope(
-                responseTo: envelope.requestID,
-                operationID: envelope.operationID,
-                payload: payload
-            )
-
         case "save":
             let request = try decoder.decode(SaveRequest.self, from: envelope.payload)
 
@@ -148,25 +87,6 @@ final class OperationRouter: Sendable {
             return ServiceEnvelope(
                 responseTo: envelope.requestID,
                 operationID: envelope.operationID
-            )
-
-        case "count":
-            let request = try decoder.decode(CountRequest.self, from: envelope.payload)
-            guard let handler = handlers[request.entityName] else {
-                return ServiceEnvelope(
-                    responseTo: envelope.requestID,
-                    operationID: envelope.operationID,
-                    errorCode: "UNKNOWN_ENTITY",
-                    errorMessage: "Entity '\(request.entityName)' not found in schema"
-                )
-            }
-            let context = container.newContext()
-            let response = try await handler.count(context, request)
-            let payload = try JSONEncoder().encode(response)
-            return ServiceEnvelope(
-                responseTo: envelope.requestID,
-                operationID: envelope.operationID,
-                payload: payload
             )
 
         case "query":

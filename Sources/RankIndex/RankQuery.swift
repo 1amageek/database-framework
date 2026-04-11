@@ -6,6 +6,8 @@
 import Foundation
 import DatabaseEngine
 import Core
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 import Rank
 
@@ -120,13 +122,34 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, rank) tuples sorted by rank
     /// - Throws: Error if execution fails
     public func execute() async throws -> [(item: T, rank: Int)] {
+        RankReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            let item = try JSONDecoder().decode(T.self, from: data)
+            guard let rank = row.annotations["rank"]?.int64Value else {
+                throw RankQueryError.invalidResponse("Missing rank annotation")
+            }
+            return (item: item, rank: Int(rank))
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [(item: T, rank: Int)] {
         // Build index name: {TypeName}_rank_{field}
         let indexName = "\(T.persistableType)_rank_\(fieldName)"
 
         // Check if index exists
         guard let _ = queryContext.schema.indexDescriptor(named: indexName) else {
             // No index - fall back to in-memory processing
-            return try await executeInMemory()
+            return try await executeInMemory(cachePolicy: cachePolicy)
         }
 
         // Get index subspace
@@ -135,10 +158,11 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         let scoresSubspace = indexSubspace.subspace("scores")
 
         // Execute query using index
-        return try await queryContext.withTransaction { transaction in
+        return try await queryContext.withTransaction(configuration: configuration) { transaction in
             try await self.executeWithIndex(
                 scoresSubspace: scoresSubspace,
-                transaction: transaction
+                transaction: transaction,
+                cachePolicy: cachePolicy
             )
         }
     }
@@ -146,20 +170,42 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute query using the rank index
     private func executeWithIndex(
         scoresSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any Transaction,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         switch queryMode {
         case .top(let k):
-            return try await scanTopK(k: k, scoresSubspace: scoresSubspace, transaction: transaction)
+            return try await scanTopK(
+                k: k,
+                scoresSubspace: scoresSubspace,
+                transaction: transaction,
+                cachePolicy: cachePolicy
+            )
 
         case .bottom(let k):
-            return try await scanBottomK(k: k, scoresSubspace: scoresSubspace, transaction: transaction)
+            return try await scanBottomK(
+                k: k,
+                scoresSubspace: scoresSubspace,
+                transaction: transaction,
+                cachePolicy: cachePolicy
+            )
 
         case .range(let from, let to):
-            return try await scanRange(from: from, to: to, scoresSubspace: scoresSubspace, transaction: transaction)
+            return try await scanRange(
+                from: from,
+                to: to,
+                scoresSubspace: scoresSubspace,
+                transaction: transaction,
+                cachePolicy: cachePolicy
+            )
 
         case .percentile(let p):
-            return try await scanPercentile(p: p, scoresSubspace: scoresSubspace, transaction: transaction)
+            return try await scanPercentile(
+                p: p,
+                scoresSubspace: scoresSubspace,
+                transaction: transaction,
+                cachePolicy: cachePolicy
+            )
         }
     }
 
@@ -173,7 +219,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanTopK(
         k: Int,
         scoresSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any Transaction,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let range = scoresSubspace.range()
 
@@ -206,7 +253,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         let sortedResults = topKHeap.toSortedArrayDescending()
 
         // Fetch items by primary key
-        return try await fetchItemsWithRank(results: sortedResults)
+        return try await fetchItemsWithRank(results: sortedResults, cachePolicy: cachePolicy)
     }
 
     /// Scan bottom K items (lowest scores)
@@ -216,7 +263,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanBottomK(
         k: Int,
         scoresSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any Transaction,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let range = scoresSubspace.range()
 
@@ -240,7 +288,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             }
         }
 
-        return try await fetchItemsWithRank(results: results)
+        return try await fetchItemsWithRank(results: results, cachePolicy: cachePolicy)
     }
 
     /// Scan items in a rank range
@@ -250,7 +298,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         from: Int,
         to: Int,
         scoresSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any Transaction,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         // First, get all items to determine ranks
         // This is similar to top(to) but we skip the first `from` items
@@ -283,7 +332,11 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // Extract range
         let rangeItems = Array(allItems.dropFirst(from).prefix(to - from))
 
-        return try await fetchItemsWithRank(results: rangeItems, startRank: from)
+        return try await fetchItemsWithRank(
+            results: rangeItems,
+            startRank: from,
+            cachePolicy: cachePolicy
+        )
     }
 
     /// Scan items at a specific percentile
@@ -292,7 +345,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     private func scanPercentile(
         p: Double,
         scoresSubspace: Subspace,
-        transaction: any Transaction
+        transaction: any Transaction,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         // First, count total items
         let range = scoresSubspace.range()
@@ -325,7 +379,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             from: safeTargetRank,
             to: safeTargetRank + 1,
             scoresSubspace: scoresSubspace,
-            transaction: transaction
+            transaction: transaction,
+            cachePolicy: cachePolicy
         )
 
         return results
@@ -344,7 +399,10 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // First element is score
         guard let firstElement = tuple[0] else { return nil }
 
-        guard let score = try? TypeConversion.double(from: firstElement) else {
+        let score: Double
+        do {
+            score = try TypeConversion.double(from: firstElement)
+        } catch {
             return nil
         }
 
@@ -362,18 +420,21 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Fetch items by primary key and add rank
     private func fetchItemsWithRank(
         results: [(score: Double, primaryKey: Tuple)],
-        startRank: Int = 0
+        startRank: Int = 0,
+        cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let ids = results.map { $0.primaryKey }
-        let items = try await queryContext.fetchItems(ids: ids, type: T.self)
+        let items = try await queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
         // Combine items with ranks
         return items.enumerated().map { (item: $0.element, rank: startRank + $0.offset) }
     }
 
     /// Execute using in-memory calculation (fallback when no index exists)
-    private func executeInMemory() async throws -> [(item: T, rank: Int)] {
-        let items = try await queryContext.context.fetch(T.self).execute()
+    private func executeInMemory(cachePolicy: CachePolicy) async throws -> [(item: T, rank: Int)] {
+        let items = try await queryContext.context.fetch(T.self)
+            .cachePolicy(cachePolicy)
+            .execute()
 
         // Extract values and sort
         let itemsWithValues: [(item: T, value: Double)] = items.compactMap { item in
@@ -408,6 +469,46 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             }
             return []
         }
+    }
+
+    internal func toSelectQuery() -> SelectQuery {
+        var parameters: [String: QueryParameterValue] = [
+            RankReadParameter.fieldName: .string(fieldName)
+        ]
+
+        let limit: Int?
+        switch queryMode {
+        case .top(let count):
+            parameters[RankReadParameter.mode] = .string(RankReadParameter.topMode)
+            parameters[RankReadParameter.count] = .int(Int64(count))
+            limit = count
+        case .bottom(let count):
+            parameters[RankReadParameter.mode] = .string(RankReadParameter.bottomMode)
+            parameters[RankReadParameter.count] = .int(Int64(count))
+            limit = count
+        case .range(let from, let to):
+            parameters[RankReadParameter.mode] = .string(RankReadParameter.rangeMode)
+            parameters[RankReadParameter.from] = .int(Int64(from))
+            parameters[RankReadParameter.to] = .int(Int64(to))
+            limit = max(to - from, 0)
+        case .percentile(let percentile):
+            parameters[RankReadParameter.mode] = .string(RankReadParameter.percentileMode)
+            parameters[RankReadParameter.percentile] = .double(percentile)
+            limit = 1
+        }
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "\(T.persistableType)_rank_\(fieldName)",
+                    kindIdentifier: RankIndexKind<T, Int64>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: limit
+        )
     }
 
     /// Execute and return a single item (useful for percentile queries)
@@ -488,6 +589,9 @@ public enum RankQueryError: Error, CustomStringConvertible {
     /// Index not found
     case indexNotFound(String)
 
+    /// Canonical query response is missing required metadata
+    case invalidResponse(String)
+
     public var description: String {
         switch self {
         case .noRankingField:
@@ -496,6 +600,8 @@ public enum RankQueryError: Error, CustomStringConvertible {
             return "Invalid percentile value: \(p). Must be between 0.0 and 1.0"
         case .indexNotFound(let name):
             return "Rank index not found: \(name)"
+        case .invalidResponse(let reason):
+            return "Invalid rank query response: \(reason)"
         }
     }
 }

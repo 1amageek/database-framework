@@ -6,6 +6,8 @@
 import Foundation
 import Core
 import DatabaseEngine
+import QueryIR
+import DatabaseClientProtocol
 import StorageKit
 
 // MARK: - Bitmap Entry Point
@@ -94,11 +96,23 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         return copy
     }
 
+    internal func equalsAny(_ value: any TupleElement & Sendable) -> Self {
+        var copy = self
+        copy.operation = .equals(value)
+        return copy
+    }
+
     /// Match any of the given values (OR)
     ///
     /// - Parameter values: Values to match
     /// - Returns: Updated query builder
     public func `in`(_ values: [some TupleElement & Sendable]) -> Self {
+        var copy = self
+        copy.operation = .in(values)
+        return copy
+    }
+
+    internal func inAny(_ values: [any TupleElement & Sendable]) -> Self {
         var copy = self
         copy.operation = .in(values)
         return copy
@@ -111,6 +125,12 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// - Parameter valueSets: Array of value arrays to AND together
     /// - Returns: Updated query builder
     public func all(_ valueSets: [[some TupleElement & Sendable]]) -> Self {
+        var copy = self
+        copy.operation = .and(valueSets)
+        return copy
+    }
+
+    internal func allAny(_ valueSets: [[any TupleElement & Sendable]]) -> Self {
         var copy = self
         copy.operation = .and(valueSets)
         return copy
@@ -132,7 +152,24 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching items
     public func execute() async throws -> [T] {
-        let primaryKeys: [Tuple] = try await withResolvedBitmap { bitmap, maintainer, transaction in
+        BitmapReadBridge.registerReadExecutors()
+        let response = try await queryContext.context.query(
+            try toSelectQuery(),
+            as: T.self,
+            options: .default
+        )
+
+        return try response.rows.map { row in
+            let data = try JSONEncoder().encode(row.fields)
+            return try JSONDecoder().decode(T.self, from: data)
+        }
+    }
+
+    internal func executeDirect(
+        configuration: TransactionConfiguration = .default,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [T] {
+        let primaryKeys: [Tuple] = try await withResolvedBitmap(configuration: configuration) { bitmap, maintainer, transaction in
             var resultBitmap = bitmap
             if let limit = self.limitCount {
                 let array = bitmap.toArray()
@@ -145,7 +182,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
             }
             return try await maintainer.getPrimaryKeys(from: resultBitmap, transaction: transaction)
         }
-        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+        return try await queryContext.fetchItems(ids: primaryKeys, type: T.self, cachePolicy: cachePolicy)
     }
 
     /// Get the count of matching items
@@ -154,7 +191,13 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Number of matching items
     public func count() async throws -> Int {
-        try await withResolvedBitmap { bitmap, _, _ in
+        try await countDirect(configuration: .readOnly)
+    }
+
+    internal func countDirect(
+        configuration: TransactionConfiguration = .readOnly
+    ) async throws -> Int {
+        try await withResolvedBitmap(configuration: configuration) { bitmap, _, _ in
             bitmap.cardinality
         }
     }
@@ -163,7 +206,13 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: RoaringBitmap of matching record IDs
     public func getBitmap() async throws -> RoaringBitmap {
-        try await withResolvedBitmap { bitmap, _, _ in
+        try await getBitmapDirect(configuration: .readOnly)
+    }
+
+    internal func getBitmapDirect(
+        configuration: TransactionConfiguration = .readOnly
+    ) async throws -> RoaringBitmap {
+        try await withResolvedBitmap(configuration: configuration) { bitmap, _, _ in
             bitmap
         }
     }
@@ -175,6 +224,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     /// Centralizes maintainer creation and operation dispatch shared by
     /// `execute()`, `count()`, and `getBitmap()`.
     private func withResolvedBitmap<R: Sendable>(
+        configuration: TransactionConfiguration,
         _ body: @escaping @Sendable (RoaringBitmap, BitmapIndexMaintainer<T>, any Transaction) async throws -> R
     ) async throws -> R {
         guard let op = operation else {
@@ -185,7 +235,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
 
-        return try await queryContext.withTransaction { transaction in
+        return try await queryContext.withTransaction(configuration: configuration) { transaction in
             let maintainer = BitmapIndexMaintainer<T>(
                 index: Index(
                     name: indexName,
@@ -217,6 +267,52 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
 
     private func buildIndexName() -> String {
         "\(T.persistableType)_bitmap_\(fieldName)"
+    }
+
+    internal func toSelectQuery() throws -> SelectQuery {
+        guard let operation else {
+            throw BitmapQueryError.noOperation
+        }
+
+        var parameters: [String: QueryParameterValue] = [
+            BitmapReadParameter.fieldName: .string(fieldName)
+        ]
+        if let limitCount {
+            parameters[BitmapReadParameter.limit] = .int(Int64(limitCount))
+        }
+
+        switch operation {
+        case .equals(let value):
+            parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.equalsOperation)
+            parameters[BitmapReadParameter.values] = .array([
+                try DatabaseEngine.CanonicalTupleElementCodec.encode(value)
+            ])
+        case .in(let values):
+            parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.inOperation)
+            parameters[BitmapReadParameter.values] = .array(
+                try values.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) }
+            )
+        case .and(let valueSets):
+            parameters[BitmapReadParameter.operation] = .string(BitmapReadParameter.andOperation)
+            parameters[BitmapReadParameter.valueSets] = .array(
+                try valueSets.map { valueSet in
+                    .array(try valueSet.map { try DatabaseEngine.CanonicalTupleElementCodec.encode($0) })
+                }
+            )
+        }
+
+        return SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: T.persistableType)),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: buildIndexName(),
+                    kindIdentifier: BitmapIndexKind<T>.identifier,
+                    parameters: parameters
+                )
+            ),
+            limit: limitCount
+        )
     }
 }
 
