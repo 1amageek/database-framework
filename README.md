@@ -347,10 +347,14 @@ Performance benchmarks live in the `PerformanceBenchmarks` test target and requi
 
 ```bash
 swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
+swift test --filter 'PerformanceBenchmarks.FDBFrameworkCRUDBenchmarkTests'
+swift test --filter 'PerformanceBenchmarks.IndexedQueryAndWriteBenchmarkTests'
 swift test --filter 'PerformanceBenchmarks.MinMaxBatchBenchmark'
 swift test --filter 'PerformanceBenchmarks.RangeTreeBenchmark'
 swift test --filter 'PerformanceBenchmarks.SerializationBenchmark'
 ```
+
+The `DatabaseEngine` benchmarks use `.serialized` suites, `FDBTestSetup.shared.withSerializedAccess`, unique benchmark IDs, and explicit directory cleanup so each run stays isolated and does not deadlock on shared FoundationDB state.
 
 ### Latest Snapshot (2026-04-11)
 

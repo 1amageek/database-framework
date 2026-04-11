@@ -635,6 +635,7 @@ let package = Package(
             name: "PerformanceBenchmarks",
             dependencies: [
                 "BenchmarkFramework",
+                "DatabaseEngine",
                 "TestSupport",
                 "ScalarIndex",
                 "RankIndex",
