@@ -471,6 +471,16 @@ private struct DataAccessEvaluator<Item: Persistable>: KeyExpressionVisitor {
         return [value]
     }
 
+    func visitTuple(_ value: Tuple) throws -> [any TupleElement] {
+        var elements: [any TupleElement] = []
+        for index in 0..<value.count {
+            if let element = value[index] {
+                elements.append(element)
+            }
+        }
+        return elements
+    }
+
     func visitEmpty() throws -> [any TupleElement] {
         return []
     }

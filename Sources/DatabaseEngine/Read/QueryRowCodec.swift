@@ -2,8 +2,8 @@ import Foundation
 import Core
 import DatabaseClientProtocol
 
-enum QueryRowCodec {
-    static func encode<T: Persistable>(
+public enum QueryRowCodec {
+    public static func encode<T: Persistable>(
         _ item: T,
         annotations: [String: FieldValue] = [:]
     ) throws -> QueryRow {
@@ -15,7 +15,7 @@ enum QueryRowCodec {
         return QueryRow(fields: fields, annotations: annotations)
     }
 
-    static func decode<T: Persistable>(
+    public static func decode<T: Persistable>(
         _ row: QueryRow,
         as type: T.Type
     ) throws -> T {
@@ -26,6 +26,19 @@ enum QueryRowCodec {
         )
         let data = try JSONSerialization.data(withJSONObject: jsonObject)
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    public static func encodeAny(
+        _ item: any Persistable,
+        annotations: [String: FieldValue] = [:]
+    ) -> QueryRow {
+        let itemType = type(of: item)
+        let fields = Dictionary(
+            uniqueKeysWithValues: itemType.allFields.map { fieldName in
+                (fieldName, FieldReader.readFieldValue(from: item, fieldName: fieldName))
+            }
+        )
+        return QueryRow(fields: fields, annotations: annotations)
     }
 
     private static func jsonValue(for value: FieldValue) throws -> Any {

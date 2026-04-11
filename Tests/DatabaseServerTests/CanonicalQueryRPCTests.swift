@@ -2,10 +2,13 @@
 import Testing
 import Foundation
 import Core
+import DatabaseEngine
 import Database
 import DatabaseServer
 import DatabaseClientProtocol
 import QueryIR
+import StorageKit
+import BitmapIndex
 
 @Persistable
 private struct RPCPerson {
@@ -46,6 +49,113 @@ private struct RPCEdge {
         storedFields: [\RPCEdge.since],
         name: "rpc_social_graph"
     )
+}
+
+private protocol RPCDocument: Polymorphable {
+    var id: String { get }
+    var ownerID: String { get }
+    var title: String { get }
+}
+
+private extension RPCDocument {
+    static var polymorphableType: String { "RPCDocument" }
+    static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
+        [Path("test"), Path("server"), Path("documents")]
+    }
+}
+
+private struct RPCTestAuth: AuthContext {
+    let userID: String
+    var roles: Set<String> = []
+}
+
+private struct RPCPolymorphicAccessPathExecutor: PolymorphicIndexReadExecutor {
+    let kindIdentifier = "test.rpc.polymorphic"
+
+    func execute(
+        context: FDBContext,
+        selectQuery: SelectQuery,
+        indexScan: IndexScanSource,
+        group: PolymorphicGroup,
+        options: ReadExecutionOptions,
+        partitionValues: [String : String]?
+    ) async throws -> QueryResponse {
+        QueryResponse(
+            rows: [
+                QueryRow(
+                    fields: [
+                        "id": .string("poly-executor-1"),
+                        "title": .string("Executor Result")
+                    ],
+                    annotations: [
+                        "_typeName": .string("RPCArticle"),
+                        "_typeCode": .int64(1),
+                        "group": .string(group.identifier)
+                    ]
+                )
+            ]
+        )
+    }
+}
+
+@Persistable
+private struct RPCArticle: RPCDocument, SecurityPolicy {
+    #Directory<RPCArticle>("test", "server", "articles")
+
+    var id: String = UUID().uuidString
+    var ownerID: String = ""
+    var title: String = ""
+    var body: String = ""
+
+    static func allowGet(resource: RPCArticle, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+
+    static func allowList(query: SecurityQuery<RPCArticle>, auth: (any AuthContext)?) -> Bool {
+        auth != nil
+    }
+
+    static func allowCreate(newResource: RPCArticle, auth: (any AuthContext)?) -> Bool {
+        newResource.ownerID == auth?.userID
+    }
+
+    static func allowUpdate(resource: RPCArticle, newResource: RPCArticle, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID && newResource.ownerID == auth?.userID
+    }
+
+    static func allowDelete(resource: RPCArticle, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+}
+
+@Persistable
+private struct RPCReport: RPCDocument, SecurityPolicy {
+    #Directory<RPCReport>("test", "server", "reports")
+
+    var id: String = UUID().uuidString
+    var ownerID: String = ""
+    var title: String = ""
+    var summary: String = ""
+
+    static func allowGet(resource: RPCReport, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+
+    static func allowList(query: SecurityQuery<RPCReport>, auth: (any AuthContext)?) -> Bool {
+        auth != nil
+    }
+
+    static func allowCreate(newResource: RPCReport, auth: (any AuthContext)?) -> Bool {
+        newResource.ownerID == auth?.userID
+    }
+
+    static func allowUpdate(resource: RPCReport, newResource: RPCReport, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID && newResource.ownerID == auth?.userID
+    }
+
+    static func allowDelete(resource: RPCReport, auth: (any AuthContext)?) -> Bool {
+        resource.ownerID == auth?.userID
+    }
 }
 
 private struct RPCTenantOrder: Persistable {
@@ -789,12 +899,414 @@ struct CanonicalQueryRPCTests {
         #expect(titles == ["Tenant A"])
     }
 
+    @Test("canonical query RPC preserves polymorphic annotations through subquery sources")
+    func polymorphicSubqueryPreservesAnnotations() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-article"
+        article.ownerID = "alice"
+        article.title = "Article"
+        article.body = "Architecture"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-report"
+        report.ownerID = "alice"
+        report.title = "Report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        let base = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            )
+        )
+        let query = SelectQuery(
+            projection: .all,
+            source: .subquery(base, alias: "docs"),
+            orderBy: [SortKey(.column(ColumnRef(table: "docs", column: "title")))]
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 2)
+        #expect(response.rows.allSatisfy { $0.annotations["_typeName"]?.stringValue != nil })
+        #expect(response.rows.allSatisfy { $0.annotations["_typeCode"]?.int64Value != nil })
+    }
+
+    @Test("canonical polymorphic query applies list and get security filtering")
+    func polymorphicLogicalSourceRespectsSecurity() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(
+            security: .enabled(strict: true)
+        )
+
+        try await AuthContextKey.$current.withValue(RPCTestAuth(userID: "alice")) {
+            let context = container.newContext()
+            var article = RPCArticle()
+            article.id = "alice-article"
+            article.ownerID = "alice"
+            article.title = "Alice Article"
+            article.body = "Body"
+            context.insert(article)
+            try await context.save()
+        }
+
+        try await AuthContextKey.$current.withValue(RPCTestAuth(userID: "bob")) {
+            let context = container.newContext()
+            var report = RPCReport()
+            report.id = "bob-report"
+            report.ownerID = "bob"
+            report.title = "Bob Report"
+            report.summary = "Summary"
+            context.insert(report)
+            try await context.save()
+        }
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            orderBy: [SortKey(.column(ColumnRef("title")))]
+        )
+
+        let response = try await AuthContextKey.$current.withValue(RPCTestAuth(userID: "alice")) {
+            try await send(query, endpoint: endpoint)
+        }
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["title"]?.stringValue == "Alice Article")
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == "RPCArticle")
+    }
+
+    @Test("canonical query RPC dispatches polymorphic access-path queries through the registry")
+    func polymorphicAccessPathSource() async throws {
+        ReadExecutorRegistry.shared.registerPolymorphic(RPCPolymorphicAccessPathExecutor())
+
+        let (_, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_test",
+                    kindIdentifier: "test.rpc.polymorphic",
+                    parameters: [:]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["title"]?.stringValue == "Executor Result")
+        #expect(response.rows.first?.annotations["group"]?.stringValue == "RPCDocument")
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == "RPCArticle")
+    }
+
+    @Test("canonical query RPC executes built-in polymorphic full-text access paths")
+    func polymorphicBuiltInFullTextAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-ft-article"
+        article.ownerID = "user-1"
+        article.title = "Vector architecture"
+        article.body = "Document body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-ft-report"
+        report.ownerID = "user-2"
+        report.title = "Quarterly report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCArticle.self,
+            id: article.id,
+            term: "vector"
+        )
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCReport.self,
+            id: report.id,
+            term: "quarterly"
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_title",
+                    kindIdentifier: "fulltext",
+                    parameters: [
+                        "fieldName": .string("title"),
+                        "terms": .array([.string("vector")]),
+                        "matchMode": .string("all"),
+                        "returnScores": .bool(false),
+                        "includeFacets": .bool(false)
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["id"]?.stringValue == article.id)
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == RPCArticle.persistableType)
+    }
+
+    @Test("canonical query RPC executes built-in polymorphic vector access paths")
+    func polymorphicBuiltInVectorAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-vector-article"
+        article.ownerID = "user-1"
+        article.title = "Vector article"
+        article.body = "Document body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-vector-report"
+        report.ownerID = "user-2"
+        report.title = "Vector report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicVector(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_embedding",
+            type: RPCArticle.self,
+            id: article.id,
+            vector: [1, 0, 0]
+        )
+        try await writePolymorphicVector(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_embedding",
+            type: RPCReport.self,
+            id: report.id,
+            vector: [0, 1, 0]
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_embedding",
+                    kindIdentifier: "vector",
+                    parameters: [
+                        "fieldName": .string("embedding"),
+                        "dimensions": .int(3),
+                        "queryVector": .array([.double(1), .double(0), .double(0)]),
+                        "k": .int(2),
+                        "metric": .string("cosine")
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let ids = response.rows.compactMap { $0.fields["id"]?.stringValue }
+
+        #expect(ids == [article.id, report.id])
+        #expect(response.rows.first?.annotations["_typeName"]?.stringValue == RPCArticle.persistableType)
+        #expect((response.rows.first?.annotations["distance"]?.doubleValue ?? 1) < 0.0001)
+    }
+
+    @Test("canonical query RPC executes built-in polymorphic rank access paths")
+    func polymorphicBuiltInRankAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-rank-article"
+        article.ownerID = "user-1"
+        article.title = "Article"
+        article.body = "Body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-rank-report"
+        report.ownerID = "user-2"
+        report.title = "Report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicRankEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_score",
+            score: 100,
+            type: RPCArticle.self,
+            id: article.id
+        )
+        try await writePolymorphicRankEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_score",
+            score: 50,
+            type: RPCReport.self,
+            id: report.id
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_score",
+                    kindIdentifier: "rank",
+                    parameters: [
+                        "fieldName": .string("score"),
+                        "mode": .string("top"),
+                        "count": .int(2)
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        let ids = response.rows.compactMap { $0.fields["id"]?.stringValue }
+        let ranks = response.rows.compactMap { $0.annotations["rank"]?.int64Value }
+
+        #expect(ids == [article.id, report.id])
+        #expect(ranks == [0, 1])
+    }
+
+    @Test("canonical query RPC executes built-in polymorphic bitmap access paths")
+    func polymorphicBuiltInBitmapAccessPath() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-bitmap-article"
+        article.ownerID = "user-1"
+        article.title = "Architecture"
+        article.body = "Body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-bitmap-report"
+        report.ownerID = "user-2"
+        report.title = "Operations"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicBitmap(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_category",
+            type: RPCArticle.self,
+            id: article.id,
+            seqID: 0,
+            fieldValue: "tech"
+        )
+        try await writePolymorphicBitmap(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_category",
+            type: RPCReport.self,
+            id: report.id,
+            seqID: 1,
+            fieldValue: "ops"
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_category",
+                    kindIdentifier: "bitmap",
+                    parameters: [
+                        "fieldName": .string("category"),
+                        "operation": .string("equals"),
+                        "values": .array([try DatabaseEngine.CanonicalTupleElementCodec.encode("tech")])
+                    ]
+                )
+            )
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["id"]?.stringValue == article.id)
+    }
+
     private func makeHarness() async throws -> (DBContainer, DatabaseEndpoint) {
         let schema = Schema(
             [RPCPerson.self, RPCNote.self, RPCEdge.self, RPCTenantOrder.self],
             version: Schema.Version(1, 0, 0)
         )
         let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        return (container, DatabaseEndpoint(container: container))
+    }
+
+    private func makePolymorphicHarness(
+        security: SecurityConfiguration
+    ) async throws -> (DBContainer, DatabaseEndpoint) {
+        let schema = Schema(
+            [RPCArticle.self, RPCReport.self],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await DBContainer.inMemory(for: schema, security: security)
         return (container, DatabaseEndpoint(container: container))
     }
 
@@ -822,6 +1334,95 @@ struct CanonicalQueryRPCTests {
         }
 
         return try JSONDecoder().decode(QueryResponse.self, from: responseEnvelope.payload)
+    }
+
+    private func writePolymorphicVector<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        type: T.Type,
+        id: String,
+        vector: [Float]
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
+        let key = indexSubspace.pack(polymorphicID(type: type, id: id))
+        let value = Tuple(vector.map { $0 as any TupleElement }).pack()
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue(value, for: key)
+        }
+    }
+
+    private func writePolymorphicTerm<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        type: T.Type,
+        id: String,
+        term: String
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
+        let key = indexSubspace.subspace("terms").subspace(term).pack(polymorphicID(type: type, id: id))
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue([], for: key)
+        }
+    }
+
+    private func writePolymorphicRankEntry<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        score: Int,
+        type: T.Type,
+        id: String
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let key = directory
+            .subspace(SubspaceKey.indexes)
+            .subspace(indexName)
+            .subspace("scores")
+            .pack(Tuple([score, type.typeCode(for: type.persistableType), id]))
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue([], for: key)
+        }
+    }
+
+    private func writePolymorphicBitmap<T: Persistable & Polymorphable>(
+        container: DBContainer,
+        groupIdentifier: String,
+        indexName: String,
+        type: T.Type,
+        id: String,
+        seqID: UInt32,
+        fieldValue: String
+    ) async throws {
+        let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
+        let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
+        let tupleID = polymorphicID(type: type, id: id)
+
+        var bitmap = RoaringBitmap()
+        bitmap.add(seqID)
+        let bitmapData = try bitmap.serialize()
+
+        try await container.engine.withTransaction(configuration: .default) { transaction in
+            transaction.setValue(Array(bitmapData), for: indexSubspace.subspace("data").pack(Tuple(fieldValue)))
+            transaction.setValue(tupleID.pack(), for: indexSubspace.subspace("ids").pack(Tuple(Int(seqID))))
+            transaction.setValue(ByteConversion.int64ToBytes(Int64(seqID)), for: indexSubspace.subspace("pks").pack(tupleID))
+        }
+    }
+
+    private func polymorphicID<T: Persistable & Polymorphable>(
+        type: T.Type,
+        id: String
+    ) -> Tuple {
+        Tuple([
+            type.typeCode(for: type.persistableType) as any TupleElement,
+            id as any TupleElement
+        ])
     }
 }
 #endif

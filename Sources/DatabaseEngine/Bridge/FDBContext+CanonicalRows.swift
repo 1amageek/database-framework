@@ -6,35 +6,44 @@ import DatabaseClientProtocol
 private struct CanonicalSourceRow: Sendable {
     let fields: [String: FieldValue]
     let scopedFields: [String: [String: FieldValue]]
+    let annotations: [String: FieldValue]
 
     init(
         fields: [String: FieldValue],
-        scopedFields: [String: [String: FieldValue]] = [:]
+        scopedFields: [String: [String: FieldValue]] = [:],
+        annotations: [String: FieldValue] = [:]
     ) {
         self.fields = fields
         self.scopedFields = scopedFields
+        self.annotations = annotations
     }
 
     static func fromBaseFields(
         _ fields: [String: FieldValue],
-        sourceName: String?
+        sourceName: String?,
+        annotations: [String: FieldValue] = [:]
     ) -> CanonicalSourceRow {
         guard let sourceName else {
-            return CanonicalSourceRow(fields: fields)
+            return CanonicalSourceRow(fields: fields, annotations: annotations)
         }
-        return CanonicalSourceRow(fields: fields, scopedFields: [sourceName: fields])
+        return CanonicalSourceRow(
+            fields: fields,
+            scopedFields: [sourceName: fields],
+            annotations: annotations
+        )
     }
 
     func applyingAlias(_ alias: String?) -> CanonicalSourceRow {
         guard let alias else { return self }
-        return CanonicalSourceRow(fields: fields, scopedFields: [alias: fields])
+        return CanonicalSourceRow(fields: fields, scopedFields: [alias: fields], annotations: annotations)
     }
 
     func merged(with other: CanonicalSourceRow) -> CanonicalSourceRow {
         let mergedScopes = scopedFields.merging(other.scopedFields) { current, _ in current }
         return CanonicalSourceRow(
             fields: CanonicalSourceRow.flatten(scopedFields: mergedScopes),
-            scopedFields: mergedScopes
+            scopedFields: mergedScopes,
+            annotations: annotations.merging(other.annotations) { current, _ in current }
         )
     }
 
@@ -103,6 +112,21 @@ extension FDBContext {
                 options: options,
                 partitionValues: partitionValues,
                 partitionMode: partitionMode
+            )
+        }
+
+        if case .logical(let logicalSource) = selectQuery.source,
+           logicalSource.kindIdentifier == BuiltinLogicalSourceKind.polymorphic,
+           selectQuery.subqueries == nil,
+           selectQuery.groupBy == nil,
+           selectQuery.having == nil,
+           selectQuery.from == nil,
+           selectQuery.fromNamed == nil,
+           selectQuery.reduced == false {
+            return try await executePolymorphicRows(
+                selectQuery,
+                logicalSource: logicalSource,
+                options: options
             )
         }
 
@@ -181,28 +205,54 @@ extension FDBContext {
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> QueryResponse {
-        guard case .table(let tableRef) = selectQuery.source else {
-            throw CanonicalReadError.unsupportedAccessPath(
-                "accessPath queries require a table source"
+        switch selectQuery.source {
+        case .table(let tableRef):
+            let entity = try resolveEntity(named: tableRef.table)
+            guard let type = entity.persistableType else {
+                throw QueryBridgeError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
+            }
+
+            let effectivePartitionValues = scopedPartitionValues(
+                partitionValues,
+                for: type,
+                mode: partitionMode
             )
-        }
+            return try await queryUsingResolvedType(
+                type,
+                selectQuery: selectQuery,
+                options: options,
+                partitionValues: effectivePartitionValues
+            )
 
-        let entity = try resolveEntity(named: tableRef.table)
-        guard let type = entity.persistableType else {
-            throw QueryBridgeError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
-        }
+        case .logical(let logicalSource):
+            guard logicalSource.kindIdentifier == BuiltinLogicalSourceKind.polymorphic else {
+                throw CanonicalReadError.unsupportedAccessPath(
+                    "accessPath queries do not support logical source '\(logicalSource.kindIdentifier)'"
+                )
+            }
+            guard case .index(let indexScan) = accessPath else {
+                throw CanonicalReadError.unsupportedAccessPath(
+                    "Polymorphic logical sources currently support only index access paths"
+                )
+            }
+            guard let executor = ReadExecutorRegistry.shared.polymorphicIndexExecutor(
+                for: indexScan.kindIdentifier
+            ) else {
+                throw CanonicalReadError.executorNotRegistered(indexScan.kindIdentifier)
+            }
+            let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+            return try await executor.execute(
+                context: self,
+                selectQuery: selectQuery,
+                indexScan: indexScan,
+                group: group,
+                options: options,
+                partitionValues: partitionValues
+            )
 
-        let effectivePartitionValues = scopedPartitionValues(
-            partitionValues,
-            for: type,
-            mode: partitionMode
-        )
-        return try await queryUsingResolvedType(
-            type,
-            selectQuery: selectQuery,
-            options: options,
-            partitionValues: effectivePartitionValues
-        )
+        default:
+            throw CanonicalReadError.unsupportedAccessPath("accessPath queries require a table or logical source")
+        }
     }
 
     private func executeSingleTableRows(
@@ -297,6 +347,60 @@ extension FDBContext {
         }
     }
 
+    private func executePolymorphicRows(
+        _ selectQuery: SelectQuery,
+        logicalSource: LogicalSourceRef,
+        options: ReadExecutionOptions
+    ) async throws -> QueryResponse {
+        let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+        let execution = CanonicalReadExecution.resolve(
+            requested: options.consistency,
+            default: .serializable
+        )
+        let records = try await scanPolymorphicItems(
+            group: group,
+            configuration: execution.transactionConfiguration,
+            limit: selectQuery.limit,
+            offset: selectQuery.offset,
+            orderBy: canonicalOrderByFields(selectQuery.orderBy)
+        )
+
+        let sourceRows = records.map { record in
+            let row = QueryRowCodec.encodeAny(
+                record.item,
+                annotations: [
+                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                ]
+            )
+            return CanonicalSourceRow.fromBaseFields(
+                row.fields,
+                sourceName: nil,
+                annotations: row.annotations
+            )
+        }
+
+        if let countResponse = try makeCountProjectionResponse(
+            selectQuery,
+            rows: sourceRows
+        ) {
+            return countResponse
+        }
+
+        let filteredRows = try applyFilter(selectQuery.filter, to: sourceRows)
+        let orderedRows = try applyOrder(selectQuery.orderBy, to: filteredRows)
+        var projectedRows = try projectRows(orderedRows, projection: selectQuery.projection)
+        if selectQuery.distinct {
+            projectedRows = canonicalUniqueRows(projectedRows)
+        }
+        let page = try CanonicalOffsetPagination.window(
+            items: projectedRows,
+            selectQuery: selectQuery,
+            options: options
+        )
+        return QueryResponse(rows: page.items, continuation: page.continuation)
+    }
+
     private func materializeRows(
         for source: DataSource,
         namedSubqueries: [NamedSubquery],
@@ -315,7 +419,7 @@ extension FDBContext {
                 )
                 let alias = tableRef.alias ?? named.name
                 return response.rows.map {
-                    CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias)
+                    CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias, annotations: $0.annotations)
                 }
             }
 
@@ -331,7 +435,38 @@ extension FDBContext {
             )
             let sourceName = tableRef.alias ?? tableRef.effectiveName
             return response.rows.map {
-                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: sourceName)
+                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: sourceName, annotations: $0.annotations)
+            }
+
+        case .logical(let logicalSource):
+            guard logicalSource.kindIdentifier == BuiltinLogicalSourceKind.polymorphic else {
+                throw QueryBridgeError.unsupportedSelectQuery(
+                    "Logical source '\(logicalSource.kindIdentifier)' is not supported"
+                )
+            }
+            let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
+            let execution = CanonicalReadExecution.resolve(
+                requested: options.consistency,
+                default: .serializable
+            )
+            let records = try await scanPolymorphicItems(
+                group: group,
+                configuration: execution.transactionConfiguration
+            )
+            let sourceName = logicalSource.alias ?? logicalSource.effectiveName
+            return records.map { record in
+                let row = QueryRowCodec.encodeAny(
+                    record.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName: .string(record.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                    ]
+                )
+                return CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: sourceName,
+                    annotations: row.annotations
+                )
             }
 
         case .subquery(let query, let alias):
@@ -342,7 +477,7 @@ extension FDBContext {
                 partitionMode: partitionMode
             )
             return response.rows.map {
-                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias)
+                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias, annotations: $0.annotations)
             }
 
         case .join(let clause):
@@ -442,7 +577,7 @@ extension FDBContext {
                 options: options,
                 partitionValues: partitionValues
             )
-            return response.rows.map { CanonicalSourceRow(fields: $0.fields) }
+            return response.rows.map { CanonicalSourceRow(fields: $0.fields, annotations: $0.annotations) }
 
         case .service(let endpoint, _, _):
             throw CanonicalReadError.unsupportedSource(
@@ -709,7 +844,7 @@ extension FDBContext {
     }
 
     private func identityRow(_ row: CanonicalSourceRow) -> QueryRow {
-        QueryRow(fields: row.fields)
+        QueryRow(fields: row.fields, annotations: row.annotations)
     }
 
     private func canonicalGraphTableSourceRow(
@@ -786,14 +921,14 @@ extension FDBContext {
     ) throws -> [QueryRow] {
         switch projection {
         case .all:
-            return rows.map { QueryRow(fields: $0.fields) }
+            return rows.map { QueryRow(fields: $0.fields, annotations: $0.annotations) }
 
         case .allFrom(let sourceName):
             return try rows.map { row in
                 guard let fields = row.fields(for: sourceName) else {
                     throw QueryBridgeError.unsupportedSelectQuery("Projection source '\(sourceName)' not found")
                 }
-                return QueryRow(fields: fields)
+                return QueryRow(fields: fields, annotations: row.annotations)
             }
 
         case .items(let items):
@@ -803,7 +938,7 @@ extension FDBContext {
                     let fieldName = item.alias ?? canonicalDefaultProjectionName(for: item.expression, index: index)
                     fields[fieldName] = try evaluateExpression(item.expression, on: row)
                 }
-                return QueryRow(fields: fields)
+                return QueryRow(fields: fields, annotations: row.annotations)
             }
 
         case .distinctItems(let items):
@@ -936,6 +1071,17 @@ extension FDBContext {
         default:
             return "column\(index)"
         }
+    }
+
+    private func canonicalOrderByFields(_ orderBy: [SortKey]?) -> [String]? {
+        guard let orderBy else { return nil }
+        let fields = orderBy.compactMap { sortKey -> String? in
+            guard case .column(let column) = sortKey.expression else {
+                return nil
+            }
+            return column.column
+        }
+        return fields.isEmpty ? nil : fields
     }
 
     private func canonicalUniqueRows(_ rows: [QueryRow]) -> [QueryRow] {

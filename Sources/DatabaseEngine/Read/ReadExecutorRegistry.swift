@@ -24,6 +24,19 @@ public protocol IndexReadExecutor: Sendable {
     ) async throws -> QueryResponse
 }
 
+public protocol PolymorphicIndexReadExecutor: Sendable {
+    var kindIdentifier: String { get }
+
+    func execute(
+        context: FDBContext,
+        selectQuery: SelectQuery,
+        indexScan: IndexScanSource,
+        group: PolymorphicGroup,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?
+    ) async throws -> QueryResponse
+}
+
 public protocol FusionReadExecutor: Sendable {
     var strategyIdentifier: String { get }
 
@@ -42,6 +55,7 @@ public final class ReadExecutorRegistry: Sendable {
 
     private struct State: Sendable {
         var indexExecutors: [String: any IndexReadExecutor] = [:]
+        var polymorphicIndexExecutors: [String: any PolymorphicIndexReadExecutor] = [:]
         var fusionExecutors: [String: any FusionReadExecutor] = [:]
     }
 
@@ -53,12 +67,20 @@ public final class ReadExecutorRegistry: Sendable {
         state.withLock { $0.indexExecutors[executor.kindIdentifier] = executor }
     }
 
+    public func registerPolymorphic(_ executor: any PolymorphicIndexReadExecutor) {
+        state.withLock { $0.polymorphicIndexExecutors[executor.kindIdentifier] = executor }
+    }
+
     public func register(_ executor: any FusionReadExecutor) {
         state.withLock { $0.fusionExecutors[executor.strategyIdentifier] = executor }
     }
 
     public func indexExecutor(for kindIdentifier: String) -> (any IndexReadExecutor)? {
         state.withLock { $0.indexExecutors[kindIdentifier] }
+    }
+
+    public func polymorphicIndexExecutor(for kindIdentifier: String) -> (any PolymorphicIndexReadExecutor)? {
+        state.withLock { $0.polymorphicIndexExecutors[kindIdentifier] }
     }
 
     public func fusionExecutor(for strategyIdentifier: String) -> (any FusionReadExecutor)? {

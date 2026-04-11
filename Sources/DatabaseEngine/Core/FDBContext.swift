@@ -1147,9 +1147,14 @@ public final class FDBContext: Sendable {
         for (_, items) in insertsByPolyType {
             guard let (_, polymorphicType) = items.first else { continue }
 
-            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+            let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
             let itemSubspace = polySubspace.subspace(SubspaceKey.items)
             let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
+            let maintenanceService = makePolymorphicIndexMaintenanceService(
+                group: group,
+                subspace: polySubspace
+            )
 
             // Use ItemStorage for large value handling (stores chunks in blobs subspace)
             let storage = ItemStorage(
@@ -1160,11 +1165,29 @@ public final class FDBContext: Sendable {
             for (serialized, _) in items {
                 let modelType = type(of: serialized.model)
                 let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-                let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
-                let polyKey = typeCodeSubspace.pack(serialized.idTuple)
+                let compositeID = makePolymorphicCompositeID(
+                    typeCode: typeCode,
+                    idTuple: serialized.idTuple
+                )
+                let polyKey = itemSubspace.pack(compositeID)
+
+                let oldModel: (any Persistable)?
+                if let existingData = try await storage.read(for: polyKey) {
+                    oldModel = try DataAccess.deserializeAny(existingData, as: modelType)
+                } else {
+                    oldModel = nil
+                }
 
                 // Write using pre-serialized data (handles compression + external storage for >90KB)
                 try await storage.write(serialized.data, for: polyKey)
+                try await maintenanceService.updateIndexesUntyped(
+                    oldModel: oldModel,
+                    newModel: serialized.model,
+                    id: compositeID,
+                    descriptors: container.schema.polymorphicIndexDescriptors(identifier: group.identifier),
+                    logicalTypeName: group.identifier,
+                    transaction: transaction
+                )
             }
         }
 
@@ -1172,9 +1195,14 @@ public final class FDBContext: Sendable {
         for (_, items) in deletesByPolyType {
             guard let (_, _, polymorphicType) = items.first else { continue }
 
-            let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
+            let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
+            let polySubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
             let itemSubspace = polySubspace.subspace(SubspaceKey.items)
             let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
+            let maintenanceService = makePolymorphicIndexMaintenanceService(
+                group: group,
+                subspace: polySubspace
+            )
 
             // Use ItemStorage for large value handling
             let storage = ItemStorage(
@@ -1185,13 +1213,53 @@ public final class FDBContext: Sendable {
             for (model, idTuple, _) in items {
                 let modelType = type(of: model)
                 let typeCode = polymorphicType.typeCode(for: modelType.persistableType)
-                let typeCodeSubspace = itemSubspace.subspace(Tuple([typeCode]))
-                let polyKey = typeCodeSubspace.pack(idTuple)
+                let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
+                let polyKey = itemSubspace.pack(compositeID)
 
                 // Delete (handles external blob chunks)
+                try await maintenanceService.updateIndexesUntyped(
+                    oldModel: model,
+                    newModel: nil as (any Persistable)?,
+                    id: compositeID,
+                    descriptors: container.schema.polymorphicIndexDescriptors(identifier: group.identifier),
+                    logicalTypeName: group.identifier,
+                    transaction: transaction
+                )
                 try await storage.delete(for: polyKey)
             }
         }
+    }
+
+    private func makePolymorphicCompositeID(
+        typeCode: Int64,
+        idTuple: Tuple
+    ) -> Tuple {
+        var elements: [any TupleElement] = [typeCode]
+        for index in 0..<idTuple.count {
+            if let element = idTuple[index] {
+                elements.append(element)
+            }
+        }
+        return Tuple(elements)
+    }
+
+    private func makePolymorphicIndexMaintenanceService(
+        group: PolymorphicGroup,
+        subspace: Subspace
+    ) -> IndexMaintenanceService {
+        let groupDescriptors = container.schema.polymorphicIndexDescriptors(identifier: group.identifier)
+        let groupConfigurations = groupDescriptors.flatMap { descriptor in
+            container.indexConfigurations[descriptor.name] ?? []
+        }
+        return IndexMaintenanceService(
+            indexStateManager: IndexStateManager(container: container, subspace: subspace),
+            violationTracker: UniquenessViolationTracker(
+                container: container,
+                metadataSubspace: subspace.subspace(SubspaceKey.metadata)
+            ),
+            indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            configurations: groupConfigurations
+        )
     }
 
     // MARK: - Rollback

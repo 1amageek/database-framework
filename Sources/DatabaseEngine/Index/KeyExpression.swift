@@ -50,6 +50,19 @@ public struct LiteralKeyExpression<T: TupleElement>: KeyExpression {
     public var columnCount: Int { 1 }
 }
 
+// MARK: - Tuple Key Expression
+
+/// Expression that returns all elements from a concrete tuple.
+public struct TupleKeyExpression: KeyExpression {
+    public let value: Tuple
+
+    public init(value: Tuple) {
+        self.value = value
+    }
+
+    public var columnCount: Int { value.count }
+}
+
 // MARK: - Empty Key Expression
 
 /// Expression that returns an empty key

@@ -213,6 +213,14 @@ public final class DBContainer: Sendable {
             let indexNames = entity.indexDescriptors.map { $0.name }
             try await stateManager.ensureReadable(indexNames)
         }
+        for group in schema.polymorphicGroups {
+            let descriptors = schema.polymorphicIndexDescriptors(identifier: group.identifier)
+            guard !descriptors.isEmpty else { continue }
+            let subspace = try await resolvePolymorphicDirectory(for: group.identifier)
+            let stateManager = IndexStateManager(container: self, subspace: subspace)
+            let indexNames = descriptors.map(\.name)
+            try await stateManager.ensureReadable(indexNames)
+        }
     }
 
     // MARK: - Context Management
@@ -454,6 +462,31 @@ public final class DBContainer: Sendable {
         // Cache the result
         directoryCache.withLock { $0[cacheKey] = subspace }
 
+        return subspace
+    }
+
+    /// Resolve a polymorphic group by its logical identifier.
+    public func polymorphicGroup(identifier: String) throws -> PolymorphicGroup {
+        guard let group = schema.polymorphicGroup(identifier: identifier) else {
+            throw FDBRuntimeError.internalError(
+                "Polymorphic group '\(identifier)' is not registered in Schema."
+            )
+        }
+        return group
+    }
+
+    /// Resolve the directory for a polymorphic group identifier.
+    public func resolvePolymorphicDirectory(for identifier: String) async throws -> Subspace {
+        let group = try polymorphicGroup(identifier: identifier)
+        let cacheKey = "_polymorphic_\(group.identifier)"
+
+        if let cached = directoryCache.withLock({ $0[cacheKey] }) {
+            return cached
+        }
+
+        let path = try group.resolvedDirectoryPath()
+        let subspace = try await engine.directoryService.createOrOpen(path: path)
+        directoryCache.withLock { $0[cacheKey] = subspace }
         return subspace
     }
 

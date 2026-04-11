@@ -163,6 +163,24 @@ internal final class IndexMaintenanceService: Sendable {
         id: Tuple,
         transaction: any Transaction
     ) async throws {
+        try await updateIndexesUntyped(
+            oldModel: oldModel,
+            newModel: newModel,
+            id: id,
+            descriptors: nil,
+            logicalTypeName: nil,
+            transaction: transaction
+        )
+    }
+
+    func updateIndexesUntyped(
+        oldModel: (any Persistable)?,
+        newModel: (any Persistable)?,
+        id: Tuple,
+        descriptors: [IndexDescriptor]?,
+        logicalTypeName: String?,
+        transaction: any Transaction
+    ) async throws {
         // Determine which model type we're working with
         let modelType: any Persistable.Type
         if let newModel = newModel {
@@ -173,7 +191,7 @@ internal final class IndexMaintenanceService: Sendable {
             return  // No model to process
         }
 
-        let indexDescriptors = modelType.indexDescriptors
+        let indexDescriptors = descriptors ?? modelType.indexDescriptors
         guard !indexDescriptors.isEmpty else { return }
 
         // Batch fetch all index states for performance
@@ -193,24 +211,21 @@ internal final class IndexMaintenanceService: Sendable {
             // Use IndexKindMaintainable protocol bridge pattern
             if let maintainable = descriptor.kind as? any IndexKindMaintainable {
                 // Build Index from IndexDescriptor
-                let index = Self.buildIndex(from: descriptor, persistableType: modelType.persistableType)
-                let idExpression = FieldKeyExpression(fieldName: "id")
+                let index = Self.buildIndex(
+                    from: descriptor,
+                    persistableType: logicalTypeName ?? modelType.persistableType
+                )
+                let idExpression: KeyExpression = logicalTypeName == nil
+                    ? FieldKeyExpression(fieldName: "id")
+                    : TupleKeyExpression(value: id)
 
                 // Check uniqueness constraint for inserts (newModel != nil)
                 // or updates where the indexed value changes
                 if descriptor.isUnique, let newModel = newModel {
-                    // Extract ID for uniqueness check
-                    let idTuple: Tuple
-                    if let element = newModel.id as? any TupleElement {
-                        idTuple = Tuple([element])
-                    } else {
-                        idTuple = Tuple(["unknown"])
-                    }
-
                     try await checkUniquenessConstraintUntyped(
                         descriptor: descriptor,
                         model: newModel,
-                        id: idTuple,
+                        id: id,
                         oldModel: oldModel,
                         state: state,
                         indexSubspace: indexSubspaceForIndex,

@@ -101,7 +101,10 @@ final class OperationRouter: Sendable {
 
         case "schema":
             let entities = container.schema.entities
-            let response = SchemaResponse(entities: entities)
+            let response = SchemaResponse(
+                entities: entities,
+                polymorphicGroups: container.schema.polymorphicGroups
+            )
             let payload = try JSONEncoder().encode(response)
             return ServiceEnvelope(
                 responseTo: envelope.requestID,

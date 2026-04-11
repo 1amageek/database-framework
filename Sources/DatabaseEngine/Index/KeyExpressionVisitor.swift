@@ -16,6 +16,9 @@ public protocol KeyExpressionVisitor {
     /// Visit a literal expression
     func visitLiteral(_ value: any TupleElement) throws -> Result
 
+    /// Visit a tuple expression
+    func visitTuple(_ value: Tuple) throws -> Result
+
     /// Visit an empty expression
     func visitEmpty() throws -> Result
 
@@ -52,6 +55,9 @@ extension KeyExpression {
 
         case is EmptyKeyExpression:
             return try visitor.visitEmpty()
+
+        case let tuple as TupleKeyExpression:
+            return try visitor.visitTuple(tuple.value)
 
         case let nest as NestExpression:
             return try visitor.visitNest(nest.parentField, nest.child)
