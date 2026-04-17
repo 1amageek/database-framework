@@ -149,10 +149,25 @@ public final class DBContainer: Sendable {
     #endif
 
     /// Initialize with explicit configuration
-    public init(
+    public convenience init(
         for schema: Schema,
         configuration: DBConfiguration,
         security: SecurityConfiguration = .enabled()
+    ) async throws {
+        try await self.init(
+            for: schema,
+            configuration: configuration,
+            security: security,
+            persistSchemaCatalog: true
+        )
+    }
+
+    internal init(
+        for schema: Schema,
+        configuration: DBConfiguration,
+        security: SecurityConfiguration,
+        persistSchemaCatalog: Bool,
+        initializeIndexes: Bool = true
     ) async throws {
         guard !schema.entities.isEmpty else {
             throw FDBRuntimeError.internalError("Schema must contain at least one entity")
@@ -185,12 +200,18 @@ public final class DBContainer: Sendable {
         self.directoryCache = Mutex([:])
         self.dataStoreCache = Mutex([:])
 
-        // Initialize all indexes to readable state
-        try await ensureIndexesReady()
+        registerSchemaTypesForIndexBuilding(schema)
 
-        // Persist schema catalog (entities + ontology) for CLI and dynamic tools
-        let registry = SchemaRegistry(database: engine)
-        try await registry.persist(schema)
+        if initializeIndexes {
+            // Initialize all indexes to readable state
+            try await ensureIndexesReady()
+        }
+
+        if persistSchemaCatalog {
+            // Persist schema catalog (entities + ontology) for CLI and dynamic tools
+            let registry = SchemaRegistry(database: engine)
+            try await registry.persist(schema)
+        }
     }
 
     // MARK: - Index Initialization
@@ -341,6 +362,22 @@ public final class DBContainer: Sendable {
         path: AnyDirectoryPath? = nil
     ) async throws -> any DataStore {
         try await fdbStore(for: type, path: path)
+    }
+
+    private func registerSchemaTypesForIndexBuilding(_ schema: Schema) {
+        for entity in schema.entities {
+            guard let persistableType = entity.persistableType else {
+                continue
+            }
+            registerIndexBuilderIfPossible(for: persistableType)
+        }
+    }
+
+    private func registerIndexBuilderIfPossible(for type: any Persistable.Type) {
+        func helper<T: Persistable>(_ concreteType: T.Type) {
+            IndexBuilderRegistry.shared.register(concreteType)
+        }
+        _openExistential(type, do: helper)
     }
 
     internal func fdbStore(
@@ -725,7 +762,13 @@ extension DBContainer {
     ) async throws {
         try P.validate()
         let schemaInstance = S.makeSchema()
-        try await self.init(for: schemaInstance, configuration: configuration)
+        try await self.init(
+            for: schemaInstance,
+            configuration: configuration,
+            security: .enabled(),
+            persistSchemaCatalog: false,
+            initializeIndexes: false
+        )
         self._migrationPlan = migrationPlan
     }
 
@@ -740,14 +783,21 @@ extension DBContainer {
         try schema.validateIndexNames()
 
         let currentVersion = try await getCurrentSchemaVersion()
+        let registry = SchemaRegistry(database: engine)
 
         guard let currentVersion else {
+            try await registry.persist(schema)
             try await setCurrentSchemaVersion(targetVersion)
+            try await ensureIndexesReady()
             logger.info("Set initial schema version: \(targetVersion)")
             return
         }
 
-        if currentVersion >= targetVersion { return }
+        if currentVersion >= targetVersion {
+            try await registry.persist(schema)
+            try await ensureIndexesReady()
+            return
+        }
 
         let stages = try plan.findPath(from: currentVersion, to: targetVersion)
         if stages.isEmpty { return }
@@ -758,21 +808,29 @@ extension DBContainer {
             try await executeStage(stage)
         }
 
+        try await ensureIndexesReady()
+
         logger.info("Migration complete: now at version \(targetVersion)")
     }
 
     private func executeStage(_ stage: MigrationStage) async throws {
         logger.info("Executing \(stage.migrationDescription)")
 
-        let storeRegistry = try await buildStoreRegistry()
+        let sourceSchema = stage.fromVersion.makeSchema()
+        let targetSchema = stage.toVersion.makeSchema()
+        let storeRegistry = try await buildStoreRegistry(for: [sourceSchema, targetSchema])
         let metadataSubspace = try await getMetadataSubspace()
+        let stageIndexConfigurations = Self.aggregateIndexConfigurations(
+            configuration.indexConfigurations + Self.generateAutoConfigurations(schema: targetSchema, database: engine)
+        )
 
         let context = MigrationContext(
             container: self,
-            schema: schema,
+            schema: targetSchema,
+            sourceSchema: sourceSchema,
             metadataSubspace: metadataSubspace,
             storeRegistry: storeRegistry,
-            indexConfigurations: indexConfigurations
+            indexConfigurations: stageIndexConfigurations
         )
 
         if let willMigrate = stage.willMigrate {
@@ -793,14 +851,23 @@ extension DBContainer {
             try await didMigrate(context)
         }
 
+        let registry = SchemaRegistry(database: engine)
+        let persistMode: SchemaRegistryPersistMode = if stage.isLightweight {
+            .strict
+        } else {
+            .allowBreakingChanges(entityNames: stage.entitiesRequiringCustomMigration)
+        }
+        try await registry.persist(targetSchema, mode: persistMode)
         try await setCurrentSchemaVersion(stage.toVersionIdentifier)
         logger.info("Updated schema version to \(stage.toVersionIdentifier)")
     }
 
-    private func buildStoreRegistry() async throws -> [String: MigrationStoreInfo] {
+    private func buildStoreRegistry(for schemas: [Schema]) async throws -> [String: MigrationStoreInfo] {
         var registry: [String: MigrationStoreInfo] = [:]
+        var seenEntities: Set<String> = []
 
-        for entity in schema.entities {
+        for entity in schemas.flatMap(\.entities) {
+            guard seenEntities.insert(entity.name).inserted else { continue }
             guard let persistableType = entity.persistableType else { continue }
             // Use resolveDirectory to respect #Directory definitions
             let subspace = try await resolveDirectory(for: persistableType)

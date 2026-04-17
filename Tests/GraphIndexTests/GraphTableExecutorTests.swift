@@ -357,7 +357,6 @@ struct GraphTableExecutorTests {
             // This should fail because NoGraphIndexType has no GraphIndexKind
             _ = try await GraphTableExecutor<NoGraphIndexType>(
                 container: container,
-                schema: schema,
                 graphTableSource: source
             ).execute()
 

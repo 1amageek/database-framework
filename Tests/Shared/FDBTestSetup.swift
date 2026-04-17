@@ -101,12 +101,18 @@ public actor FDBTestSetup {
         return database
     }
 
-    private func createConfiguredEngine() async throws -> FDBStorageEngine {
+    private func createConfiguredEngine(systemPriority: Bool = false) async throws -> FDBStorageEngine {
         if !FDBClient.isInitialized {
             try await FDBClient.initialize()
         }
 
-        let database = try openConfiguredDatabase()
+        let baseDatabase = try openConfiguredDatabase()
+        let database: any DatabaseProtocol
+        if systemPriority {
+            database = FDBSystemPriorityDatabase(wrapping: baseDatabase)
+        } else {
+            database = baseDatabase
+        }
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
@@ -118,6 +124,8 @@ public actor FDBTestSetup {
             let transaction = try engine.createTransaction()
 
             do {
+                try transaction.setOption(forOption: .prioritySystemImmediate)
+                try transaction.setOption(forOption: .readPriorityHigh)
                 try transaction.setOption(
                     to: Self.healthCheckAttemptTimeoutMs,
                     forOption: .timeout(milliseconds: Self.healthCheckAttemptTimeoutMs)
@@ -160,7 +168,7 @@ public actor FDBTestSetup {
             initState = .initializing([])
 
             do {
-                let engine = try await createConfiguredEngine()
+                let engine = try await createConfiguredEngine(systemPriority: true)
                 try await verifyClusterHealth(using: engine)
                 await cleanupTestDirectoriesBestEffort()
                 if case .initializing(let continuations) = initState {
@@ -196,7 +204,7 @@ public actor FDBTestSetup {
         didCleanupTestDirectories = true
 
         do {
-            let engine = try await createConfiguredEngine()
+            let engine = try await createConfiguredEngine(systemPriority: true)
             try await engine.directoryService.remove(path: ["test"])
         } catch {
             // Ignore cleanup failures; tests will surface real issues.
