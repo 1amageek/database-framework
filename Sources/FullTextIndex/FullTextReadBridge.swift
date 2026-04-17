@@ -109,7 +109,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             selectQuery: selectQuery,
             options: options
         )
-        let rows = try page.items.map { QueryRow(fields: try encodeFields($0)) }
+        let rows = try page.items.map { try QueryRowCodec.encode($0) }
         return QueryResponse(rows: rows, continuation: page.continuation)
     }
 
@@ -128,8 +128,8 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             options: options
         )
         let rows = try page.items.map { result in
-            QueryRow(
-                fields: try encodeFields(result.item),
+            try QueryRowCodec.encode(
+                result.item,
                 annotations: ["score": .double(result.score)]
             )
         }
@@ -159,7 +159,7 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             items: result.items,
             context: pagination
         )
-        let rows = try page.items.map { QueryRow(fields: try encodeFields($0)) }
+        let rows = try page.items.map { try QueryRowCodec.encode($0) }
 
         var metadata: [String: FieldValue] = [
             FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))
@@ -184,11 +184,6 @@ private struct FullTextReadExecutor: IndexReadExecutor {
             return false
         }
         return true
-    }
-
-    private func encodeFields<T: Persistable>(_ item: T) throws -> [String: FieldValue] {
-        let data = try JSONEncoder().encode(item)
-        return try JSONDecoder().decode([String: FieldValue].self, from: data)
     }
 
     private func decodeMatchMode(

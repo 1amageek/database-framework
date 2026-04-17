@@ -10,6 +10,16 @@ import QueryIR
 import DatabaseClientProtocol
 import StorageKit
 
+private enum BitmapQueryRuntime {
+    static let registration: Void = {
+        BitmapReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Bitmap Entry Point
 
 /// Entry point for bitmap queries
@@ -80,6 +90,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     // MARK: - Initialization
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
+        BitmapQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
     }
@@ -152,7 +163,6 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching items
     public func execute() async throws -> [T] {
-        BitmapReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             try toSelectQuery(),
             as: T.self,
@@ -160,8 +170,7 @@ public struct BitmapQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            return try JSONDecoder().decode(T.self, from: data)
+            try QueryRowCodec.decode(row, as: T.self)
         }
     }
 

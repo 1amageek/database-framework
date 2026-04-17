@@ -206,7 +206,26 @@ extension FDBContext {
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> QueryResponse {
         switch selectQuery.source {
-        case .table:
+        case .table(let tableRef):
+            // Non-scalar index access paths (fulltext, vector, rank, etc.) are
+            // handled by kind-specific executors registered in ReadExecutorRegistry.
+            // Only scalar index access is routed through SelectQueryPlanner, because
+            // it maps cleanly onto Query<T>.forcedIndex + typed fetch.
+            if case .index(let indexScan) = accessPath,
+               indexScan.kindIdentifier != "scalar",
+               let executor = ReadExecutorRegistry.shared.indexExecutor(
+                for: indexScan.kindIdentifier
+               ) {
+                return try await dispatchTableIndexExecutor(
+                    executor: executor,
+                    tableRef: tableRef,
+                    selectQuery: selectQuery,
+                    indexScan: indexScan,
+                    options: options,
+                    partitionValues: partitionValues,
+                    partitionMode: partitionMode
+                )
+            }
             return try await executeSingleTableRows(
                 selectQuery,
                 options: options,
@@ -315,6 +334,39 @@ extension FDBContext {
         let residualOrderBy: [SortKey]?
         let limitPushed: Bool
         let offsetPushed: Bool
+    }
+
+    private func dispatchTableIndexExecutor(
+        executor: any IndexReadExecutor,
+        tableRef: TableRef,
+        selectQuery: SelectQuery,
+        indexScan: IndexScanSource,
+        options: ReadExecutionOptions,
+        partitionValues: [String: String]?,
+        partitionMode: CanonicalPartitionRoutingMode
+    ) async throws -> QueryResponse {
+        let entity = try resolveEntity(named: tableRef.table)
+        guard let type = entity.persistableType else {
+            throw CanonicalReadError.unsupportedSelectQuery(
+                "Entity '\(tableRef.table)' is not loadable"
+            )
+        }
+        let effectivePartitionValues = scopedPartitionValues(
+            partitionValues,
+            for: type,
+            mode: partitionMode
+        )
+        func helper<T: Persistable>(_ concreteType: T.Type) async throws -> QueryResponse {
+            try await executor.execute(
+                context: self,
+                selectQuery: selectQuery,
+                indexScan: indexScan,
+                as: T.self,
+                options: options,
+                partitionValues: effectivePartitionValues
+            )
+        }
+        return try await _openExistential(type, do: helper)
     }
 
     private func fetchTableSourceRows(

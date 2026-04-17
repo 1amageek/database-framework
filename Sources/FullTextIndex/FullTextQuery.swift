@@ -134,8 +134,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            return try JSONDecoder().decode(T.self, from: data)
+            try QueryRowCodec.decode(row, as: T.self)
         }
     }
 
@@ -219,8 +218,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         let items: [T] = try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            return try JSONDecoder().decode(T.self, from: data)
+            try QueryRowCodec.decode(row, as: T.self)
         }
 
         return FacetedSearchResult(
@@ -563,8 +561,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            let item = try JSONDecoder().decode(T.self, from: data)
+            let item = try QueryRowCodec.decode(row, as: T.self)
             guard let score = row.annotations["score"]?.doubleValue else {
                 throw CanonicalReadError.missingAnnotation("score")
             }

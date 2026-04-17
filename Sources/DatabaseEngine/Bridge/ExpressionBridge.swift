@@ -280,3 +280,50 @@ extension Array where Element == QueryIR.Expression {
         return self.dropFirst().reduce(first, combine)
     }
 }
+
+// MARK: - Partial AND Pushdown
+
+/// Result of splitting a top-level conjunction into push-down and residual parts.
+///
+/// Each top-level AND conjunct is attempted for conversion to `Predicate<T>`:
+/// conjuncts that convert are returned in `pushed`; the remainder are returned in
+/// `residual` so the caller can evaluate them in-memory over the fetched rows.
+struct SplitAndResult<T: Persistable>: Sendable {
+    /// Conjuncts successfully converted to typed predicates (push-down candidates).
+    let pushed: [Predicate<T>]
+    /// Conjuncts that could not be converted; must be evaluated as residual.
+    let residual: [QueryIR.Expression]
+}
+
+extension QueryIR.Expression {
+    /// Return the top-level AND conjuncts of this expression in left-to-right order.
+    ///
+    /// `AND(a, AND(b, c))` → `[a, b, c]`. Non-AND expressions return `[self]`.
+    func flattenAnd() -> [QueryIR.Expression] {
+        if case .and(let lhs, let rhs) = self {
+            return lhs.flattenAnd() + rhs.flattenAnd()
+        }
+        return [self]
+    }
+
+    /// Split this expression into pushable typed predicates and residual conjuncts.
+    ///
+    /// Flattens the top-level AND structure and attempts `toPredicate(for:)` on each
+    /// conjunct. Successful conversions are returned as `Predicate<T>`; failures are
+    /// returned as `QueryIR.Expression` for residual in-memory evaluation. This enables
+    /// partial push-down: the convertible part of `A AND B AND C` engages the typed
+    /// fetch path (index selection, range scans) even when one conjunct cannot be
+    /// represented as a typed predicate.
+    func splitAnd<T: Persistable>(for type: T.Type) -> SplitAndResult<T> {
+        var pushed: [Predicate<T>] = []
+        var residual: [QueryIR.Expression] = []
+        for conjunct in flattenAnd() {
+            if let predicate: Predicate<T> = conjunct.toPredicate(for: type) {
+                pushed.append(predicate)
+            } else {
+                residual.append(conjunct)
+            }
+        }
+        return SplitAndResult(pushed: pushed, residual: residual)
+    }
+}

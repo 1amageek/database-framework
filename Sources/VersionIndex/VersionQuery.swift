@@ -133,8 +133,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            let item = try JSONDecoder().decode(T.self, from: data)
+            let item = try QueryRowCodec.decode(row, as: T.self)
             guard let versionData = row.annotations["version"]?.dataValue else {
                 throw VersionQueryError.invalidResponse("Missing version annotation")
             }

@@ -11,6 +11,16 @@ import QueryIR
 import DatabaseClientProtocol
 import StorageKit
 
+private enum PermutedQueryRuntime {
+    static let registration: Void = {
+        PermutedReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Permuted Entry Point
 
 /// Entry point for permuted index queries
@@ -99,6 +109,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         indexName: String,
         permutation: Permutation? = nil
     ) {
+        PermutedQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.indexName = indexName
         self.permutation = permutation
@@ -142,7 +153,6 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of matching items
     public func execute() async throws -> [T] {
-        PermutedReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             try toSelectQuery(),
             as: T.self,
@@ -150,8 +160,7 @@ public struct PermutedQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            return try JSONDecoder().decode(T.self, from: data)
+            try QueryRowCodec.decode(row, as: T.self)
         }
     }
 

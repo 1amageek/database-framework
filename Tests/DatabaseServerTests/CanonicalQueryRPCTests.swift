@@ -9,6 +9,7 @@ import DatabaseClientProtocol
 import QueryIR
 import StorageKit
 import BitmapIndex
+import FullTextIndex
 
 @Persistable
 private struct RPCPerson {
@@ -61,6 +62,15 @@ private extension RPCDocument {
     static var polymorphableType: String { "RPCDocument" }
     static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
         [Path("test"), Path("server"), Path("documents")]
+    }
+    static var polymorphicIndexDescriptors: [IndexDescriptor] {
+        [
+            IndexDescriptor(
+                name: "rpc_document_title",
+                keyPaths: [] as [PartialKeyPath<RPCArticle>],
+                kind: FullTextIndexKind<RPCArticle>(fieldNames: ["title"])
+            )
+        ]
     }
 }
 
@@ -988,6 +998,85 @@ struct CanonicalQueryRPCTests {
         #expect(response.rows.count == 1)
         #expect(response.rows.first?.fields["title"]?.stringValue == "Alice Article")
         #expect(response.rows.first?.annotations["_typeName"]?.stringValue == "RPCArticle")
+    }
+
+    @Test("developer polymorphic query decodes mixed concrete results")
+    func developerPolymorphicQueryDecodesMixedResults() async throws {
+        let (container, _) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "developer-poly-article"
+        article.ownerID = "alice"
+        article.title = "Article"
+        article.body = "Body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "developer-poly-report"
+        report.ownerID = "alice"
+        report.title = "Report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        let results = try await context.findPolymorphic(RPCArticle.self)
+            .orderBy(\.title)
+            .execute()
+
+        #expect(results.count == 2)
+        #expect(results.map(\.typeName) == ["RPCArticle", "RPCReport"])
+        #expect(results[0].item(as: RPCArticle.self)?.body == "Body")
+        #expect(results[1].item(as: RPCReport.self)?.summary == "Summary")
+    }
+
+    @Test("developer polymorphic full-text query hides logical source wiring")
+    func developerPolymorphicFullTextQuery() async throws {
+        let (container, _) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "developer-ft-article"
+        article.ownerID = "user-1"
+        article.title = "Vector architecture"
+        article.body = "Document body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "developer-ft-report"
+        report.ownerID = "user-2"
+        report.title = "Quarterly report"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCArticle.self,
+            id: article.id,
+            term: "vector"
+        )
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCReport.self,
+            id: report.id,
+            term: "quarterly"
+        )
+
+        let results = try await context.findPolymorphic(RPCArticle.self)
+            .fullText(\.title)
+            .terms("vector")
+            .execute()
+
+        #expect(results.count == 1)
+        #expect(results[0].typeName == RPCArticle.persistableType)
+        #expect(results[0].item(as: RPCArticle.self)?.id == article.id)
     }
 
     @Test("canonical query RPC dispatches polymorphic access-path queries through the registry")

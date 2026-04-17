@@ -57,6 +57,13 @@ public struct Query<T: Persistable>: Sendable {
     /// - `.stale(N)`: Allow stale data up to N seconds
     public var cachePolicy: CachePolicy = .server
 
+    /// Forced index hint set by callers that already decided which named index
+    /// must serve this query (e.g. a canonical `SelectQuery` carrying an
+    /// `accessPath`). When non-nil, the fetch path restricts index selection to
+    /// the named index and raises an error if the index cannot serve the
+    /// pushed-down predicate — silent fallback to a full scan is forbidden.
+    public var forcedIndex: IndexHint?
+
     /// Initialize an empty query
     public init() {
         self.predicates = []
@@ -65,6 +72,7 @@ public struct Query<T: Persistable>: Sendable {
         self.fetchOffset = nil
         self.partitionBinding = nil
         self.cachePolicy = .server
+        self.forcedIndex = nil
     }
 
     // MARK: - Fluent API
@@ -181,6 +189,24 @@ public struct Query<T: Persistable>: Sendable {
             )))
         }
         return copy
+    }
+}
+
+// MARK: - IndexHint
+
+/// Restricts index selection during a fetch to a specific named index.
+///
+/// Set on `Query<T>.forcedIndex` when a higher layer (typically the canonical
+/// `SelectQuery` bridge) has already chosen the index to use. The fetch path
+/// honors the hint strictly: if the named index does not exist or cannot serve
+/// the pushed-down predicate, it raises an error rather than silently falling
+/// back to a full table scan.
+public struct IndexHint: Sendable, Equatable, Hashable {
+    /// The name of the index registered on the target `Persistable` type.
+    public let indexName: String
+
+    public init(indexName: String) {
+        self.indexName = indexName
     }
 }
 
@@ -450,10 +476,18 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
     /// Returns raw comparison (ascending order); caller applies sort direction.
     private let _compare: (@Sendable (T, T) -> ComparisonResult)?
 
+    /// Explicit field name override.
+    ///
+    /// Set by `init(fieldName:order:)` when the sort descriptor is reconstructed
+    /// from a type-erased source (e.g., QueryIR bridge) and the `keyPath` is a
+    /// placeholder. When non-nil, takes precedence over the keyPath-derived name.
+    private let _overrideFieldName: String?
+
     /// Create a sort descriptor with zero-copy comparison
     public init<V: Comparable & Sendable>(keyPath: KeyPath<T, V>, order: SortOrder = .ascending) {
         self.keyPath = keyPath
         self.order = order
+        self._overrideFieldName = nil
         nonisolated(unsafe) let kp = keyPath
         self._compare = { lhs, rhs in
             let l = lhs[keyPath: kp]
@@ -469,11 +503,26 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
         self.keyPath = keyPath
         self.order = order
         self._compare = nil
+        self._overrideFieldName = nil
     }
 
-    /// Get the field name using Persistable's fieldName method
+    /// Create a sort descriptor from a field name (for QueryIR bridges).
+    ///
+    /// Used when the sort key originates from a canonical/erased source and a typed
+    /// KeyPath is unavailable. Comparison falls back to FieldReader, reading strictly
+    /// by `fieldName` (the stored `keyPath` is a harmless placeholder that is NOT
+    /// used for value access in this mode).
+    init(fieldName: String, order: SortOrder) {
+        self.keyPath = \T.id as AnyKeyPath
+        self.order = order
+        self._compare = nil
+        self._overrideFieldName = fieldName
+    }
+
+    /// Get the field name using Persistable's fieldName method,
+    /// preferring the explicit override set for QueryIR-bridged descriptors.
     public var fieldName: String {
-        T.fieldName(for: keyPath)
+        _overrideFieldName ?? T.fieldName(for: keyPath)
     }
 
     // MARK: - Comparison
@@ -507,11 +556,18 @@ public struct SortDescriptor<T: Persistable>: @unchecked Sendable {
     /// Handles null ordering: null sorts first in raw comparison
     /// (ascending = null first, descending = null last after flip).
     private func compareViaFieldReader(_ lhs: T, _ rhs: T) -> ComparisonResult {
-        let lhsRaw = FieldReader.read(from: lhs, keyPath: keyPath, fieldName: fieldName)
-        let rhsRaw = FieldReader.read(from: rhs, keyPath: keyPath, fieldName: fieldName)
-
-        let lhsField = lhsRaw.flatMap { FieldValue($0) } ?? .null
-        let rhsField = rhsRaw.flatMap { FieldValue($0) } ?? .null
+        let lhsField: FieldValue
+        let rhsField: FieldValue
+        if let overrideName = _overrideFieldName {
+            // keyPath is a placeholder in this mode — read strictly by field name.
+            lhsField = FieldReader.readFieldValue(from: lhs, fieldName: overrideName)
+            rhsField = FieldReader.readFieldValue(from: rhs, fieldName: overrideName)
+        } else {
+            let lhsRaw = FieldReader.read(from: lhs, keyPath: keyPath, fieldName: fieldName)
+            let rhsRaw = FieldReader.read(from: rhs, keyPath: keyPath, fieldName: fieldName)
+            lhsField = lhsRaw.flatMap { FieldValue($0) } ?? .null
+            rhsField = rhsRaw.flatMap { FieldValue($0) } ?? .null
+        }
 
         // Null sorts first in raw (ascending) comparison
         if case .null = lhsField, case .null = rhsField { return .orderedSame }

@@ -93,9 +93,8 @@ private struct VectorReadExecutor: IndexReadExecutor {
         )
 
         let rows = try page.items.map { result in
-            let fields = try encodeFields(result.item)
-            return QueryRow(
-                fields: fields,
+            try QueryRowCodec.encode(
+                result.item,
                 annotations: ["distance": .double(result.distance)]
             )
         }
@@ -112,12 +111,6 @@ private struct VectorReadExecutor: IndexReadExecutor {
             return false
         }
         return true
-    }
-
-    private func encodeFields<T: Persistable>(_ item: T) throws -> [String: FieldValue] {
-        let data = try JSONEncoder().encode(item)
-        let fields = try JSONDecoder().decode([String: FieldValue].self, from: data)
-        return fields
     }
 
     private func requireString(

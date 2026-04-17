@@ -82,9 +82,7 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             options: options
         )
         let rows = try page.items.map { item in
-            let data = try JSONEncoder().encode(item)
-            let fields = try JSONDecoder().decode([String: FieldValue].self, from: data)
-            return QueryRow(fields: fields)
+            try QueryRowCodec.encode(item)
         }
         return QueryResponse(rows: rows, continuation: page.continuation)
     }

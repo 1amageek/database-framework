@@ -187,8 +187,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            let item = try JSONDecoder().decode(T.self, from: data)
+            let item = try QueryRowCodec.decode(row, as: T.self)
             guard let distance = row.annotations["distance"]?.doubleValue else {
                 throw CanonicalReadError.missingAnnotation("distance")
             }

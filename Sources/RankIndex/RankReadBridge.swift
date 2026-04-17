@@ -87,10 +87,8 @@ private struct RankReadExecutor: IndexReadExecutor {
             options: options
         )
         let rows = try page.items.map { result in
-            let data = try JSONEncoder().encode(result.item)
-            let fields = try JSONDecoder().decode([String: FieldValue].self, from: data)
-            return QueryRow(
-                fields: fields,
+            try QueryRowCodec.encode(
+                result.item,
                 annotations: ["rank": .int64(Int64(result.rank))]
             )
         }
