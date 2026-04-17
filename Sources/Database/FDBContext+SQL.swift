@@ -6,6 +6,7 @@ import Core
 import QueryIR
 import QueryAST
 import DatabaseEngine
+import DatabaseRuntime
 
 // MARK: - FDBContext + SQL String Execution
 
@@ -36,11 +37,13 @@ extension FDBContext {
     ///   - type: The Persistable type to fetch
     /// - Returns: Array of matching models
     /// - Throws: `SQLParseError` for invalid SQL, `SPARQLFunctionError` for SPARQL errors,
-    ///           `QueryBridgeError` for conversion errors, or any underlying fetch errors
+    ///           `CanonicalReadError` for conversion errors, or any underlying fetch errors
     public func executeSQL<T: Persistable>(
         _ sql: String,
         as type: T.Type
     ) async throws -> [T] {
+        BuiltinReadRuntime.registerBuiltins()
+
         // 1. Parse SQL string
         let parser = SQLParser()
         let statement = try parser.parse(sql)

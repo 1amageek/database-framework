@@ -18,12 +18,12 @@ private struct RuntimeSPARQLSourceExecutor: SPARQLSourceExecutor {
         partitionValues: [String: String]?
     ) async throws -> QueryResponse {
         guard selectQuery.subqueries == nil || selectQuery.subqueries?.isEmpty == true else {
-            throw QueryBridgeError.unsupportedSelectQuery(
+            throw CanonicalReadError.unsupportedSelectQuery(
                 "SPARQL canonical execution does not yet support WITH bindings"
             )
         }
         guard selectQuery.from == nil, selectQuery.fromNamed == nil, selectQuery.reduced == false else {
-            throw QueryBridgeError.unsupportedSelectQuery(
+            throw CanonicalReadError.unsupportedSelectQuery(
                 "SPARQL canonical execution does not yet support dataset clauses or REDUCED"
             )
         }

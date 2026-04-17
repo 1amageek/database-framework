@@ -162,7 +162,7 @@ extension FDBContext {
               selectQuery.from == nil,
               selectQuery.fromNamed == nil,
               selectQuery.reduced == false else {
-            throw QueryBridgeError.unsupportedSelectQuery(
+            throw CanonicalReadError.unsupportedSelectQuery(
                 "Canonical logical-source execution does not yet support grouping or SPARQL dataset clauses"
             )
         }
@@ -206,22 +206,12 @@ extension FDBContext {
         partitionMode: CanonicalPartitionRoutingMode
     ) async throws -> QueryResponse {
         switch selectQuery.source {
-        case .table(let tableRef):
-            let entity = try resolveEntity(named: tableRef.table)
-            guard let type = entity.persistableType else {
-                throw QueryBridgeError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
-            }
-
-            let effectivePartitionValues = scopedPartitionValues(
-                partitionValues,
-                for: type,
-                mode: partitionMode
-            )
-            return try await queryUsingResolvedType(
-                type,
-                selectQuery: selectQuery,
+        case .table:
+            return try await executeSingleTableRows(
+                selectQuery,
                 options: options,
-                partitionValues: effectivePartitionValues
+                partitionValues: partitionValues,
+                partitionMode: partitionMode
             )
 
         case .logical(let logicalSource):
@@ -267,7 +257,7 @@ extension FDBContext {
 
         let entity = try resolveEntity(named: tableRef.table)
         guard let type = entity.persistableType else {
-            throw QueryBridgeError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
+            throw CanonicalReadError.unsupportedSelectQuery("Entity '\(tableRef.table)' is not loadable")
         }
 
         let effectivePartitionValues = scopedPartitionValues(
@@ -275,40 +265,90 @@ extension FDBContext {
             for: type,
             mode: partitionMode
         )
-        return try await queryUsingResolvedType(
-            type,
+        let sourceName = tableRef.alias ?? tableRef.effectiveName
+        let pushdown = try await fetchTableSourceRows(
+            type: type,
+            sourceName: sourceName,
             selectQuery: selectQuery,
-            options: options,
-            partitionValues: effectivePartitionValues
+            partitionValues: effectivePartitionValues,
+            options: options
         )
-    }
 
-    private func queryUsingResolvedType(
-        _ type: any Persistable.Type,
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
-        try await _queryUsingResolvedType(
-            type,
-            selectQuery: selectQuery,
-            options: options,
-            partitionValues: partitionValues
-        )
-    }
+        let filteredRows = try applyFilter(pushdown.residualFilter, to: pushdown.rows)
 
-    private func _queryUsingResolvedType<T: Persistable>(
-        _ type: T.Type,
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions,
-        partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
-        try await query(
+        if let countResponse = try makeCountProjectionResponse(
             selectQuery,
-            as: type,
-            options: options,
-            partitionValues: partitionValues
+            rows: filteredRows
+        ) {
+            return countResponse
+        }
+
+        let orderedRows = try applyOrder(pushdown.residualOrderBy, to: filteredRows)
+        var projectedRows = try projectRows(orderedRows, projection: selectQuery.projection)
+        if selectQuery.distinct {
+            projectedRows = canonicalUniqueRows(projectedRows)
+        }
+
+        // When LIMIT/OFFSET are pushed down to the typed fetch, strip them from the
+        // pagination input so `CanonicalOffsetPagination.window` doesn't re-apply them.
+        let paginationQuery: SelectQuery
+        if pushdown.limitPushed || pushdown.offsetPushed {
+            var modified = selectQuery
+            if pushdown.limitPushed { modified = modified.replacing(limit: nil) }
+            if pushdown.offsetPushed { modified = modified.replacing(offset: nil) }
+            paginationQuery = modified
+        } else {
+            paginationQuery = selectQuery
+        }
+
+        let page = try CanonicalOffsetPagination.window(
+            items: projectedRows,
+            selectQuery: paginationQuery,
+            options: options
         )
+        return QueryResponse(rows: page.items, continuation: page.continuation)
+    }
+
+    private struct CanonicalTableSourceRows: Sendable {
+        let rows: [CanonicalSourceRow]
+        let residualFilter: QueryIR.Expression?
+        let residualOrderBy: [SortKey]?
+        let limitPushed: Bool
+        let offsetPushed: Bool
+    }
+
+    private func fetchTableSourceRows(
+        type: any Persistable.Type,
+        sourceName: String,
+        selectQuery: SelectQuery,
+        partitionValues: [String: String]?,
+        options: ReadExecutionOptions
+    ) async throws -> CanonicalTableSourceRows {
+        func helper<T: Persistable>(_ concreteType: T.Type) async throws -> CanonicalTableSourceRows {
+            let plan = try SelectQueryPlanner.plan(
+                selectQuery,
+                as: T.self,
+                partitionValues: partitionValues,
+                options: options
+            )
+            let items = try await fetch(plan.typedQuery)
+            let rows = items.map { item -> CanonicalSourceRow in
+                let row = QueryRowCodec.encodeAny(item)
+                return CanonicalSourceRow.fromBaseFields(
+                    row.fields,
+                    sourceName: sourceName,
+                    annotations: row.annotations
+                )
+            }
+            return CanonicalTableSourceRows(
+                rows: rows,
+                residualFilter: plan.residualFilter,
+                residualOrderBy: plan.residualOrderBy,
+                limitPushed: plan.limitPushed,
+                offsetPushed: plan.offsetPushed
+            )
+        }
+        return try await _openExistential(type, do: helper)
     }
 
     private func resolveEntity(named name: String) throws -> Schema.Entity {
@@ -440,7 +480,7 @@ extension FDBContext {
 
         case .logical(let logicalSource):
             guard logicalSource.kindIdentifier == BuiltinLogicalSourceKind.polymorphic else {
-                throw QueryBridgeError.unsupportedSelectQuery(
+                throw CanonicalReadError.unsupportedSelectQuery(
                     "Logical source '\(logicalSource.kindIdentifier)' is not supported"
                 )
             }
@@ -532,11 +572,11 @@ extension FDBContext {
             return try rows.map { values in
                 let names = columnNames ?? values.indices.map { "column\($0)" }
                 guard names.count == values.count else {
-                    throw QueryBridgeError.unsupportedSelectQuery("VALUES column count mismatch")
+                    throw CanonicalReadError.unsupportedSelectQuery("VALUES column count mismatch")
                 }
                 let fields = try Dictionary(uniqueKeysWithValues: zip(names, values).map { name, literal in
                     guard let fieldValue = literal.toFieldValue() else {
-                        throw QueryBridgeError.incompatibleLiteralType
+                        throw CanonicalReadError.incompatibleLiteralType
                     }
                     return (name, fieldValue)
                 })
@@ -595,7 +635,7 @@ extension FDBContext {
     ) async throws -> [CanonicalSourceRow] {
         switch clause.type {
         case .lateral, .leftLateral:
-            throw QueryBridgeError.unsupportedSelectQuery("LATERAL joins are not yet supported")
+            throw CanonicalReadError.unsupportedSelectQuery("LATERAL joins are not yet supported")
         case .natural, .naturalLeft, .naturalRight, .naturalFull:
             let leftRows = try await materializeRows(
                 for: clause.left,
@@ -926,7 +966,7 @@ extension FDBContext {
         case .allFrom(let sourceName):
             return try rows.map { row in
                 guard let fields = row.fields(for: sourceName) else {
-                    throw QueryBridgeError.unsupportedSelectQuery("Projection source '\(sourceName)' not found")
+                    throw CanonicalReadError.unsupportedSelectQuery("Projection source '\(sourceName)' not found")
                 }
                 return QueryRow(fields: fields, annotations: row.annotations)
             }
@@ -960,7 +1000,7 @@ extension FDBContext {
         }
 
         guard expression == nil, distinct == false else {
-            throw QueryBridgeError.unsupportedSelectQuery(
+            throw CanonicalReadError.unsupportedSelectQuery(
                 "Canonical logical-source execution currently supports only COUNT(*) projections"
             )
         }
@@ -982,12 +1022,12 @@ extension FDBContext {
         case .column:
             let value = try evaluateExpression(expression, on: row)
             guard let boolValue = value.boolValue else {
-                throw QueryBridgeError.unsupportedExpression
+                throw CanonicalReadError.unsupportedExpression
             }
             return boolValue
         case .literal(let literal):
             guard let value = literal.toFieldValue()?.boolValue else {
-                throw QueryBridgeError.incompatibleLiteralType
+                throw CanonicalReadError.incompatibleLiteralType
             }
             return value
 
@@ -1038,7 +1078,7 @@ extension FDBContext {
             let right = try values.map { try evaluateExpression($0, on: row) }
             return !right.contains(left)
         default:
-            throw QueryBridgeError.unsupportedExpression
+            throw CanonicalReadError.unsupportedExpression
         }
     }
 
@@ -1049,18 +1089,18 @@ extension FDBContext {
         switch expression {
         case .column(let column):
             guard let value = row.fieldValue(for: column) else {
-                throw QueryBridgeError.unsupportedExpression
+                throw CanonicalReadError.unsupportedExpression
             }
             return value
         case .literal(let literal):
             guard let value = literal.toFieldValue() else {
-                throw QueryBridgeError.incompatibleLiteralType
+                throw CanonicalReadError.incompatibleLiteralType
             }
             return value
         default:
             // Canonical logical-source evaluation intentionally supports only
             // column and literal operands plus the boolean/comparison forms above.
-            throw QueryBridgeError.unsupportedExpression
+            throw CanonicalReadError.unsupportedExpression
         }
     }
 

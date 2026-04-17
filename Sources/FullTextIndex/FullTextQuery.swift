@@ -9,6 +9,16 @@ import DatabaseClientProtocol
 import StorageKit
 import FullText
 
+private enum FullTextQueryRuntime {
+    static let registration: Void = {
+        FullTextReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Full-Text Query Builder
 
 /// Builder for full-text search queries
@@ -42,6 +52,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private var facetLimit: Int = 10
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
+        FullTextQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
     }
@@ -116,7 +127,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return []
         }
 
-        FullTextReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             toSelectQuery(),
             as: T.self,
@@ -202,7 +212,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return FacetedSearchResult(items: [], facets: [:], totalCount: 0)
         }
 
-        FullTextReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             toSelectQuery(includeFacets: true),
             as: T.self,
@@ -547,7 +556,6 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return []
         }
 
-        FullTextReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             toSelectQuery(returnScores: true),
             as: T.self,
@@ -557,7 +565,9 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         return try response.rows.map { row in
             let data = try JSONEncoder().encode(row.fields)
             let item = try JSONDecoder().decode(T.self, from: data)
-            let score = row.annotations["score"]?.doubleValue ?? 0
+            guard let score = row.annotations["score"]?.doubleValue else {
+                throw CanonicalReadError.missingAnnotation("score")
+            }
             return (item: item, score: score)
         }
     }
@@ -721,6 +731,196 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         return facets
+    }
+}
+
+// MARK: - Polymorphic Full-Text Query Builder
+
+public enum PolymorphicFullTextQueryError: Error, Sendable, CustomStringConvertible {
+    case indexNotFound(groupIdentifier: String, fieldName: String)
+
+    public var description: String {
+        switch self {
+        case .indexNotFound(let groupIdentifier, let fieldName):
+            return """
+                No polymorphic full-text index was found for group '\(groupIdentifier)' and field '\(fieldName)'.
+                Declare the shared full-text index on the polymorphic group metadata, or use .index(...) as an explicit escape hatch.
+                """
+        }
+    }
+}
+
+/// Builder for full-text search across a polymorphic logical group.
+///
+/// Use `context.findPolymorphic(ConcreteType.self)` to start the query, then
+/// narrow by a field that is shared across the conforming models.
+public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphable>: Sendable {
+    private var base: PolymorphicQuery<Member>
+    private let fieldName: String
+    private var indexName: String?
+    private var searchTerms: [String] = []
+    private var matchMode: TextMatchMode = .all
+    private var returnScores = false
+    private var bm25Params: BM25Parameters = .default
+
+    internal init(
+        base: PolymorphicQuery<Member>,
+        fieldName: String
+    ) {
+        FullTextQueryRuntime.ensureRegistered()
+        self.base = base
+        self.fieldName = fieldName
+    }
+
+    /// Set search terms and match mode.
+    public func terms(_ terms: [String], mode: TextMatchMode = .all) -> Self {
+        var copy = self
+        copy.searchTerms = terms
+        copy.matchMode = mode
+        return copy
+    }
+
+    /// Set a single search term and match mode.
+    public func term(_ term: String, mode: TextMatchMode = .all) -> Self {
+        terms([term], mode: mode)
+    }
+
+    /// Set search terms using a variadic API.
+    public func terms(_ terms: String..., mode: TextMatchMode = .all) -> Self {
+        self.terms(terms, mode: mode)
+    }
+
+    /// Use an explicit polymorphic full-text index name as an escape hatch.
+    public func index(_ name: String) -> Self {
+        var copy = self
+        copy.indexName = name
+        return copy
+    }
+
+    /// Limit the number of matching rows.
+    public func limit(_ count: Int) -> Self {
+        var copy = self
+        copy.base = copy.base.limit(count)
+        return copy
+    }
+
+    /// Skip the first N matching rows.
+    public func offset(_ count: Int) -> Self {
+        var copy = self
+        copy.base = copy.base.offset(count)
+        return copy
+    }
+
+    /// Set canonical read consistency for the search.
+    public func consistency(_ consistency: ReadConsistency?) -> Self {
+        var copy = self
+        copy.base = copy.base.consistency(consistency)
+        return copy
+    }
+
+    /// Set canonical page size for the search.
+    public func pageSize(_ count: Int?) -> Self {
+        var copy = self
+        copy.base = copy.base.pageSize(count)
+        return copy
+    }
+
+    /// Continue from a previous polymorphic continuation token.
+    public func continuing(from continuation: QueryContinuation?) -> Self {
+        var copy = self
+        copy.base = copy.base.continuing(from: continuation)
+        return copy
+    }
+
+    /// Return BM25 scores in the annotations of each result row.
+    public func bm25(k1: Float = 1.2, b: Float = 0.75) -> Self {
+        var copy = self
+        copy.returnScores = true
+        copy.bm25Params = BM25Parameters(k1: k1, b: b)
+        return copy
+    }
+
+    /// Execute the polymorphic full-text search.
+    public func execute() async throws -> [PolymorphicQueryResult] {
+        try await executePage().results
+    }
+
+    /// Execute the polymorphic full-text search and return page metadata.
+    public func executePage() async throws -> PolymorphicQueryPage {
+        guard !searchTerms.isEmpty else {
+            return PolymorphicQueryPage(results: [], continuation: nil, metadata: [:])
+        }
+
+        return try await base.executePage(accessPath: .index(try makeIndexScan()))
+    }
+
+    /// Execute the polymorphic full-text search and return the first result.
+    public func first() async throws -> PolymorphicQueryResult? {
+        try await executePage().results.first
+    }
+
+    private func makeIndexScan() throws -> IndexScanSource {
+        var parameters: [String: QueryParameterValue] = [
+            FullTextReadParameter.fieldName: .string(fieldName),
+            FullTextReadParameter.terms: .array(searchTerms.map(QueryParameterValue.string)),
+            FullTextReadParameter.matchMode: .string(matchMode.accessPathIdentifier),
+            FullTextReadParameter.returnScores: .bool(returnScores),
+            FullTextReadParameter.includeFacets: .bool(false)
+        ]
+
+        if let limit = base.limitCount {
+            parameters[FullTextReadParameter.limit] = .int(Int64(limit))
+        }
+        if returnScores {
+            parameters[FullTextReadParameter.bm25K1] = .double(Double(bm25Params.k1))
+            parameters[FullTextReadParameter.bm25B] = .double(Double(bm25Params.b))
+        }
+
+        return IndexScanSource(
+            indexName: try buildIndexName(),
+            kindIdentifier: FullTextIndexKind<Member>.identifier,
+            parameters: parameters
+        )
+    }
+
+    private func buildIndexName() throws -> String {
+        if let indexName {
+            return indexName
+        }
+
+        if let resolvedIndexName = try base.resolveIndexName(
+            kindIdentifier: FullTextIndexKind<Member>.identifier,
+            fieldName: fieldName
+        ) {
+            return resolvedIndexName
+        }
+
+        throw PolymorphicFullTextQueryError.indexNotFound(
+            groupIdentifier: base.identifier,
+            fieldName: fieldName
+        )
+    }
+}
+
+public extension PolymorphicQuery where Member: Persistable & Polymorphable {
+    /// Search a shared String field across all members of the polymorphic group.
+    func fullText(
+        _ keyPath: KeyPath<Member, String>
+    ) -> PolymorphicFullTextQueryBuilder<Member> {
+        PolymorphicFullTextQueryBuilder(
+            base: self,
+            fieldName: Member.fieldName(for: keyPath)
+        )
+    }
+
+    /// Search a shared optional String field across all members of the polymorphic group.
+    func fullText(
+        _ keyPath: KeyPath<Member, String?>
+    ) -> PolymorphicFullTextQueryBuilder<Member> {
+        PolymorphicFullTextQueryBuilder(
+            base: self,
+            fieldName: Member.fieldName(for: keyPath)
+        )
     }
 }
 

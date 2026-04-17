@@ -10,6 +10,16 @@ import QueryIR
 import DatabaseClientProtocol
 import StorageKit
 
+private enum VersionQueryRuntime {
+    static let registration: Void = {
+        VersionReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Version Entry Point
 
 /// Entry point for version history queries
@@ -83,6 +93,7 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
         queryContext: IndexQueryContext,
         primaryKey: [any TupleElement & Sendable]
     ) {
+        VersionQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.primaryKey = primaryKey
     }
@@ -115,7 +126,6 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
     ///
     /// - Returns: Array of (version, item) tuples
     public func execute() async throws -> [(version: Version, item: T)] {
-        VersionReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             try toSelectQuery(),
             as: T.self,
@@ -149,18 +159,12 @@ public struct VersionQueryBuilder<T: Persistable>: Sendable {
             )
         }
 
-        // Deserialize items
+        // Deserialize items (empty data marks deletion and is skipped by design)
         var results: [(version: Version, item: T)] = []
         for (version, data) in rawResults {
-            if !data.isEmpty {
-                do {
-                    let item: T = try DataAccess.deserialize(data)
-                    results.append((version: version, item: item))
-                } catch {
-                    // Skip items that can't be deserialized (deletion markers, etc.)
-                    continue
-                }
-            }
+            guard !data.isEmpty else { continue }
+            let item: T = try DataAccess.deserialize(data)
+            results.append((version: version, item: item))
         }
 
         return results

@@ -9,6 +9,16 @@ import DatabaseClientProtocol
 import StorageKit
 import Vector
 
+private enum VectorQueryRuntime {
+    static let registration: Void = {
+        VectorReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Vector Query Builder
 
 /// Builder for vector similarity search queries
@@ -44,6 +54,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
     private var acornParams: ACORNParameters = .default
 
     internal init(queryContext: IndexQueryContext, fieldName: String, dimensions: Int) {
+        VectorQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
         self.dimensions = dimensions
@@ -169,7 +180,6 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             throw VectorQueryError.closureFilterUnsupported
         }
 
-        VectorReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             toSelectQuery(),
             as: T.self,
@@ -179,7 +189,9 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return try response.rows.map { row in
             let data = try JSONEncoder().encode(row.fields)
             let item = try JSONDecoder().decode(T.self, from: data)
-            let distance = row.annotations["distance"]?.doubleValue ?? 0
+            guard let distance = row.annotations["distance"]?.doubleValue else {
+                throw CanonicalReadError.missingAnnotation("distance")
+            }
             return (item: item, distance: distance)
         }
     }

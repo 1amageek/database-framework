@@ -315,7 +315,7 @@ public func executeSQL<T: Persistable>(
 **Throws**:
 - `SQLParseError`: Invalid SQL syntax
 - `SPARQLFunctionError`: SPARQL execution errors
-- `QueryBridgeError`: Query conversion errors
+- `CanonicalReadError`: Query conversion errors
 - `FDBError`: FoundationDB errors
 
 **Example**:

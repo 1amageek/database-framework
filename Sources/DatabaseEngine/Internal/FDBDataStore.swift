@@ -230,7 +230,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         limit: Int?
     ) async throws -> IndexFetchResult<T>? {
         // Extract indexable condition from predicate
-        guard let condition = extractIndexableCondition(from: predicate),
+        guard let condition = try extractIndexableCondition(from: predicate),
               let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) else {
             return nil
         }
@@ -371,14 +371,25 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///
     /// For AND predicates, extracts all conditions that can potentially use an index.
     /// This enables compound index optimization.
-    private func extractAllIndexableConditions<T: Persistable>(from predicate: Predicate<T>) -> [IndexableCondition] {
+    ///
+    /// Throws `CanonicalReadError.unencodablePredicateValue` when an indexable
+    /// operator's value cannot be encoded into the FDB tuple form. Silently
+    /// falling back to a full scan here would mask data-shape bugs and is
+    /// explicitly prohibited by project policy.
+    private func extractAllIndexableConditions<T: Persistable>(from predicate: Predicate<T>) throws -> [IndexableCondition] {
         switch predicate {
         case .comparison(let comparison):
             switch comparison.op {
             case .equal, .lessThan, .lessThanOrEqual, .greaterThan, .greaterThanOrEqual:
-                // Convert to Tuple here for Sendable compatibility
-                // If conversion fails, skip this condition (fall back to full scan)
-                guard let tuple = try? valueToTuple(comparison.value) else { return [] }
+                let tuple: Tuple
+                do {
+                    tuple = try valueToTuple(comparison.value)
+                } catch {
+                    throw CanonicalReadError.unencodablePredicateValue(
+                        field: comparison.fieldName,
+                        valueDescription: String(describing: comparison.value)
+                    )
+                }
                 return [IndexableCondition(fieldName: comparison.fieldName, op: comparison.op, valueTuple: tuple)]
             default:
                 return []
@@ -386,7 +397,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         case .and(let predicates):
             // Extract all indexable conditions from AND predicates
-            return predicates.flatMap { extractAllIndexableConditions(from: $0) }
+            return try predicates.flatMap { try extractAllIndexableConditions(from: $0) }
 
         default:
             return []
@@ -399,8 +410,15 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// 1. Compound index matching multiple conditions (equals only)
     /// 2. Single field index with equals comparison
     /// 3. Single field index with range comparison
-    private func extractIndexableCondition<T: Persistable>(from predicate: Predicate<T>) -> IndexableCondition? {
-        let allConditions = extractAllIndexableConditions(from: predicate)
+    ///
+    /// - Parameter descriptors: The indexes the condition must be matchable against.
+    ///   Defaults to `T.indexDescriptors`; callers pass a narrower list when a
+    ///   forced-index hint restricts selection to one descriptor.
+    private func extractIndexableCondition<T: Persistable>(
+        from predicate: Predicate<T>,
+        in descriptors: [IndexDescriptor]? = nil
+    ) throws -> IndexableCondition? {
+        let allConditions = try extractAllIndexableConditions(from: predicate)
         guard !allConditions.isEmpty else { return nil }
 
         // Build field-to-condition map for quick lookup
@@ -417,7 +435,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Find best matching index
-        let descriptors = T.indexDescriptors
+        let descriptors = descriptors ?? T.indexDescriptors
 
         // Priority 1: Find compound index matching multiple equals conditions
         for descriptor in descriptors {
@@ -627,7 +645,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Try to use index for counting
         if let predicate = combinedPredicate,
-           let condition = extractIndexableCondition(from: predicate),
+           let condition = try extractIndexableCondition(from: predicate),
            let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
             return try await countUsingIndex(condition: condition, index: matchingIndex)
         }
@@ -739,7 +757,13 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Try index-optimized fetch
         if let predicate = combinedPredicate,
-           let indexResult = try await fetchUsingIndexWithTransaction(predicate, type: T.self, limit: query.fetchLimit, transaction: transaction) {
+           let indexResult = try await fetchUsingIndexWithTransaction(
+               predicate,
+               type: T.self,
+               limit: query.fetchLimit,
+               forcedIndexName: query.forcedIndex?.indexName,
+               transaction: transaction
+           ) {
             results = indexResult.models
 
             // If index didn't cover all predicate conditions, apply remaining filters
@@ -749,7 +773,14 @@ internal final class FDBDataStore: DataStore, Sendable {
                 }
             }
         } else {
-            // Fall back to full table scan
+            // Fall back to full table scan. A forced index without a predicate
+            // is a misuse — the fetch path has nothing to match against, so we
+            // fail loudly rather than silently scanning the whole table.
+            if query.forcedIndex != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(query.forcedIndex!.indexName)' requires a filter predicate"
+                )
+            }
             results = try await fetchAllWithTransaction(T.self, transaction: transaction)
 
             // Apply predicate filter
@@ -819,16 +850,42 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
     }
 
-    /// Attempt to fetch using an index with an existing transaction
+    /// Attempt to fetch using an index with an existing transaction.
+    ///
+    /// - Parameters:
+    ///   - forcedIndexName: When set, restricts index selection to the named
+    ///     index. Mismatches (index not found, or predicate has no condition on
+    ///     the index's leading field) raise `CanonicalReadError` instead of
+    ///     silently falling back to a full scan — the caller has asked for this
+    ///     exact index and deserves an explicit failure.
     private func fetchUsingIndexWithTransaction<T: Persistable>(
         _ predicate: Predicate<T>,
         type: T.Type,
         limit: Int?,
+        forcedIndexName: String? = nil,
         transaction: any Transaction
     ) async throws -> IndexFetchResult<T>? {
+        // Restrict descriptors when a forced index hint is present.
+        let candidateDescriptors: [IndexDescriptor]
+        if let forcedIndexName {
+            guard let forced = T.indexDescriptors.first(where: { $0.name == forcedIndexName }) else {
+                throw CanonicalReadError.indexHintNotFound(
+                    "Forced index '\(forcedIndexName)' not found on type '\(T.persistableType)'"
+                )
+            }
+            candidateDescriptors = [forced]
+        } else {
+            candidateDescriptors = T.indexDescriptors
+        }
+
         // Extract indexable condition from predicate
-        guard let condition = extractIndexableCondition(from: predicate),
-              let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) else {
+        guard let condition = try extractIndexableCondition(from: predicate, in: candidateDescriptors),
+              let matchingIndex = findMatchingIndex(for: condition, in: candidateDescriptors, type: T.self) else {
+            if forcedIndexName != nil {
+                throw CanonicalReadError.indexHintNotApplicable(
+                    "Forced index '\(forcedIndexName!)' cannot serve the given predicate on type '\(T.persistableType)'"
+                )
+            }
             return nil
         }
 
@@ -1008,7 +1065,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Try to use index for counting
         if let predicate = combinedPredicate,
-           let condition = extractIndexableCondition(from: predicate),
+           let condition = try extractIndexableCondition(from: predicate),
            let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
             return try await countUsingIndexWithTransaction(condition: condition, index: matchingIndex, transaction: transaction)
         }

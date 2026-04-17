@@ -11,6 +11,16 @@ import DatabaseClientProtocol
 import StorageKit
 import Rank
 
+private enum RankQueryRuntime {
+    static let registration: Void = {
+        RankReadBridge.registerReadExecutors()
+    }()
+
+    static func ensureRegistered() {
+        _ = registration
+    }
+}
+
 // MARK: - Rank Query Builder
 
 /// Builder for ranking queries (leaderboards, top-N, percentiles)
@@ -51,6 +61,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     }
 
     internal init(queryContext: IndexQueryContext, fieldName: String) {
+        RankQueryRuntime.ensureRegistered()
         self.queryContext = queryContext
         self.fieldName = fieldName
     }
@@ -122,7 +133,6 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, rank) tuples sorted by rank
     /// - Throws: Error if execution fails
     public func execute() async throws -> [(item: T, rank: Int)] {
-        RankReadBridge.registerReadExecutors()
         let response = try await queryContext.context.query(
             toSelectQuery(),
             as: T.self,
@@ -399,12 +409,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // First element is score
         guard let firstElement = tuple[0] else { return nil }
 
-        let score: Double
-        do {
-            score = try TypeConversion.double(from: firstElement)
-        } catch {
-            return nil
-        }
+        let score = try TypeConversion.double(from: firstElement)
 
         // Remaining elements are primary key
         var primaryKeyElements: [any TupleElement] = []

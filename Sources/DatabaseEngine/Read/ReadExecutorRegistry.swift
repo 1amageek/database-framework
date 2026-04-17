@@ -4,13 +4,6 @@ import Core
 import QueryIR
 import DatabaseClientProtocol
 
-public enum CanonicalReadError: Error, Sendable {
-    case unsupportedSource(String)
-    case unsupportedAccessPath(String)
-    case executorNotRegistered(String)
-    case invalidContinuation
-}
-
 public protocol IndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
 

@@ -163,13 +163,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
 
         for entity in container.schema.entities {
             for indexDescriptor in entity.indexDescriptors {
-                do {
-                    let stats = try await indexStatistics(indexDescriptor.name)
-                    results.append(stats)
-                } catch {
-                    // Skip indexes that fail to load
-                    continue
-                }
+                let stats = try await indexStatistics(indexDescriptor.name)
+                results.append(stats)
             }
         }
 
@@ -197,22 +192,8 @@ public final class AdminContext: AdminContextProtocol, Sendable {
         let indexes = entity.indexDescriptors
         let planner = QueryPlanner<T>(indexes: indexes)
 
-        do {
-            let internalPlan = try planner.plan(query: query)
-            return convertToPublicPlan(internalPlan)
-        } catch {
-            // Fallback to table scan
-            return QueryPlanPublic(
-                planType: .tableScan,
-                selectedIndex: nil,
-                estimatedCost: Double.infinity,
-                estimatedRows: 0,
-                indexConditions: [],
-                filterConditions: query.predicates.map { describeCondition($0) },
-                sortRequired: !query.sortDescriptors.isEmpty,
-                alternatives: nil
-            )
-        }
+        let internalPlan = try planner.plan(query: query)
+        return convertToPublicPlan(internalPlan)
     }
 
     public func explainAnalyze<T: Persistable>(_ query: Query<T>) async throws -> QueryExecutionStatsPublic {
@@ -334,13 +315,18 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     ///
     /// Creates an Index object from an IndexDescriptor for use with IndexMaintainers.
     private func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
-        let rootExpression: KeyExpression
+        let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
+
         if descriptor.keyPaths.isEmpty {
-            rootExpression = EmptyKeyExpression()
-        } else {
-            let firstKeyPathString = String(describing: descriptor.keyPaths.first!)
-            let fieldName = extractFieldName(from: firstKeyPathString)
-            rootExpression = FieldKeyExpression(fieldName: fieldName)
+            return Index(
+                name: descriptor.name,
+                kind: descriptor.kind,
+                rootExpression: rootExpression,
+                subspaceKey: descriptor.name,
+                itemTypes: Set([persistableType]),
+                isUnique: descriptor.isUnique,
+                storedFieldNames: descriptor.storedFieldNames
+            )
         }
 
         return Index(
@@ -353,18 +339,6 @@ public final class AdminContext: AdminContextProtocol, Sendable {
             isUnique: descriptor.isUnique,
             storedFieldNames: descriptor.storedFieldNames
         )
-    }
-
-    /// Extract field name from keyPath string representation
-    private func extractFieldName(from keyPathString: String) -> String {
-        if let dotIndex = keyPathString.lastIndex(of: ".") {
-            let afterDot = keyPathString[keyPathString.index(after: dotIndex)...]
-            if let parenIndex = afterDot.firstIndex(of: "(") {
-                return String(afterDot[..<parenIndex])
-            }
-            return String(afterDot)
-        }
-        return keyPathString
     }
 
     /// Update statistics for all types in the schema
