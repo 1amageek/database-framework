@@ -177,6 +177,16 @@ extension SchemaMigrationPlan {
                     actual: stage.toVersionIdentifier
                 )
             }
+
+            if stage.isLightweight {
+                let report = stage.schemaCompatibilityReport
+                if !report.isLightweightCompatible {
+                    throw MigrationPlanError.incompatibleLightweightStage(
+                        stageIndex: index,
+                        issues: report.allIssues
+                    )
+                }
+            }
         }
     }
 }
@@ -199,6 +209,9 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
     /// Stage doesn't connect expected versions
     case stageMismatch(stageIndex: Int, expected: Schema.Version, actual: Schema.Version)
+
+    /// Lightweight stage contains breaking schema changes
+    case incompatibleLightweightStage(stageIndex: Int, issues: [SchemaCompatibilityIssue])
 
     /// No migration path exists between versions
     case noMigrationPath(from: Schema.Version, to: Schema.Version)
@@ -225,6 +238,10 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
 
         case .stageMismatch(let index, let expected, let actual):
             return "Stage \(index) version mismatch: expected \(expected), got \(actual)"
+
+        case .incompatibleLightweightStage(let index, let issues):
+            let summary = issues.map { $0.description }.joined(separator: " | ")
+            return "Stage \(index) is marked lightweight but requires custom migration: \(summary)"
 
         case .noMigrationPath(let from, let to):
             return "No migration path from \(from) to \(to)"

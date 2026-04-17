@@ -103,6 +103,9 @@ public struct MigrationContext: Sendable {
     /// Schema being migrated to
     public let schema: Schema
 
+    /// Schema being migrated from
+    public let sourceSchema: Schema
+
     /// Metadata subspace for storing migration progress
     public let metadataSubspace: Subspace
 
@@ -122,12 +125,14 @@ public struct MigrationContext: Sendable {
     internal init(
         container: DBContainer,
         schema: Schema,
+        sourceSchema: Schema? = nil,
         metadataSubspace: Subspace,
         storeRegistry: [String: MigrationStoreInfo],
         indexConfigurations: [String: [any IndexConfiguration]] = [:]
     ) {
         self.container = container
         self.schema = schema
+        self.sourceSchema = sourceSchema ?? schema
         self.metadataSubspace = metadataSubspace
         self.storeRegistry = storeRegistry
         self.indexConfigurations = indexConfigurations
@@ -172,7 +177,7 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if index addition fails or target entity cannot be determined
     public func addIndex(_ indexDescriptor: IndexDescriptor, batchSize: Int = 100) async throws {
         // 1. Identify target entity from Schema
-        let targetEntity = try identifyTargetEntity(for: indexDescriptor)
+        let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: schema)
 
         // 2. Get store info for target entity
         guard let info = storeRegistry[targetEntity.name] else {
@@ -273,15 +278,15 @@ public struct MigrationContext: Sendable {
         indexName: String,
         addedVersion: Schema.Version
     ) async throws {
-        // 1. Find index descriptor in schema to identify target entity
-        guard let indexDescriptor = schema.indexDescriptor(named: indexName) else {
+        // 1. Find index descriptor in source schema to identify target entity
+        guard let indexDescriptor = sourceSchema.indexDescriptor(named: indexName) else {
             throw FDBRuntimeError.indexNotFound(
-                "Index '\(indexName)' not found in schema. Cannot determine target entity."
+                "Index '\(indexName)' not found in source schema. Cannot determine target entity."
             )
         }
 
         // 2. Identify target entity
-        let targetEntity = try identifyTargetEntity(for: indexDescriptor)
+        let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: sourceSchema)
 
         // 3. Get store info for target entity
         guard let info = storeRegistry[targetEntity.name] else {
@@ -348,7 +353,7 @@ public struct MigrationContext: Sendable {
         }
 
         // 2. Identify target entity
-        let targetEntity = try identifyTargetEntity(for: indexDescriptor)
+        let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: schema)
 
         // 3. Get store info for target entity
         guard let info = storeRegistry[targetEntity.name] else {
@@ -709,7 +714,10 @@ public struct MigrationContext: Sendable {
     /// - Parameter descriptor: IndexDescriptor to match
     /// - Returns: Target entity
     /// - Throws: Error if no entity owns this index or multiple entities claim it
-    private func identifyTargetEntity(for descriptor: IndexDescriptor) throws -> Schema.Entity {
+    private func identifyTargetEntity(
+        for descriptor: IndexDescriptor,
+        in schema: Schema
+    ) throws -> Schema.Entity {
         var matchingEntities: [Schema.Entity] = []
 
         for entity in schema.entities {

@@ -29,8 +29,12 @@ public struct SchemaRegistry: Sendable {
     ///
     /// Called during `DBContainer.init` after `ensureIndexesReady()`.
     /// Overwrites existing entries. Entity and ontology are written atomically.
-    public func persist(_ schema: Schema) async throws {
+    public func persist(
+        _ schema: Schema,
+        mode: SchemaRegistryPersistMode = .strict
+    ) async throws {
         let entities = schema.entities
+        try await validateCompatibility(of: entities, mode: mode)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
@@ -61,22 +65,7 @@ public struct SchemaRegistry: Sendable {
         }
 
         // Cache miss - fetch from FDB
-        let prefix = Tuple([Self.catalogPrefix]).pack()
-        let subspace = Subspace(prefix: prefix)
-        let (begin, end) = subspace.range()
-
-        let entities = try await database.withTransaction { transaction in
-            var entities: [Schema.Entity] = []
-            let decoder = JSONDecoder()
-
-            let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
-            for (_, value) in sequence {
-                let data = Data(value)
-                let entity = try decoder.decode(Schema.Entity.self, from: data)
-                entities.append(entity)
-            }
-            return entities
-        }
+        let entities = try await loadAllFromStorage()
 
         // Populate cache
         cache.set(entities)
@@ -103,7 +92,11 @@ public struct SchemaRegistry: Sendable {
     ///
     /// Used by CLI to apply individual schema definitions.
     /// Overwrites existing entry if present.
-    public func persist(_ entity: Schema.Entity) async throws {
+    public func persist(
+        _ entity: Schema.Entity,
+        mode: SchemaRegistryPersistMode = .strict
+    ) async throws {
+        try await validateCompatibility(of: [entity], mode: mode)
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
@@ -137,5 +130,80 @@ public struct SchemaRegistry: Sendable {
     /// Build FDB key for a schema entry: (_schema, typeName) as Tuple
     private static func key(for typeName: String) -> Bytes {
         Tuple([catalogPrefix, typeName]).pack()
+    }
+
+    private func loadAllFromStorage() async throws -> [Schema.Entity] {
+        let prefix = Tuple([Self.catalogPrefix]).pack()
+        let subspace = Subspace(prefix: prefix)
+        let (begin, end) = subspace.range()
+
+        return try await database.withTransaction { transaction in
+            var entities: [Schema.Entity] = []
+            let decoder = JSONDecoder()
+
+            let sequence = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(begin),
+                to: .firstGreaterOrEqual(end),
+                snapshot: true
+            )
+            for (_, value) in sequence {
+                let data = Data(value)
+                let entity = try decoder.decode(Schema.Entity.self, from: data)
+                entities.append(entity)
+            }
+            return entities
+        }
+    }
+
+    private func validateCompatibility(
+        of entities: [Schema.Entity],
+        mode: SchemaRegistryPersistMode
+    ) async throws {
+        let existingEntities = try await loadAllFromStorage()
+        let existingByName = Dictionary(uniqueKeysWithValues: existingEntities.map { ($0.name, $0) })
+
+        for entity in entities {
+            guard let existing = existingByName[entity.name] else {
+                continue
+            }
+
+            let report = entity.compatibilityReport(from: existing)
+            guard !report.isCompatible else {
+                continue
+            }
+
+            guard mode.allowsBreakingChanges(for: entity.name) else {
+                throw SchemaRegistryError.incompatibleEntityEvolution(
+                    entityName: entity.name,
+                    issues: report.issues
+                )
+            }
+        }
+    }
+}
+
+public enum SchemaRegistryPersistMode: Sendable {
+    case strict
+    case allowBreakingChanges(entityNames: Set<String>)
+
+    fileprivate func allowsBreakingChanges(for entityName: String) -> Bool {
+        switch self {
+        case .strict:
+            return false
+        case .allowBreakingChanges(let entityNames):
+            return entityNames.contains(entityName)
+        }
+    }
+}
+
+public enum SchemaRegistryError: Error, CustomStringConvertible, Sendable {
+    case incompatibleEntityEvolution(entityName: String, issues: [SchemaCompatibilityIssue])
+
+    public var description: String {
+        switch self {
+        case .incompatibleEntityEvolution(let entityName, let issues):
+            let summary = issues.map { $0.description }.joined(separator: " | ")
+            return "Schema entity '\(entityName)' is not append-only compatible with the persisted registry entry: \(summary)"
+        }
     }
 }

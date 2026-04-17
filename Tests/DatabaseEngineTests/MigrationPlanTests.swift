@@ -42,6 +42,15 @@ struct UserV3 {
     var createdAt: Double = 0
 }
 
+/// V2b: User with reordered fields (unsafe without explicit migration)
+@Persistable(type: "TestUser")
+struct UserV2Reordered {
+    #Index(ScalarIndexKind<UserV2Reordered>(fields: [\.email]), unique: true, name: "TestUser_email")
+
+    var email: String
+    var name: String
+}
+
 /// Tests for Migration API
 ///
 /// **Coverage**:
@@ -70,6 +79,11 @@ struct MigrationPlanTests {
     enum TestSchemaV3: VersionedSchema {
         static let versionIdentifier = Schema.Version(3, 0, 0)
         static let models: [any Persistable.Type] = [UserV3.self]
+    }
+
+    enum TestSchemaV2Reordered: VersionedSchema {
+        static let versionIdentifier = Schema.Version(2, 1, 0)
+        static let models: [any Persistable.Type] = [UserV2Reordered.self]
     }
 
     // MARK: - Test Migration Plans
@@ -317,6 +331,28 @@ struct MigrationPlanTests {
         #expect(!stage.isLightweight)
     }
 
+    @Test("Unsafe field reordering is not lightweight")
+    func unsafeFieldReorderingIsNotLightweight() {
+        #expect(!TestSchemaV2Reordered.canLightweightMigrate(from: TestSchemaV1.self))
+
+        let stage = MigrationStage.automatic(
+            from: TestSchemaV1.self,
+            to: TestSchemaV2Reordered.self
+        )
+
+        #expect(!stage.isLightweight)
+        #expect(
+            stage.schemaCompatibilityReport.allIssues.contains(
+                .renumberedField(
+                    entityName: "TestUser",
+                    fieldName: "email",
+                    expected: 3,
+                    actual: 2
+                )
+            )
+        )
+    }
+
     // MARK: - Validation Error Tests
 
     /// Invalid plan with wrong stage count
@@ -358,6 +394,15 @@ struct MigrationPlanTests {
         }
     }
 
+    enum InvalidLightweightPlan: SchemaMigrationPlan {
+        static var schemas: [any VersionedSchema.Type] {
+            [TestSchemaV1.self, TestSchemaV2Reordered.self]
+        }
+        static var stages: [MigrationStage] {
+            [MigrationStage.lightweight(fromVersion: TestSchemaV1.self, toVersion: TestSchemaV2Reordered.self)]
+        }
+    }
+
     /// Test: Validation fails for out-of-order versions
     @Test("Validation fails for out-of-order versions")
     func validationFailsForOutOfOrderVersions() {
@@ -367,6 +412,32 @@ struct MigrationPlanTests {
         } catch let error as MigrationPlanError {
             if case .versionsNotOrdered = error {
                 // Expected
+            } else {
+                Issue.record("Unexpected error type: \(error)")
+            }
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
+    }
+
+    @Test("Validation fails when lightweight stage contains breaking schema changes")
+    func validationFailsForIncompatibleLightweightStage() {
+        do {
+            try InvalidLightweightPlan.validate()
+            Issue.record("Expected incompatibleLightweightStage error")
+        } catch let error as MigrationPlanError {
+            if case .incompatibleLightweightStage(let stageIndex, let issues) = error {
+                #expect(stageIndex == 0)
+                #expect(
+                    issues.contains(
+                        .renumberedField(
+                            entityName: "TestUser",
+                            fieldName: "email",
+                            expected: 3,
+                            actual: 2
+                        )
+                    )
+                )
             } else {
                 Issue.record("Unexpected error type: \(error)")
             }

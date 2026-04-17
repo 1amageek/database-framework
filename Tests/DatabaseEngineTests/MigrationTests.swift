@@ -7,6 +7,110 @@ import Core
 import TestSupport
 @testable import DatabaseEngine
 
+@Persistable(type: "SchemaRegistryAppendOnlyUser")
+struct SchemaRegistryAppendOnlyUserV1 {
+    var name: String
+    var email: String
+}
+
+@Persistable(type: "SchemaRegistryAppendOnlyUser")
+struct SchemaRegistryAppendOnlyUserV2 {
+    var name: String
+    var email: String
+    var age: Int = 0
+}
+
+enum SchemaRegistryAppendOnlySchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [SchemaRegistryAppendOnlyUserV1.self]
+}
+
+enum SchemaRegistryAppendOnlySchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [SchemaRegistryAppendOnlyUserV2.self]
+}
+
+enum SchemaRegistryAppendOnlyMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [SchemaRegistryAppendOnlySchemaV1.self, SchemaRegistryAppendOnlySchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .lightweight(
+                fromVersion: SchemaRegistryAppendOnlySchemaV1.self,
+                toVersion: SchemaRegistryAppendOnlySchemaV2.self
+            )
+        ]
+    }
+}
+
+@Persistable(type: "SchemaRegistryAppendOnlyUser")
+struct SchemaRegistryAppendOnlyUserReordered {
+    var email: String
+    var name: String
+}
+
+@Persistable(type: "SchemaRegistryMigratedUser")
+struct SchemaRegistryMigratedUserV1 {
+    var name: String
+    var email: String
+}
+
+@Persistable(type: "SchemaRegistryMigratedUser")
+struct SchemaRegistryMigratedUserV2 {
+    #Index(ScalarIndexKind<SchemaRegistryMigratedUserV2>(fields: [\.fullName]), name: "SchemaRegistryMigratedUser_fullName")
+
+    var fullName: String
+    var email: String
+}
+
+enum SchemaRegistryMigrationSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [SchemaRegistryMigratedUserV1.self]
+}
+
+enum SchemaRegistryMigrationSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [SchemaRegistryMigratedUserV2.self]
+}
+
+enum SchemaRegistryCustomMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [SchemaRegistryMigrationSchemaV1.self, SchemaRegistryMigrationSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: SchemaRegistryMigrationSchemaV1.self,
+                toVersion: SchemaRegistryMigrationSchemaV2.self,
+                willMigrate: migrateLegacyUsers,
+                didMigrate: nil
+            )
+        ]
+    }
+
+    static func migrateLegacyUsers(context: MigrationContext) async throws {
+        var migratedUsers: [SchemaRegistryMigratedUserV2] = []
+
+        for try await legacyUser in context.enumerate(SchemaRegistryMigratedUserV1.self) {
+            var migratedUser = SchemaRegistryMigratedUserV2(
+                fullName: legacyUser.name,
+                email: legacyUser.email
+            )
+            migratedUser.id = legacyUser.id
+            migratedUsers.append(migratedUser)
+        }
+
+        guard !migratedUsers.isEmpty else {
+            return
+        }
+
+        try await context.batchUpdate(migratedUsers, batchSize: 100)
+    }
+}
+
 /// Tests for Migration functionality
 ///
 /// **Coverage**:
@@ -44,9 +148,15 @@ struct MigrationTests {
 
     // MARK: - Helper Methods
 
+    private func makeSystemPriorityEngine() async throws -> any StorageEngine {
+        let engine = try await FDBTestSetup.shared.makeEngine()
+        let database = FDBSystemPriorityDatabase(wrapping: engine.database)
+        return try await FDBStorageEngine(configuration: .init(database: database))
+    }
+
     private func setupContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await makeSystemPriorityEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([MigrationTestUser.self], version: Schema.Version(1, 0, 0))
@@ -60,7 +170,7 @@ struct MigrationTests {
 
     private func setupBatchTestContainer() async throws -> DBContainer {
         try await FDBTestEnvironment.shared.ensureInitialized()
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = try await makeSystemPriorityEngine()
 
         // Use Schema([Type.self]) to properly register types
         let schema = Schema([BatchTestRecord.self], version: Schema.Version(1, 0, 0))
@@ -73,8 +183,32 @@ struct MigrationTests {
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "migration"])
-        try? await container.engine.directoryService.remove(path: ["_metadata"])
+        do {
+            try await container.engine.directoryService.remove(path: ["test", "migration"])
+        } catch {
+        }
+        do {
+            try await container.engine.directoryService.remove(path: ["_metadata"])
+        } catch {
+        }
+    }
+
+    private func clearSchemaEntries(
+        in database: any StorageEngine,
+        typeNames: [String]
+    ) async throws {
+        try await database.withTransaction { transaction in
+            for typeName in typeNames {
+                transaction.clear(key: Tuple(["_schema", typeName]).pack())
+            }
+        }
+    }
+
+    private func clearMetadata(in database: any StorageEngine) async throws {
+        do {
+            try await database.directoryService.remove(path: ["_metadata"])
+        } catch {
+        }
     }
 
     private func insertTestRecords(
@@ -129,13 +263,12 @@ struct MigrationTests {
     @Test("Schema version persists across container instances")
     func schemaVersionPersistsAcrossContainers() async throws {
         try await FDBTestSetup.shared.withSerializedAccess {
-            let database = try await FDBTestSetup.shared.makeEngine()
+            let database = try await makeSystemPriorityEngine()
 
             let schema = Schema([MigrationTestUser.self], version: Schema.Version(2, 0, 0))
 
             // Clean up first
-            
-            try? await database.directoryService.remove(path: ["_metadata"])
+            try await clearMetadata(in: database)
 
             // Create first container and set version
             let container1 = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
@@ -148,7 +281,206 @@ struct MigrationTests {
             #expect(version == Schema.Version(2, 0, 0))
 
             // Cleanup
-            try? await database.directoryService.remove(path: ["_metadata"])
+            try await clearMetadata(in: database)
+        }
+    }
+
+    @Test("SchemaRegistry accepts append-only field additions")
+    func schemaRegistryAcceptsAppendOnlyFieldAdditions() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try await makeSystemPriorityEngine()
+            let registry = SchemaRegistry(database: database)
+            let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
+
+            try await clearSchemaEntries(in: database, typeNames: [typeName])
+
+            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV1.self]))
+            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV2.self]))
+
+            let entity = try await registry.load(typeName: typeName)
+            #expect(entity?.fieldMapByName["name"]?.fieldNumber == 2)
+            #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
+            #expect(entity?.fieldMapByName["age"]?.fieldNumber == 4)
+        }
+    }
+
+    @Test("Lightweight migration keeps existing FDB data readable end-to-end")
+    func lightweightMigrationPreservesExistingDataEndToEnd() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try await makeSystemPriorityEngine()
+            let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
+            let userID = "fdb-lightweight-\(UUID().uuidString)"
+
+            try await clearSchemaEntries(in: database, typeNames: [typeName])
+            try await clearMetadata(in: database)
+
+            let initialContainer = try await DBContainer(
+                for: SchemaRegistryAppendOnlySchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            let initialContext = initialContainer.newContext()
+
+            var user = SchemaRegistryAppendOnlyUserV1(
+                name: "Alice",
+                email: "alice@example.com"
+            )
+            user.id = userID
+            initialContext.insert(user)
+            try await initialContext.save()
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            let migratedContainer = try await DBContainer(
+                for: SchemaRegistryAppendOnlySchemaV2.self,
+                migrationPlan: SchemaRegistryAppendOnlyMigrationPlan.self,
+                configuration: .init(backend: .custom(database))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            let verificationContainer = try await DBContainer(
+                for: SchemaRegistryAppendOnlySchemaV2.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            let migratedUsers = try await verificationContainer
+                .newContext()
+                .fetch(SchemaRegistryAppendOnlyUserV2.self)
+                .execute()
+            let migratedUser = migratedUsers.first { $0.id == userID }
+
+            #expect(migratedUser != nil)
+            #expect(migratedUser?.name == "Alice")
+            #expect(migratedUser?.email == "alice@example.com")
+            #expect(migratedUser?.age == 0)
+        }
+    }
+
+    @Test("SchemaRegistry rejects reordered fields without migration")
+    func schemaRegistryRejectsReorderedFieldsWithoutMigration() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try await makeSystemPriorityEngine()
+            let registry = SchemaRegistry(database: database)
+            let typeName = SchemaRegistryAppendOnlyUserV1.persistableType
+
+            try await clearSchemaEntries(in: database, typeNames: [typeName])
+
+            try await registry.persist(Schema([SchemaRegistryAppendOnlyUserV1.self]))
+
+            do {
+                try await registry.persist(Schema([SchemaRegistryAppendOnlyUserReordered.self]))
+                Issue.record("Expected incompatibleEntityEvolution error")
+            } catch let error as SchemaRegistryError {
+                if case .incompatibleEntityEvolution(let entityName, let issues) = error {
+                    #expect(entityName == typeName)
+                    #expect(
+                        issues.contains(
+                            .renumberedField(
+                                entityName: typeName,
+                                fieldName: "email",
+                                expected: 3,
+                                actual: 2
+                            )
+                        )
+                    )
+                } else {
+                    Issue.record("Unexpected schema registry error: \(error)")
+                }
+            }
+        }
+    }
+
+    @Test("Custom migration can persist breaking schema changes")
+    func customMigrationCanPersistBreakingSchemaChanges() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try await makeSystemPriorityEngine()
+            let typeName = SchemaRegistryMigratedUserV1.persistableType
+
+            try await clearSchemaEntries(in: database, typeNames: [typeName])
+            try await clearMetadata(in: database)
+
+            let initialContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            let migratedContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV2.self,
+                migrationPlan: SchemaRegistryCustomMigrationPlan.self,
+                configuration: .init(backend: .custom(database))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            let registry = SchemaRegistry(database: database)
+            let entity = try await registry.load(typeName: typeName)
+            let version = try await migratedContainer.getCurrentSchemaVersion()
+
+            #expect(version == Schema.Version(2, 0, 0))
+            #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
+            #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
+            #expect(entity?.fieldMapByName["name"] == nil)
+        }
+    }
+
+    @Test("Custom migration transforms FDB data end-to-end")
+    func customMigrationTransformsDataEndToEnd() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            let database = try await makeSystemPriorityEngine()
+            let typeName = SchemaRegistryMigratedUserV1.persistableType
+            let idPrefix = UUID().uuidString
+            let firstID = "fdb-migrated-\(idPrefix)-1"
+            let secondID = "fdb-migrated-\(idPrefix)-2"
+
+            try await clearSchemaEntries(in: database, typeNames: [typeName])
+            try await clearMetadata(in: database)
+
+            let initialContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            let initialContext = initialContainer.newContext()
+
+            var firstUser = SchemaRegistryMigratedUserV1(
+                name: "Alice",
+                email: "alice@example.com"
+            )
+            firstUser.id = firstID
+            initialContext.insert(firstUser)
+
+            var secondUser = SchemaRegistryMigratedUserV1(
+                name: "Bob",
+                email: "bob@example.com"
+            )
+            secondUser.id = secondID
+            initialContext.insert(secondUser)
+
+            try await initialContext.save()
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            let migratedContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV2.self,
+                migrationPlan: SchemaRegistryCustomMigrationPlan.self,
+                configuration: .init(backend: .custom(database))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            let verificationContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV2.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            let migratedUsers = try await verificationContainer
+                .newContext()
+                .fetch(SchemaRegistryMigratedUserV2.self)
+                .execute()
+            let migratedUsersByID = Dictionary(uniqueKeysWithValues: migratedUsers.map { ($0.id, $0) })
+
+            #expect(migratedUsersByID[firstID]?.fullName == "Alice")
+            #expect(migratedUsersByID[firstID]?.email == "alice@example.com")
+            #expect(migratedUsersByID[secondID]?.fullName == "Bob")
+            #expect(migratedUsersByID[secondID]?.email == "bob@example.com")
         }
     }
 

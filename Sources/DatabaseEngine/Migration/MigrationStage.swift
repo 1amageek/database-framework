@@ -151,6 +151,16 @@ public enum MigrationStage: Sendable {
 // MARK: - MigrationStage Extensions
 
 extension MigrationStage {
+    /// Get schema compatibility report for this migration stage.
+    public var schemaCompatibilityReport: SchemaCompatibilityReport {
+        toVersion.makeSchema().compatibilityReport(from: fromVersion.makeSchema())
+    }
+
+    /// Entity names that require explicit migration acknowledgement.
+    public var entitiesRequiringCustomMigration: Set<String> {
+        schemaCompatibilityReport.entitiesRequiringCustomMigration
+    }
+
     /// Get index changes for this migration stage
     ///
     /// Returns the indexes that need to be added and removed.
