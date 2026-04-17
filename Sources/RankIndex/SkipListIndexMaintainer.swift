@@ -110,15 +110,12 @@ public struct SkipListIndexMaintainer<Item: Persistable, Score: Comparable & Num
     ) async throws {
         switch (oldItem, newItem) {
         case (nil, let new?):
-            // Insert
             try await insertEntry(item: new, id: nil, transaction: transaction)
 
         case (let old?, nil):
-            // Delete
             try await deleteEntry(item: old, id: nil, transaction: transaction)
 
         case (let old?, let new?):
-            // Update
             try await deleteEntry(item: old, id: nil, transaction: transaction)
             try await insertEntry(item: new, id: nil, transaction: transaction)
 

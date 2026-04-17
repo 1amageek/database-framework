@@ -1581,13 +1581,43 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///   - inserts: Models to insert or update
     ///   - deletes: Models to delete
     ///   - transaction: The transaction to use
+    ///   - skipExistingCheck: When true, skips reading the pre-existing row (no
+    ///     security / no indexes / known-new inserts only). Forced `false` per
+    ///     operation when a non-`.none` precondition is supplied, since the
+    ///     precondition needs the existence read to evaluate.
+    ///   - insertPreconditions: Optional preconditions aligned positionally with
+    ///     `inserts`. Empty or `.none` means no check.
+    ///   - deletePreconditions: Optional preconditions aligned positionally with
+    ///     `deletes`. Empty or `.none` means no check.
     /// - Returns: Serialized data for inserted models
     @discardableResult
     func executeBatchInTransaction(
         inserts: [any Persistable],
         deletes: [any Persistable],
         transaction: any Transaction,
-        skipExistingCheck: Bool = false
+        skipExistingCheck: Bool
+    ) async throws -> [SerializedModel] {
+        try await executeBatchInTransactionWithPreconditions(
+            inserts: inserts,
+            deletes: deletes,
+            transaction: transaction,
+            skipExistingCheck: skipExistingCheck,
+            insertPreconditions: [],
+            deletePreconditions: []
+        )
+    }
+
+    /// Same as `executeBatchInTransaction` but threads per-operation
+    /// `WritePrecondition` through. Used by `FDBContext.save()` to surface
+    /// `FDBContextError.preconditionFailed` instead of silent fallback.
+    @discardableResult
+    func executeBatchInTransactionWithPreconditions(
+        inserts: [any Persistable],
+        deletes: [any Persistable],
+        transaction: any Transaction,
+        skipExistingCheck: Bool,
+        insertPreconditions: [WritePrecondition],
+        deletePreconditions: [WritePrecondition]
     ) async throws -> [SerializedModel] {
         let encoder = ProtobufEncoder()
         var serializedModels: [SerializedModel] = []
@@ -1598,39 +1628,93 @@ internal final class FDBDataStore: DataStore, Sendable {
         }
 
         // Process inserts with single encoder
-        for model in inserts {
+        for (index, model) in inserts.enumerated() {
+            let precondition = insertPreconditions.indices.contains(index)
+                ? insertPreconditions[index]
+                : WritePrecondition.none
+
             // Determine if we can skip reading existing records per model type:
             // Safe only when ALL of:
             // 1. Caller signals known inserts (skipExistingCheck)
             // 2. Security is disabled (no CREATE/UPDATE evaluation needed)
             // 3. Model type has no indexes (no oldModel needed for diff-based index update)
+            // 4. Precondition is `.none` (preconditions need the existence read)
             let hasIndexes = !type(of: model).indexDescriptors.isEmpty
-            let canSkip = skipExistingCheck && securityDelegate == nil && !hasIndexes
+            let canSkip = skipExistingCheck
+                && securityDelegate == nil
+                && !hasIndexes
+                && precondition == .none
 
             let serialized = try await saveModelUntypedWithSecurityReturningData(
                 model,
                 transaction: transaction,
                 encoder: encoder,
-                skipExistingCheck: canSkip
+                skipExistingCheck: canSkip,
+                precondition: precondition
             )
             serializedModels.append(serialized)
         }
 
         // Process deletes
-        for model in deletes {
+        for (index, model) in deletes.enumerated() {
+            let precondition = deletePreconditions.indices.contains(index)
+                ? deletePreconditions[index]
+                : WritePrecondition.none
+
             // Skip blob cleanup when security is disabled and no indexes:
             // blob chunks only exist for >90KB items, and the clearRange DELETE
             // query is unnecessary overhead for typical inline-sized records.
             let hasIndexes = !type(of: model).indexDescriptors.isEmpty
-            let canSkipBlobs = skipExistingCheck && securityDelegate == nil && !hasIndexes
+            let canSkipBlobs = skipExistingCheck
+                && securityDelegate == nil
+                && !hasIndexes
+                && precondition == .none
             try await deleteModelUntyped(
                 model,
                 transaction: transaction,
-                skipBlobCleanup: canSkipBlobs
+                skipBlobCleanup: canSkipBlobs,
+                precondition: precondition
             )
         }
 
         return serializedModels
+    }
+
+    /// Execute replace operations within an externally-provided transaction
+    ///
+    /// Used for the `.replace(old, new)` pending mutation flow. The caller supplies
+    /// the pre-image directly, so index maintenance can diff old → new without
+    /// re-reading storage. This is critical for in-tx `delete + insert` same-ID:
+    /// storage may still contain stale old data that a re-read would return.
+    ///
+    /// - Parameters:
+    ///   - pairs: (old, new) pairs. `old` is trusted as the pre-image.
+    ///   - transaction: The transaction to use
+    /// - Returns: Serialized data for the new models (for dual-write optimization)
+    @discardableResult
+    func executeReplaceInTransaction(
+        pairs: [(old: any Persistable, new: any Persistable)],
+        transaction: any Transaction,
+        preconditions: [WritePrecondition] = []
+    ) async throws -> [SerializedModel] {
+        let encoder = ProtobufEncoder()
+        var results: [SerializedModel] = []
+        results.reserveCapacity(pairs.count)
+        for (index, pair) in pairs.enumerated() {
+            let precondition = preconditions.indices.contains(index)
+                ? preconditions[index]
+                : WritePrecondition.none
+            let serialized = try await saveModelUntypedWithSecurityReturningData(
+                pair.new,
+                transaction: transaction,
+                encoder: encoder,
+                skipExistingCheck: false,
+                providedOld: pair.old,
+                precondition: precondition
+            )
+            results.append(serialized)
+        }
+        return results
     }
 
     /// Execute operations within a raw transaction
@@ -1688,7 +1772,9 @@ internal final class FDBDataStore: DataStore, Sendable {
         _ model: any Persistable,
         transaction: any Transaction,
         encoder: ProtobufEncoder,
-        skipExistingCheck: Bool = false
+        skipExistingCheck: Bool = false,
+        providedOld: (any Persistable)? = nil,
+        precondition: WritePrecondition = .none
     ) async throws -> SerializedModel {
         let modelType = type(of: model)
         let persistableType = modelType.persistableType
@@ -1706,20 +1792,46 @@ internal final class FDBDataStore: DataStore, Sendable {
         // Check for existing record and deserialize for security evaluation and index update
         var oldModel: (any Persistable)?
         let isNewRecord: Bool
+        let existingRowPresent: Bool
 
-        if skipExistingCheck {
+        if let providedOld {
+            // Replace path: caller supplies the pre-image. For preconditions that
+            // need to verify current storage state (`.exists`, `.notExists`), do a
+            // lightweight existence probe; otherwise we trust providedOld.
+            let needsExistenceProbe = precondition.requiresExistenceRead
+            if needsExistenceProbe {
+                existingRowPresent = try await storage.read(for: key) != nil
+            } else {
+                existingRowPresent = true  // trusted
+            }
+            oldModel = providedOld
+            try securityDelegate?.evaluateUpdate(providedOld, newResource: model)
+            isNewRecord = false
+        } else if skipExistingCheck {
             // Fast path: caller guarantees this is a new insert with no security checks needed
             isNewRecord = true
+            existingRowPresent = false
         } else if let oldData = try await storage.read(for: key) {
             // Update - deserialize old model (used for both security and index update)
             oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
             try securityDelegate?.evaluateUpdate(oldModel!, newResource: model)
             isNewRecord = false
+            existingRowPresent = true
         } else {
             // Create
             try securityDelegate?.evaluateCreate(model)
             isNewRecord = true
+            existingRowPresent = false
         }
+
+        // Phase 2: evaluate write precondition against observed storage state.
+        // Must run BEFORE any write so violations abort cleanly (no partial state).
+        try Self.evaluateWritePrecondition(
+            precondition,
+            existingRowPresent: existingRowPresent,
+            typeName: persistableType,
+            idDescription: String(describing: model.id)
+        )
 
         // Serialize using Protobuf (encoder reused across all models)
         let data = Array(try encoder.encode(model))
@@ -1740,6 +1852,53 @@ internal final class FDBDataStore: DataStore, Sendable {
         return SerializedModel(model: model, data: data, idTuple: idTuple)
     }
 
+    /// Evaluate a `WritePrecondition` against an observed existence bit.
+    ///
+    /// Called after the existence probe (where required) but before any
+    /// mutation. Violations throw `FDBContextError.preconditionFailed` so
+    /// the enclosing transaction is aborted cleanly — no silent fallback.
+    ///
+    /// `.matchesStored` / `.matchesStoredOrAbsent` require a stored
+    /// versionstamp which is not yet wired into the row envelope; these
+    /// cases throw a "not yet supported" precondition failure so callers
+    /// get a clear signal instead of a silent no-op.
+    private static func evaluateWritePrecondition(
+        _ precondition: WritePrecondition,
+        existingRowPresent: Bool,
+        typeName: String,
+        idDescription: String
+    ) throws {
+        switch precondition {
+        case .none:
+            return
+        case .notExists:
+            if existingRowPresent {
+                throw FDBContextError.preconditionFailed(
+                    typeName: typeName,
+                    idDescription: idDescription,
+                    precondition: precondition,
+                    reason: "row already exists"
+                )
+            }
+        case .exists:
+            if !existingRowPresent {
+                throw FDBContextError.preconditionFailed(
+                    typeName: typeName,
+                    idDescription: idDescription,
+                    precondition: precondition,
+                    reason: "row not found"
+                )
+            }
+        case .matchesStored, .matchesStoredOrAbsent:
+            throw FDBContextError.preconditionFailed(
+                typeName: typeName,
+                idDescription: idDescription,
+                precondition: precondition,
+                reason: "versionstamp-based precondition is not yet supported"
+            )
+        }
+    }
+
     /// Delete model without type parameter (for batch operations)
     ///
     /// - Parameters:
@@ -1750,13 +1909,29 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func deleteModelUntyped(
         _ model: any Persistable,
         transaction: any Transaction,
-        skipBlobCleanup: Bool = false
+        skipBlobCleanup: Bool = false,
+        precondition: WritePrecondition = .none
     ) async throws {
         let persistableType = type(of: model).persistableType
         let validatedID = try validateID(model.id, for: persistableType)
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
         let key = itemKey(for: persistableType, id: idTuple)
+
+        // Phase 2: evaluate write precondition before touching storage.
+        if precondition.requiresExistenceRead {
+            let storageProbe = ItemStorage(
+                transaction: transaction,
+                blobsSubspace: self.blobsSubspace
+            )
+            let existingRowPresent = try await storageProbe.read(for: key) != nil
+            try Self.evaluateWritePrecondition(
+                precondition,
+                existingRowPresent: existingRowPresent,
+                typeName: persistableType,
+                idDescription: String(describing: model.id)
+            )
+        }
 
         // Remove index entries first via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(

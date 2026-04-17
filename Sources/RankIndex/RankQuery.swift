@@ -140,8 +140,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         )
 
         return try response.rows.map { row in
-            let data = try JSONEncoder().encode(row.fields)
-            let item = try JSONDecoder().decode(T.self, from: data)
+            let item = try QueryRowCodec.decode(row, as: T.self)
             guard let rank = row.annotations["rank"]?.int64Value else {
                 throw RankQueryError.invalidResponse("Missing rank annotation")
             }
@@ -250,7 +249,6 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         for (key, _) in sequence {
             guard scoresSubspace.contains(key) else { break }
 
-            // Resource limit
             scannedKeys += 1
             if scannedKeys >= Self.maxScanKeys { break }
 
@@ -259,10 +257,7 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
             }
         }
 
-        // Get sorted results (highest first)
         let sortedResults = topKHeap.toSortedArrayDescending()
-
-        // Fetch items by primary key
         return try await fetchItemsWithRank(results: sortedResults, cachePolicy: cachePolicy)
     }
 

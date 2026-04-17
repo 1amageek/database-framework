@@ -140,12 +140,62 @@ public final class FDBContext: Sendable {
 
     // MARK: - State
 
-    private struct ContextState: Sendable {
-        /// Models pending insertion (type-erased)
-        var insertedModels: [ModelKey: any Persistable] = [:]
+    /// Pending mutation for a ModelKey prior to `save()`.
+    ///
+    /// Introduced in Phase 1 (PendingMutation redesign) to replace the dual
+    /// `insertedModels` / `deletedModels` maps, which silently dropped the old
+    /// value when `delete(old) + insert(new)` collided on the same ID.
+    ///
+    /// Phase 2 attaches a `WritePrecondition` to every variant so the save path
+    /// can enforce explicit existence / version checks instead of silent
+    /// fallbacks. Producers:
+    /// - `create(_:)`        → `.insert(new, .notExists)` (strict insert)
+    /// - `upsert(_:)` / legacy `insert(_:)` → `.upsert(new, .none)` (blind write)
+    /// - `replace(old:with:)` → `.replace(old, new, .exists)`
+    /// - `delete(_:)`        → `.delete(old, .none)` by default (legacy idempotent)
+    ///                         or `.exists` when the caller opts in
+    internal enum PendingMutation: Sendable {
+        case insert(new: any Persistable, precondition: WritePrecondition)
+        case upsert(new: any Persistable, precondition: WritePrecondition)
+        case delete(old: any Persistable, precondition: WritePrecondition)
+        case replace(old: any Persistable, new: any Persistable, precondition: WritePrecondition)
 
-        /// Models pending deletion (type-erased)
-        var deletedModels: [ModelKey: any Persistable] = [:]
+        var precondition: WritePrecondition {
+            switch self {
+            case .insert(_, let p), .upsert(_, let p), .delete(_, let p), .replace(_, _, let p):
+                return p
+            }
+        }
+    }
+
+    /// Snapshot of a single staged insert/upsert as captured from the pending map
+    /// at `save()` time. Preserves strictness (create vs upsert) and precondition
+    /// so the storage layer can enforce the user's intent and so an error rollback
+    /// can restore the exact same pending state.
+    internal struct StagedInsert: Sendable {
+        let model: any Persistable
+        let strict: Bool
+        let precondition: WritePrecondition
+    }
+
+    /// Snapshot of a single staged replace (explicit old → new pair).
+    internal struct StagedReplace: Sendable {
+        let old: any Persistable
+        let new: any Persistable
+        let precondition: WritePrecondition
+    }
+
+    /// Snapshot of a single staged delete.
+    internal struct StagedDelete: Sendable {
+        let model: any Persistable
+        let precondition: WritePrecondition
+    }
+
+    private struct ContextState: Sendable {
+        /// Mutations keyed by ModelKey. Merge rules are applied on every
+        /// `insert()` / `delete()` call so the map always holds the fused
+        /// final intent for each key.
+        var pending: [ModelKey: PendingMutation] = [:]
 
         /// Whether a save operation is currently in progress
         var isSaving: Bool = false
@@ -161,7 +211,7 @@ public final class FDBContext: Sendable {
 
         /// Whether the context has unsaved changes
         var hasChanges: Bool {
-            return !insertedModels.isEmpty || !deletedModels.isEmpty
+            return !pending.isEmpty
         }
 
         init(autosaveEnabled: Bool = false) {
@@ -239,17 +289,25 @@ public final class FDBContext: Sendable {
                 return (nil, false)
             }
 
-            let insertKey = ModelKey(persistableType: T.persistableType, id: id)
-            if let inserted = state.insertedModels[insertKey] as? T {
-                return (inserted, false)
+            let key = ModelKey(persistableType: T.persistableType, id: id)
+            guard let mutation = state.pending[key] else {
+                return (nil, false)
             }
 
-            let deleteKey = ModelKey(persistableType: T.persistableType, id: id)
-            if state.deletedModels[deleteKey] != nil {
+            switch mutation {
+            case .insert(let new, _), .upsert(let new, _):
+                if let typed = new as? T {
+                    return (typed, false)
+                }
+                return (nil, false)
+            case .replace(_, let new, _):
+                if let typed = new as? T {
+                    return (typed, false)
+                }
+                return (nil, false)
+            case .delete:
                 return (nil, true)
             }
-
-            return (nil, false)
         }
     }
 
@@ -311,19 +369,144 @@ public final class FDBContext: Sendable {
         }
     }
 
-    // MARK: - Insert
+    // MARK: - Write Operations (Phase 2 explicit API)
 
-    /// Register a model for persistence
+    /// Stage a strict insert. Fails at `save()` if a row with the same id already
+    /// exists in storage (unless the caller overrides the precondition).
     ///
-    /// The model is not persisted until `save()` is called.
+    /// Default precondition: `.notExists`.
+    ///
+    /// - Parameters:
+    ///   - model: The model to insert.
+    ///   - precondition: Assertion checked against stored state at commit time.
+    public func create<T: Persistable>(
+        _ model: T,
+        precondition: WritePrecondition = .notExists
+    ) {
+        mergeInsert(model: model, strict: true, precondition: precondition)
+    }
+
+    /// Stage a blind upsert. Writes the new value without existence checks.
+    ///
+    /// Default precondition: `.none`. Matches the legacy `insert()` behavior.
+    ///
+    /// - Parameters:
+    ///   - model: The model to write.
+    ///   - precondition: Assertion checked against stored state at commit time.
+    public func upsert<T: Persistable>(
+        _ model: T,
+        precondition: WritePrecondition = .none
+    ) {
+        mergeInsert(model: model, strict: false, precondition: precondition)
+    }
+
+    /// Stage an explicit old→new replacement. The supplied `old` is trusted for
+    /// index maintenance — the framework does NOT re-read the pre-image from
+    /// storage. Use this when the caller already holds the pre-image (e.g. read
+    /// earlier in the same context) to avoid an extra storage round-trip.
+    ///
+    /// Default precondition: `.exists` — if the row is missing at commit time,
+    /// `preconditionFailed` is thrown rather than silently downgrading to an
+    /// insert.
+    ///
+    /// - Parameters:
+    ///   - old: The pre-image (trusted; used for index maintenance).
+    ///   - new: The post-image to write.
+    ///   - precondition: Assertion checked against stored state at commit time.
+    public func replace<T: Persistable>(
+        old: T,
+        with new: T,
+        precondition: WritePrecondition = .exists
+    ) {
+        let key = ModelKey(new)
+
+        let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
+            let merged: PendingMutation
+            switch state.pending[key] {
+            case .none:
+                merged = .replace(old: old, new: new, precondition: precondition)
+            case .some(.insert):
+                // A prior strict insert has not yet hit storage. Replacing its
+                // new value in-place preserves the strict-insert intent.
+                merged = .insert(new: new, precondition: precondition)
+            case .some(.upsert):
+                merged = .replace(old: old, new: new, precondition: precondition)
+            case .some(.delete(let origOld, _)):
+                merged = .replace(old: origOld, new: new, precondition: precondition)
+            case .some(.replace(let origOld, _, _)):
+                // Keep the original pre-image (the one before any staged mutation)
+                // so index maintenance can accurately remove the on-disk entries.
+                merged = .replace(old: origOld, new: new, precondition: precondition)
+            }
+            state.pending[key] = merged
+
+            if state.autosaveEnabled && !state.autosaveScheduled {
+                state.autosaveScheduled = true
+                return true
+            }
+            return false
+        }
+
+        if shouldScheduleAutosave {
+            scheduleAutosave()
+        }
+    }
+
+    // MARK: - Insert (legacy alias)
+
+    /// Register a model for persistence. Legacy entry point equivalent to
+    /// `upsert(_:)` — retained for source compatibility.
+    ///
+    /// Merge rules against an existing pending mutation on the same ModelKey:
+    /// - none               → `.upsert(new)`
+    /// - `.upsert(_)`       → `.upsert(new)` (last write wins)
+    /// - `.insert(_)`       → `.insert(new)` (preserve strict-insert intent)
+    /// - `.delete(old)`     → `.replace(old, new)`  (Phase 1 bug fix)
+    /// - `.replace(old, _)` → `.replace(old, new)`
     ///
     /// - Parameter model: The model to insert
     public func insert<T: Persistable>(_ model: T) {
+        upsert(model)
+    }
+
+    /// Merge a new insert/upsert/create into the pending map.
+    ///
+    /// - Parameters:
+    ///   - model: The model to stage.
+    ///   - strict: `true` for `create(_:)` (produces `.insert`); `false` for
+    ///             `upsert(_:)` / legacy `insert(_:)` (produces `.upsert`).
+    ///   - precondition: Precondition for the staged operation (stored as-is
+    ///                   unless a prior `.delete` / `.replace` is present, in
+    ///                   which case `.replace` takes precedence).
+    private func mergeInsert<T: Persistable>(
+        model: T,
+        strict: Bool,
+        precondition: WritePrecondition
+    ) {
         let key = ModelKey(model)
 
         let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            state.insertedModels[key] = model
-            state.deletedModels.removeValue(forKey: key)
+            let merged: PendingMutation
+            switch state.pending[key] {
+            case .none:
+                merged = strict
+                    ? .insert(new: model, precondition: precondition)
+                    : .upsert(new: model, precondition: precondition)
+            case .some(.upsert):
+                // Upsert + create / upsert → keep the new variant's strictness.
+                merged = strict
+                    ? .insert(new: model, precondition: precondition)
+                    : .upsert(new: model, precondition: precondition)
+            case .some(.insert):
+                // A prior strict insert upgrades any follow-up to strict too,
+                // preserving the notExists intent.
+                merged = .insert(new: model, precondition: precondition)
+            case .some(.delete(let old, _)):
+                merged = .replace(old: old, new: model, precondition: precondition)
+            case .some(.replace(let old, _, _)):
+                merged = .replace(old: old, new: model, precondition: precondition)
+            }
+            state.pending[key] = merged
 
             if state.autosaveEnabled && !state.autosaveScheduled {
                 state.autosaveScheduled = true
@@ -339,17 +522,43 @@ public final class FDBContext: Sendable {
 
     // MARK: - Delete
 
-    /// Mark a model for deletion
+    /// Mark a model for deletion.
     ///
-    /// - Parameter model: The model to delete
-    public func delete<T: Persistable>(_ model: T) {
+    /// Merge rules against an existing pending mutation on the same ModelKey:
+    /// - none               → `.delete(old)`
+    /// - `.insert(_)`       → erase entry (cancel the uncommitted insert; warn if
+    ///                         the key may refer to an existing stored row).
+    /// - `.upsert(_)`       → `.delete(old)` (last write wins; the upsert is dropped)
+    /// - `.delete(_)`       → `.delete(old)` (last write wins)
+    /// - `.replace(origOld, _)` → `.delete(origOld)` (keep the pre-replace old)
+    ///
+    /// - Parameters:
+    ///   - model: The model to delete.
+    ///   - precondition: Assertion checked against stored state at commit time.
+    ///                   Defaults to `.none` for source-compatibility with the
+    ///                   pre-Phase-2 idempotent behavior. Pass `.exists` to
+    ///                   detect deletes that target a missing row.
+    public func delete<T: Persistable>(
+        _ model: T,
+        precondition: WritePrecondition = .none
+    ) {
         let key = ModelKey(model)
 
         let shouldScheduleAutosave = stateLock.withLock { state -> Bool in
-            if state.insertedModels.removeValue(forKey: key) != nil {
-                // Model was inserted in this context - just cancel the insert
-            } else {
-                state.deletedModels[key] = model
+            switch state.pending[key] {
+            case .none:
+                state.pending[key] = .delete(old: model, precondition: precondition)
+            case .some(.insert):
+                state.pending.removeValue(forKey: key)
+                self.logger.warning(
+                    "delete() cancelled a pending insert for \(T.persistableType). If a stored row exists for this id, its delete intent has been dropped."
+                )
+            case .some(.upsert):
+                state.pending[key] = .delete(old: model, precondition: precondition)
+            case .some(.delete):
+                state.pending[key] = .delete(old: model, precondition: precondition)
+            case .some(.replace(let origOld, _, _)):
+                state.pending[key] = .delete(old: origOld, precondition: precondition)
             }
 
             if state.autosaveEnabled && !state.autosaveScheduled && state.hasChanges {
@@ -742,9 +951,13 @@ public final class FDBContext: Sendable {
         enum SaveCheckResult {
             case noChanges
             case alreadySaving
-            case singleInsert(any Persistable)
-            case singleDelete(any Persistable)
-            case proceed(inserts: [any Persistable], deletes: [any Persistable])
+            case singleInsert(StagedInsert)
+            case singleDelete(StagedDelete)
+            case proceed(
+                inserts: [StagedInsert],
+                replaces: [StagedReplace],
+                deletes: [StagedDelete]
+            )
         }
 
         let checkResult = stateLock.withLock { state -> SaveCheckResult in
@@ -757,31 +970,54 @@ public final class FDBContext: Sendable {
                 return .noChanges
             }
 
-            if state.insertedModels.count == 1, state.deletedModels.isEmpty,
-               let model = state.insertedModels.values.first {
-                state.insertedModels.removeAll()
-                state.isSaving = true
-                state.autosaveScheduled = false
-                return .singleInsert(model)
+            // Fast path: exactly one mutation in the pending map, and that mutation
+            // is a pure upsert or pure delete WITH `.none` precondition. `.replace`
+            // always needs the general path so the user-provided old value reaches
+            // IndexMaintenanceService; non-`.none` preconditions need the general
+            // path so precondition evaluation happens against storage.
+            if state.pending.count == 1, let (_, only) = state.pending.first {
+                switch only {
+                case .upsert(let model, let p) where p == .none:
+                    state.pending.removeAll()
+                    state.isSaving = true
+                    state.autosaveScheduled = false
+                    return .singleInsert(StagedInsert(model: model, strict: false, precondition: p))
+                case .insert, .upsert:
+                    break  // fall through to general path (precondition enforcement)
+                case .delete(let model, let p) where p == .none:
+                    state.pending.removeAll()
+                    state.isSaving = true
+                    state.autosaveScheduled = false
+                    return .singleDelete(StagedDelete(model: model, precondition: p))
+                case .delete:
+                    break  // fall through to general path (precondition enforcement)
+                case .replace:
+                    break  // fall through to general path
+                }
             }
 
-            if state.insertedModels.isEmpty, state.deletedModels.count == 1,
-               let model = state.deletedModels.values.first {
-                state.deletedModels.removeAll()
-                state.isSaving = true
-                state.autosaveScheduled = false
-                return .singleDelete(model)
+            var inserts: [StagedInsert] = []
+            var replaces: [StagedReplace] = []
+            var deletes: [StagedDelete] = []
+
+            for (_, mutation) in state.pending {
+                switch mutation {
+                case .insert(let new, let p):
+                    inserts.append(StagedInsert(model: new, strict: true, precondition: p))
+                case .upsert(let new, let p):
+                    inserts.append(StagedInsert(model: new, strict: false, precondition: p))
+                case .delete(let old, let p):
+                    deletes.append(StagedDelete(model: old, precondition: p))
+                case .replace(let old, let new, let p):
+                    replaces.append(StagedReplace(old: old, new: new, precondition: p))
+                }
             }
 
-            let inserts = Array(state.insertedModels.values)
-            let deletes = Array(state.deletedModels.values)
-
-            state.insertedModels.removeAll()
-            state.deletedModels.removeAll()
+            state.pending.removeAll()
             state.isSaving = true
             state.autosaveScheduled = false
 
-            return .proceed(inserts: inserts, deletes: deletes)
+            return .proceed(inserts: inserts, replaces: replaces, deletes: deletes)
         }
 
         switch checkResult {
@@ -789,16 +1025,17 @@ public final class FDBContext: Sendable {
             return
         case .alreadySaving:
             throw FDBContextError.concurrentSaveNotAllowed
-        case .singleInsert(let model):
+        case .singleInsert(let staged):
             do {
                 if let fastResult = try await saveSingleOperationFastPathIfEligible(
-                    model,
+                    staged.model,
                     isDelete: false
                 ) {
                     _ = fastResult
                 } else {
                     try await saveGeneralPath(
-                        insertsSnapshot: [model],
+                        insertsSnapshot: [staged],
+                        replacesSnapshot: [],
                         deletesSnapshot: []
                     )
                 }
@@ -807,21 +1044,22 @@ public final class FDBContext: Sendable {
                     state.isSaving = false
                 }
             } catch {
-                restoreSingleOperation(model, isDelete: false)
+                restoreSingleInsert(staged)
                 throw error
             }
             return
-        case .singleDelete(let model):
+        case .singleDelete(let staged):
             do {
                 if let fastResult = try await saveSingleOperationFastPathIfEligible(
-                    model,
+                    staged.model,
                     isDelete: true
                 ) {
                     _ = fastResult
                 } else {
                     try await saveGeneralPath(
                         insertsSnapshot: [],
-                        deletesSnapshot: [model]
+                        replacesSnapshot: [],
+                        deletesSnapshot: [staged]
                     )
                 }
 
@@ -829,12 +1067,12 @@ public final class FDBContext: Sendable {
                     state.isSaving = false
                 }
             } catch {
-                restoreSingleOperation(model, isDelete: true)
+                restoreSingleDelete(staged)
                 throw error
             }
             return
-        case .proceed(let inserts, let deletes):
-            guard !inserts.isEmpty || !deletes.isEmpty else {
+        case .proceed(let inserts, let replaces, let deletes):
+            guard !inserts.isEmpty || !replaces.isEmpty || !deletes.isEmpty else {
                 stateLock.withLock { state in
                     state.isSaving = false
                 }
@@ -844,6 +1082,7 @@ public final class FDBContext: Sendable {
             do {
                 try await saveGeneralPath(
                     insertsSnapshot: inserts,
+                    replacesSnapshot: replaces,
                     deletesSnapshot: deletes
                 )
 
@@ -852,13 +1091,35 @@ public final class FDBContext: Sendable {
                 }
             } catch {
                 stateLock.withLock { state in
-                    for model in inserts {
-                        let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
-                        state.insertedModels[key] = model
+                    for staged in inserts {
+                        let key = ModelKey(
+                            persistableType: type(of: staged.model).persistableType,
+                            id: staged.model.id
+                        )
+                        state.pending[key] = staged.strict
+                            ? .insert(new: staged.model, precondition: staged.precondition)
+                            : .upsert(new: staged.model, precondition: staged.precondition)
                     }
-                    for model in deletes {
-                        let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
-                        state.deletedModels[key] = model
+                    for staged in replaces {
+                        let key = ModelKey(
+                            persistableType: type(of: staged.new).persistableType,
+                            id: staged.new.id
+                        )
+                        state.pending[key] = .replace(
+                            old: staged.old,
+                            new: staged.new,
+                            precondition: staged.precondition
+                        )
+                    }
+                    for staged in deletes {
+                        let key = ModelKey(
+                            persistableType: type(of: staged.model).persistableType,
+                            id: staged.model.id
+                        )
+                        state.pending[key] = .delete(
+                            old: staged.model,
+                            precondition: staged.precondition
+                        )
                     }
                     state.isSaving = false
                 }
@@ -919,47 +1180,70 @@ public final class FDBContext: Sendable {
         return true
     }
 
-    private func restoreSingleOperation(
-        _ model: any Persistable,
-        isDelete: Bool
-    ) {
+    private func restoreSingleInsert(_ staged: StagedInsert) {
         stateLock.withLock { state in
-            let key = ModelKey(persistableType: type(of: model).persistableType, id: model.id)
-            if isDelete {
-                state.deletedModels[key] = model
-            } else {
-                state.insertedModels[key] = model
-            }
+            let key = ModelKey(
+                persistableType: type(of: staged.model).persistableType,
+                id: staged.model.id
+            )
+            state.pending[key] = staged.strict
+                ? .insert(new: staged.model, precondition: staged.precondition)
+                : .upsert(new: staged.model, precondition: staged.precondition)
+            state.isSaving = false
+        }
+    }
+
+    private func restoreSingleDelete(_ staged: StagedDelete) {
+        stateLock.withLock { state in
+            let key = ModelKey(
+                persistableType: type(of: staged.model).persistableType,
+                id: staged.model.id
+            )
+            state.pending[key] = .delete(old: staged.model, precondition: staged.precondition)
             state.isSaving = false
         }
     }
 
     /// General path for multi-model or dynamic-directory save operations.
     private func saveGeneralPath(
-        insertsSnapshot: [any Persistable],
-        deletesSnapshot: [any Persistable]
+        insertsSnapshot: [StagedInsert],
+        replacesSnapshot: [StagedReplace],
+        deletesSnapshot: [StagedDelete]
     ) async throws {
         // Group models by (type, partition) for partition-aware batching
-        var insertsByStore: [StoreKey: [any Persistable]] = [:]
-        var deletesByStore: [StoreKey: [any Persistable]] = [:]
+        var insertsByStore: [StoreKey: [StagedInsert]] = [:]
+        var replacesByStore: [StoreKey: [StagedReplace]] = [:]
+        var deletesByStore: [StoreKey: [StagedDelete]] = [:]
 
-        for model in insertsSnapshot {
-            let modelType = type(of: model)
+        for staged in insertsSnapshot {
+            let modelType = type(of: staged.model)
             let typeName = modelType.persistableType
-            let resolvedPath = resolvePartitionPath(for: model)
+            let resolvedPath = resolvePartitionPath(for: staged.model)
             let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
-            insertsByStore[key, default: []].append(model)
+            insertsByStore[key, default: []].append(staged)
         }
 
-        for model in deletesSnapshot {
-            let modelType = type(of: model)
+        for staged in replacesSnapshot {
+            // Replace keys are derived from `new` (the post-state); `old` and `new`
+            // share the same ModelKey by construction (merge rule invariant).
+            let modelType = type(of: staged.new)
             let typeName = modelType.persistableType
-            let resolvedPath = resolvePartitionPath(for: model)
+            let resolvedPath = resolvePartitionPath(for: staged.new)
             let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
-            deletesByStore[key, default: []].append(model)
+            replacesByStore[key, default: []].append(staged)
         }
 
-        let allStoreKeys = Set(insertsByStore.keys).union(deletesByStore.keys)
+        for staged in deletesSnapshot {
+            let modelType = type(of: staged.model)
+            let typeName = modelType.persistableType
+            let resolvedPath = resolvePartitionPath(for: staged.model)
+            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
+            deletesByStore[key, default: []].append(staged)
+        }
+
+        let allStoreKeys = Set(insertsByStore.keys)
+            .union(replacesByStore.keys)
+            .union(deletesByStore.keys)
 
         // Resolve stores with caching (avoids FDBDataStore re-creation across save() calls)
         var resolvedStores: [StoreKey: FDBDataStore] = [:]
@@ -970,7 +1254,10 @@ public final class FDBContext: Sendable {
                 continue
             }
 
-            let sampleModel = insertsByStore[storeKey]?.first ?? deletesByStore[storeKey]?.first
+            let sampleModel: (any Persistable)? =
+                insertsByStore[storeKey]?.first?.model
+                ?? replacesByStore[storeKey]?.first?.new
+                ?? deletesByStore[storeKey]?.first?.model
             guard let model = sampleModel else { continue }
 
             let modelType = type(of: model)
@@ -989,47 +1276,79 @@ public final class FDBContext: Sendable {
 
         // Make immutable copies for Sendable closure
         let insertsForTransaction = insertsByStore
+        let replacesForTransaction = replacesByStore
         let deletesForTransaction = deletesByStore
 
         // Get any store to provide the transaction (all stores share the same database)
-        guard let anyStore = storesByKey.values.first else {
+        guard storesByKey.values.first != nil else {
             return
         }
 
-        // Execute all operations in a single transaction via DataStore
-        try await anyStore.withRawTransaction { transaction in
+        // Route through the context's own raw transaction so the commit updates
+        // the ReadVersionCache. Using FDBDataStore.withRawTransaction here would
+        // bypass the cache and leave subsequent `.cached` reads observing the
+        // pre-commit version (visible as: delete+insert RMW appearing to "lose"
+        // the update until a fresh read version is acquired).
+        try await self.withRawTransaction { transaction in
             var allSerializedModels: [SerializedModel] = []
 
             // Batch process inserts per (type, partition)
             // skipExistingCheck: inserts from FDBContext are known new records,
-            // so we can skip the storage.read() + clearAllBlobs() overhead
-            for (storeKey, models) in insertsForTransaction {
+            // so we can skip the storage.read() + clearAllBlobs() overhead. The
+            // storage layer is responsible for evaluating `staged.precondition`
+            // (Phase 2) and throwing `FDBContextError.preconditionFailed` on
+            // violations.
+            for (storeKey, stagedItems) in insertsForTransaction {
                 guard let store = storesByKey[storeKey] else { continue }
-                let serialized = try await store.executeBatchInTransaction(
+                let models = stagedItems.map { $0.model }
+                let preconditions = stagedItems.map { $0.precondition }
+                let serialized = try await store.executeBatchInTransactionWithPreconditions(
                     inserts: models,
                     deletes: [],
                     transaction: transaction,
-                    skipExistingCheck: true
+                    skipExistingCheck: true,
+                    insertPreconditions: preconditions,
+                    deletePreconditions: []
+                )
+                allSerializedModels.append(contentsOf: serialized)
+            }
+
+            // Batch process replaces per (type, partition) — old is user-provided,
+            // so index maintenance skips the storage re-read. skipExistingCheck is
+            // false because replace semantically expects the row to exist and we
+            // want the storage layer to detect the mismatch via ItemStorage write.
+            for (storeKey, stagedItems) in replacesForTransaction {
+                guard let store = storesByKey[storeKey] else { continue }
+                let pairs = stagedItems.map { (old: $0.old, new: $0.new) }
+                let preconditions = stagedItems.map { $0.precondition }
+                let serialized = try await store.executeReplaceInTransaction(
+                    pairs: pairs,
+                    transaction: transaction,
+                    preconditions: preconditions
                 )
                 allSerializedModels.append(contentsOf: serialized)
             }
 
             // Batch process deletes per (type, partition)
             // skipExistingCheck: enables blob cleanup skip for no-index, no-security types
-            for (storeKey, models) in deletesForTransaction {
+            for (storeKey, stagedItems) in deletesForTransaction {
                 guard let store = storesByKey[storeKey] else { continue }
-                try await store.executeBatchInTransaction(
+                let models = stagedItems.map { $0.model }
+                let preconditions = stagedItems.map { $0.precondition }
+                try await store.executeBatchInTransactionWithPreconditions(
                     inserts: [],
                     deletes: models,
                     transaction: transaction,
-                    skipExistingCheck: true
+                    skipExistingCheck: true,
+                    insertPreconditions: [],
+                    deletePreconditions: preconditions
                 )
             }
 
             // Batch handle Polymorphable dual-write (reusing serialized data)
             try await self.processDualWrites(
                 serializedInserts: allSerializedModels,
-                deletes: deletesSnapshot,
+                deletes: deletesSnapshot.map { $0.model },
                 transaction: transaction
             )
         }
@@ -1267,8 +1586,7 @@ public final class FDBContext: Sendable {
     /// Discard all pending changes
     public func rollback() {
         stateLock.withLock { state in
-            state.insertedModels.removeAll()
-            state.deletedModels.removeAll()
+            state.pending.removeAll()
             state.isSaving = false
             state.autosaveScheduled = false
         }
@@ -1379,6 +1697,21 @@ public enum FDBContextError: Error, CustomStringConvertible {
     case modelNotFound(String)
     case transactionTooLarge(currentSize: Int, limit: Int, hint: String)
 
+    /// A `WritePrecondition` was violated at commit time.
+    ///
+    /// - `typeName`: `Persistable.persistableType` of the offending model.
+    /// - `idDescription`: String form of the primary key (for diagnostics only — the raw
+    ///   id bytes are intentionally not exposed to avoid leaking binary key material).
+    /// - `precondition`: The precondition that failed.
+    /// - `reason`: Human-readable explanation (e.g. "row already exists",
+    ///   "row not found", "stored version mismatch").
+    case preconditionFailed(
+        typeName: String,
+        idDescription: String,
+        precondition: WritePrecondition,
+        reason: String
+    )
+
     public var description: String {
         switch self {
         case .concurrentSaveNotAllowed:
@@ -1387,6 +1720,8 @@ public enum FDBContextError: Error, CustomStringConvertible {
             return "FDBContextError: Model of type '\(type)' not found"
         case .transactionTooLarge(let currentSize, let limit, let hint):
             return "FDBContextError: Transaction size (\(currentSize) bytes) approaching limit (\(limit) bytes). \(hint)"
+        case .preconditionFailed(let typeName, let idDescription, let precondition, let reason):
+            return "FDBContextError: Precondition \(precondition) failed for \(typeName) id=\(idDescription): \(reason)"
         }
     }
 }
@@ -1515,14 +1850,25 @@ extension FDBContext {
 
 extension FDBContext: CustomStringConvertible {
     public var description: String {
-        let (insertedCount, deletedCount) = stateLock.withLock { state in
-            (state.insertedModels.count, state.deletedModels.count)
+        let (insertCount, deleteCount, replaceCount) = stateLock.withLock { state in
+            var inserts = 0
+            var deletes = 0
+            var replaces = 0
+            for mutation in state.pending.values {
+                switch mutation {
+                case .insert, .upsert: inserts += 1
+                case .delete: deletes += 1
+                case .replace: replaces += 1
+                }
+            }
+            return (inserts, deletes, replaces)
         }
 
         return """
         FDBContext(
-            insertedModels: \(insertedCount),
-            deletedModels: \(deletedCount),
+            inserts: \(insertCount),
+            deletes: \(deleteCount),
+            replaces: \(replaceCount),
             hasChanges: \(hasChanges)
         )
         """

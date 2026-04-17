@@ -83,22 +83,18 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // Remove old score entry
         if let oldItem = oldItem {
             if let oldKey = try buildScoreKey(for: oldItem) {
                 transaction.clear(key: oldKey)
-                // Decrement count atomically
                 let decrementBytes = ByteConversion.int64ToBytes(-1)
                 transaction.atomicOp(key: countKey, param: decrementBytes, mutationType: .add)
             }
         }
 
-        // Add new score entry
         if let newItem = newItem {
             if let newKey = try buildScoreKey(for: newItem) {
                 let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
                 transaction.setValue(value, for: newKey)
-                // Increment count atomically
                 let incrementBytes = ByteConversion.int64ToBytes(1)
                 transaction.atomicOp(key: countKey, param: incrementBytes, mutationType: .add)
             }

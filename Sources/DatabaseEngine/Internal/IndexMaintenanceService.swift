@@ -267,17 +267,18 @@ internal final class IndexMaintenanceService: Sendable {
     ///   - persistableType: The type name for itemTypes
     /// - Returns: An Index object suitable for IndexMaintainer
     private static func buildIndex(from descriptor: IndexDescriptor, persistableType: String) -> Index {
-        // Build rootExpression from keyPaths
-        // Most IndexMaintainers prefer keyPaths over rootExpression, so we provide a simple expression
-        let rootExpression: KeyExpression
+        let rootExpression = KeyExpressionFactory.from(keyPaths: descriptor.fieldNames)
+
         if descriptor.keyPaths.isEmpty {
-            rootExpression = EmptyKeyExpression()
-        } else {
-            // Use the first keyPath's field name as a simple expression
-            // Note: IndexMaintainers should use Index.keyPaths directly for accurate field extraction
-            let firstKeyPathString = String(describing: descriptor.keyPaths.first!)
-            let fieldName = extractFieldName(from: firstKeyPathString)
-            rootExpression = FieldKeyExpression(fieldName: fieldName)
+            return Index(
+                name: descriptor.name,
+                kind: descriptor.kind,
+                rootExpression: rootExpression,
+                subspaceKey: descriptor.name,
+                itemTypes: Set([persistableType]),
+                isUnique: descriptor.isUnique,
+                storedFieldNames: descriptor.storedFieldNames
+            )
         }
 
         return Index(
@@ -290,24 +291,6 @@ internal final class IndexMaintenanceService: Sendable {
             isUnique: descriptor.isUnique,
             storedFieldNames: descriptor.storedFieldNames
         )
-    }
-
-    /// Extract field name from keyPath string representation
-    ///
-    /// KeyPath string representation looks like: "\\Type.fieldName" or "Swift.KeyPath<Type, FieldType>"
-    private static func extractFieldName(from keyPathString: String) -> String {
-        // Try to extract field name from various formats
-        // Format 1: "\Type.fieldName"
-        if let dotIndex = keyPathString.lastIndex(of: ".") {
-            let afterDot = keyPathString[keyPathString.index(after: dotIndex)...]
-            // Remove any trailing type info
-            if let parenIndex = afterDot.firstIndex(of: "(") {
-                return String(afterDot[..<parenIndex])
-            }
-            return String(afterDot)
-        }
-        // Fallback: return the whole string
-        return keyPathString
     }
 
     /// Type-erased helper for updating index with IndexKindMaintainable
