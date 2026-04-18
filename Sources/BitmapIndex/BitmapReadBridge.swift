@@ -32,14 +32,14 @@ private enum BitmapReadBridgeError: Error, Sendable {
 private struct BitmapReadExecutor: IndexReadExecutor {
     let kindIdentifier = "bitmap"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
 
         let execution = CanonicalReadExecution.resolve(
@@ -72,49 +72,12 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             throw BitmapReadBridgeError.invalidParameter(BitmapReadParameter.operation)
         }
 
-        if isCountProjection(selectQuery) {
-            let count = try await builder.countDirect(configuration: execution.transactionConfiguration)
-            return makeCountResponse(selectQuery: selectQuery, count: count)
-        }
-
         let results = try await builder.executeDirect(
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { item in
-            try QueryRowCodec.encode(item)
-        }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        let rows = results.map { BridgedRow.encoding($0) }
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(
@@ -190,14 +153,14 @@ private struct PolymorphicBitmapPlaceholder: Persistable {
 private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "bitmap"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(BitmapReadParameter.fieldName, from: indexScan.parameters)
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
@@ -220,9 +183,9 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             .subspace(indexScan.indexName)
 
         let operation = try requireString(BitmapReadParameter.operation, from: indexScan.parameters)
-        let resolved = try await context.executeCanonicalRead(
+        let primaryKeys = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
-        ) { transaction in
+        ) { transaction -> [Tuple] in
             let maintainer = BitmapIndexMaintainer<PolymorphicBitmapPlaceholder>(
                 index: Index(
                     name: indexScan.indexName,
@@ -256,11 +219,6 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 throw BitmapReadBridgeError.invalidParameter(BitmapReadParameter.operation)
             }
 
-            let count = bitmap.cardinality
-            if isCountProjection(selectQuery) {
-                return (count: count, primaryKeys: [] as [Tuple])
-            }
-
             let limitedBitmap: RoaringBitmap
             if let limit = indexScan.parameters[BitmapReadParameter.limit]?.int64Value {
                 let ids = bitmap.toArray()
@@ -276,60 +234,25 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
             } else {
                 limitedBitmap = bitmap
             }
-            let primaryKeys = try await maintainer.getPrimaryKeys(from: limitedBitmap, transaction: transaction)
-            return (count: count, primaryKeys: primaryKeys)
-        }
-
-        if isCountProjection(selectQuery) {
-            return makeCountResponse(selectQuery: selectQuery, count: resolved.count)
+            return try await maintainer.getPrimaryKeys(from: limitedBitmap, transaction: transaction)
         }
 
         let records = try await context.fetchPolymorphicItems(
             group: group,
-            ids: resolved.primaryKeys,
+            ids: primaryKeys,
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let page = try CanonicalOffsetPagination.window(
-            items: records,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { record in
-            QueryRowCodec.encodeAny(
-                record.item,
+        let rows = records.map { record in
+            BridgedRow.encoding(
+                any: record.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(record.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
                 ]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(

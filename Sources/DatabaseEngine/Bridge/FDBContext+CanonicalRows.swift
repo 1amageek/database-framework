@@ -216,7 +216,7 @@ extension FDBContext {
                let executor = ReadExecutorRegistry.shared.indexExecutor(
                 for: indexScan.kindIdentifier
                ) {
-                return try await dispatchTableIndexExecutor(
+                let rowSet = try await dispatchTableIndexExecutor(
                     executor: executor,
                     tableRef: tableRef,
                     selectQuery: selectQuery,
@@ -224,6 +224,13 @@ extension FDBContext {
                     options: options,
                     partitionValues: partitionValues,
                     partitionMode: partitionMode
+                )
+                let sourceName = tableRef.alias ?? tableRef.effectiveName
+                return try finalizeBridgedRowSet(
+                    rowSet,
+                    sourceName: sourceName,
+                    selectQuery: selectQuery,
+                    options: options
                 )
             }
             return try await executeSingleTableRows(
@@ -250,7 +257,7 @@ extension FDBContext {
                 throw CanonicalReadError.executorNotRegistered(indexScan.kindIdentifier)
             }
             let group = try container.polymorphicGroup(identifier: logicalSource.identifier)
-            return try await executor.execute(
+            let rowSet = try await executor.executeRows(
                 context: self,
                 selectQuery: selectQuery,
                 indexScan: indexScan,
@@ -258,10 +265,66 @@ extension FDBContext {
                 options: options,
                 partitionValues: partitionValues
             )
+            return try finalizeBridgedRowSet(
+                rowSet,
+                sourceName: logicalSource.effectiveName,
+                selectQuery: selectQuery,
+                options: options
+            )
 
         default:
             throw CanonicalReadError.unsupportedAccessPath("accessPath queries require a table or logical source")
         }
+    }
+
+    /// Apply the common SQL pipeline on top of a bridge's index-native row set.
+    ///
+    /// Runs `WHERE` → `COUNT(*)` short-circuit → `ORDER BY` → projection →
+    /// `DISTINCT` → `LIMIT`/`OFFSET` pagination. Index-native ordering is
+    /// preserved only when the outer `SELECT` has no `ORDER BY`.
+    private func finalizeBridgedRowSet(
+        _ rowSet: BridgedRowSet,
+        sourceName: String?,
+        selectQuery: SelectQuery,
+        options: ReadExecutionOptions
+    ) throws -> QueryResponse {
+        let canonicalRows = rowSet.rows.map { bridged in
+            CanonicalSourceRow.fromBaseFields(
+                bridged.fields,
+                sourceName: sourceName,
+                annotations: bridged.annotations
+            )
+        }
+
+        let filtered = try applyFilter(selectQuery.filter, to: canonicalRows)
+
+        if let countResponse = try makeCountProjectionResponse(selectQuery, rows: filtered) {
+            return countResponse
+        }
+
+        let ordered: [CanonicalSourceRow]
+        let hasExplicitOrder = (selectQuery.orderBy?.isEmpty == false)
+        if rowSet.ordering == .indexNative, !hasExplicitOrder {
+            ordered = filtered
+        } else {
+            ordered = try applyOrder(selectQuery.orderBy, to: filtered)
+        }
+
+        var projected = try projectRows(ordered, projection: selectQuery.projection)
+        if selectQuery.distinct {
+            projected = canonicalUniqueRows(projected)
+        }
+
+        let page = try CanonicalOffsetPagination.window(
+            items: projected,
+            selectQuery: selectQuery,
+            options: options
+        )
+        return QueryResponse(
+            rows: page.items,
+            continuation: page.continuation,
+            metadata: rowSet.metadata
+        )
     }
 
     private func executeSingleTableRows(
@@ -344,7 +407,7 @@ extension FDBContext {
         options: ReadExecutionOptions,
         partitionValues: [String: String]?,
         partitionMode: CanonicalPartitionRoutingMode
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let entity = try resolveEntity(named: tableRef.table)
         guard let type = entity.persistableType else {
             throw CanonicalReadError.unsupportedSelectQuery(
@@ -356,8 +419,8 @@ extension FDBContext {
             for: type,
             mode: partitionMode
         )
-        func helper<T: Persistable>(_ concreteType: T.Type) async throws -> QueryResponse {
-            try await executor.execute(
+        func helper<T: Persistable>(_ concreteType: T.Type) async throws -> BridgedRowSet {
+            try await executor.executeRows(
                 context: self,
                 selectQuery: selectQuery,
                 indexScan: indexScan,

@@ -32,14 +32,14 @@ private enum PermutedReadBridgeError: Error, Sendable {
 private struct PermutedReadExecutor: IndexReadExecutor {
     let kindIdentifier = "permuted"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -72,44 +72,8 @@ private struct PermutedReadExecutor: IndexReadExecutor {
             cachePolicy: execution.cachePolicy
         )
 
-        if isCountProjection(selectQuery) {
-            return makeCountResponse(selectQuery: selectQuery, count: results.count)
-        }
-
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { item in
-            try QueryRowCodec.encode(item)
-        }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        let rows = results.map { BridgedRow.encoding($0) }
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(
@@ -182,14 +146,14 @@ private struct PolymorphicPermutedPlaceholder: Persistable {
 private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "permuted"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -258,56 +222,22 @@ private struct PolymorphicPermutedReadExecutor: PolymorphicIndexReadExecutor {
             primaryKeys = Array(primaryKeys.prefix(Int(limit)))
         }
 
-        if isCountProjection(selectQuery) {
-            return makeCountResponse(selectQuery: selectQuery, count: primaryKeys.count)
-        }
-
         let records = try await context.fetchPolymorphicItems(
             group: group,
             ids: primaryKeys,
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: records,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { record in
-            QueryRowCodec.encodeAny(
-                record.item,
+        let rows = records.map { record in
+            BridgedRow.encoding(
+                any: record.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(record.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
                 ]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(

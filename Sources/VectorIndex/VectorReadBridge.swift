@@ -30,14 +30,14 @@ private enum VectorReadBridgeError: Error, Sendable {
 private struct VectorReadExecutor: IndexReadExecutor {
     let kindIdentifier = "vector"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
         let queryVector = try requireFloatArray(VectorReadParameter.queryVector, from: indexScan.parameters)
@@ -74,43 +74,13 @@ private struct VectorReadExecutor: IndexReadExecutor {
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        return try makeResponse(results: results, selectQuery: selectQuery, options: options)
-    }
-
-    private func makeResponse<T: Persistable>(
-        results: [(item: T, distance: Double)],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for vector access paths")
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-
-        let rows = try page.items.map { result in
-            try QueryRowCodec.encode(
+        let rows = results.map { result in
+            BridgedRow.encoding(
                 result.item,
                 annotations: ["distance": .double(result.distance)]
             )
         }
-
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(
@@ -191,14 +161,14 @@ private struct PolymorphicVectorPlaceholder: Persistable {
 private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "vector"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(VectorReadParameter.fieldName, from: indexScan.parameters)
         let dimensions = try requireInt(VectorReadParameter.dimensions, from: indexScan.parameters)
         let queryVector = try requireFloatArray(VectorReadParameter.queryVector, from: indexScan.parameters)
@@ -412,11 +382,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         records: [PolymorphicRecord],
         selectQuery: SelectQuery,
         options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for vector access paths")
-        }
-
+    ) throws -> BridgedRowSet {
         let recordByID: [String: PolymorphicRecord] = Dictionary(
             uniqueKeysWithValues: records.map { record in
                 (stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item))), record)
@@ -429,15 +395,9 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
             return (record: record, distance: result.distance)
         }
 
-        let page = try CanonicalOffsetPagination.window(
-            items: orderedResults,
-            selectQuery: selectQuery,
-            options: options
-        )
-
-        let rows = page.items.map { result in
-            QueryRowCodec.encodeAny(
-                result.record.item,
+        let rows = orderedResults.map { result in
+            BridgedRow.encoding(
+                any: result.record.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
@@ -445,7 +405,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                 ]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func makeKind(
@@ -524,17 +484,6 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
     private func stableKey(_ tuple: Tuple) -> String {
         Data(tuple.pack()).base64EncodedString()
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
     }
 
     private func requireString(

@@ -274,7 +274,8 @@ struct OnlineIndexerLargeDataTests {
     func testBuildIndexWithSingleItem() async throws {
         let ctx = try await TestContext()
 
-        let player = Player(id: "single", name: "Only One", score: 100, level: 1)
+        var player = Player(name: "Only One", score: 100, level: 1)
+        player.id = "single"
         try await ctx.insertPlayers([player])
 
         let index = TestIndex.create(name: "single_idx")

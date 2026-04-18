@@ -36,14 +36,14 @@ private enum FullTextReadBridgeError: Error, Sendable {
 private struct FullTextReadExecutor: IndexReadExecutor {
     let kindIdentifier = "fulltext"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(FullTextReadParameter.fieldName, from: indexScan.parameters)
         let terms = try requireStringArray(FullTextReadParameter.terms, from: indexScan.parameters)
         let matchMode = try decodeMatchMode(from: indexScan.parameters)
@@ -74,7 +74,12 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 configuration: execution.transactionConfiguration,
                 cachePolicy: execution.cachePolicy
             )
-            return try makeFacetedResponse(result: result, selectQuery: selectQuery, options: options)
+            let rows = result.items.map { BridgedRow.encoding($0) }
+            return BridgedRowSet(
+                rows: rows,
+                ordering: .indexNative,
+                metadata: facetMetadata(totalCount: result.totalCount, facets: result.facets)
+            )
         }
 
         if returnScores {
@@ -85,105 +90,38 @@ private struct FullTextReadExecutor: IndexReadExecutor {
                 configuration: execution.transactionConfiguration,
                 cachePolicy: execution.cachePolicy
             )
-            return try makeScoredResponse(results: results, selectQuery: selectQuery, options: options)
+            let rows = results.map { result in
+                BridgedRow.encoding(
+                    result.item,
+                    annotations: ["score": .double(result.score)]
+                )
+            }
+            return BridgedRowSet(rows: rows, ordering: .indexNative)
         }
 
         let results = try await builder.executeDirect(
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        return try makePlainResponse(results: results, selectQuery: selectQuery, options: options)
+        let rows = results.map { BridgedRow.encoding($0) }
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
-    private func makePlainResponse<T: Persistable>(
-        results: [T],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { try QueryRowCodec.encode($0) }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeScoredResponse<T: Persistable>(
-        results: [(item: T, score: Double)],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { result in
-            try QueryRowCodec.encode(
-                result.item,
-                annotations: ["score": .double(result.score)]
-            )
-        }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeFacetedResponse<T: Persistable>(
-        result: FacetedSearchResult<T>,
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let pagination = try CanonicalOffsetPagination.context(
-            selectQuery: selectQuery,
-            options: options
-        )
-        if pagination.isExhausted {
-            return QueryResponse(
-                rows: [],
-                metadata: [FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))]
-            )
-        }
-        let page = try CanonicalOffsetPagination.window(
-            items: result.items,
-            context: pagination
-        )
-        let rows = try page.items.map { try QueryRowCodec.encode($0) }
-
+    private func facetMetadata(
+        totalCount: Int,
+        facets: [String: [(value: String, count: Int64)]]
+    ) -> [String: FieldValue] {
         var metadata: [String: FieldValue] = [
-            FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))
+            FullTextReadParameter.totalCount: .int64(Int64(totalCount))
         ]
-        for (field, buckets) in result.facets {
+        for (field, buckets) in facets {
             metadata[FullTextReadParameter.facetMetadataPrefix + field] = .array(
                 buckets.map { bucket in
                     .array([.string(bucket.value), .int64(bucket.count)])
                 }
             )
         }
-
-        return QueryResponse(rows: rows, continuation: page.continuation, metadata: metadata)
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return metadata
     }
 
     private func decodeMatchMode(
@@ -271,14 +209,14 @@ private struct PolymorphicFullTextPlaceholder: Persistable {
 private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "fulltext"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(FullTextReadParameter.fieldName, from: indexScan.parameters)
         let terms = try requireStringArray(FullTextReadParameter.terms, from: indexScan.parameters)
         let matchMode = try decodeMatchMode(from: indexScan.parameters)
@@ -332,10 +270,19 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 indexSubspace: indexSubspace,
                 execution: execution
             )
-            return try makeFacetedResponse(
-                result: result,
-                selectQuery: selectQuery,
-                options: options
+            let rows = result.items.map { record in
+                BridgedRow.encoding(
+                    any: record.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName: .string(record.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                    ]
+                )
+            }
+            return BridgedRowSet(
+                rows: rows,
+                ordering: .indexNative,
+                metadata: facetMetadata(totalCount: result.totalCount, facets: result.facets)
             )
         }
 
@@ -355,11 +302,17 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 indexSubspace: indexSubspace,
                 execution: execution
             )
-            return try makeScoredResponse(
-                results: results,
-                selectQuery: selectQuery,
-                options: options
-            )
+            let rows = results.map { result in
+                BridgedRow.encoding(
+                    any: result.record.item,
+                    annotations: [
+                        PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
+                        PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
+                        "score": .double(result.score)
+                    ]
+                )
+            }
+            return BridgedRowSet(rows: rows, ordering: .indexNative)
         }
 
         let results = try await executePlainSearch(
@@ -374,11 +327,33 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             indexSubspace: indexSubspace,
             execution: execution
         )
-        return try makePlainResponse(
-            results: results,
-            selectQuery: selectQuery,
-            options: options
-        )
+        let rows = results.map { record in
+            BridgedRow.encoding(
+                any: record.item,
+                annotations: [
+                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
+                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
+                ]
+            )
+        }
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
+    }
+
+    private func facetMetadata(
+        totalCount: Int,
+        facets: [String: [(value: String, count: Int64)]]
+    ) -> [String: FieldValue] {
+        var metadata: [String: FieldValue] = [
+            FullTextReadParameter.totalCount: .int64(Int64(totalCount))
+        ]
+        for (field, buckets) in facets {
+            metadata[FullTextReadParameter.facetMetadataPrefix + field] = .array(
+                buckets.map { bucket in
+                    .array([.string(bucket.value), .int64(bucket.count)])
+                }
+            )
+        }
+        return metadata
     }
 
     private func executePlainSearch(
@@ -713,111 +688,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         return results
     }
 
-    private func makePlainResponse(
-        results: [PolymorphicRecord],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { record in
-            QueryRowCodec.encodeAny(
-                record.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
-                ]
-            )
-        }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeScoredResponse(
-        results: [(record: PolymorphicRecord, score: Double)],
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { result in
-            QueryRowCodec.encodeAny(
-                result.record.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
-                    "score": .double(result.score)
-                ]
-            )
-        }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeFacetedResponse(
-        result: (items: [PolymorphicRecord], facets: [String: [(value: String, count: Int64)]], totalCount: Int),
-        selectQuery: SelectQuery,
-        options: ReadExecutionOptions
-    ) throws -> QueryResponse {
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for full-text access paths")
-        }
-
-        let pagination = try CanonicalOffsetPagination.context(
-            selectQuery: selectQuery,
-            options: options
-        )
-        if pagination.isExhausted {
-            return QueryResponse(
-                rows: [],
-                metadata: [FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))]
-            )
-        }
-
-        let page = try CanonicalOffsetPagination.window(
-            items: result.items,
-            context: pagination
-        )
-        let rows = page.items.map { record in
-            QueryRowCodec.encodeAny(
-                record.item,
-                annotations: [
-                    PolymorphicRowAnnotation.typeName: .string(record.typeName),
-                    PolymorphicRowAnnotation.typeCode: .int64(record.typeCode)
-                ]
-            )
-        }
-
-        var metadata: [String: FieldValue] = [
-            FullTextReadParameter.totalCount: .int64(Int64(result.totalCount))
-        ]
-        for (field, buckets) in result.facets {
-            metadata[FullTextReadParameter.facetMetadataPrefix + field] = .array(
-                buckets.map { bucket in
-                    .array([.string(bucket.value), .int64(bucket.count)])
-                }
-            )
-        }
-
-        return QueryResponse(
-            rows: rows,
-            continuation: page.continuation,
-            metadata: metadata
-        )
-    }
-
     private func makeKind(
         fieldName: String,
         descriptor: AnyIndexDescriptor?
@@ -882,17 +752,6 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
 
     private func stableKey(_ tuple: Tuple) -> String {
         Data(tuple.pack()).base64EncodedString()
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
     }
 
     private func decodeMatchMode(

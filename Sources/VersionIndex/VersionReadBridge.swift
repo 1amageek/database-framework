@@ -25,14 +25,14 @@ private enum VersionReadBridgeError: Error, Sendable {
 private struct VersionReadExecutor: IndexReadExecutor {
     let kindIdentifier = "version"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let primaryKeyValues = try requireArray(VersionReadParameter.primaryKey, from: indexScan.parameters)
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
 
@@ -57,47 +57,13 @@ private struct VersionReadExecutor: IndexReadExecutor {
             configuration: execution.transactionConfiguration
         )
 
-        if isCountProjection(selectQuery) {
-            return makeCountResponse(selectQuery: selectQuery, count: results.count)
-        }
-
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { result in
-            try QueryRowCodec.encode(
+        let rows = results.map { result in
+            BridgedRow.encoding(
                 result.item,
                 annotations: ["version": .data(Data(result.version.bytes))]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireArray(
@@ -150,14 +116,14 @@ private struct PolymorphicVersionPlaceholder: Persistable {
 private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "version"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let primaryKeyValues = try requireArray(VersionReadParameter.primaryKey, from: indexScan.parameters)
         let primaryKey = try primaryKeyValues.map { try DatabaseEngine.CanonicalTupleElementCodec.decode($0) }
         guard let typeCode = primaryKey.first as? Int64 else {
@@ -219,18 +185,9 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
             }
         }
 
-        if isCountProjection(selectQuery) {
-            return makeCountResponse(selectQuery: selectQuery, count: results.count)
-        }
-
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { result in
-            QueryRowCodec.encodeAny(
-                result.item,
+        let rows = results.map { result in
+            BridgedRow.encoding(
+                any: result.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(runtimeType.persistableType),
                     PolymorphicRowAnnotation.typeCode: .int64(typeCode),
@@ -238,32 +195,7 @@ private struct PolymorphicVersionReadExecutor: PolymorphicIndexReadExecutor {
                 ]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func makeCountResponse(
-        selectQuery: SelectQuery,
-        count: Int
-    ) -> QueryResponse {
-        let alias: String
-        if case .items(let items) = selectQuery.projection,
-           let first = items.first {
-            alias = first.alias ?? "count"
-        } else {
-            alias = "count"
-        }
-        return QueryResponse(rows: [QueryRow(fields: [alias: .int64(Int64(count))])])
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireArray(

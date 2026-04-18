@@ -30,19 +30,29 @@ public enum RankReadBridge {
 private enum RankReadBridgeError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
+    case invalidRange(from: Int, to: Int)
+}
+
+private func validateRankRange(from: Int, to: Int) throws {
+    guard from >= 0 else {
+        throw RankReadBridgeError.invalidRange(from: from, to: to)
+    }
+    guard to > from else {
+        throw RankReadBridgeError.invalidRange(from: from, to: to)
+    }
 }
 
 private struct RankReadExecutor: IndexReadExecutor {
     let kindIdentifier = "rank"
 
-    func execute<T: Persistable>(
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse {
+    ) async throws -> BridgedRowSet {
         let fieldName = try requireString(RankReadParameter.fieldName, from: indexScan.parameters)
 
         let execution = CanonicalReadExecution.resolve(
@@ -62,10 +72,10 @@ private struct RankReadExecutor: IndexReadExecutor {
         case RankReadParameter.bottomMode:
             builder = builder.bottom(try requireInt(RankReadParameter.count, from: indexScan.parameters))
         case RankReadParameter.rangeMode:
-            builder = builder.range(
-                from: try requireInt(RankReadParameter.from, from: indexScan.parameters),
-                to: try requireInt(RankReadParameter.to, from: indexScan.parameters)
-            )
+            let from = try requireInt(RankReadParameter.from, from: indexScan.parameters)
+            let to = try requireInt(RankReadParameter.to, from: indexScan.parameters)
+            try validateRankRange(from: from, to: to)
+            builder = builder.range(from: from, to: to)
         case RankReadParameter.percentileMode:
             builder = builder.percentile(try requireDouble(RankReadParameter.percentile, from: indexScan.parameters))
         default:
@@ -77,33 +87,13 @@ private struct RankReadExecutor: IndexReadExecutor {
             cachePolicy: execution.cachePolicy
         )
 
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for rank access paths")
-        }
-
-        let page = try DatabaseEngine.CanonicalOffsetPagination.window(
-            items: results,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = try page.items.map { result in
-            try QueryRowCodec.encode(
+        let rows = results.map { result in
+            BridgedRow.encoding(
                 result.item,
                 annotations: ["rank": .int64(Int64(result.rank))]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
     private func requireString(
@@ -138,19 +128,17 @@ private struct RankReadExecutor: IndexReadExecutor {
 }
 
 private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
-    private static let maxScanKeys = 100_000
-
     let kindIdentifier = "rank"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
-        let fieldName = try requireString(RankReadParameter.fieldName, from: indexScan.parameters)
+    ) async throws -> BridgedRowSet {
+        _ = try requireString(RankReadParameter.fieldName, from: indexScan.parameters)
         let execution = CanonicalReadExecution.resolve(
             requested: options.consistency,
             default: .snapshot
@@ -166,22 +154,17 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             orderBy: orderByFields
         )
 
-        let scoresSubspace = try await context.container
+        let indexSubspace = try await context.container
             .resolvePolymorphicDirectory(for: group.identifier)
             .subspace(SubspaceKey.indexes)
             .subspace(indexScan.indexName)
-            .subspace("scores")
 
         let rankedKeys = try await context.executeCanonicalRead(
             configuration: execution.transactionConfiguration
         ) { transaction in
-            let entries = try await loadEntries(
-                from: scoresSubspace,
-                transaction: transaction
-            )
-            return try rankedEntries(
-                entries: entries,
-                mode: requireString(RankReadParameter.mode, from: indexScan.parameters),
+            try await scanRanked(
+                indexSubspace: indexSubspace,
+                transaction: transaction,
                 parameters: indexScan.parameters
             )
         }
@@ -192,10 +175,6 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-
-        if isCountProjection(selectQuery) {
-            throw CanonicalReadError.unsupportedAccessPath("count() is not supported for rank access paths")
-        }
 
         let recordByID: [String: PolymorphicRecord] = Dictionary(
             uniqueKeysWithValues: records.map { record in
@@ -210,14 +189,9 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             return (record: record, rank: result.rank)
         }
 
-        let page = try CanonicalOffsetPagination.window(
-            items: orderedResults,
-            selectQuery: selectQuery,
-            options: options
-        )
-        let rows = page.items.map { result in
-            QueryRowCodec.encodeAny(
-                result.record.item,
+        let rows = orderedResults.map { result in
+            BridgedRow.encoding(
+                any: result.record.item,
                 annotations: [
                     PolymorphicRowAnnotation.typeName: .string(result.record.typeName),
                     PolymorphicRowAnnotation.typeCode: .int64(result.record.typeCode),
@@ -225,95 +199,50 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
                 ]
             )
         }
-        return QueryResponse(rows: rows, continuation: page.continuation)
+        return BridgedRowSet(rows: rows, ordering: .indexNative)
     }
 
-    private func loadEntries(
-        from scoresSubspace: Subspace,
-        transaction: any Transaction
-    ) async throws -> [(score: Double, primaryKey: Tuple)] {
-        let range = scoresSubspace.range()
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        var entries: [(score: Double, primaryKey: Tuple)] = []
-        entries.reserveCapacity(128)
-        var scannedKeys = 0
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-            scannedKeys += 1
-            if scannedKeys >= Self.maxScanKeys { break }
-            guard let entry = try parseIndexKey(key, scoresSubspace: scoresSubspace) else {
-                continue
-            }
-            entries.append(entry)
-        }
-        return entries
-    }
-
-    private func rankedEntries(
-        entries: [(score: Double, primaryKey: Tuple)],
-        mode: String,
+    private func scanRanked(
+        indexSubspace: Subspace,
+        transaction: any Transaction,
         parameters: [String: QueryParameterValue]
-    ) throws -> [(primaryKey: Tuple, rank: Int)] {
+    ) async throws -> [(primaryKey: Tuple, rank: Int)] {
+        let scoresSubspace = indexSubspace.subspace("scores")
+        let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
+        let mode = try requireString(RankReadParameter.mode, from: parameters)
+
         switch mode {
         case RankReadParameter.topMode:
             let count = try requireInt(RankReadParameter.count, from: parameters)
-            let sorted = entries.sorted { $0.score > $1.score }
-            return Array(sorted.prefix(count)).enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
+            let entries = try await scanner.top(k: count)
+            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
         case RankReadParameter.bottomMode:
             let count = try requireInt(RankReadParameter.count, from: parameters)
-            let sorted = entries.sorted { $0.score < $1.score }
-            return Array(sorted.prefix(count)).enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
+            let entries = try await scanner.bottom(k: count)
+            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
         case RankReadParameter.rangeMode:
             let from = try requireInt(RankReadParameter.from, from: parameters)
             let to = try requireInt(RankReadParameter.to, from: parameters)
-            let sorted = entries.sorted { $0.score > $1.score }
-            return Array(sorted.dropFirst(from).prefix(max(to - from, 0))).enumerated().map {
-                (primaryKey: $0.element.primaryKey, rank: from + $0.offset)
-            }
+            try validateRankRange(from: from, to: to)
+            let entries = try await scanner.rangeDescending(from: from, to: to)
+            return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: from + $0.offset) }
 
         case RankReadParameter.percentileMode:
             let percentile = try requireDouble(RankReadParameter.percentile, from: parameters)
-            let sorted = entries.sorted { $0.score > $1.score }
-            guard !sorted.isEmpty else { return [] }
-            let targetRank = Int(Double(sorted.count) * (1.0 - percentile))
-            let safeRank = max(0, min(targetRank, sorted.count - 1))
-            return [(primaryKey: sorted[safeRank].primaryKey, rank: safeRank)]
+            let countKey = indexSubspace.pack(Tuple("_count"))
+            let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
+            let totalCount = countBytes.map { Int(ByteConversion.bytesToInt64($0)) } ?? 0
+            guard totalCount > 0 else { return [] }
+            let targetRank = Int(Double(totalCount) * (1.0 - percentile))
+            let safeRank = max(0, min(targetRank, totalCount - 1))
+            guard let entry = try await scanner.nthFromTop(safeRank) else { return [] }
+            return [(primaryKey: entry.primaryKey, rank: safeRank)]
 
         default:
             throw RankReadBridgeError.invalidParameter(RankReadParameter.mode)
         }
-    }
-
-    private func parseIndexKey(
-        _ key: Bytes,
-        scoresSubspace: Subspace
-    ) throws -> (score: Double, primaryKey: Tuple)? {
-        let tuple = try scoresSubspace.unpack(key)
-        guard tuple.count >= 2, let firstElement = tuple[0] else {
-            return nil
-        }
-
-        let score: Double
-        do {
-            score = try TypeConversion.double(from: firstElement)
-        } catch {
-            return nil
-        }
-
-        var primaryKeyElements: [any TupleElement] = []
-        for index in 1..<tuple.count {
-            if let element = tuple[index] {
-                primaryKeyElements.append(element)
-            }
-        }
-        return (score: score, primaryKey: Tuple(primaryKeyElements))
     }
 
     private func primaryKeyElements(from item: any Persistable) -> [any TupleElement] {
@@ -325,17 +254,6 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
     private func stableKey(_ tuple: Tuple) -> String {
         Data(tuple.pack()).base64EncodedString()
-    }
-
-    private func isCountProjection(_ selectQuery: SelectQuery) -> Bool {
-        guard case .items(let items) = selectQuery.projection,
-              items.count == 1,
-              case .aggregate(.count(let expression, let distinct)) = items[0].expression,
-              expression == nil,
-              distinct == false else {
-            return false
-        }
-        return true
     }
 
     private func requireString(

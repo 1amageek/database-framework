@@ -10,15 +10,15 @@ struct CanonicalReadRegistryTests {
     private struct TestPolymorphicExecutor: PolymorphicIndexReadExecutor {
         let kindIdentifier = "test.polymorphic.runtime"
 
-        func execute(
+        func executeRows(
             context: FDBContext,
             selectQuery: SelectQuery,
             indexScan: IndexScanSource,
             group: PolymorphicGroup,
             options: ReadExecutionOptions,
             partitionValues: [String : String]?
-        ) async throws -> QueryResponse {
-            QueryResponse()
+        ) async throws -> BridgedRowSet {
+            .empty
         }
     }
 

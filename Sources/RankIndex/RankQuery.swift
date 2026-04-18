@@ -45,9 +45,6 @@ private enum RankQueryRuntime {
 /// // Returns: Player?
 /// ```
 public struct RankQueryBuilder<T: Persistable>: Sendable {
-    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
-    private static var maxScanKeys: Int { 100_000 }
-
     private let queryContext: IndexQueryContext
     private let fieldName: String
     private var queryMode: RankQueryMode = .top(10)
@@ -123,10 +120,10 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// Execute the ranking query using the index
     ///
     /// Uses RankIndex for efficient queries:
-    /// - top(k): O(n log k) with TopKHeap
-    /// - bottom(k): O(n log k) with TopKHeap
-    /// - range: O(n) scan with skip
-    /// - percentile: O(n log k) where k = targetRank
+    /// - top(k): O(K) native FDB reverse range scan
+    /// - bottom(k): O(K) native FDB forward range scan
+    /// - range: O(to) reverse scan then drop first `from`
+    /// - percentile: O(1) atomic count + O(targetRank) reverse scan
     ///
     /// Falls back to in-memory sorting if no RankIndex exists for the field.
     ///
@@ -164,12 +161,11 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
         let indexSubspace = typeSubspace.subspace(indexName)
-        let scoresSubspace = indexSubspace.subspace("scores")
 
         // Execute query using index
         return try await queryContext.withTransaction(configuration: configuration) { transaction in
             try await self.executeWithIndex(
-                scoresSubspace: scoresSubspace,
+                indexSubspace: indexSubspace,
                 transaction: transaction,
                 cachePolicy: cachePolicy
             )
@@ -178,255 +174,117 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
 
     /// Execute query using the rank index
     private func executeWithIndex(
-        scoresSubspace: Subspace,
+        indexSubspace: Subspace,
         transaction: any Transaction,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
+        let scoresSubspace = indexSubspace.subspace("scores")
+        let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
+
         switch queryMode {
         case .top(let k):
-            return try await scanTopK(
+            return try await scanTop(
+                scanner: scanner,
                 k: k,
-                scoresSubspace: scoresSubspace,
-                transaction: transaction,
                 cachePolicy: cachePolicy
             )
 
         case .bottom(let k):
-            return try await scanBottomK(
+            return try await scanBottom(
+                scanner: scanner,
                 k: k,
-                scoresSubspace: scoresSubspace,
-                transaction: transaction,
                 cachePolicy: cachePolicy
             )
 
         case .range(let from, let to):
             return try await scanRange(
+                scanner: scanner,
                 from: from,
                 to: to,
-                scoresSubspace: scoresSubspace,
-                transaction: transaction,
                 cachePolicy: cachePolicy
             )
 
         case .percentile(let p):
             return try await scanPercentile(
+                scanner: scanner,
+                indexSubspace: indexSubspace,
                 p: p,
-                scoresSubspace: scoresSubspace,
                 transaction: transaction,
                 cachePolicy: cachePolicy
             )
         }
     }
 
-    /// Scan top K items (highest scores)
+    /// Scan top K items (highest scores) using FDB reverse range scan.
     ///
-    /// Index stores: [score][primaryKey] in ascending order.
-    /// To get top K, we use a min-heap while scanning all entries,
-    /// then sort the results in descending order.
-    ///
-    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
-    private func scanTopK(
+    /// **Algorithm**: `collectRange(reverse: true, limit: k)` reads the K highest
+    /// entries directly in O(K). No heap, no truncation, no later sort.
+    private func scanTop(
+        scanner: RankScanner,
         k: Int,
-        scoresSubspace: Subspace,
-        transaction: any Transaction,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
-        let range = scoresSubspace.range()
-
-        // Use min-heap to track top-k highest scores
-        var topKHeap = TopKHeap<(score: Double, primaryKey: Tuple)>(
-            k: k,
-            comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
-        )
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        var scannedKeys = 0
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-
-            scannedKeys += 1
-            if scannedKeys >= Self.maxScanKeys { break }
-
-            if let (score, primaryKey) = try parseIndexKey(key, scoresSubspace: scoresSubspace) {
-                topKHeap.insert((score: score, primaryKey: primaryKey))
-            }
-        }
-
-        let sortedResults = topKHeap.toSortedArrayDescending()
-        return try await fetchItemsWithRank(results: sortedResults, cachePolicy: cachePolicy)
+        let entries = try await scanner.top(k: k)
+        return try await fetchItemsWithRank(entries: entries, startRank: 0, cachePolicy: cachePolicy)
     }
 
-    /// Scan bottom K items (lowest scores)
-    ///
-    /// Index stores scores in ascending order, so we can simply take the first K.
-    /// Naturally limited to k items (no additional resource limit needed).
-    private func scanBottomK(
+    /// Scan bottom K items (lowest scores) using FDB forward range scan.
+    private func scanBottom(
+        scanner: RankScanner,
         k: Int,
-        scoresSubspace: Subspace,
-        transaction: any Transaction,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
-        let range = scoresSubspace.range()
-
-        var results: [(score: Double, primaryKey: Tuple)] = []
-        results.reserveCapacity(k)
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-
-            if let (score, primaryKey) = try parseIndexKey(key, scoresSubspace: scoresSubspace) {
-                results.append((score: score, primaryKey: primaryKey))
-                if results.count >= k {
-                    break
-                }
-            }
-        }
-
-        return try await fetchItemsWithRank(results: results, cachePolicy: cachePolicy)
+        let entries = try await scanner.bottom(k: k)
+        return try await fetchItemsWithRank(entries: entries, startRank: 0, cachePolicy: cachePolicy)
     }
 
-    /// Scan items in a rank range
-    ///
-    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
+    /// Scan items in a rank range [from, to) using reverse scan of `to` entries.
     private func scanRange(
+        scanner: RankScanner,
         from: Int,
         to: Int,
-        scoresSubspace: Subspace,
-        transaction: any Transaction,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
-        // First, get all items to determine ranks
-        // This is similar to top(to) but we skip the first `from` items
-        let range = scoresSubspace.range()
-
-        var allItems: [(score: Double, primaryKey: Tuple)] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        var scannedKeys = 0
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-
-            // Resource limit
-            scannedKeys += 1
-            if scannedKeys >= Self.maxScanKeys { break }
-
-            if let (score, primaryKey) = try parseIndexKey(key, scoresSubspace: scoresSubspace) {
-                allItems.append((score: score, primaryKey: primaryKey))
-            }
-        }
-
-        // Sort by score descending (highest first = rank 0)
-        allItems.sort { $0.score > $1.score }
-
-        // Extract range
-        let rangeItems = Array(allItems.dropFirst(from).prefix(to - from))
-
-        return try await fetchItemsWithRank(
-            results: rangeItems,
-            startRank: from,
-            cachePolicy: cachePolicy
-        )
+        let entries = try await scanner.rangeDescending(from: from, to: to)
+        return try await fetchItemsWithRank(entries: entries, startRank: from, cachePolicy: cachePolicy)
     }
 
-    /// Scan items at a specific percentile
+    /// Scan item at a specific percentile.
     ///
-    /// **Resource Limit**: Count limited to 100,000 keys.
+    /// Uses the atomic count key (`_count`) for O(1) total count, then reads the
+    /// Nth-from-top entry directly.
     private func scanPercentile(
+        scanner: RankScanner,
+        indexSubspace: Subspace,
         p: Double,
-        scoresSubspace: Subspace,
         transaction: any Transaction,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
-        // First, count total items
-        let range = scoresSubspace.range()
-        var totalCount = 0
-
-        let countSequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        for (key, _) in countSequence {
-            guard scoresSubspace.contains(key) else { break }
-            totalCount += 1
-            // Resource limit for count operation
-            if totalCount >= Self.maxScanKeys { break }
-        }
-
+        let countKey = indexSubspace.pack(Tuple("_count"))
+        let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
+        let totalCount = countBytes.map { Int(ByteConversion.bytesToInt64($0)) } ?? 0
         guard totalCount > 0 else { return [] }
 
-        // Calculate target rank
-        // percentile 0.5 (median) = rank at position totalCount * 0.5
-        // percentile 1.0 (100th) = rank 0 (highest score)
-        // percentile 0.0 (0th) = rank totalCount - 1 (lowest score)
+        // percentile 0.5 (median) = middle rank; 1.0 = highest; 0.0 = lowest.
         let targetRank = Int(Double(totalCount) * (1.0 - p))
         let safeTargetRank = max(0, min(targetRank, totalCount - 1))
 
-        // Get the item at targetRank using range query
-        let results = try await scanRange(
-            from: safeTargetRank,
-            to: safeTargetRank + 1,
-            scoresSubspace: scoresSubspace,
-            transaction: transaction,
+        guard let entry = try await scanner.nthFromTop(safeTargetRank) else { return [] }
+        return try await fetchItemsWithRank(
+            entries: [entry],
+            startRank: safeTargetRank,
             cachePolicy: cachePolicy
         )
-
-        return results
     }
 
-    /// Parse index key to extract score and primary key
-    ///
-    /// Key format: [scoresSubspace][score][primaryKey...]
-    private func parseIndexKey(_ key: Bytes, scoresSubspace: Subspace) throws -> (score: Double, primaryKey: Tuple)? {
-        let tuple = try scoresSubspace.unpack(key)
-
-        guard tuple.count >= 2 else {
-            return nil
-        }
-
-        // First element is score
-        guard let firstElement = tuple[0] else { return nil }
-
-        let score = try TypeConversion.double(from: firstElement)
-
-        // Remaining elements are primary key
-        var primaryKeyElements: [any TupleElement] = []
-        for i in 1..<tuple.count {
-            if let element = tuple[i] {
-                primaryKeyElements.append(element)
-            }
-        }
-
-        return (score: score, primaryKey: Tuple(primaryKeyElements))
-    }
-
-    /// Fetch items by primary key and add rank
+    /// Fetch items by primary key and add rank (ordered by scanner output).
     private func fetchItemsWithRank(
-        results: [(score: Double, primaryKey: Tuple)],
-        startRank: Int = 0,
+        entries: [RankScanEntry],
+        startRank: Int,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
-        let ids = results.map { $0.primaryKey }
+        let ids = entries.map { $0.primaryKey }
         let items = try await queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
-
-        // Combine items with ranks
         return items.enumerated().map { (item: $0.element, rank: startRank + $0.offset) }
     }
 

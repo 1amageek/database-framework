@@ -206,6 +206,17 @@ public actor FDBTestSetup {
         do {
             let engine = try await createConfiguredEngine(systemPriority: true)
             try await engine.directoryService.remove(path: ["test"])
+
+            // Clear stale schema catalog entries (/_schema/) to prevent
+            // append-only compatibility check failures when test models
+            // are redefined across runs.
+            try await engine.withTransaction { transaction in
+                let catalogPrefix: String = "_schema"
+                let prefix = StorageKit.Tuple([catalogPrefix]).pack()
+                let subspace = StorageKit.Subspace(prefix: prefix)
+                let (begin, end) = subspace.range()
+                transaction.clearRange(beginKey: begin, endKey: end)
+            }
         } catch {
             // Ignore cleanup failures; tests will surface real issues.
         }

@@ -124,12 +124,13 @@ public struct LargeTestDataGenerator {
     public static func generatePlayers(count: Int, nameLength: Int = 100) -> [Player] {
         (0..<count).map { i in
             let name = String(repeating: "x", count: nameLength) + String(i)
-            return Player(
-                id: String(format: "player_%06d", i),
+            var player = Player(
                 name: name,
                 score: Int64(i * 100),
                 level: (i % 100) + 1
             )
+            player.id = String(format: "player_%06d", i)
+            return player
         }
     }
 

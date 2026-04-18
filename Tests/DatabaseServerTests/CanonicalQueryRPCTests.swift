@@ -82,17 +82,17 @@ private struct RPCTestAuth: AuthContext {
 private struct RPCPolymorphicAccessPathExecutor: PolymorphicIndexReadExecutor {
     let kindIdentifier = "test.rpc.polymorphic"
 
-    func execute(
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String : String]?
-    ) async throws -> QueryResponse {
-        QueryResponse(
+    ) async throws -> BridgedRowSet {
+        BridgedRowSet(
             rows: [
-                QueryRow(
+                BridgedRow(
                     fields: [
                         "id": .string("poly-executor-1"),
                         "title": .string("Executor Result")
@@ -103,7 +103,8 @@ private struct RPCPolymorphicAccessPathExecutor: PolymorphicIndexReadExecutor {
                         "group": .string(group.identifier)
                     ]
                 )
-            ]
+            ],
+            ordering: .indexNative
         )
     }
 }
@@ -1311,6 +1312,145 @@ struct CanonicalQueryRPCTests {
 
         #expect(ids == [article.id, report.id])
         #expect(ranks == [0, 1])
+    }
+
+    @Test("canonical query RPC resolves qualified columns on aliased polymorphic access paths")
+    func polymorphicAccessPathQualifiedColumn() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-qualified-article"
+        article.ownerID = "user-1"
+        article.title = "Apple vector"
+        article.body = "Body"
+        context.insert(article)
+
+        var report = RPCReport()
+        report.id = "poly-qualified-report"
+        report.ownerID = "user-2"
+        report.title = "Banana vector"
+        report.summary = "Summary"
+        context.insert(report)
+
+        try await context.save()
+
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCArticle.self,
+            id: article.id,
+            term: "vector"
+        )
+        try await writePolymorphicTerm(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_title",
+            type: RPCReport.self,
+            id: report.id,
+            term: "vector"
+        )
+
+        let query = SelectQuery(
+            projection: .items([
+                ProjectionItem(.column(ColumnRef(table: "docs", column: "id")), alias: "documentID"),
+                ProjectionItem(.column(ColumnRef(table: "docs", column: "title")), alias: "documentTitle"),
+            ]),
+            source: .logical(
+                LogicalSourceRef(
+                    kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                    identifier: "RPCDocument",
+                    alias: "docs"
+                )
+            ),
+            accessPath: .index(
+                IndexScanSource(
+                    indexName: "rpc_document_title",
+                    kindIdentifier: "fulltext",
+                    parameters: [
+                        "fieldName": .string("title"),
+                        "terms": .array([.string("vector")]),
+                        "matchMode": .string("all"),
+                        "returnScores": .bool(false),
+                        "includeFacets": .bool(false)
+                    ]
+                )
+            ),
+            filter: .equal(
+                .column(ColumnRef(table: "docs", column: "ownerID")),
+                .literal(.string("user-1"))
+            ),
+            orderBy: [
+                SortKey(.column(ColumnRef(table: "docs", column: "title")))
+            ]
+        )
+
+        let response = try await send(query, endpoint: endpoint)
+
+        #expect(response.rows.count == 1)
+        #expect(response.rows.first?.fields["documentID"]?.stringValue == article.id)
+        #expect(response.rows.first?.fields["documentTitle"]?.stringValue == "Apple vector")
+    }
+
+    @Test("canonical query RPC rejects invalid rank ranges without crashing")
+    func polymorphicBuiltInRankAccessPathInvalidRange() async throws {
+        let (container, endpoint) = try await makePolymorphicHarness(security: .disabled)
+        let context = container.newContext()
+
+        var article = RPCArticle()
+        article.id = "poly-rank-invalid-article"
+        article.ownerID = "user-1"
+        article.title = "Article"
+        article.body = "Body"
+        context.insert(article)
+
+        try await context.save()
+
+        try await writePolymorphicRankEntry(
+            container: container,
+            groupIdentifier: "RPCDocument",
+            indexName: "rpc_document_score",
+            score: 100,
+            type: RPCArticle.self,
+            id: article.id
+        )
+
+        func rankRangeQuery(from: Int, to: Int) -> SelectQuery {
+            SelectQuery(
+                projection: .all,
+                source: .logical(
+                    LogicalSourceRef(
+                        kindIdentifier: BuiltinLogicalSourceKind.polymorphic,
+                        identifier: "RPCDocument"
+                    )
+                ),
+                accessPath: .index(
+                    IndexScanSource(
+                        indexName: "rpc_document_score",
+                        kindIdentifier: "rank",
+                        parameters: [
+                            "fieldName": .string("score"),
+                            "mode": .string("range"),
+                            "from": .int(Int64(from)),
+                            "to": .int(Int64(to))
+                        ]
+                    )
+                )
+            )
+        }
+
+        await #expect(throws: ServiceError.self) {
+            _ = try await send(rankRangeQuery(from: -1, to: 5), endpoint: endpoint)
+        }
+
+        await #expect(throws: ServiceError.self) {
+            _ = try await send(rankRangeQuery(from: 5, to: 5), endpoint: endpoint)
+        }
+
+        await #expect(throws: ServiceError.self) {
+            _ = try await send(rankRangeQuery(from: 10, to: 5), endpoint: endpoint)
+        }
     }
 
     @Test("canonical query RPC executes built-in polymorphic bitmap access paths")

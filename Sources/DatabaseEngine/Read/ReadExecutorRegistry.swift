@@ -7,27 +7,36 @@ import DatabaseClientProtocol
 public protocol IndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
 
-    func execute<T: Persistable>(
+    /// Produce an index-native row set.
+    ///
+    /// Bridges must not apply SQL `WHERE` / `ORDER BY` / projection /
+    /// `DISTINCT` / `LIMIT` / `OFFSET` — the dispatcher does. Bridges are
+    /// responsible only for producing the candidate rows ordered in index-native
+    /// form (e.g. distance ascending, rank descending) together with any
+    /// per-row annotations (`distance`, `score`, `rank`, …).
+    func executeRows<T: Persistable>(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         as type: T.Type,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse
+    ) async throws -> BridgedRowSet
 }
 
 public protocol PolymorphicIndexReadExecutor: Sendable {
     var kindIdentifier: String { get }
 
-    func execute(
+    /// Produce an index-native row set for a polymorphic group. Same contract
+    /// as `IndexReadExecutor.executeRows` — no SQL post-processing in bridges.
+    func executeRows(
         context: FDBContext,
         selectQuery: SelectQuery,
         indexScan: IndexScanSource,
         group: PolymorphicGroup,
         options: ReadExecutionOptions,
         partitionValues: [String: String]?
-    ) async throws -> QueryResponse
+    ) async throws -> BridgedRowSet
 }
 
 public protocol FusionReadExecutor: Sendable {

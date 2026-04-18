@@ -127,21 +127,12 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         return []
     }
 
-    /// Maximum number of keys to scan for safety (prevents DoS on large indexes)
-    private var maxScanKeys: Int { 100_000 }
-
-    /// Get top K items (highest scores)
+    /// Get top K items (highest scores).
     ///
-    /// **Type-Safe**: Returns Score type instead of forcing Int64.
-    ///
-    /// **Algorithm**: Uses max-heap to maintain top-k during O(n) scan.
-    /// Previous implementation: O(n log n) full sort.
-    /// Current implementation: O(n log k) using bounded heap.
-    ///
-    /// **Resource Limit**: Scans at most 100,000 keys to prevent DoS attacks.
-    ///
-    /// **Note**: Could be further optimized to O(k) with reverse range scan,
-    /// but fdb-swift-bindings currently doesn't support reverse iteration.
+    /// **Algorithm**: Native FDB reverse range scan with `limit: k`. O(K).
+    /// The scores subspace is `[subspace]["scores"][score][primaryKey]`, and FDB
+    /// preserves tuple ordering, so `reverse: true` yields highest scores first
+    /// without reading more than K entries.
     ///
     /// - Parameters:
     ///   - k: Number of items to return
@@ -153,53 +144,20 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
     ) async throws -> [(score: Score, primaryKey: [any TupleElement])] {
         guard k > 0 else { return [] }
 
-        let range = scoresSubspace.range()
+        let scanner = RankScanner(scoresSubspace: scoresSubspace, transaction: transaction)
+        let entries = try await scanner.top(k: k)
 
-        // Use min-heap of size k to track top-k highest scores
-        // Min-heap because we want to evict the smallest of our "top" candidates
-        var topKHeap = TopKHeap<(score: Score, primaryKey: [any TupleElement])>(
-            k: k,
-            comparator: { $0.score < $1.score }  // Min-heap: smallest score at top
-        )
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(range.begin),
-            to: .firstGreaterOrEqual(range.end),
-            snapshot: true
-        )
-
-        var scannedKeys = 0
-        for (key, _) in sequence {
-            guard scoresSubspace.contains(key) else { break }
-
-            // Resource limit: prevent DoS on large indexes
-            scannedKeys += 1
-            if scannedKeys >= maxScanKeys {
-                break
-            }
-
-            // Unpack key: [score][primaryKey] - skip corrupt entries
-            guard let keyTuple = try? scoresSubspace.unpack(key),
-                  keyTuple.count >= 2 else {
+        var results: [(score: Score, primaryKey: [any TupleElement])] = []
+        results.reserveCapacity(entries.count)
+        for entry in entries {
+            // Skip corrupt entries silently (legacy semantics)
+            guard let score = try? TupleDecoder.decode(entry.scoreElement, as: Score.self) else {
                 continue
             }
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
-
-            // First element is score - extract as Score type
-            guard let score = try? TupleDecoder.decode(elements[0], as: Score.self) else {
-                continue
-            }
-
-            // Remaining elements are primary key
-            let primaryKey = Array(elements.dropFirst())
-
-            // Insert into bounded heap - O(log k) per insertion
-            topKHeap.insert((score: score, primaryKey: primaryKey))
+            let primaryKey: [any TupleElement] = (0..<entry.primaryKey.count).compactMap { entry.primaryKey[$0] }
+            results.append((score: score, primaryKey: primaryKey))
         }
-
-        // Extract sorted results (highest scores first)
-        return topKHeap.toSortedArrayDescending()
+        return results
     }
 
     /// Get rank for a specific score
@@ -369,94 +327,6 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         }
 
         return try packAndValidate(Tuple(allElements), in: scoresSubspace)
-    }
-}
-
-// MARK: - TopKHeap
-
-/// A bounded min-heap for maintaining top-k elements efficiently.
-///
-/// **Algorithm**:
-/// - Maintains a min-heap of at most k elements
-/// - New elements are inserted if heap is not full
-/// - If full, new element replaces root only if it's "better" (larger for top-k highest)
-/// - Complexity: O(log k) per insertion
-///
-/// **Usage for Top-K Highest Scores**:
-/// ```swift
-/// var heap = TopKHeap<(score: Int64, pk: String)>(k: 10) { $0.score < $1.score }
-/// for item in items { heap.insert(item) }
-/// let topK = heap.toSortedArrayDescending()
-/// ```
-internal struct TopKHeap<Element> {
-    private var elements: [Element] = []
-    private let k: Int
-    private let comparator: (Element, Element) -> Bool  // Returns true if $0 should be closer to root
-
-    init(k: Int, comparator: @escaping (Element, Element) -> Bool) {
-        self.k = k
-        self.comparator = comparator
-        elements.reserveCapacity(k)
-    }
-
-    var count: Int { elements.count }
-    var isEmpty: Bool { elements.isEmpty }
-    var top: Element? { elements.first }
-
-    /// Insert element, maintaining at most k elements.
-    /// If heap is full and new element is "worse" than root, it's discarded.
-    mutating func insert(_ element: Element) {
-        if elements.count < k {
-            // Heap not full: just insert
-            elements.append(element)
-            siftUp(elements.count - 1)
-        } else if let root = elements.first, comparator(root, element) {
-            // Heap full and new element is "better" than root: replace root
-            // For top-k highest with min-heap: root has smallest score,
-            // so we replace if new element has higher score
-            elements[0] = element
-            siftDown(0)
-        }
-        // Otherwise: element is worse than all top-k, discard
-    }
-
-    /// Extract elements sorted in descending order (highest first for top-k).
-    func toSortedArrayDescending() -> [Element] {
-        // Sort by reverse comparator to get descending order
-        return elements.sorted { comparator($1, $0) }
-    }
-
-    private mutating func siftUp(_ index: Int) {
-        var i = index
-        while i > 0 {
-            let parent = (i - 1) / 2
-            if comparator(elements[i], elements[parent]) {
-                elements.swapAt(i, parent)
-                i = parent
-            } else {
-                break
-            }
-        }
-    }
-
-    private mutating func siftDown(_ index: Int) {
-        var i = index
-        while true {
-            let left = 2 * i + 1
-            let right = 2 * i + 2
-            var smallest = i
-
-            if left < elements.count && comparator(elements[left], elements[smallest]) {
-                smallest = left
-            }
-            if right < elements.count && comparator(elements[right], elements[smallest]) {
-                smallest = right
-            }
-
-            if smallest == i { break }
-            elements.swapAt(i, smallest)
-            i = smallest
-        }
     }
 }
 
