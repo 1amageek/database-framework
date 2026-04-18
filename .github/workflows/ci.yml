@@ -15,7 +15,8 @@ jobs:
     name: SQLite trait (macOS)
     # macOS runner required: transitive deps (swift-hnsw → Accelerate,
     # swift-testing-heartbeat → pthread_threadid_np) do not build on Linux.
-    runs-on: macos-15
+    # macos-26 needed for Swift 6.2 runtime (libswift_DarwinFoundation1).
+    runs-on: macos-26
     timeout-minutes: 30
     steps:
       - name: Select latest stable Xcode
