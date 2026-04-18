@@ -1,5 +1,6 @@
 #if SQLITE
 import Testing
+import Foundation
 import Database
 import TestHeartbeat
 
@@ -194,12 +195,18 @@ struct SchemaEvolutionMigrationSQLiteTests {
     @Test("Custom migration persists breaking schema changes on SQLite")
     func customMigrationPersistsBreakingSchemaChanges() async throws {
         let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let seededID = "sqlite-breaking-\(UUID().uuidString)"
 
         let initialContainer = try await DBContainer(
             for: SQLiteMigrationSchemaV1.makeSchema(),
             configuration: .init(backend: .custom(engine)),
             security: .disabled
         )
+        let initialContext = initialContainer.newContext()
+        var seededUser = SQLiteMigratedUserV1(name: "Charlie", email: "charlie@example.com")
+        seededUser.id = seededID
+        initialContext.insert(seededUser)
+        try await initialContext.save()
         try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
 
         let migratedContainer = try await DBContainer(
@@ -217,6 +224,20 @@ struct SchemaEvolutionMigrationSQLiteTests {
         #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
         #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
         #expect(entity?.fieldMapByName["name"] == nil)
+
+        let verificationContainer = try await DBContainer(
+            for: SQLiteMigrationSchemaV2.makeSchema(),
+            configuration: .init(backend: .custom(engine)),
+            security: .disabled
+        )
+        let migratedUsers = try await verificationContainer.newContext()
+            .fetch(SQLiteMigratedUserV2.self)
+            .execute()
+        let migratedUser = migratedUsers.first { $0.id == seededID }
+
+        #expect(migratedUsers.count == 1)
+        #expect(migratedUser?.fullName == "Charlie")
+        #expect(migratedUser?.email == "charlie@example.com")
     }
 
     @Test("Custom migration transforms SQLite data end-to-end")

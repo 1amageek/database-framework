@@ -109,10 +109,19 @@ public struct MigrationContext: Sendable {
     /// Metadata subspace for storing migration progress
     public let metadataSubspace: Subspace
 
-    /// Store info registry
+    /// Source-schema store info registry (read from this side).
     ///
-    /// Maps item type names to their store information.
-    private let storeRegistry: [String: MigrationStoreInfo]
+    /// Maps entity names → their subspaces resolved for the source schema's
+    /// `#Directory` definitions. Used by `removeIndex` and as the lookup for
+    /// `enumerate` when a type's `#Directory` only exists in the source schema.
+    private let sourceStoreRegistry: [String: MigrationStoreInfo]
+
+    /// Target-schema store info registry (write to this side).
+    ///
+    /// Maps entity names → subspaces resolved for the target schema's
+    /// `#Directory` definitions. Used by `addIndex`, `rebuildIndex`, and as
+    /// the fallback lookup for data operations.
+    private let targetStoreRegistry: [String: MigrationStoreInfo]
 
     /// Index configurations from DBContainer
     ///
@@ -127,29 +136,54 @@ public struct MigrationContext: Sendable {
         schema: Schema,
         sourceSchema: Schema? = nil,
         metadataSubspace: Subspace,
-        storeRegistry: [String: MigrationStoreInfo],
+        sourceStoreRegistry: [String: MigrationStoreInfo],
+        targetStoreRegistry: [String: MigrationStoreInfo],
         indexConfigurations: [String: [any IndexConfiguration]] = [:]
     ) {
         self.container = container
         self.schema = schema
         self.sourceSchema = sourceSchema ?? schema
         self.metadataSubspace = metadataSubspace
-        self.storeRegistry = storeRegistry
+        self.sourceStoreRegistry = sourceStoreRegistry
+        self.targetStoreRegistry = targetStoreRegistry
         self.indexConfigurations = indexConfigurations
+    }
+
+    /// Convenience initializer for callers that use a single registry for both sides.
+    internal init(
+        container: DBContainer,
+        schema: Schema,
+        sourceSchema: Schema? = nil,
+        metadataSubspace: Subspace,
+        storeRegistry: [String: MigrationStoreInfo],
+        indexConfigurations: [String: [any IndexConfiguration]] = [:]
+    ) {
+        self.init(
+            container: container,
+            schema: schema,
+            sourceSchema: sourceSchema,
+            metadataSubspace: metadataSubspace,
+            sourceStoreRegistry: storeRegistry,
+            targetStoreRegistry: storeRegistry,
+            indexConfigurations: indexConfigurations
+        )
     }
 
     // MARK: - Store Access
 
-    /// Get store info for an item type
+    /// Get store info for an item type.
     ///
-    /// - Parameter itemType: Item type name
+    /// - Parameters:
+    ///   - itemType: Item type name (`entity.name` / `T.persistableType`)
+    ///   - source: When `true`, looks up the source-schema registry. Defaults to target.
     /// - Returns: MigrationStoreInfo
     /// - Throws: Error if store not found
-    public func storeInfo(for itemType: String) throws -> MigrationStoreInfo {
-        guard let info = storeRegistry[itemType] else {
+    public func storeInfo(for itemType: String, source: Bool = false) throws -> MigrationStoreInfo {
+        let registry = source ? sourceStoreRegistry : targetStoreRegistry
+        guard let info = registry[itemType] else {
             throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry. " +
-                "Available stores: \(storeRegistry.keys.sorted().joined(separator: ", "))"
+                "Store info for '\(itemType)' not found in \(source ? "source" : "target") registry. " +
+                "Available stores: \(registry.keys.sorted().joined(separator: ", "))"
             )
         }
         return info
@@ -179,11 +213,11 @@ public struct MigrationContext: Sendable {
         // 1. Identify target entity from Schema
         let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: schema)
 
-        // 2. Get store info for target entity
-        guard let info = storeRegistry[targetEntity.name] else {
+        // 2. Get store info for target entity (written to target-schema directory)
+        guard let info = targetStoreRegistry[targetEntity.name] else {
             throw FDBRuntimeError.internalError(
-                "Store info for entity '\(targetEntity.name)' not found in registry. " +
-                "Available stores: \(storeRegistry.keys.sorted().joined(separator: ", "))"
+                "Store info for entity '\(targetEntity.name)' not found in target registry. " +
+                "Available stores: \(targetStoreRegistry.keys.sorted().joined(separator: ", "))"
             )
         }
 
@@ -288,10 +322,11 @@ public struct MigrationContext: Sendable {
         // 2. Identify target entity
         let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: sourceSchema)
 
-        // 3. Get store info for target entity
-        guard let info = storeRegistry[targetEntity.name] else {
+        // 3. Get store info from the source registry (the index lives under the
+        //    source schema's directory — that's where it needs to be cleared).
+        guard let info = sourceStoreRegistry[targetEntity.name] else {
             throw FDBRuntimeError.internalError(
-                "Store info for entity '\(targetEntity.name)' not found in registry"
+                "Store info for entity '\(targetEntity.name)' not found in source registry"
             )
         }
 
@@ -355,10 +390,10 @@ public struct MigrationContext: Sendable {
         // 2. Identify target entity
         let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: schema)
 
-        // 3. Get store info for target entity
-        guard let info = storeRegistry[targetEntity.name] else {
+        // 3. Get store info for target entity (rebuild writes to target directory)
+        guard let info = targetStoreRegistry[targetEntity.name] else {
             throw FDBRuntimeError.internalError(
-                "Store info for entity '\(targetEntity.name)' not found in registry"
+                "Store info for entity '\(targetEntity.name)' not found in target registry"
             )
         }
 
@@ -470,14 +505,35 @@ public struct MigrationContext: Sendable {
         _ type: T.Type,
         batchSize: Int = 1000
     ) -> AsyncThrowingStream<T, Error> {
-        // Capture self properties for async enumeration
-        let enumerator = ItemEnumerator<T>(
-            itemType: T.persistableType,
-            storeRegistry: self.storeRegistry,
-            container: self.container,
-            batchSize: batchSize
-        )
-        return enumerator.makeStream()
+        // Resolve the storage directory from `T` itself so V1 reads from V1's
+        // `#Directory` even when V2 is also registered for the same entity name.
+        let itemType = T.persistableType
+        let container = self.container
+        return AsyncThrowingStream { continuation in
+            let task = Task {
+                do {
+                    let subspace = try await container.resolveDirectory(for: type)
+                    let info = MigrationStoreInfo(
+                        subspace: subspace,
+                        indexSubspace: subspace.subspace(SubspaceKey.indexes),
+                        blobsSubspace: subspace.subspace(SubspaceKey.blobs)
+                    )
+                    let enumerator = ItemEnumerator<T>(
+                        itemType: itemType,
+                        storeInfo: info,
+                        container: container,
+                        batchSize: batchSize
+                    )
+                    for try await item in enumerator.makeStream() {
+                        continuation.yield(item)
+                    }
+                    continuation.finish()
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+            continuation.onTermination = { _ in task.cancel() }
+        }
     }
 
     /// Update a single item during migration
@@ -489,18 +545,13 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if update fails
     public func update<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
-
-        guard let info = storeRegistry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry"
-            )
-        }
+        let subspace = try await container.resolveDirectory(for: T.self)
 
         let encoder = ProtobufEncoder()
         let data = try encoder.encode(item)
         let validatedID = try item.validateIDForStorage()
-        let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
-        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
+        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
@@ -520,16 +571,11 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if delete fails
     public func delete<T: Persistable>(_ item: T) async throws {
         let itemType = T.persistableType
-
-        guard let info = storeRegistry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry"
-            )
-        }
+        let subspace = try await container.resolveDirectory(for: T.self)
 
         let validatedID = try item.validateIDForStorage()
-        let itemKey = info.subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
-        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
+        let itemKey = subspace.subspace(SubspaceKey.items).subspace(itemType).pack(Tuple(validatedID))
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
             let storage = ItemStorage(
@@ -551,15 +597,10 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if any batch fails
     public func batchUpdate<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
+        let subspace = try await container.resolveDirectory(for: T.self)
 
-        guard let info = storeRegistry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry"
-            )
-        }
-
-        let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
-        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
         let encoder = ProtobufEncoder()  // Reuse across all batches (Sendable)
 
         // Process in batches
@@ -593,15 +634,10 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if any batch fails
     public func batchDelete<T: Persistable>(_ items: [T], batchSize: Int = 100) async throws {
         let itemType = T.persistableType
+        let subspace = try await container.resolveDirectory(for: T.self)
 
-        guard let info = storeRegistry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry"
-            )
-        }
-
-        let itemSubspace = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
-        let blobsSubspace = info.subspace.subspace(SubspaceKey.blobs)
+        let itemSubspace = subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
 
         // Process in batches
         for batchStart in stride(from: 0, to: items.count, by: batchSize) {
@@ -637,14 +673,9 @@ public struct MigrationContext: Sendable {
         avgRowSizeBytes: Int = 500
     ) async throws -> Int {
         let itemType = T.persistableType
+        let subspace = try await container.resolveDirectory(for: T.self)
 
-        guard let info = storeRegistry[itemType] else {
-            throw FDBRuntimeError.invalidArgument(
-                "Store info for '\(itemType)' not found in registry"
-            )
-        }
-
-        let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
+        let itemPrefix = subspace.subspace(SubspaceKey.items).subspace(itemType)
         let (beginKey, endKey) = itemPrefix.range()
 
         // Use approximate count for large datasets
@@ -702,6 +733,31 @@ public struct MigrationContext: Sendable {
         }
 
         return totalCount
+    }
+
+    // MARK: - Legacy Storage Cleanup
+
+    /// Range-clear a legacy type's storage directory.
+    ///
+    /// When a schema migration moves a type from one `#Directory` to another
+    /// (e.g., V1 `#Directory<V1>("old", "users")` → V2 `#Directory<V2>("new", "users")`),
+    /// custom migration code is responsible for copying the data. Afterwards
+    /// the V1 location still holds the original rows and their indexes.
+    /// Call this with the legacy type (`V1.self`) to reclaim that space.
+    ///
+    /// Uses the type's own `#Directory` definition via
+    /// `container.resolveDirectory(for: T.self)`, so V1 and V2 — even with the
+    /// same `persistableType` — clear independent subspaces.
+    ///
+    /// - Parameter type: The legacy Persistable type whose storage should be removed.
+    /// - Throws: Any error from directory resolution or the clearRange transaction.
+    public func purgeLegacyStorage<T: Persistable>(_ type: T.Type) async throws {
+        let subspace = try await container.resolveDirectory(for: T.self)
+        let (beginKey, endKey) = subspace.range()
+
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
+            transaction.clearRange(beginKey: beginKey, endKey: endKey)
+        }
     }
 
     // MARK: - Private Helpers
@@ -838,13 +894,13 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 /// in a Sendable-safe way.
 	private struct ItemEnumerator<T: Persistable>: Sendable {
     let itemType: String
-    let storeRegistry: [String: MigrationStoreInfo]
+    let storeInfo: MigrationStoreInfo
     let container: DBContainer
     let batchSize: Int
 
-    init(itemType: String, storeRegistry: [String: MigrationStoreInfo], container: DBContainer, batchSize: Int) {
+    init(itemType: String, storeInfo: MigrationStoreInfo, container: DBContainer, batchSize: Int) {
         self.itemType = itemType
-        self.storeRegistry = storeRegistry
+        self.storeInfo = storeInfo
         self.container = container
         self.batchSize = batchSize
     }
@@ -852,21 +908,13 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
 	    func makeStream() -> AsyncThrowingStream<T, Error> {
         // Capture properties in local variables for sendability
         let itemType = self.itemType
-        let storeRegistry = self.storeRegistry
+        let info = self.storeInfo
         let container = self.container
         let batchSize = self.batchSize
 
         return AsyncThrowingStream { continuation in
             let task = Task {
                 do {
-                    // Get store info for this type
-                    guard let info = storeRegistry[itemType] else {
-                        continuation.finish(throwing: FDBRuntimeError.invalidArgument(
-                            "Store info for '\(itemType)' not found in registry"
-                        ))
-                        return
-                    }
-
 	                    // Build prefix for item scanning
 	                    let itemPrefix = info.subspace.subspace(SubspaceKey.items).subspace(itemType)
 	                    let (beginKey, endKey) = itemPrefix.range()

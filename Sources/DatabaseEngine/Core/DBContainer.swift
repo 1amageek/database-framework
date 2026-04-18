@@ -818,7 +818,11 @@ extension DBContainer {
 
         let sourceSchema = stage.fromVersion.makeSchema()
         let targetSchema = stage.toVersion.makeSchema()
-        let storeRegistry = try await buildStoreRegistry(for: [sourceSchema, targetSchema])
+        // Build per-schema registries. Same entity name may resolve to
+        // different subspaces when the source and target versions declare
+        // different `#Directory` paths — so we can't dedup across schemas.
+        let sourceStoreRegistry = try await buildStoreRegistry(for: sourceSchema)
+        let targetStoreRegistry = try await buildStoreRegistry(for: targetSchema)
         let metadataSubspace = try await getMetadataSubspace()
         let stageIndexConfigurations = Self.aggregateIndexConfigurations(
             configuration.indexConfigurations + Self.generateAutoConfigurations(schema: targetSchema, database: engine)
@@ -829,7 +833,8 @@ extension DBContainer {
             schema: targetSchema,
             sourceSchema: sourceSchema,
             metadataSubspace: metadataSubspace,
-            storeRegistry: storeRegistry,
+            sourceStoreRegistry: sourceStoreRegistry,
+            targetStoreRegistry: targetStoreRegistry,
             indexConfigurations: stageIndexConfigurations
         )
 
@@ -862,14 +867,14 @@ extension DBContainer {
         logger.info("Updated schema version to \(stage.toVersionIdentifier)")
     }
 
-    private func buildStoreRegistry(for schemas: [Schema]) async throws -> [String: MigrationStoreInfo] {
+    private func buildStoreRegistry(for schema: Schema) async throws -> [String: MigrationStoreInfo] {
         var registry: [String: MigrationStoreInfo] = [:]
-        var seenEntities: Set<String> = []
 
-        for entity in schemas.flatMap(\.entities) {
-            guard seenEntities.insert(entity.name).inserted else { continue }
+        for entity in schema.entities {
             guard let persistableType = entity.persistableType else { continue }
-            // Use resolveDirectory to respect #Directory definitions
+            // Use resolveDirectory to respect #Directory definitions declared
+            // by *this schema's* Swift type — V1 and V2 with the same entity
+            // name may point to different directories.
             let subspace = try await resolveDirectory(for: persistableType)
             let info = MigrationStoreInfo(
                 subspace: subspace,

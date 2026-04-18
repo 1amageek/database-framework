@@ -394,6 +394,8 @@ struct MigrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             let database = try await makeSystemPriorityEngine()
             let typeName = SchemaRegistryMigratedUserV1.persistableType
+            let idPrefix = UUID().uuidString
+            let seededID = "fdb-breaking-\(idPrefix)"
 
             try await clearSchemaEntries(in: database, typeNames: [typeName])
             try await clearMetadata(in: database)
@@ -403,6 +405,14 @@ struct MigrationTests {
                 configuration: .init(backend: .custom(database)),
                 security: .disabled
             )
+            let initialContext = initialContainer.newContext()
+            var seededUser = SchemaRegistryMigratedUserV1(
+                name: "Charlie",
+                email: "charlie@example.com"
+            )
+            seededUser.id = seededID
+            initialContext.insert(seededUser)
+            try await initialContext.save()
             try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
 
             let migratedContainer = try await DBContainer(
@@ -420,6 +430,20 @@ struct MigrationTests {
             #expect(entity?.fieldMapByName["fullName"]?.fieldNumber == 2)
             #expect(entity?.fieldMapByName["email"]?.fieldNumber == 3)
             #expect(entity?.fieldMapByName["name"] == nil)
+
+            let verificationContainer = try await DBContainer(
+                for: SchemaRegistryMigrationSchemaV2.makeSchema(),
+                configuration: .init(backend: .custom(database)),
+                security: .disabled
+            )
+            let verificationContext = verificationContainer.newContext()
+            let migratedUsers = try await verificationContext
+                .fetch(SchemaRegistryMigratedUserV2.self)
+                .execute()
+            let migratedUser = try #require(migratedUsers.first { $0.id == seededID })
+
+            #expect(migratedUser.fullName == "Charlie")
+            #expect(migratedUser.email == "charlie@example.com")
         }
     }
 
