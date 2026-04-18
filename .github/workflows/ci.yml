@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sqlite:
+    name: SQLite trait (macOS)
+    # macOS runner required: transitive deps (swift-hnsw → Accelerate,
+    # swift-testing-heartbeat → pthread_threadid_np) do not build on Linux.
+    # macos-26 needed for Swift 6.2 runtime (libswift_DarwinFoundation1).
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Checkout database-framework
+        uses: actions/checkout@v4
+        with:
+          path: database-framework
+
+      - name: Checkout database-kit (sibling dep)
+        uses: actions/checkout@v4
+        with:
+          repository: 1amageek/database-kit
+          ref: main
+          path: database-kit
+
+      - name: Report Swift version
+        run: swift --version
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: database-framework/.build
+          key: ${{ runner.os }}-swiftpm-sqlite-${{ hashFiles('database-framework/Package.resolved', 'database-framework/Package.swift') }}
+          restore-keys: ${{ runner.os }}-swiftpm-sqlite-
+
+      - name: Resolve dependencies
+        working-directory: database-framework
+        run: swift package --traits SQLite resolve
+
+      - name: Build (SQLite)
+        working-directory: database-framework
+        run: swift build --traits SQLite
+
+      - name: Test (SQLite)
+        working-directory: database-framework
+        timeout-minutes: 15
+        run: swift test --traits SQLite --filter FDBiteTests
