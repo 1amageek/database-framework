@@ -77,7 +77,10 @@ private struct BitmapReadExecutor: IndexReadExecutor {
             cachePolicy: execution.cachePolicy
         )
         let rows = results.map { BridgedRow.encoding($0) }
-        return BridgedRowSet(rows: rows, ordering: .indexNative)
+        // Bitmap iteration order is by internal RoaringBitmap integer ID, which
+        // does not correspond to any domain-meaningful field order. Callers must
+        // supply explicit orderBy if they want deterministic output.
+        return BridgedRowSet(rows: rows, ordering: .unordered)
     }
 
     private func requireString(
@@ -252,7 +255,10 @@ private struct PolymorphicBitmapReadExecutor: PolymorphicIndexReadExecutor {
                 ]
             )
         }
-        return BridgedRowSet(rows: rows, ordering: .indexNative)
+        // Bitmap iteration order is by internal RoaringBitmap integer ID, which
+        // does not correspond to any domain-meaningful field order. Callers must
+        // supply explicit orderBy if they want deterministic output.
+        return BridgedRowSet(rows: rows, ordering: .unordered)
     }
 
     private func requireString(

@@ -228,6 +228,65 @@ public struct IndexQueryContext: Sendable {
         return results
     }
 
+    /// Fetch items by their IDs, preserving input order (nil for missing).
+    ///
+    /// Unlike `fetchItems`, this returns `T?` slots so callers can detect which
+    /// IDs were missing without their later indexes shifting. Use this when the
+    /// caller attaches per-index metadata (rank, score offset, etc.) that must
+    /// stay aligned with the original ID list.
+    ///
+    /// - Parameters:
+    ///   - ids: Array of item IDs (as Tuples)
+    ///   - type: The item type
+    ///   - cachePolicy: Cache policy for each fetch
+    /// - Returns: `[T?]` in the same order as `ids`; nil for IDs that do not resolve.
+    public func fetchItemsPreservingOrder<T: Persistable>(
+        ids: [Tuple],
+        type: T.Type,
+        cachePolicy: CachePolicy = .server
+    ) async throws -> [T?] {
+        try context.container.securityDelegate?.evaluateList(
+            type: type,
+            limit: ids.count,
+            offset: nil,
+            orderBy: nil
+        )
+
+        var results: [T?] = []
+        results.reserveCapacity(ids.count)
+
+        if let binding = partitionBinding(for: type) {
+            for id in ids {
+                guard let idElement = id[0] else {
+                    results.append(nil)
+                    continue
+                }
+                let item = try await context.model(
+                    for: idElement,
+                    as: type,
+                    partition: binding,
+                    cachePolicy: cachePolicy
+                )
+                results.append(item)
+            }
+        } else {
+            for id in ids {
+                guard let idElement = id[0] else {
+                    results.append(nil)
+                    continue
+                }
+                let item = try await context.model(
+                    for: idElement,
+                    as: type,
+                    cachePolicy: cachePolicy
+                )
+                results.append(item)
+            }
+        }
+
+        return results
+    }
+
     /// Fetch a single item by ID
     ///
     /// For types with dynamic directories, uses the partition binding if set via `withPartition()`.

@@ -150,10 +150,7 @@ public struct RankIndexMaintainer<Item: Persistable, Score: Comparable & Numeric
         var results: [(score: Score, primaryKey: [any TupleElement])] = []
         results.reserveCapacity(entries.count)
         for entry in entries {
-            // Skip corrupt entries silently (legacy semantics)
-            guard let score = try? TupleDecoder.decode(entry.scoreElement, as: Score.self) else {
-                continue
-            }
+            let score = try TupleDecoder.decode(entry.scoreElement, as: Score.self)
             let primaryKey: [any TupleElement] = (0..<entry.primaryKey.count).compactMap { entry.primaryKey[$0] }
             results.append((score: score, primaryKey: primaryKey))
         }

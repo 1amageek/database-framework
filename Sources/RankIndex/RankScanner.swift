@@ -20,6 +20,11 @@ struct RankScanEntry: Sendable {
     let primaryKey: Tuple
 }
 
+enum RankScannerError: Error, Sendable, Equatable {
+    case invalidRange(from: Int, to: Int)
+    case negativeIndex(Int)
+}
+
 /// Scanner for the rank scores subspace.
 ///
 /// **Key structure**: `[scoresSubspace][score][primaryKey...]`. FDB stores
@@ -40,7 +45,11 @@ struct RankScanner {
     }
 
     /// Top-K: highest-score entries in descending order. O(K).
+    ///
+    /// - `k < 0` throws `RankScannerError.negativeIndex` — never silently swallowed.
+    /// - `k == 0` returns `[]` by contract (caller asked for zero results).
     func top(k: Int) async throws -> [RankScanEntry] {
+        guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
         let range = scoresSubspace.range()
         let sequence = try await transaction.collectRange(
@@ -54,7 +63,11 @@ struct RankScanner {
     }
 
     /// Bottom-K: lowest-score entries in ascending order. O(K).
+    ///
+    /// - `k < 0` throws `RankScannerError.negativeIndex` — never silently swallowed.
+    /// - `k == 0` returns `[]` by contract (caller asked for zero results).
     func bottom(k: Int) async throws -> [RankScanEntry] {
+        guard k >= 0 else { throw RankScannerError.negativeIndex(k) }
         guard k > 0 else { return [] }
         let range = scoresSubspace.range()
         let sequence = try await transaction.collectRange(
@@ -70,7 +83,9 @@ struct RankScanner {
     /// Rank range [from, to) in descending order. O(to).
     /// Reads `to` highest entries and drops the first `from`.
     func rangeDescending(from: Int, to: Int) async throws -> [RankScanEntry] {
-        precondition(from >= 0 && to > from, "invalid rank range")
+        guard from >= 0, to > from else {
+            throw RankScannerError.invalidRange(from: from, to: to)
+        }
         let all = try await top(k: to)
         guard all.count > from else { return [] }
         return Array(all[from..<min(to, all.count)])
@@ -79,7 +94,9 @@ struct RankScanner {
     /// Read the Nth-highest entry (0-based, 0 = highest). O(N+1).
     /// Used by percentile when total count is known in O(1).
     func nthFromTop(_ n: Int) async throws -> RankScanEntry? {
-        precondition(n >= 0)
+        guard n >= 0 else {
+            throw RankScannerError.negativeIndex(n)
+        }
         let entries = try await top(k: n + 1)
         guard entries.count == n + 1 else { return nil }
         return entries[n]
