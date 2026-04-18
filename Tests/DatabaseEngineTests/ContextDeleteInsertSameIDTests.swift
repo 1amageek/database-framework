@@ -323,34 +323,25 @@ struct ContextDeleteInsertSameIDTests {
         context.insert(updated)
         try await context.save()
 
-        // KNOWN BUG (tracked by Phase 1 PendingMutation + FullText maintainer audit):
-        // in the canonical `delete → insert` same-id pattern, FullText's maintainer
-        // only partially cleans up — the `terms/{oldToken}/{docID}` entry is cleared
-        // but the `df/{oldToken}` document-frequency entry persists, so queries for
-        // the old token still return the record, and the new token is never indexed.
-        // ScalarIndex survives the same pattern because problem ② (storage re-read)
-        // fully reconstructs its index state. FullText does not.
-        await withKnownIssue("delete+insert same-id incompletely updates FullText inverted index — fixed by Phase 1 + maintainer audit") {
-            let oldHits = try await context.search(DelInsArticle.self)
-                .fullText(\.content)
-                .terms([oldToken])
-                .execute()
-            #expect(oldHits.isEmpty, "Old full-text token must be cleared after delete+insert")
+        let oldHits = try await context.search(DelInsArticle.self)
+            .fullText(\.content)
+            .terms([oldToken])
+            .execute()
+        #expect(oldHits.isEmpty, "Old full-text token must be cleared after delete+insert")
 
-            let newHits = try await context.search(DelInsArticle.self)
-                .fullText(\.content)
-                .terms([newToken])
-                .execute()
-            #expect(newHits.count == 1, "New full-text token must be indexed after delete+insert")
-            #expect(newHits.first?.id == articleId)
+        let newHits = try await context.search(DelInsArticle.self)
+            .fullText(\.content)
+            .terms([newToken])
+            .execute()
+        #expect(newHits.count == 1, "New full-text token must be indexed after delete+insert")
+        #expect(newHits.first?.id == articleId)
 
-            let sharedHits = try await context.search(DelInsArticle.self)
-                .fullText(\.content)
-                .terms([sharedToken])
-                .execute()
-            #expect(sharedHits.count == 1, "Shared token must still match exactly once after replace")
-            #expect(sharedHits.first?.id == articleId)
-        }
+        let sharedHits = try await context.search(DelInsArticle.self)
+            .fullText(\.content)
+            .terms([sharedToken])
+            .execute()
+        #expect(sharedHits.count == 1, "Shared token must still match exactly once after replace")
+        #expect(sharedHits.first?.id == articleId)
     }
 
     // MARK: - Helpers

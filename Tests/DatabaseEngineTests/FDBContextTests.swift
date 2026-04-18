@@ -108,8 +108,22 @@ struct FDBContextTests {
         #expect(context.hasChanges == false)
     }
 
-    @Test("Insert and delete cancel each other for unsaved models")
-    func insertAndDeleteCancel() async throws {
+    @Test("Strict create + delete cancel each other for unsaved models")
+    func createAndDeleteCancel() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        let user = TestUser(name: "Bob", email: "bob@example.com", age: 25)
+
+        context.create(user)
+        #expect(context.hasChanges == true)
+
+        context.delete(user)
+        #expect(context.hasChanges == false)
+    }
+
+    @Test("Upsert + delete keeps the delete staged (may target stored row)")
+    func upsertAndDeleteKeepsDeletion() async throws {
         let container = try await setupContainer()
         let context = container.newContext()
 
@@ -119,7 +133,7 @@ struct FDBContextTests {
         #expect(context.hasChanges == true)
 
         context.delete(user)
-        #expect(context.hasChanges == false)
+        #expect(context.hasChanges == true)
     }
 
     @Test("Save with no changes does nothing")
