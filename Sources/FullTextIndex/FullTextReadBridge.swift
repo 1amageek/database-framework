@@ -446,11 +446,12 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             configuration: execution.transactionConfiguration,
             cachePolicy: execution.cachePolicy
         )
-        let recordByID: [String: PolymorphicRecord] = Dictionary(
-            uniqueKeysWithValues: records.map { record in
-                (stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item))), record)
-            }
-        )
+        var recordByID: [String: PolymorphicRecord] = [:]
+        recordByID.reserveCapacity(records.count)
+        for record in records {
+            let key = stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item)))
+            recordByID[key] = record
+        }
 
         var combined: [(record: PolymorphicRecord, score: Double)] = []
         combined.reserveCapacity(scoredResults.count)

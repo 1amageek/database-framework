@@ -63,58 +63,71 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         self.fieldName = fieldName
     }
 
-    /// Get top N items (highest values)
+    /// Get top N items (highest values).
     ///
-    /// **Note**: Values ≤ 0 are ignored.
+    /// Invalid `n` (≤ 0) is stored as-is; validation is deferred to execute
+    /// time so callers receive an error rather than a silently swapped-out mode.
     ///
-    /// - Parameter n: Number of items to return (must be > 0)
+    /// - Parameter n: Number of items to return (must be > 0 at execute time)
     /// - Returns: Updated query builder
     public func top(_ n: Int) -> Self {
-        guard n > 0 else { return self }
         var copy = self
         copy.queryMode = .top(n)
         return copy
     }
 
-    /// Get bottom N items (lowest values)
+    /// Get bottom N items (lowest values).
     ///
-    /// **Note**: Values ≤ 0 are ignored.
+    /// Validation is deferred to execute time; see `top(_:)`.
     ///
-    /// - Parameter n: Number of items to return (must be > 0)
+    /// - Parameter n: Number of items to return (must be > 0 at execute time)
     /// - Returns: Updated query builder
     public func bottom(_ n: Int) -> Self {
-        guard n > 0 else { return self }
         var copy = self
         copy.queryMode = .bottom(n)
         return copy
     }
 
-    /// Get items in a specific rank range
+    /// Get items in a specific rank range.
     ///
-    /// **Note**: Invalid ranges (from < 0 or to ≤ from) are ignored.
+    /// Validation is deferred to execute time; see `top(_:)`.
     ///
     /// - Parameters:
-    ///   - from: Start rank (0-based, inclusive)
-    ///   - to: End rank (exclusive)
+    ///   - from: Start rank (0-based, inclusive; must be ≥ 0 at execute time)
+    ///   - to: End rank (exclusive; must be > `from` at execute time)
     /// - Returns: Updated query builder
     public func range(from: Int, to: Int) -> Self {
-        guard from >= 0 && to > from else { return self }
         var copy = self
         copy.queryMode = .range(from: from, to: to)
         return copy
     }
 
-    /// Get items at a specific percentile
+    /// Get items at a specific percentile.
     ///
-    /// **Note**: Values outside 0.0-1.0 range are ignored.
+    /// Validation is deferred to execute time; see `top(_:)`.
     ///
-    /// - Parameter p: Percentile value (0.0 to 1.0, e.g., 0.5 for median)
+    /// - Parameter p: Percentile value (must be in [0.0, 1.0] at execute time)
     /// - Returns: Updated query builder
     public func percentile(_ p: Double) -> Self {
-        guard p >= 0.0 && p <= 1.0 else { return self }
         var copy = self
         copy.queryMode = .percentile(p)
         return copy
+    }
+
+    /// Validate the current query mode. Called at every execute entry point so
+    /// invalid arguments surface as typed errors rather than silently reverting
+    /// to the default mode.
+    private func validateMode() throws {
+        switch queryMode {
+        case .top(let n), .bottom(let n):
+            guard n > 0 else { throw RankQueryError.invalidCount(n) }
+        case .range(let from, let to):
+            guard from >= 0, to > from else {
+                throw RankQueryError.invalidRange(from: from, to: to)
+            }
+        case .percentile(let p):
+            guard p >= 0.0, p <= 1.0 else { throw RankQueryError.invalidPercentile(p) }
+        }
     }
 
     /// Execute the ranking query using the index
@@ -130,6 +143,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
     /// - Returns: Array of (item, rank) tuples sorted by rank
     /// - Throws: Error if execution fails
     public func execute() async throws -> [(item: T, rank: Int)] {
+        try validateMode()
+
         let response = try await queryContext.context.query(
             toSelectQuery(),
             as: T.self,
@@ -149,6 +164,8 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         configuration: TransactionConfiguration = .default,
         cachePolicy: CachePolicy = .server
     ) async throws -> [(item: T, rank: Int)] {
+        try validateMode()
+
         // Build index name: {TypeName}_rank_{field}
         let indexName = "\(T.persistableType)_rank_\(fieldName)"
 
@@ -277,15 +294,30 @@ public struct RankQueryBuilder<T: Persistable>: Sendable {
         )
     }
 
-    /// Fetch items by primary key and add rank (ordered by scanner output).
+    /// Fetch items by primary key and pair each with its scan-position rank.
+    ///
+    /// Uses `fetchItemsPreservingOrder` so that items deleted between scan and
+    /// fetch do not shift rank numbers for the remaining items. For top(10) where
+    /// entries[3] is missing, results still report ranks 0, 1, 2, 4, 5, ... — not
+    /// 0, 1, 2, 3, 4, ... (which would mis-label the 4th-highest as rank 3).
     private func fetchItemsWithRank(
         entries: [RankScanEntry],
         startRank: Int,
         cachePolicy: CachePolicy
     ) async throws -> [(item: T, rank: Int)] {
         let ids = entries.map { $0.primaryKey }
-        let items = try await queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
-        return items.enumerated().map { (item: $0.element, rank: startRank + $0.offset) }
+        let items = try await queryContext.fetchItemsPreservingOrder(
+            ids: ids,
+            type: T.self,
+            cachePolicy: cachePolicy
+        )
+        var results: [(item: T, rank: Int)] = []
+        results.reserveCapacity(items.count)
+        for (offset, maybeItem) in items.enumerated() {
+            guard let item = maybeItem else { continue }
+            results.append((item: item, rank: startRank + offset))
+        }
+        return results
     }
 
     /// Execute using in-memory calculation (fallback when no index exists)
@@ -441,6 +473,12 @@ public enum RankQueryError: Error, CustomStringConvertible {
     /// No ranking field specified
     case noRankingField
 
+    /// Invalid count for top/bottom (must be > 0)
+    case invalidCount(Int)
+
+    /// Invalid rank range (must satisfy `from >= 0 && to > from`)
+    case invalidRange(from: Int, to: Int)
+
     /// Invalid percentile value
     case invalidPercentile(Double)
 
@@ -454,6 +492,10 @@ public enum RankQueryError: Error, CustomStringConvertible {
         switch self {
         case .noRankingField:
             return "No ranking field specified for rank query"
+        case .invalidCount(let n):
+            return "Invalid count: \(n). top/bottom require a positive count"
+        case .invalidRange(let from, let to):
+            return "Invalid rank range: from=\(from), to=\(to). Require from >= 0 and to > from"
         case .invalidPercentile(let p):
             return "Invalid percentile value: \(p). Must be between 0.0 and 1.0"
         case .indexNotFound(let name):

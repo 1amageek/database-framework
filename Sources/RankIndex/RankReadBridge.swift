@@ -31,6 +31,8 @@ private enum RankReadBridgeError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case invalidRange(from: Int, to: Int)
+    case invalidPercentile(Double)
+    case invalidCount(Int)
 }
 
 private func validateRankRange(from: Int, to: Int) throws {
@@ -39,6 +41,18 @@ private func validateRankRange(from: Int, to: Int) throws {
     }
     guard to > from else {
         throw RankReadBridgeError.invalidRange(from: from, to: to)
+    }
+}
+
+private func validateRankCount(_ count: Int) throws {
+    guard count > 0 else {
+        throw RankReadBridgeError.invalidCount(count)
+    }
+}
+
+private func validatePercentile(_ value: Double) throws {
+    guard value >= 0.0 && value <= 1.0 else {
+        throw RankReadBridgeError.invalidPercentile(value)
     }
 }
 
@@ -68,16 +82,22 @@ private struct RankReadExecutor: IndexReadExecutor {
         let mode = try requireString(RankReadParameter.mode, from: indexScan.parameters)
         switch mode {
         case RankReadParameter.topMode:
-            builder = builder.top(try requireInt(RankReadParameter.count, from: indexScan.parameters))
+            let count = try requireInt(RankReadParameter.count, from: indexScan.parameters)
+            try validateRankCount(count)
+            builder = builder.top(count)
         case RankReadParameter.bottomMode:
-            builder = builder.bottom(try requireInt(RankReadParameter.count, from: indexScan.parameters))
+            let count = try requireInt(RankReadParameter.count, from: indexScan.parameters)
+            try validateRankCount(count)
+            builder = builder.bottom(count)
         case RankReadParameter.rangeMode:
             let from = try requireInt(RankReadParameter.from, from: indexScan.parameters)
             let to = try requireInt(RankReadParameter.to, from: indexScan.parameters)
             try validateRankRange(from: from, to: to)
             builder = builder.range(from: from, to: to)
         case RankReadParameter.percentileMode:
-            builder = builder.percentile(try requireDouble(RankReadParameter.percentile, from: indexScan.parameters))
+            let percentile = try requireDouble(RankReadParameter.percentile, from: indexScan.parameters)
+            try validatePercentile(percentile)
+            builder = builder.percentile(percentile)
         default:
             throw RankReadBridgeError.invalidParameter(RankReadParameter.mode)
         }
@@ -176,11 +196,12 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
             cachePolicy: execution.cachePolicy
         )
 
-        let recordByID: [String: PolymorphicRecord] = Dictionary(
-            uniqueKeysWithValues: records.map { record in
-                (stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item))), record)
-            }
-        )
+        var recordByID: [String: PolymorphicRecord] = [:]
+        recordByID.reserveCapacity(records.count)
+        for record in records {
+            let key = stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item)))
+            recordByID[key] = record
+        }
         let orderedResults: [(record: PolymorphicRecord, rank: Int)] = rankedKeys.compactMap { result in
             let key = stableKey(result.primaryKey)
             guard let record = recordByID[key] else {
@@ -214,11 +235,13 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
         switch mode {
         case RankReadParameter.topMode:
             let count = try requireInt(RankReadParameter.count, from: parameters)
+            try validateRankCount(count)
             let entries = try await scanner.top(k: count)
             return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
         case RankReadParameter.bottomMode:
             let count = try requireInt(RankReadParameter.count, from: parameters)
+            try validateRankCount(count)
             let entries = try await scanner.bottom(k: count)
             return entries.enumerated().map { (primaryKey: $0.element.primaryKey, rank: $0.offset) }
 
@@ -231,6 +254,7 @@ private struct PolymorphicRankReadExecutor: PolymorphicIndexReadExecutor {
 
         case RankReadParameter.percentileMode:
             let percentile = try requireDouble(RankReadParameter.percentile, from: parameters)
+            try validatePercentile(percentile)
             let countKey = indexSubspace.pack(Tuple("_count"))
             let countBytes = try await transaction.getValue(for: countKey, snapshot: true)
             let totalCount = countBytes.map { Int(ByteConversion.bytesToInt64($0)) } ?? 0

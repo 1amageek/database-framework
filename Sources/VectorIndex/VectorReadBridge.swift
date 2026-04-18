@@ -383,11 +383,12 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
         selectQuery: SelectQuery,
         options: ReadExecutionOptions
     ) throws -> BridgedRowSet {
-        let recordByID: [String: PolymorphicRecord] = Dictionary(
-            uniqueKeysWithValues: records.map { record in
-                (stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item))), record)
-            }
-        )
+        var recordByID: [String: PolymorphicRecord] = [:]
+        recordByID.reserveCapacity(records.count)
+        for record in records {
+            let key = stableKey(Tuple([record.typeCode] + primaryKeyElements(from: record.item)))
+            recordByID[key] = record
+        }
 
         let orderedResults: [(record: PolymorphicRecord, distance: Double)] = results.compactMap { result -> (record: PolymorphicRecord, distance: Double)? in
             let key = stableKey(Tuple(result.primaryKey))
