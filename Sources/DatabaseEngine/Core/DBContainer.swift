@@ -823,6 +823,26 @@ extension DBContainer {
         // different `#Directory` paths — so we can't dedup across schemas.
         let sourceStoreRegistry = try await buildStoreRegistry(for: sourceSchema)
         let targetStoreRegistry = try await buildStoreRegistry(for: targetSchema)
+
+        // Guard: a lightweight stage cannot move data across a `#Directory`
+        // change. If any entity resolves to a different subspace in source vs
+        // target, bumping the version alone would orphan the rows silently.
+        if stage.isLightweight {
+            let mismatches = sourceStoreRegistry
+                .compactMap { entityName, sourceInfo -> String? in
+                    guard let targetInfo = targetStoreRegistry[entityName] else { return nil }
+                    return sourceInfo.subspace == targetInfo.subspace ? nil : entityName
+                }
+                .sorted()
+            if !mismatches.isEmpty {
+                throw MigrationPlanError.lightweightDirectoryChange(
+                    entityNames: mismatches,
+                    from: stage.fromVersionIdentifier,
+                    to: stage.toVersionIdentifier
+                )
+            }
+        }
+
         let metadataSubspace = try await getMetadataSubspace()
         let stageIndexConfigurations = Self.aggregateIndexConfigurations(
             configuration.indexConfigurations + Self.generateAutoConfigurations(schema: targetSchema, database: engine)

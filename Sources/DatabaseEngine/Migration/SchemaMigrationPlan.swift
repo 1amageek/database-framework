@@ -213,6 +213,20 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
     /// Lightweight stage contains breaking schema changes
     case incompatibleLightweightStage(stageIndex: Int, issues: [SchemaCompatibilityIssue])
 
+    /// Lightweight stage cannot move data across a `#Directory` change
+    ///
+    /// Lightweight migrations only bump the schema version and never copy
+    /// rows between directories. If any entity resolves to a different
+    /// storage subspace between source and target, data would orphan
+    /// silently. Promote the stage to `.custom` and copy the data
+    /// explicitly (see `MigrationContext.enumerate` / `batchUpdate` /
+    /// `purgeLegacyStorage`).
+    case lightweightDirectoryChange(
+        entityNames: [String],
+        from: Schema.Version,
+        to: Schema.Version
+    )
+
     /// No migration path exists between versions
     case noMigrationPath(from: Schema.Version, to: Schema.Version)
 
@@ -242,6 +256,11 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
         case .incompatibleLightweightStage(let index, let issues):
             let summary = issues.map { $0.description }.joined(separator: " | ")
             return "Stage \(index) is marked lightweight but requires custom migration: \(summary)"
+
+        case .lightweightDirectoryChange(let entityNames, let from, let to):
+            let names = entityNames.joined(separator: ", ")
+            return "Lightweight migration from \(from) to \(to) cannot handle #Directory change for entity(ies) [\(names)]. " +
+                "Use .custom with willMigrate/didMigrate to copy rows and purge the legacy directory."
 
         case .noMigrationPath(let from, let to):
             return "No migration path from \(from) to \(to)"

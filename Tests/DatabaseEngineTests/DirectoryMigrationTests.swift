@@ -4,6 +4,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
+import ScalarIndex
 import TestSupport
 import TestHeartbeat
 @testable import DatabaseEngine
@@ -34,6 +35,232 @@ enum DirectoryMigrationSchemaV1: VersionedSchema {
 enum DirectoryMigrationSchemaV2: VersionedSchema {
     static let versionIdentifier = Schema.Version(2, 0, 0)
     static let models: [any Persistable.Type] = [DirectoryMigrationUserV2.self]
+}
+
+// MARK: - Directory change with #Index on both sides
+
+@Persistable(type: "DirectoryIndexedUser")
+struct DirectoryIndexedUserV1 {
+    #Directory<DirectoryIndexedUserV1>("test", "directory-indexed-migration", "legacy")
+    #Index(ScalarIndexKind<DirectoryIndexedUserV1>(fields: [\.email]), name: "DirectoryIndexedUser_email")
+
+    var name: String
+    var email: String
+}
+
+@Persistable(type: "DirectoryIndexedUser")
+struct DirectoryIndexedUserV2 {
+    #Directory<DirectoryIndexedUserV2>("test", "directory-indexed-migration", "current")
+    #Index(ScalarIndexKind<DirectoryIndexedUserV2>(fields: [\.email]), name: "DirectoryIndexedUser_email")
+
+    var name: String
+    var email: String
+}
+
+enum DirectoryIndexedSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryIndexedUserV1.self]
+}
+
+enum DirectoryIndexedSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryIndexedUserV2.self]
+}
+
+enum DirectoryIndexedCopyPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [DirectoryIndexedSchemaV1.self, DirectoryIndexedSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: DirectoryIndexedSchemaV1.self,
+                toVersion: DirectoryIndexedSchemaV2.self,
+                willMigrate: copyLegacyUsers,
+                didMigrate: purgeLegacyDirectory
+            )
+        ]
+    }
+
+    static func copyLegacyUsers(context: MigrationContext) async throws {
+        var copied: [DirectoryIndexedUserV2] = []
+        for try await legacy in context.enumerate(DirectoryIndexedUserV1.self) {
+            var user = DirectoryIndexedUserV2(name: legacy.name, email: legacy.email)
+            user.id = legacy.id
+            copied.append(user)
+        }
+        guard !copied.isEmpty else { return }
+        try await context.batchUpdate(copied, batchSize: 100)
+    }
+
+    static func purgeLegacyDirectory(context: MigrationContext) async throws {
+        try await context.purgeLegacyStorage(DirectoryIndexedUserV1.self)
+        try await context.rebuildIndex(indexName: "DirectoryIndexedUser_email")
+    }
+}
+
+// MARK: - Directory change + addIndex in same stage
+
+@Persistable(type: "DirectoryAddIdxUser")
+struct DirectoryAddIdxUserV1 {
+    #Directory<DirectoryAddIdxUserV1>("test", "directory-add-idx", "legacy")
+
+    var name: String
+    var score: Int
+}
+
+@Persistable(type: "DirectoryAddIdxUser")
+struct DirectoryAddIdxUserV2 {
+    #Directory<DirectoryAddIdxUserV2>("test", "directory-add-idx", "current")
+    #Index(ScalarIndexKind<DirectoryAddIdxUserV2>(fields: [\.score]), name: "DirectoryAddIdxUser_score")
+
+    var name: String
+    var score: Int
+}
+
+enum DirectoryAddIdxSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryAddIdxUserV1.self]
+}
+
+enum DirectoryAddIdxSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryAddIdxUserV2.self]
+}
+
+enum DirectoryAddIdxPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [DirectoryAddIdxSchemaV1.self, DirectoryAddIdxSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: DirectoryAddIdxSchemaV1.self,
+                toVersion: DirectoryAddIdxSchemaV2.self,
+                willMigrate: copyLegacyUsers,
+                didMigrate: purgeLegacyDirectory
+            )
+        ]
+    }
+
+    static func copyLegacyUsers(context: MigrationContext) async throws {
+        var copied: [DirectoryAddIdxUserV2] = []
+        for try await legacy in context.enumerate(DirectoryAddIdxUserV1.self) {
+            var user = DirectoryAddIdxUserV2(name: legacy.name, score: legacy.score)
+            user.id = legacy.id
+            copied.append(user)
+        }
+        guard !copied.isEmpty else { return }
+        try await context.batchUpdate(copied, batchSize: 100)
+    }
+
+    static func purgeLegacyDirectory(context: MigrationContext) async throws {
+        try await context.purgeLegacyStorage(DirectoryAddIdxUserV1.self)
+    }
+}
+
+// MARK: - Directory change + removeIndex in same stage
+
+@Persistable(type: "DirectoryRemIdxUser")
+struct DirectoryRemIdxUserV1 {
+    #Directory<DirectoryRemIdxUserV1>("test", "directory-rem-idx", "legacy")
+    #Index(ScalarIndexKind<DirectoryRemIdxUserV1>(fields: [\.tag]), name: "DirectoryRemIdxUser_tag")
+
+    var name: String
+    var tag: String
+}
+
+@Persistable(type: "DirectoryRemIdxUser")
+struct DirectoryRemIdxUserV2 {
+    #Directory<DirectoryRemIdxUserV2>("test", "directory-rem-idx", "current")
+
+    var name: String
+    var tag: String
+}
+
+enum DirectoryRemIdxSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryRemIdxUserV1.self]
+}
+
+enum DirectoryRemIdxSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryRemIdxUserV2.self]
+}
+
+enum DirectoryRemIdxPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [DirectoryRemIdxSchemaV1.self, DirectoryRemIdxSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: DirectoryRemIdxSchemaV1.self,
+                toVersion: DirectoryRemIdxSchemaV2.self,
+                willMigrate: copyLegacyUsers,
+                didMigrate: purgeLegacyDirectory
+            )
+        ]
+    }
+
+    static func copyLegacyUsers(context: MigrationContext) async throws {
+        var copied: [DirectoryRemIdxUserV2] = []
+        for try await legacy in context.enumerate(DirectoryRemIdxUserV1.self) {
+            var user = DirectoryRemIdxUserV2(name: legacy.name, tag: legacy.tag)
+            user.id = legacy.id
+            copied.append(user)
+        }
+        guard !copied.isEmpty else { return }
+        try await context.batchUpdate(copied, batchSize: 100)
+    }
+
+    static func purgeLegacyDirectory(context: MigrationContext) async throws {
+        try await context.purgeLegacyStorage(DirectoryRemIdxUserV1.self)
+    }
+}
+
+// MARK: - Lightweight-with-directory-change Schemas (must be rejected)
+
+@Persistable(type: "DirectoryLightweightUser")
+struct DirectoryLightweightUserV1 {
+    #Directory<DirectoryLightweightUserV1>("test", "directory-lightweight", "legacy")
+
+    var name: String
+}
+
+@Persistable(type: "DirectoryLightweightUser")
+struct DirectoryLightweightUserV2 {
+    #Directory<DirectoryLightweightUserV2>("test", "directory-lightweight", "current")
+
+    var name: String
+}
+
+enum DirectoryLightweightSchemaV1: VersionedSchema {
+    static let versionIdentifier = Schema.Version(1, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryLightweightUserV1.self]
+}
+
+enum DirectoryLightweightSchemaV2: VersionedSchema {
+    static let versionIdentifier = Schema.Version(2, 0, 0)
+    static let models: [any Persistable.Type] = [DirectoryLightweightUserV2.self]
+}
+
+enum DirectoryLightweightPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [DirectoryLightweightSchemaV1.self, DirectoryLightweightSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .lightweight(
+                fromVersion: DirectoryLightweightSchemaV1.self,
+                toVersion: DirectoryLightweightSchemaV2.self
+            )
+        ]
+    }
 }
 
 enum DirectoryMigrationCopyPlan: SchemaMigrationPlan {
@@ -235,6 +462,291 @@ struct DirectoryMigrationTests {
             #expect(target.email == "bob@example.com")
 
             try await cleanDirectories(engine: engine)
+        }
+    }
+
+    @Test("purgeLegacyStorage clears both items and index keys from the legacy directory")
+    func purgeLegacyStorageClearsIndexKeys() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            try await FDBTestEnvironment.shared.ensureInitialized()
+            let engine = try await makeSystemPriorityEngine()
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-indexed-migration", segment])
+                } catch {
+                }
+            }
+            do {
+                try await engine.directoryService.remove(path: ["_metadata"])
+            } catch {
+            }
+
+            let seededID = "dir-indexed-\(UUID().uuidString)"
+
+            let initialContainer = try await DBContainer(
+                for: DirectoryIndexedSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(engine)),
+                security: .disabled
+            )
+            let initialContext = initialContainer.newContext()
+            var seededUser = DirectoryIndexedUserV1(name: "Alice", email: "alice@example.com")
+            seededUser.id = seededID
+            initialContext.insert(seededUser)
+            try await initialContext.save()
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            // Sanity: V1 index subspace must hold one entry before migration.
+            let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryIndexedUserV1.self)
+            let legacyIndexPrefix = legacySubspace.subspace(SubspaceKey.indexes).subspace("DirectoryIndexedUser_email")
+            let (legacyIndexBegin, legacyIndexEnd) = legacyIndexPrefix.range()
+            let legacyIndexBefore = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(legacyIndexBegin),
+                    to: .firstGreaterOrEqual(legacyIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(legacyIndexBefore == 1)
+
+            let migratedContainer = try await DBContainer(
+                for: DirectoryIndexedSchemaV2.self,
+                migrationPlan: DirectoryIndexedCopyPlan.self,
+                configuration: .init(backend: .custom(engine))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            // V1 index subspace must be empty after purgeLegacyStorage.
+            let legacyIndexAfter = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(legacyIndexBegin),
+                    to: .firstGreaterOrEqual(legacyIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(legacyIndexAfter == 0)
+
+            // V2 index subspace must be populated by the copy.
+            let targetSubspace = try await migratedContainer.resolveDirectory(for: DirectoryIndexedUserV2.self)
+            let targetIndexPrefix = targetSubspace.subspace(SubspaceKey.indexes).subspace("DirectoryIndexedUser_email")
+            let (targetIndexBegin, targetIndexEnd) = targetIndexPrefix.range()
+            let targetIndexCount = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(targetIndexBegin),
+                    to: .firstGreaterOrEqual(targetIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(targetIndexCount == 1)
+
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-indexed-migration", segment])
+                } catch {
+                }
+            }
+        }
+    }
+
+    @Test("Custom stage builds a newly added index in the target directory after copying data")
+    func addIndexRunsAfterDirectoryChange() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            try await FDBTestEnvironment.shared.ensureInitialized()
+            let engine = try await makeSystemPriorityEngine()
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-add-idx", segment])
+                } catch {
+                }
+            }
+            do {
+                try await engine.directoryService.remove(path: ["_metadata"])
+            } catch {
+            }
+
+            let seededID = "dir-add-idx-\(UUID().uuidString)"
+
+            let initialContainer = try await DBContainer(
+                for: DirectoryAddIdxSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(engine)),
+                security: .disabled
+            )
+            let initialContext = initialContainer.newContext()
+            var seededUser = DirectoryAddIdxUserV1(name: "Alice", score: 42)
+            seededUser.id = seededID
+            initialContext.insert(seededUser)
+            try await initialContext.save()
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            let migratedContainer = try await DBContainer(
+                for: DirectoryAddIdxSchemaV2.self,
+                migrationPlan: DirectoryAddIdxPlan.self,
+                configuration: .init(backend: .custom(engine))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            // Framework should have called addIndex for the new score index,
+            // which builds it in the *target* (V2) directory against the rows
+            // that willMigrate just copied there.
+            let targetSubspace = try await migratedContainer.resolveDirectory(for: DirectoryAddIdxUserV2.self)
+            let targetIndexPrefix = targetSubspace.subspace(SubspaceKey.indexes).subspace("DirectoryAddIdxUser_score")
+            let (targetIndexBegin, targetIndexEnd) = targetIndexPrefix.range()
+            let targetIndexCount = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(targetIndexBegin),
+                    to: .firstGreaterOrEqual(targetIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(targetIndexCount == 1)
+
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-add-idx", segment])
+                } catch {
+                }
+            }
+        }
+    }
+
+    @Test("Custom stage clears the dropped index from the legacy directory")
+    func removeIndexRunsAfterDirectoryChange() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            try await FDBTestEnvironment.shared.ensureInitialized()
+            let engine = try await makeSystemPriorityEngine()
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-rem-idx", segment])
+                } catch {
+                }
+            }
+            do {
+                try await engine.directoryService.remove(path: ["_metadata"])
+            } catch {
+            }
+
+            let seededID = "dir-rem-idx-\(UUID().uuidString)"
+
+            let initialContainer = try await DBContainer(
+                for: DirectoryRemIdxSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(engine)),
+                security: .disabled
+            )
+            let initialContext = initialContainer.newContext()
+            var seededUser = DirectoryRemIdxUserV1(name: "Alice", tag: "hot")
+            seededUser.id = seededID
+            initialContext.insert(seededUser)
+            try await initialContext.save()
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            // Sanity: legacy index subspace holds one entry before migration.
+            let legacySubspace = try await initialContainer.resolveDirectory(for: DirectoryRemIdxUserV1.self)
+            let legacyIndexPrefix = legacySubspace.subspace(SubspaceKey.indexes).subspace("DirectoryRemIdxUser_tag")
+            let (legacyIndexBegin, legacyIndexEnd) = legacyIndexPrefix.range()
+            let legacyIndexBefore = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(legacyIndexBegin),
+                    to: .firstGreaterOrEqual(legacyIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(legacyIndexBefore == 1)
+
+            let migratedContainer = try await DBContainer(
+                for: DirectoryRemIdxSchemaV2.self,
+                migrationPlan: DirectoryRemIdxPlan.self,
+                configuration: .init(backend: .custom(engine))
+            )
+            try await migratedContainer.migrateIfNeeded()
+
+            // removeIndex targets the *source* registry (the legacy directory).
+            // Combined with didMigrate purgeLegacyStorage, the legacy index
+            // subspace must be empty after migration.
+            let legacyIndexAfter = try await engine.withTransaction { transaction in
+                let pairs = try await transaction.collectRange(
+                    from: .firstGreaterOrEqual(legacyIndexBegin),
+                    to: .firstGreaterOrEqual(legacyIndexEnd),
+                    limit: 1000,
+                    snapshot: true,
+                    streamingMode: .wantAll
+                )
+                return pairs.count
+            }
+            #expect(legacyIndexAfter == 0)
+
+            // V2 data must exist in the current directory.
+            let verificationContainer = try await DBContainer(
+                for: DirectoryRemIdxSchemaV2.makeSchema(),
+                configuration: .init(backend: .custom(engine)),
+                security: .disabled
+            )
+            let rows = try await verificationContainer.newContext()
+                .fetch(DirectoryRemIdxUserV2.self)
+                .execute()
+            #expect(rows.count == 1)
+
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-rem-idx", segment])
+                } catch {
+                }
+            }
+        }
+    }
+
+    @Test("Lightweight stage with changed #Directory is rejected with actionable error")
+    func lightweightStageRejectsDirectoryChange() async throws {
+        try await FDBTestSetup.shared.withSerializedAccess {
+            try await FDBTestEnvironment.shared.ensureInitialized()
+            let engine = try await makeSystemPriorityEngine()
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-lightweight", segment])
+                } catch {
+                }
+            }
+            do {
+                try await engine.directoryService.remove(path: ["_metadata"])
+            } catch {
+            }
+
+            let initialContainer = try await DBContainer(
+                for: DirectoryLightweightSchemaV1.makeSchema(),
+                configuration: .init(backend: .custom(engine)),
+                security: .disabled
+            )
+            try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
+
+            let migratedContainer = try await DBContainer(
+                for: DirectoryLightweightSchemaV2.self,
+                migrationPlan: DirectoryLightweightPlan.self,
+                configuration: .init(backend: .custom(engine))
+            )
+
+            await #expect(throws: MigrationPlanError.self) {
+                try await migratedContainer.migrateIfNeeded()
+            }
+
+            for segment in ["legacy", "current"] {
+                do {
+                    try await engine.directoryService.remove(path: ["test", "directory-lightweight", segment])
+                } catch {
+                }
+            }
         }
     }
 }
