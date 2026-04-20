@@ -661,7 +661,7 @@ public final class FDBContext: Sendable {
                 // Different directory - need to clear polymorphic data too
                 let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
                 let typeCode = polymorphicType.typeCode(for: T.persistableType)
-                let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(Tuple([typeCode]))
+                let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(typeCode)
 
                 try await self.withRawTransaction(configuration: .batch) { transaction in
                     let (polyBegin, polyEnd) = polyItemSubspace.range()
@@ -1960,7 +1960,7 @@ extension FDBContext {
                 let typeCode = polyType.typeCode(for: entity.name)
                 let codableType = persistableType
 
-                let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let typeSubspace = itemSubspace.subspace(typeCode)
                 let (begin, end) = typeSubspace.range()
 
                 // ItemStorage.scan handles both inline and external (split) values transparently
@@ -2022,7 +2022,7 @@ extension FDBContext {
                 let typeCode = polyType.typeCode(for: entity.name)
                 let codableType = persistableType
 
-                let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+                let typeSubspace = itemSubspace.subspace(typeCode)
                 let key = typeSubspace.pack(idTuple)
 
                 if let data = try await storage.read(for: key) {
@@ -2097,7 +2097,7 @@ extension FDBContext {
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+        let typeSubspace = itemSubspace.subspace(typeCode)
 
         let validatedID = try item.validateIDForStorage()
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
@@ -2170,7 +2170,7 @@ extension FDBContext {
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeSubspace = itemSubspace.subspace(Tuple([typeCode]))
+        let typeSubspace = itemSubspace.subspace(typeCode)
 
         let idTuple = Tuple([id])
         let key = typeSubspace.pack(idTuple)
