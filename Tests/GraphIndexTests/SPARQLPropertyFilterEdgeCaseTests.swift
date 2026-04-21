@@ -6,15 +6,15 @@ import Testing
 import Foundation
 import Core
 import Graph
-import DatabaseEngine
 import StorageKit
 import FDBStorage
 import TestSupport
+@testable import DatabaseEngine
 @testable import GraphIndex
 
 @Persistable
 fileprivate struct EdgeCaseConnection {
-    #Directory<EdgeCaseConnection>("test", "edge_case")
+    #Directory<EdgeCaseConnection>("sparql_property_filter_edge_case_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var target: String = ""
@@ -48,10 +48,15 @@ struct SPARQLPropertyFilterEdgeCaseTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([EdgeCaseConnection.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
 
-        
-        try? await database.directoryService.remove(path: ["test", "edge_case"])
+        if try await database.directoryService.exists(path: ["sparql_property_filter_edge_case_tests"]) {
+            try await database.directoryService.remove(path: ["sparql_property_filter_edge_case_tests"])
+        }
         try await container.ensureIndexesReady()
 
         // Set index to readable

@@ -19,7 +19,7 @@ import TestSupport
 
 @Persistable
 struct SetOpTestEdge {
-    #Directory<SetOpTestEdge>("test", "sparql", "setops")
+    #Directory<SetOpTestEdge>("sparql_set_operation_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -51,7 +51,11 @@ struct SPARQLSetOperationTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SetOpTestEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func insertEdges(_ edges: [SetOpTestEdge], context: FDBContext) async throws {

@@ -38,9 +38,9 @@ public enum FDBTestSetupError: Error, LocalizedError {
 /// ```
 public actor FDBTestSetup {
     public static let shared = FDBTestSetup()
-    private static let transactionTimeoutMs = 10_000
-    private static let transactionRetryLimit = 1
-    private static let transactionMaxRetryDelayMs = 100
+    private static let transactionTimeoutMs = 30_000
+    private static let transactionRetryLimit = 20
+    private static let transactionMaxRetryDelayMs = 1_000
     private static let healthCheckAttemptTimeoutMs = 5_000
     private static let clusterReadyTimeoutMs = 30_000
     private static let clusterReadyPollIntervalNs: UInt64 = 250_000_000

@@ -6,11 +6,11 @@ import Testing
 import Foundation
 import Core
 import Graph
-import DatabaseEngine
 import StorageKit
 import FDBStorage
 import TestSupport
 import QueryIR
+@testable import DatabaseEngine
 @testable import GraphIndex
 
 // MARK: - Test Models
@@ -18,7 +18,7 @@ import QueryIR
 /// Type without GraphIndexKind (for error testing)
 @Persistable
 fileprivate struct NoGraphIndexType {
-    #Directory<NoGraphIndexType>("test", "no_graph_index")
+    #Directory<NoGraphIndexType>("graph_table_no_graph_index")
     var id: String = UUID().uuidString
     var name: String = ""
 
@@ -33,7 +33,7 @@ struct GraphTableExecutorTests {
 
     @Persistable
     struct SocialEdge {
-        #Directory<SocialEdge>("test", "social_edges_executor")
+        #Directory<SocialEdge>("graph_table_social_edges_executor")
 
         var id: String = UUID().uuidString
         var from: String = ""
@@ -69,10 +69,17 @@ struct GraphTableExecutorTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
 
-
-        try? await database.directoryService.remove(path: ["test", "social_edges_executor"])
+        let subspace = try await container.resolveDirectory(for: SocialEdge.self)
+        let (begin, end) = subspace.range()
+        try await database.withTransaction { transaction in
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
         try await container.ensureIndexesReady()
 
         return container
@@ -340,7 +347,16 @@ struct GraphTableExecutorTests {
     func testErrorIndexNotFound() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([NoGraphIndexType.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
+        let subspace = try await container.resolveDirectory(for: NoGraphIndexType.self)
+        let (begin, end) = subspace.range()
+        try await database.withTransaction { transaction in
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
 
         let source = GraphTableSource(
             graphName: "NonExistentGraph",

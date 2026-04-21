@@ -21,7 +21,7 @@ import TestSupport
 @Persistable
 @OWLClass("http://test.org/onto#Employee")
 struct ValEmployee {
-    #Directory<ValEmployee>("test", "validation", "employee")
+    #Directory<ValEmployee>("ontology_iri_validation_tests", "employee")
 
     var id: String = ULID().ulidString
 
@@ -32,7 +32,7 @@ struct ValEmployee {
 @Persistable
 @OWLObjectProperty("http://test.org/onto#worksOn", from: "employeeID", to: "projectID")
 struct ValAssignment {
-    #Directory<ValAssignment>("test", "validation", "assignment")
+    #Directory<ValAssignment>("ontology_iri_validation_tests", "assignment")
 
     var id: String = ULID().ulidString
     var employeeID: String = ""
@@ -42,7 +42,7 @@ struct ValAssignment {
 @Persistable
 @OWLClass("http://test.org/onto#NonExistentClass")
 struct ValBadClass {
-    #Directory<ValBadClass>("test", "validation", "badclass")
+    #Directory<ValBadClass>("ontology_iri_validation_tests", "badclass")
 
     var id: String = ULID().ulidString
     var name: String = ""
@@ -51,7 +51,7 @@ struct ValBadClass {
 @Persistable
 @OWLObjectProperty("http://test.org/onto#nonExistentProp", from: "fromID", to: "toID")
 struct ValBadRelation {
-    #Directory<ValBadRelation>("test", "validation", "badrel")
+    #Directory<ValBadRelation>("ontology_iri_validation_tests", "badrel")
 
     var id: String = ULID().ulidString
     var fromID: String = ""
@@ -62,7 +62,7 @@ struct ValBadRelation {
 @Persistable
 @OWLObjectProperty("http://test.org/onto#name", from: "srcID", to: "dstID")
 struct ValDataPropAsObjectProp {
-    #Directory<ValDataPropAsObjectProp>("test", "validation", "typemismatch")
+    #Directory<ValDataPropAsObjectProp>("ontology_iri_validation_tests", "typemismatch")
 
     var id: String = ULID().ulidString
     var srcID: String = ""
@@ -73,7 +73,7 @@ struct ValDataPropAsObjectProp {
 @Persistable
 @OWLClass("http://test.org/onto#Employee")
 struct ValBadDataProperty {
-    #Directory<ValBadDataProperty>("test", "validation", "baddataprop")
+    #Directory<ValBadDataProperty>("ontology_iri_validation_tests", "baddataprop")
 
     var id: String = ULID().ulidString
 
@@ -85,7 +85,7 @@ struct ValBadDataProperty {
 @Persistable
 @OWLClass("http://test.org/onto#Employee")
 struct ValObjPropAsDataProp {
-    #Directory<ValObjPropAsDataProp>("test", "validation", "objasdata")
+    #Directory<ValObjPropAsDataProp>("ontology_iri_validation_tests", "objasdata")
 
     var id: String = ULID().ulidString
 
@@ -98,20 +98,27 @@ struct ValObjPropAsDataProp {
 @Suite("Ontology IRI Validation", .serialized, .heartbeat)
 struct OntologyIRIValidationTests {
 
-    private static let ontologyIRI = "http://test.org/onto"
+    private static let ontologyIRI = "http://test.org/ontology-iri-validation"
 
     // MARK: - Helpers
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
+        if try await database.directoryService.exists(path: ["ontology_iri_validation_tests"]) {
+            try await database.directoryService.remove(path: ["ontology_iri_validation_tests"])
+        }
         let schema = Schema(
             [ValEmployee.self, ValAssignment.self, ValBadClass.self,
              ValBadRelation.self, ValDataPropAsObjectProp.self,
              ValBadDataProperty.self, ValObjPropAsDataProp.self],
             version: Schema.Version(1, 0, 0)
         )
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
         return container.newContext()
     }
 

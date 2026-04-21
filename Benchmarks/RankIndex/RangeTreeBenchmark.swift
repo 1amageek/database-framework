@@ -10,15 +10,15 @@ import StorageKit
 @testable import TestSupport
 
 @Persistable
-struct Player {
-    #Directory<Player>("benchmarks", "players")
+struct BenchmarkPlayer {
+    #Directory<BenchmarkPlayer>("benchmarks", "rank_players")
 
     var id: String = UUID().uuidString
     var name: String = ""
     var score: Int64 = 0
 
     // Rank index on score
-    #Index(RankIndexKind<Player, Int64>(field: \.score), name: "score_rank")
+    #Index(RankIndexKind<BenchmarkPlayer, Int64>(field: \.score), name: "score_rank")
 }
 
 @Suite("RankIndex: Range Tree Benchmark", .serialized, .heartbeat)
@@ -30,13 +30,11 @@ struct RangeTreeBenchmark {
     }
 
     private func makeContext() async throws -> FDBContext {
-        do {
-            try await database.directoryService.remove(path: ["benchmarks", "players"])
-        } catch {
-            // Ignore missing benchmark directories so each benchmark starts clean.
+        if try await database.directoryService.exists(path: ["benchmarks", "rank_players"]) {
+            try await database.directoryService.remove(path: ["benchmarks", "rank_players"])
         }
 
-        let schema = Schema([Player.self], version: Schema.Version(1, 0, 0))
+        let schema = Schema([BenchmarkPlayer.self], version: Schema.Version(1, 0, 0))
         let container = try await DBContainer(
             for: schema,
             configuration: .init(backend: .custom(database)),
@@ -52,10 +50,10 @@ struct RangeTreeBenchmark {
 
         // Setup: Create test players with scores
         let playerCount = 1000  // Reduced for faster benchmarks
-        var players: [Player] = []
+        var players: [BenchmarkPlayer] = []
 
         for i in 0..<playerCount {
-            players.append(Player(
+            players.append(BenchmarkPlayer(
                 name: "Player \(i)",
                 score: Int64.random(in: 0...100000)
             ))
@@ -80,16 +78,18 @@ struct RangeTreeBenchmark {
         let result = try await runner.compare(
             name: "RankIndex: TopKHeap Performance (Current)",
             baseline: { @Sendable () async throws -> Int in
+                ctx.clearReadVersionCache()
                 // Current TopKHeap implementation
-                let results = try await ctx.rank(Player.self)
+                let results = try await ctx.rank(BenchmarkPlayer.self)
                     .by(\.score)
                     .top(100)
                     .execute()
                 return results.count
             },
             optimized: { @Sendable () async throws -> Int in
+                ctx.clearReadVersionCache()
                 // Same implementation (Range Tree not yet implemented)
-                let results = try await ctx.rank(Player.self)
+                let results = try await ctx.rank(BenchmarkPlayer.self)
                     .by(\.score)
                     .top(100)
                     .execute()
@@ -118,7 +118,7 @@ struct RangeTreeBenchmark {
         // Setup: Create fixed dataset for query scaling.
         let playerCount = 1000
         for i in 0..<playerCount {
-            context.insert(Player(
+            context.insert(BenchmarkPlayer(
                 name: "Scalability Player \(i)",
                 score: Int64.random(in: 0...100000)
             ))
@@ -139,8 +139,9 @@ struct RangeTreeBenchmark {
             name: "Rank Query Scalability",
             dataSizes: [10, 50, 100]  // K values to test
         ) { @Sendable (k: Int) async throws -> Int in
+            ctx.clearReadVersionCache()
             // Query top K items
-            let topPlayers = try await ctx.rank(Player.self)
+            let topPlayers = try await ctx.rank(BenchmarkPlayer.self)
                 .by(\.score)
                 .top(k)
                 .execute()
@@ -165,10 +166,10 @@ struct RangeTreeBenchmark {
 
         // Setup: Create fixed dataset
         let playerCount = 1000
-        var players: [Player] = []
+        var players: [BenchmarkPlayer] = []
 
         for i in 0..<playerCount {
-            players.append(Player(
+            players.append(BenchmarkPlayer(
                 name: "Player \(i)",
                 score: Int64.random(in: 0...100000)
             ))
@@ -193,7 +194,8 @@ struct RangeTreeBenchmark {
             name: "TopK Performance for Different K",
             dataSizes: [10, 50, 100, 200]  // Reduced sizes
         ) { @Sendable (k: Int) async throws -> Int in
-            let topPlayers = try await ctx.rank(Player.self)
+            ctx.clearReadVersionCache()
+            let topPlayers = try await ctx.rank(BenchmarkPlayer.self)
                 .by(\.score)
                 .top(k)
                 .execute()

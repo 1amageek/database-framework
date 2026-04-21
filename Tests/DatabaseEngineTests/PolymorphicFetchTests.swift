@@ -26,13 +26,13 @@ extension PolymorphicFetchDocument {
     public static var polymorphableType: String { "PolymorphicFetchDocument" }
 
     public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
-        [Path("test"), Path("polymorphicfetch"), Path("shared")]
+        [Path("polymorphic_fetch_tests_shared")]
     }
 }
 
 @Persistable
 struct PolymorphicFetchArticle: PolymorphicFetchDocument {
-    #Directory<PolymorphicFetchArticle>("test", "polymorphicfetch", "articles")
+    #Directory<PolymorphicFetchArticle>("polymorphic_fetch_tests_articles")
     var id: String = ULID().ulidString
     var title: String
     var body: String
@@ -40,7 +40,7 @@ struct PolymorphicFetchArticle: PolymorphicFetchDocument {
 
 @Persistable
 struct PolymorphicFetchReport: PolymorphicFetchDocument {
-    #Directory<PolymorphicFetchReport>("test", "polymorphicfetch", "reports")
+    #Directory<PolymorphicFetchReport>("polymorphic_fetch_tests_reports")
     var id: String = ULID().ulidString
     var title: String
     var pageCount: Int
@@ -84,24 +84,20 @@ struct PolymorphicFetchTests {
         )
 
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
+            security: .disabled,
         )
     }
 
     private func cleanup(container: DBContainer) async throws {
         for path in [
-            ["test", "polymorphicfetch", "articles"],
-            ["test", "polymorphicfetch", "reports"],
-            ["test", "polymorphicfetch", "shared"],
+            ["polymorphic_fetch_tests_articles"],
+            ["polymorphic_fetch_tests_reports"],
+            ["polymorphic_fetch_tests_shared"],
         ] {
-            do {
+            if try await container.engine.directoryService.exists(path: path) {
                 try await container.engine.directoryService.remove(path: path)
-            } catch let error as DirectoryError {
-                guard case .directoryNotFound = error else {
-                    throw error
-                }
             }
         }
     }

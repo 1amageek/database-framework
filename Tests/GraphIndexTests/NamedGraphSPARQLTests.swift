@@ -20,7 +20,7 @@ import TestSupport
 
 @Persistable
 struct SPARQLQuadStatement {
-    #Directory<SPARQLQuadStatement>("test", "sparql", "quads")
+    #Directory<SPARQLQuadStatement>("named_graph_sparql_tests")
 
     var id: String = ULID().ulidString
     var subject: String = ""
@@ -48,11 +48,17 @@ struct NamedGraphSPARQLTests {
         try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SPARQLQuadStatement.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "sparql", "quads"])
+        if try await container.engine.directoryService.exists(path: ["named_graph_sparql_tests"]) {
+            try await container.engine.directoryService.remove(path: ["named_graph_sparql_tests"])
+        }
         try await container.ensureIndexesReady()
     }
 
@@ -369,7 +375,11 @@ struct NamedGraphSPARQLTests {
                 [SPARQLTestStatement.self],
                 version: Schema.Version(1, 0, 0)
             )
-            container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+            container = try await DBContainer(
+                testing: schema,
+                configuration: .init(backend: .custom(database)),
+                security: .disabled,
+            )
         }
 
         

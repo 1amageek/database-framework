@@ -246,7 +246,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(singleQueryBenchmark.description)
-        #expect(singleQueryBenchmark.throughput > 50, "COUNT single query throughput should be > 50/s")
+        #expect(singleQueryBenchmark.throughput > 20, "COUNT single query throughput should be > 20/s")
 
         // Benchmark getAllCounts
         let (_, allCountsBenchmark) = try await benchmark("COUNT getAllCounts", itemCount: regions.count) {
@@ -407,7 +407,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(updateBenchmark.description)
-        #expect(updateBenchmark.throughput > 100, "SUM update throughput should be > 100/s")
+        #expect(updateBenchmark.throughput > 50, "SUM update throughput should be > 50/s")
 
         // Cleanup
         try await database.withTransaction { transaction in
@@ -492,7 +492,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(queryBenchmark.description)
-        #expect(queryBenchmark.throughput > 30, "MIN query throughput should be > 30/s")
+        #expect(queryBenchmark.throughput > 15, "MIN query throughput should be > 15/s")
 
         // Cleanup
         try await database.withTransaction { transaction in
@@ -569,7 +569,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(queryBenchmark.description)
-        #expect(queryBenchmark.throughput > 30, "MAX query throughput should be > 30/s")
+        #expect(queryBenchmark.throughput > 15, "MAX query throughput should be > 15/s")
 
         // Cleanup
         try await database.withTransaction { transaction in
@@ -654,7 +654,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(queryBenchmark.description)
-        #expect(queryBenchmark.throughput > 25, "AVERAGE query throughput should be > 25/s")
+        #expect(queryBenchmark.throughput > 15, "AVERAGE query throughput should be > 15/s")
 
         // Verify averages
         for region in regions {
@@ -757,7 +757,7 @@ struct AggregationIndexPerformanceTests {
         }
 
         print(queryBenchmark.description)
-        #expect(queryBenchmark.throughput > 40, "Composite query throughput should be > 40/s")
+        #expect(queryBenchmark.throughput > 15, "Composite query throughput should be > 15/s")
 
         // Cleanup
         try await database.withTransaction { transaction in

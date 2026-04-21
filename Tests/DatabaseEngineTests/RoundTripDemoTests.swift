@@ -13,7 +13,7 @@ import TestSupport
 
 @Persistable
 struct DemoItem: Equatable {
-    #Directory<DemoItem>("test", "roundtrip", "demo")
+    #Directory<DemoItem>("round_trip_demo_tests")
 
     var id: String = UUID().uuidString
     var name: String = ""
@@ -29,10 +29,10 @@ struct RoundTripDemoTests {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([DemoItem.self], version: Schema.Version(1, 0, 0))
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
-            )
+            security: .disabled,
+        )
     }
 
     @Test("Create -> Read -> Update -> Delete round-trip")

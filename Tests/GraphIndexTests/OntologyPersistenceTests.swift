@@ -27,7 +27,7 @@ import TestSupport
 /// Ontology tests do not use this entity — they operate on the ontology subspace (O/).
 @Persistable
 struct OntologyTestDummy {
-    #Directory<OntologyTestDummy>("test", "ontology", "dummy")
+    #Directory<OntologyTestDummy>("ontology_persistence_dummy")
 
     var id: String = ULID().ulidString
     var subject: String = ""
@@ -47,7 +47,7 @@ struct OntologyTestDummy {
 @Suite("Ontology Persistence", .serialized, .heartbeat)
 struct OntologyPersistenceTests {
 
-    private static let testOntologyIRI = "http://test.org/ontology"
+    private static let testOntologyIRI = "http://test.org/ontology-persistence"
 
     // MARK: - Helpers
 
@@ -55,7 +55,11 @@ struct OntologyPersistenceTests {
         try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([OntologyTestDummy.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
         return container.newContext()
     }
 

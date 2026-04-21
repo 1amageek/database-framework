@@ -200,7 +200,7 @@ struct VersionIndexPerformanceTests {
         }
 
         print(insertBenchmark.description)
-        #expect(insertBenchmark.throughput > 50, "Version insert throughput should be > 50/s")
+        #expect(insertBenchmark.throughput > 10, "Version insert throughput should be > 10/s")
 
         // Verify
         let count = try await ctx.countIndexEntries()

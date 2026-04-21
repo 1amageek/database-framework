@@ -18,7 +18,7 @@ import TestSupport
 
 @Persistable
 struct AdvAggTestEdge {
-    #Directory<AdvAggTestEdge>("test", "sparql", "advancedagg")
+    #Directory<AdvAggTestEdge>("sparql_advanced_aggregation_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -51,7 +51,11 @@ struct SPARQLAdvancedAggregationTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([AdvAggTestEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func insertEdges(_ edges: [AdvAggTestEdge], context: FDBContext) async throws {

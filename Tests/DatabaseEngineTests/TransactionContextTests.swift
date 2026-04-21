@@ -24,7 +24,7 @@ struct TransactionContextTests {
     /// Test model for transaction tests
     @Persistable
     struct TransactionTestUser {
-        #Directory<TransactionTestUser>("test", "txcontext", "users")
+        #Directory<TransactionTestUser>("transaction_context_test_users")
         var id: String = ULID().ulidString
         var name: String
         var balance: Int
@@ -33,7 +33,7 @@ struct TransactionContextTests {
     /// Test model for products
     @Persistable
     struct TransactionTestProduct {
-        #Directory<TransactionTestProduct>("test", "txcontext", "products")
+        #Directory<TransactionTestProduct>("transaction_context_test_products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double
@@ -51,15 +51,19 @@ struct TransactionContextTests {
         )
 
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
-            )
+            security: .disabled,
+        )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "txcontext", "users"])
-        try? await container.engine.directoryService.remove(path: ["test", "txcontext", "products"])
+        if try await container.engine.directoryService.exists(path: ["transaction_context_test_users"]) {
+            try await container.engine.directoryService.remove(path: ["transaction_context_test_users"])
+        }
+        if try await container.engine.directoryService.exists(path: ["transaction_context_test_products"]) {
+            try await container.engine.directoryService.remove(path: ["transaction_context_test_products"])
+        }
     }
 
     // MARK: - TransactionConfiguration Tests

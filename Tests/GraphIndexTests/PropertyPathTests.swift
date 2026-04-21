@@ -16,7 +16,7 @@ import TestSupport
 
 @Persistable
 struct EdgeForPropertyPath {
-    #Directory<EdgeForPropertyPath>("test", "sparql", "propertypath")
+    #Directory<EdgeForPropertyPath>("property_path_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -48,7 +48,11 @@ struct PropertyPathTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([EdgeForPropertyPath.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func insertEdges(_ edges: [EdgeForPropertyPath], context: FDBContext) async throws {

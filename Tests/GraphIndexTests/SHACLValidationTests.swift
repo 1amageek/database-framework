@@ -29,7 +29,7 @@ import TestSupport
 /// RDF-like statement for SHACL validation testing
 @Persistable
 struct SHACLTestStatement {
-    #Directory<SHACLTestStatement>("test", "shacl", "statements")
+    #Directory<SHACLTestStatement>("shacl_validation_tests", "statements")
 
     var id: String = ULID().ulidString
     var subject: String = ""
@@ -55,14 +55,16 @@ struct SHACLValidationTests {
         try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SHACLTestStatement.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func cleanup(container: DBContainer) async throws {
-        do {
-            try await container.engine.directoryService.remove(path: ["test", "shacl", "statements"])
-        } catch {
-            // Directory may not exist on first run
+        if try await container.engine.directoryService.exists(path: ["shacl_validation_tests", "statements"]) {
+            try await container.engine.directoryService.remove(path: ["shacl_validation_tests", "statements"])
         }
         try await container.ensureIndexesReady()
         try await container.newContext().shacl.deleteAllShapesGraphs()

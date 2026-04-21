@@ -32,7 +32,7 @@ import TestSupport
 /// ScalarIndex-backed model: email is an indexed scalar field.
 @Persistable
 struct DelInsUser {
-    #Directory<DelInsUser>("test", "delins", "users")
+    #Directory<DelInsUser>("context_delete_insert_same_id", "users")
 
     var id: String = UUID().uuidString
     var email: String = ""
@@ -45,7 +45,7 @@ struct DelInsUser {
 /// FullTextIndex-backed model: content is a tokenized text field.
 @Persistable
 struct DelInsArticle {
-    #Directory<DelInsArticle>("test", "delins", "articles")
+    #Directory<DelInsArticle>("context_delete_insert_same_id", "articles")
 
     var id: String = UUID().uuidString
     var title: String = ""
@@ -69,9 +69,9 @@ struct ContextDeleteInsertSameIDTests {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([DelInsUser.self])
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
+            security: .disabled,
         )
     }
 
@@ -79,19 +79,23 @@ struct ContextDeleteInsertSameIDTests {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([DelInsArticle.self])
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
+            security: .disabled,
         )
     }
 
     private func cleanupUsers(_ container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "delins", "users"])
+        if try await container.engine.directoryService.exists(path: ["context_delete_insert_same_id", "users"]) {
+            try await container.engine.directoryService.remove(path: ["context_delete_insert_same_id", "users"])
+        }
         try await container.ensureIndexesReady()
     }
 
     private func cleanupArticles(_ container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "delins", "articles"])
+        if try await container.engine.directoryService.exists(path: ["context_delete_insert_same_id", "articles"]) {
+            try await container.engine.directoryService.remove(path: ["context_delete_insert_same_id", "articles"])
+        }
         try await container.ensureIndexesReady()
     }
 

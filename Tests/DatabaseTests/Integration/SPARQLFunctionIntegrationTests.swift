@@ -22,8 +22,8 @@ struct SPARQLFunctionIntegrationTests {
     // MARK: - Test Models
 
     @Persistable
-    struct User {
-        #Directory<User>("test", "sparql_func", "users")
+    struct SPARQLFunctionUser {
+        #Directory<SPARQLFunctionUser>("sparql_function_test_users")
 
         var id: String = UUID().uuidString
         var name: String = ""
@@ -31,15 +31,15 @@ struct SPARQLFunctionIntegrationTests {
     }
 
     @Persistable
-    struct RDFTriple {
-        #Directory<RDFTriple>("test", "sparql_func", "rdf")
+    struct SPARQLFunctionTriple {
+        #Directory<SPARQLFunctionTriple>("sparql_function_test_rdf")
 
         var id: String = UUID().uuidString
         var subject: String = ""
         var predicate: String = ""
         var object: String = ""
 
-        #Index(GraphIndexKind<RDFTriple>(
+        #Index(GraphIndexKind<SPARQLFunctionTriple>(
             from: \.subject,
             edge: \.predicate,
             to: \.object,
@@ -51,18 +51,27 @@ struct SPARQLFunctionIntegrationTests {
 
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([User.self, RDFTriple.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let schema = Schema([SPARQLFunctionUser.self, SPARQLFunctionTriple.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
 
         // Clean up previous test data
-        try? await database.directoryService.remove(path: ["test", "sparql_func"])
+        if try await database.directoryService.exists(path: ["sparql_function_test_users"]) {
+            try await database.directoryService.remove(path: ["sparql_function_test_users"])
+        }
+        if try await database.directoryService.exists(path: ["sparql_function_test_rdf"]) {
+            try await database.directoryService.remove(path: ["sparql_function_test_rdf"])
+        }
         try await container.ensureIndexesReady()
 
         // Set index to readable (required for SPARQL queries)
-        let subspace = try await container.resolveDirectory(for: RDFTriple.self)
+        let subspace = try await container.resolveDirectory(for: SPARQLFunctionTriple.self)
         let indexStateManager = IndexStateManager(container: container, subspace: subspace)
 
-        for descriptor in RDFTriple.indexDescriptors {
+        for descriptor in SPARQLFunctionTriple.indexDescriptors {
             let currentState = try await indexStateManager.state(of: descriptor.name)
             if currentState == .disabled {
                 try await indexStateManager.enable(descriptor.name)
@@ -87,9 +96,9 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create users
-        var alice = User(name: "Alice", age: 25)
-        var bob = User(name: "Bob", age: 30)
-        var carol = User(name: "Carol", age: 35)
+        var alice = SPARQLFunctionUser(name: "Alice", age: 25)
+        var bob = SPARQLFunctionUser(name: "Bob", age: 30)
+        var carol = SPARQLFunctionUser(name: "Carol", age: 35)
 
         alice.id = uniqueID("user")
         bob.id = uniqueID("user")
@@ -101,17 +110,17 @@ struct SPARQLFunctionIntegrationTests {
         try await context.save()
 
         // Setup: Create RDF triples (Alice and Bob know each other)
-        context.insert(RDFTriple(subject: alice.id, predicate: "knows", object: bob.id))
-        context.insert(RDFTriple(subject: bob.id, predicate: "knows", object: alice.id))
+        context.insert(SPARQLFunctionTriple(subject: alice.id, predicate: "knows", object: bob.id))
+        context.insert(SPARQLFunctionTriple(subject: bob.id, predicate: "knows", object: alice.id))
         try await context.save()
 
         // Execute: SQL with SPARQL() function
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s \"knows\" \"\(bob.id)\" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"knows\" \"\(bob.id)\" }'))
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only Alice should be returned
         #expect(users.count == 1)
@@ -127,9 +136,9 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create users
-        var user1 = User(name: "User1", age: 20)
-        var user2 = User(name: "User2", age: 30)
-        var user3 = User(name: "User3", age: 40)
+        var user1 = SPARQLFunctionUser(name: "User1", age: 20)
+        var user2 = SPARQLFunctionUser(name: "User2", age: 30)
+        var user3 = SPARQLFunctionUser(name: "User3", age: 40)
 
         user1.id = uniqueID("user")
         user2.id = uniqueID("user")
@@ -141,19 +150,19 @@ struct SPARQLFunctionIntegrationTests {
         try await context.save()
 
         // Setup: Create RDF triples
-        context.insert(RDFTriple(subject: user1.id, predicate: "role", object: "admin"))
-        context.insert(RDFTriple(subject: user2.id, predicate: "role", object: "admin"))
-        context.insert(RDFTriple(subject: user3.id, predicate: "role", object: "user"))
+        context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "role", object: "admin"))
+        context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "role", object: "admin"))
+        context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "role", object: "user"))
         try await context.save()
 
         // Execute: SQL with SPARQL() + age filter
         let sql = """
-        SELECT * FROM User
+        SELECT * FROM SPARQLFunctionUser
         WHERE age > 25
-          AND id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
+          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only User2 (age=30, role=admin)
         #expect(users.count == 1)
@@ -169,10 +178,10 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create users
-        var admin = User(name: "Admin", age: 30)
-        var developer = User(name: "Developer", age: 25)
-        var both = User(name: "Both", age: 35)
-        var none = User(name: "None", age: 20)
+        var admin = SPARQLFunctionUser(name: "Admin", age: 30)
+        var developer = SPARQLFunctionUser(name: "Developer", age: 25)
+        var both = SPARQLFunctionUser(name: "Both", age: 35)
+        var none = SPARQLFunctionUser(name: "None", age: 20)
 
         admin.id = uniqueID("user")
         developer.id = uniqueID("user")
@@ -186,21 +195,21 @@ struct SPARQLFunctionIntegrationTests {
         try await context.save()
 
         // Setup: Create RDF triples
-        context.insert(RDFTriple(subject: admin.id, predicate: "role", object: "admin"))
-        context.insert(RDFTriple(subject: both.id, predicate: "role", object: "admin"))
+        context.insert(SPARQLFunctionTriple(subject: admin.id, predicate: "role", object: "admin"))
+        context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "role", object: "admin"))
 
-        context.insert(RDFTriple(subject: developer.id, predicate: "skill", object: "swift"))
-        context.insert(RDFTriple(subject: both.id, predicate: "skill", object: "swift"))
+        context.insert(SPARQLFunctionTriple(subject: developer.id, predicate: "skill", object: "swift"))
+        context.insert(SPARQLFunctionTriple(subject: both.id, predicate: "skill", object: "swift"))
         try await context.save()
 
         // Execute: Find users who are admins AND have swift skill
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
-          AND id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s "skill" "swift" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s \"role\" "admin" }'))
+          AND id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "skill" "swift" }'))
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Only 'Both' user
         #expect(users.count == 1)
@@ -216,12 +225,12 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         let sql = """
-        SELECT * FROM User
+        SELECT * FROM SPARQLFunctionUser
         WHERE id IN (SPARQL(NonExistentType, 'SELECT ?s WHERE { ?s "p" "o" }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
-            try await context.executeSQL(sql, as: User.self)
+            try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
         }
     }
 
@@ -234,12 +243,12 @@ struct SPARQLFunctionIntegrationTests {
 
         // User type has no graph index
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(User, 'SELECT ?s WHERE { ?s "p" "o" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionUser, 'SELECT ?s WHERE { ?s "p" "o" }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
-            try await context.executeSQL(sql, as: User.self)
+            try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
         }
     }
 
@@ -251,21 +260,21 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create triple
-        var user = User(name: "Test", age: 25)
+        var user = SPARQLFunctionUser(name: "Test", age: 25)
         user.id = uniqueID("user")
 
         context.insert(user)
-        context.insert(RDFTriple(subject: user.id, predicate: "knows", object: "someone"))
+        context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "knows", object: "someone"))
         try await context.save()
 
         // Execute: Query returns multiple variables (?s and ?o)
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }'))
         """
 
         await #expect(throws: SPARQLFunctionError.self) {
-            try await context.executeSQL(sql, as: User.self)
+            try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
         }
     }
 
@@ -277,8 +286,8 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup
-        var person1 = User(name: "Person1", age: 25)
-        var person2 = User(name: "Person2", age: 30)
+        var person1 = SPARQLFunctionUser(name: "Person1", age: 25)
+        var person2 = SPARQLFunctionUser(name: "Person2", age: 30)
 
         person1.id = uniqueID("person")
         person2.id = uniqueID("person")
@@ -287,16 +296,16 @@ struct SPARQLFunctionIntegrationTests {
         context.insert(person2)
         try await context.save()
 
-        context.insert(RDFTriple(subject: person1.id, predicate: "knows", object: person2.id))
+        context.insert(SPARQLFunctionTriple(subject: person1.id, predicate: "knows", object: person2.id))
         try await context.save()
 
         // Execute: Query returns ?s and ?o, but we explicitly select ?s
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }', '?s'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s ?o WHERE { ?s "knows" ?o }', '?s'))
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: person1 is returned
         #expect(users.count == 1)
@@ -311,7 +320,7 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create users but no matching triples
-        var user = User(name: "Test", age: 25)
+        var user = SPARQLFunctionUser(name: "Test", age: 25)
         user.id = uniqueID("user")
 
         context.insert(user)
@@ -319,11 +328,11 @@ struct SPARQLFunctionIntegrationTests {
 
         // Execute: SPARQL returns no results
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s "nonexistent" "value" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "nonexistent" "value" }'))
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: No users returned
         #expect(users.isEmpty)
@@ -337,9 +346,9 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup: Create 100 users and triples
-        var users: [User] = []
+        var users: [SPARQLFunctionUser] = []
         for i in 0..<100 {
-            var user = User(name: "User\(i)", age: 20 + (i % 50))
+            var user = SPARQLFunctionUser(name: "User\(i)", age: 20 + (i % 50))
             user.id = uniqueID("user-\(i)")
             users.append(user)
             context.insert(user)
@@ -348,19 +357,19 @@ struct SPARQLFunctionIntegrationTests {
 
         // Create triples for all users
         for user in users {
-            context.insert(RDFTriple(subject: user.id, predicate: "status", object: "active"))
+            context.insert(SPARQLFunctionTriple(subject: user.id, predicate: "status", object: "active"))
         }
         try await context.save()
 
         // Execute: Should return all users
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s "status" "active" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "status" "active" }'))
         LIMIT 100
         """
 
         let startTime = Date()
-        let results = try await context.executeSQL(sql, as: User.self)
+        let results = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
         let duration = Date().timeIntervalSince(startTime)
 
         // Verify
@@ -378,7 +387,7 @@ struct SPARQLFunctionIntegrationTests {
         // Construct a SelectQuery with from/fromNamed and a simple filter (no SPARQL() function)
         let query = QueryIR.SelectQuery(
             projection: .all,
-            source: .table(QueryIR.TableRef("User")),
+            source: .table(QueryIR.TableRef("SPARQLFunctionUser")),
             filter: .greaterThan(.column(QueryIR.ColumnRef(column: "age")), .literal(.int(25))),
             from: ["http://example.org/graph1"],
             fromNamed: ["http://example.org/named1", "http://example.org/named2"]
@@ -407,9 +416,9 @@ struct SPARQLFunctionIntegrationTests {
         let context = container.newContext()
 
         // Setup
-        var user1 = User(name: "Alice", age: 30)
-        var user2 = User(name: "Bob", age: 25)
-        var user3 = User(name: "Carol", age: 35)
+        var user1 = SPARQLFunctionUser(name: "Alice", age: 30)
+        var user2 = SPARQLFunctionUser(name: "Bob", age: 25)
+        var user3 = SPARQLFunctionUser(name: "Carol", age: 35)
 
         user1.id = uniqueID("user")
         user2.id = uniqueID("user")
@@ -420,20 +429,20 @@ struct SPARQLFunctionIntegrationTests {
         context.insert(user3)
         try await context.save()
 
-        context.insert(RDFTriple(subject: user1.id, predicate: "verified", object: "true"))
-        context.insert(RDFTriple(subject: user2.id, predicate: "verified", object: "true"))
-        context.insert(RDFTriple(subject: user3.id, predicate: "verified", object: "true"))
+        context.insert(SPARQLFunctionTriple(subject: user1.id, predicate: "verified", object: "true"))
+        context.insert(SPARQLFunctionTriple(subject: user2.id, predicate: "verified", object: "true"))
+        context.insert(SPARQLFunctionTriple(subject: user3.id, predicate: "verified", object: "true"))
         try await context.save()
 
         // Execute: SPARQL + ORDER BY + LIMIT
         let sql = """
-        SELECT * FROM User
-        WHERE id IN (SPARQL(RDFTriple, 'SELECT ?s WHERE { ?s "verified" "true" }'))
+        SELECT * FROM SPARQLFunctionUser
+        WHERE id IN (SPARQL(SPARQLFunctionTriple, 'SELECT ?s WHERE { ?s "verified" "true" }'))
         ORDER BY age ASC
         LIMIT 2
         """
 
-        let users = try await context.executeSQL(sql, as: User.self)
+        let users = try await context.executeSQL(sql, as: SPARQLFunctionUser.self)
 
         // Verify: Bob (25) and Alice (30)
         #expect(users.count == 2)

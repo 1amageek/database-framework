@@ -22,15 +22,36 @@ import TestSupport
 @Suite("OntologyStore Phase 2 Fixes", .serialized, .heartbeat)
 struct OntologyStorePhase2Tests {
 
-    private static let testOntologyIRI = "http://test.org/phase2"
+    @Persistable
+    struct OntologyPhase2Dummy {
+        #Directory<OntologyPhase2Dummy>("ontology_phase2_dummy")
+
+        var id: String = ULID().ulidString
+        var subject: String = ""
+        var predicate: String = ""
+        var object: String = ""
+
+        #Index(GraphIndexKind<OntologyPhase2Dummy>(
+            from: \.subject,
+            edge: \.predicate,
+            to: \.object,
+            strategy: .tripleStore
+        ))
+    }
+
+    private static let testOntologyIRI = "http://test.org/ontology-phase2-fixes"
 
     // MARK: - Helpers
 
     private func setupContext() async throws -> FDBContext {
         try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
-        let schema = Schema([OntologyTestDummy.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let schema = Schema([OntologyPhase2Dummy.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
         return container.newContext()
     }
 

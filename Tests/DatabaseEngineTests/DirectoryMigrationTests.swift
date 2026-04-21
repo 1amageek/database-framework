@@ -13,7 +13,7 @@ import TestHeartbeat
 
 @Persistable(type: "DirectoryMigrationUser")
 struct DirectoryMigrationUserV1 {
-    #Directory<DirectoryMigrationUserV1>("test", "directory-migration", "legacy")
+    #Directory<DirectoryMigrationUserV1>("directory_migration_test_legacy")
 
     var name: String
     var email: String
@@ -21,7 +21,7 @@ struct DirectoryMigrationUserV1 {
 
 @Persistable(type: "DirectoryMigrationUser")
 struct DirectoryMigrationUserV2 {
-    #Directory<DirectoryMigrationUserV2>("test", "directory-migration", "current")
+    #Directory<DirectoryMigrationUserV2>("directory_migration_test_current")
 
     var name: String
     var email: String
@@ -41,7 +41,7 @@ enum DirectoryMigrationSchemaV2: VersionedSchema {
 
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV1 {
-    #Directory<DirectoryIndexedUserV1>("test", "directory-indexed-migration", "legacy")
+    #Directory<DirectoryIndexedUserV1>("directory_indexed_migration_test_legacy")
     #Index(ScalarIndexKind<DirectoryIndexedUserV1>(fields: [\.email]), name: "DirectoryIndexedUser_email")
 
     var name: String
@@ -50,7 +50,7 @@ struct DirectoryIndexedUserV1 {
 
 @Persistable(type: "DirectoryIndexedUser")
 struct DirectoryIndexedUserV2 {
-    #Directory<DirectoryIndexedUserV2>("test", "directory-indexed-migration", "current")
+    #Directory<DirectoryIndexedUserV2>("directory_indexed_migration_test_current")
     #Index(ScalarIndexKind<DirectoryIndexedUserV2>(fields: [\.email]), name: "DirectoryIndexedUser_email")
 
     var name: String
@@ -104,7 +104,7 @@ enum DirectoryIndexedCopyPlan: SchemaMigrationPlan {
 
 @Persistable(type: "DirectoryAddIdxUser")
 struct DirectoryAddIdxUserV1 {
-    #Directory<DirectoryAddIdxUserV1>("test", "directory-add-idx", "legacy")
+    #Directory<DirectoryAddIdxUserV1>("directory_add_idx_test_legacy")
 
     var name: String
     var score: Int
@@ -112,7 +112,7 @@ struct DirectoryAddIdxUserV1 {
 
 @Persistable(type: "DirectoryAddIdxUser")
 struct DirectoryAddIdxUserV2 {
-    #Directory<DirectoryAddIdxUserV2>("test", "directory-add-idx", "current")
+    #Directory<DirectoryAddIdxUserV2>("directory_add_idx_test_current")
     #Index(ScalarIndexKind<DirectoryAddIdxUserV2>(fields: [\.score]), name: "DirectoryAddIdxUser_score")
 
     var name: String
@@ -165,7 +165,7 @@ enum DirectoryAddIdxPlan: SchemaMigrationPlan {
 
 @Persistable(type: "DirectoryRemIdxUser")
 struct DirectoryRemIdxUserV1 {
-    #Directory<DirectoryRemIdxUserV1>("test", "directory-rem-idx", "legacy")
+    #Directory<DirectoryRemIdxUserV1>("directory_rem_idx_test_legacy")
     #Index(ScalarIndexKind<DirectoryRemIdxUserV1>(fields: [\.tag]), name: "DirectoryRemIdxUser_tag")
 
     var name: String
@@ -174,7 +174,7 @@ struct DirectoryRemIdxUserV1 {
 
 @Persistable(type: "DirectoryRemIdxUser")
 struct DirectoryRemIdxUserV2 {
-    #Directory<DirectoryRemIdxUserV2>("test", "directory-rem-idx", "current")
+    #Directory<DirectoryRemIdxUserV2>("directory_rem_idx_test_current")
 
     var name: String
     var tag: String
@@ -226,14 +226,14 @@ enum DirectoryRemIdxPlan: SchemaMigrationPlan {
 
 @Persistable(type: "DirectoryLightweightUser")
 struct DirectoryLightweightUserV1 {
-    #Directory<DirectoryLightweightUserV1>("test", "directory-lightweight", "legacy")
+    #Directory<DirectoryLightweightUserV1>("directory_lightweight_test_legacy")
 
     var name: String
 }
 
 @Persistable(type: "DirectoryLightweightUser")
 struct DirectoryLightweightUserV2 {
-    #Directory<DirectoryLightweightUserV2>("test", "directory-lightweight", "current")
+    #Directory<DirectoryLightweightUserV2>("directory_lightweight_test_current")
 
     var name: String
 }
@@ -309,15 +309,10 @@ struct DirectoryMigrationTests {
     }
 
     private func cleanDirectories(engine: any StorageEngine) async throws {
-        for segment in ["legacy", "current"] {
-            do {
-                try await engine.directoryService.remove(path: ["test", "directory-migration", segment])
-            } catch {
+        for path in [["directory_migration_test_legacy"], ["directory_migration_test_current"]] {
+            if try await engine.directoryService.exists(path: path) {
+                try await engine.directoryService.remove(path: path)
             }
-        }
-        do {
-            try await engine.directoryService.remove(path: ["_metadata"])
-        } catch {
         }
     }
 
@@ -332,9 +327,9 @@ struct DirectoryMigrationTests {
 
             // 1. Insert V1 data into the legacy directory.
             let initialContainer = try await DBContainer(
-                for: DirectoryMigrationSchemaV1.makeSchema(),
+                testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryMigrationUserV1(name: "Alice", email: "alice@example.com")
@@ -369,9 +364,9 @@ struct DirectoryMigrationTests {
 
             // 3. Data must be readable via the V2 schema (new directory).
             let verificationContainer = try await DBContainer(
-                for: DirectoryMigrationSchemaV2.makeSchema(),
+                testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let verificationContext = verificationContainer.newContext()
             let migratedUsers = try await verificationContext
@@ -426,9 +421,9 @@ struct DirectoryMigrationTests {
             let seededID = "dir-migration-idempotent-\(UUID().uuidString)"
 
             let initialContainer = try await DBContainer(
-                for: DirectoryMigrationSchemaV1.makeSchema(),
+                testing: DirectoryMigrationSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryMigrationUserV1(name: "Bob", email: "bob@example.com")
@@ -449,9 +444,9 @@ struct DirectoryMigrationTests {
             try await migratedContainer.migrateIfNeeded()
 
             let verificationContainer = try await DBContainer(
-                for: DirectoryMigrationSchemaV2.makeSchema(),
+                testing: DirectoryMigrationSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
                 .fetch(DirectoryMigrationUserV2.self)
@@ -470,23 +465,18 @@ struct DirectoryMigrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-indexed-migration", segment])
-                } catch {
+            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
-            }
-            do {
-                try await engine.directoryService.remove(path: ["_metadata"])
-            } catch {
             }
 
             let seededID = "dir-indexed-\(UUID().uuidString)"
 
             let initialContainer = try await DBContainer(
-                for: DirectoryIndexedSchemaV1.makeSchema(),
+                testing: DirectoryIndexedSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryIndexedUserV1(name: "Alice", email: "alice@example.com")
@@ -547,10 +537,9 @@ struct DirectoryMigrationTests {
             }
             #expect(targetIndexCount == 1)
 
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-indexed-migration", segment])
-                } catch {
+            for path in [["directory_indexed_migration_test_legacy"], ["directory_indexed_migration_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
             }
         }
@@ -561,23 +550,18 @@ struct DirectoryMigrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-add-idx", segment])
-                } catch {
+            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
-            }
-            do {
-                try await engine.directoryService.remove(path: ["_metadata"])
-            } catch {
             }
 
             let seededID = "dir-add-idx-\(UUID().uuidString)"
 
             let initialContainer = try await DBContainer(
-                for: DirectoryAddIdxSchemaV1.makeSchema(),
+                testing: DirectoryAddIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryAddIdxUserV1(name: "Alice", score: 42)
@@ -611,10 +595,9 @@ struct DirectoryMigrationTests {
             }
             #expect(targetIndexCount == 1)
 
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-add-idx", segment])
-                } catch {
+            for path in [["directory_add_idx_test_legacy"], ["directory_add_idx_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
             }
         }
@@ -625,23 +608,18 @@ struct DirectoryMigrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-rem-idx", segment])
-                } catch {
+            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
-            }
-            do {
-                try await engine.directoryService.remove(path: ["_metadata"])
-            } catch {
             }
 
             let seededID = "dir-rem-idx-\(UUID().uuidString)"
 
             let initialContainer = try await DBContainer(
-                for: DirectoryRemIdxSchemaV1.makeSchema(),
+                testing: DirectoryRemIdxSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let initialContext = initialContainer.newContext()
             var seededUser = DirectoryRemIdxUserV1(name: "Alice", tag: "hot")
@@ -690,19 +668,18 @@ struct DirectoryMigrationTests {
 
             // V2 data must exist in the current directory.
             let verificationContainer = try await DBContainer(
-                for: DirectoryRemIdxSchemaV2.makeSchema(),
+                testing: DirectoryRemIdxSchemaV2.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             let rows = try await verificationContainer.newContext()
                 .fetch(DirectoryRemIdxUserV2.self)
                 .execute()
             #expect(rows.count == 1)
 
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-rem-idx", segment])
-                } catch {
+            for path in [["directory_rem_idx_test_legacy"], ["directory_rem_idx_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
             }
         }
@@ -713,21 +690,16 @@ struct DirectoryMigrationTests {
         try await FDBTestSetup.shared.withSerializedAccess {
             try await FDBTestEnvironment.shared.ensureInitialized()
             let engine = try await makeSystemPriorityEngine()
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-lightweight", segment])
-                } catch {
+            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
-            }
-            do {
-                try await engine.directoryService.remove(path: ["_metadata"])
-            } catch {
             }
 
             let initialContainer = try await DBContainer(
-                for: DirectoryLightweightSchemaV1.makeSchema(),
+                testing: DirectoryLightweightSchemaV1.makeSchema(),
                 configuration: .init(backend: .custom(engine)),
-                security: .disabled
+                security: .disabled,
             )
             try await initialContainer.setCurrentSchemaVersion(Schema.Version(1, 0, 0))
 
@@ -741,10 +713,9 @@ struct DirectoryMigrationTests {
                 try await migratedContainer.migrateIfNeeded()
             }
 
-            for segment in ["legacy", "current"] {
-                do {
-                    try await engine.directoryService.remove(path: ["test", "directory-lightweight", segment])
-                } catch {
+            for path in [["directory_lightweight_test_legacy"], ["directory_lightweight_test_current"]] {
+                if try await engine.directoryService.exists(path: path) {
+                    try await engine.directoryService.remove(path: path)
                 }
             }
         }

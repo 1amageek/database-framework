@@ -27,7 +27,7 @@ import TestSupport
 /// Article with FullTextIndex for testing CRUD path
 @Persistable
 struct E2EFullTextArticle {
-    #Directory<E2EFullTextArticle>("test", "e2e", "fulltext_articles")
+    #Directory<E2EFullTextArticle>("index_maintenance_e2e_fulltext_articles")
 
     var id: String = ULID().ulidString
     var title: String = ""
@@ -43,7 +43,7 @@ struct E2EFullTextArticle {
 /// Edge with GraphIndex for testing CRUD path
 @Persistable
 struct E2EGraphEdge {
-    #Directory<E2EGraphEdge>("test", "e2e", "graph_edges")
+    #Directory<E2EGraphEdge>("index_maintenance_e2e_graph_edges")
 
     var id: String = ULID().ulidString
     var source: String = ""
@@ -62,7 +62,7 @@ struct E2EGraphEdge {
 /// Simple model with ScalarIndex for baseline comparison
 @Persistable
 struct E2EScalarUser {
-    #Directory<E2EScalarUser>("test", "e2e", "scalar_users")
+    #Directory<E2EScalarUser>("index_maintenance_e2e_scalar_users")
 
     var id: String = ULID().ulidString
     var email: String = ""
@@ -75,7 +75,7 @@ struct E2EScalarUser {
 /// Model with CountIndex for testing aggregation path
 @Persistable
 struct E2ECountItem {
-    #Directory<E2ECountItem>("test", "e2e", "count_items")
+    #Directory<E2ECountItem>("index_maintenance_e2e_count_items")
 
     var id: String = ULID().ulidString
     var category: String = ""
@@ -99,15 +99,17 @@ struct IndexMaintenanceE2ETests {
         let schema = Schema(types.map { $0 as any Persistable.Type }, version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
-            )
+            security: .disabled,
+        )
     }
 
     private func cleanup(container: DBContainer, paths: [[String]]) async throws {
         for path in paths {
-            try? await container.engine.directoryService.remove(path: path)
+            if try await container.engine.directoryService.exists(path: path) {
+                try await container.engine.directoryService.remove(path: path)
+            }
         }
         // Re-initialize indexes after directory removal
         try await container.ensureIndexesReady()
@@ -149,7 +151,7 @@ struct IndexMaintenanceE2ETests {
     @Test("ScalarIndex: Insert via FDBContext.save() maintains index (baseline)")
     func testScalarIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EScalarUser.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "scalar_users"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_scalar_users"]])
 
         let context = container.newContext()
 
@@ -186,7 +188,7 @@ struct IndexMaintenanceE2ETests {
             #expect(entryCount == 1, "Scalar index should have 1 entry after insert, got \(entryCount)")
         }
 
-        try await cleanup(container: container, paths: [["test", "e2e", "scalar_users"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_scalar_users"]])
     }
 
     // MARK: - Count Index E2E Tests (Explicit case - should work)
@@ -194,7 +196,7 @@ struct IndexMaintenanceE2ETests {
     @Test("CountIndex: Insert via FDBContext.save() maintains index (explicit case)")
     func testCountIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2ECountItem.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "count_items"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_count_items"]])
 
         let context = container.newContext()
 
@@ -239,7 +241,7 @@ struct IndexMaintenanceE2ETests {
             #expect(entryCount == 2, "Count index should have 2 entries (2 groups), got \(entryCount)")
         }
 
-        try await cleanup(container: container, paths: [["test", "e2e", "count_items"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_count_items"]])
     }
 
     // MARK: - FullText Index E2E Tests (Falls to default case - EXPECTED TO FAIL)
@@ -247,7 +249,7 @@ struct IndexMaintenanceE2ETests {
     @Test("FullTextIndex: Insert via FDBContext.save() maintains index")
     func testFullTextIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EFullTextArticle.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "fulltext_articles"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_fulltext_articles"]])
 
         let context = container.newContext()
 
@@ -298,7 +300,7 @@ struct IndexMaintenanceE2ETests {
             )
         }
 
-        try await cleanup(container: container, paths: [["test", "e2e", "fulltext_articles"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_fulltext_articles"]])
     }
 
     // MARK: - Graph Index E2E Tests (Falls to default case - EXPECTED TO FAIL)
@@ -306,7 +308,7 @@ struct IndexMaintenanceE2ETests {
     @Test("GraphIndex: Insert via FDBContext.save() maintains index")
     func testGraphIndexInsertViaSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
         let context = container.newContext()
 
@@ -358,13 +360,13 @@ struct IndexMaintenanceE2ETests {
             )
         }
 
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 
     @Test("GraphIndex: Delete via FDBContext.save() removes all index entries")
     func testGraphIndexDeleteViaSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
         let context = container.newContext()
 
@@ -415,7 +417,7 @@ struct IndexMaintenanceE2ETests {
             )
         }
 
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 
     // MARK: - Comparison Test: Direct Maintainer vs FDBContext.save()
@@ -423,7 +425,7 @@ struct IndexMaintenanceE2ETests {
     @Test("Comparison: Direct IndexMaintainer works but FDBContext.save() may not")
     func testComparisonDirectVsSave() async throws {
         let container = try await setupContainer([E2EGraphEdge.self])
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
 
         // Part 1: Direct IndexMaintainer usage (should work)
         let typeSubspace = try await container.resolveDirectory(for: E2EGraphEdge.self)
@@ -512,7 +514,7 @@ struct IndexMaintenanceE2ETests {
             "FDBContext.save() should create 2 entries (same as direct maintainer), got \(contextSaveCount). Direct maintainer created \(directMaintainerCount). This discrepancy proves IndexMaintenanceService is not using IndexKindMaintainable."
         )
 
-        try await cleanup(container: container, paths: [["test", "e2e", "graph_edges"]])
+        try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 }
 #endif

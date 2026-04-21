@@ -18,16 +18,18 @@ struct SchemaDefinitionIntegrationTests {
         try await FDBTestSetup.shared.initialize()
     }
 
+    private func uniqueTypeName(_ base: String) -> String {
+        "\(base)_\(UUID().uuidString.prefix(8))"
+    }
+
     @Test("Apply and retrieve schema")
     func testApplyAndRetrieve() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
-
-        // Clean up
-        try? await database.directoryService.remove(path: ["_schema"])
+        let typeName = uniqueTypeName("SchemaDefUser")
 
         // Create YAML
         let yaml = """
-        TestUser:
+        \(typeName):
           "#Directory": [test, schema_def, users]
 
           id: string
@@ -44,24 +46,25 @@ struct SchemaDefinitionIntegrationTests {
         try await registry.persist(catalog)
 
         // Retrieve
-        let retrieved = try await registry.load(typeName: "TestUser")
+        let retrieved = try await registry.load(typeName: typeName)
 
         #expect(retrieved != nil)
-        #expect(retrieved?.name == "TestUser")
+        #expect(retrieved?.name == typeName)
         #expect(retrieved?.fields.count == 4)
         #expect(retrieved?.indexes.count == 2)
 
         // Clean up
-        try await registry.delete(typeName: "TestUser")
+        try await registry.delete(typeName: typeName)
     }
 
     @Test("Export schema to YAML")
     func testExportSchema() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
+        let typeName = uniqueTypeName("SchemaProduct")
 
         // Create catalog
         let catalog = Schema.Entity(
-            name: "TestProduct",
+            name: typeName,
             fields: [
                 FieldSchema(name: "id", fieldNumber: 1, type: .string),
                 FieldSchema(name: "name", fieldNumber: 2, type: .string),
@@ -93,26 +96,27 @@ struct SchemaDefinitionIntegrationTests {
         try await registry.persist(catalog)
 
         // Export
-        let retrieved = try await registry.load(typeName: "TestProduct")
+        let retrieved = try await registry.load(typeName: typeName)
         #expect(retrieved != nil)
 
         let yaml = try SchemaFileExporter.toYAML(retrieved!)
 
-        #expect(yaml.contains("TestProduct:"))
+        #expect(yaml.contains("\(typeName):"))
         #expect(yaml.contains("id: string"))
         #expect(yaml.contains("price: double#scalar"))
 
         // Clean up
-        try await registry.delete(typeName: "TestProduct")
+        try await registry.delete(typeName: typeName)
     }
 
     @Test("Round-trip: YAML -> Catalog -> FDB -> Catalog -> YAML")
     func testFullRoundTrip() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
+        let typeName = uniqueTypeName("SchemaArticle")
 
         let originalYAML = """
-        TestArticle:
+        \(typeName):
           "#Directory": [test, articles]
 
           id: string
@@ -128,7 +132,7 @@ struct SchemaDefinitionIntegrationTests {
         try await registry.persist(catalog1)
 
         // Retrieve from FDB
-        let catalog2 = try await registry.load(typeName: "TestArticle")
+        let catalog2 = try await registry.load(typeName: typeName)
         #expect(catalog2 != nil)
 
         // Export to YAML
@@ -143,16 +147,17 @@ struct SchemaDefinitionIntegrationTests {
         #expect(catalog3.indexes.count == catalog1.indexes.count)
 
         // Clean up
-        try await registry.delete(typeName: "TestArticle")
+        try await registry.delete(typeName: typeName)
     }
 
     @Test("Apply schema with graph index")
     func testApplyGraphSchema() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
+        let typeName = uniqueTypeName("SchemaFollow")
 
         let yaml = """
-        TestFollow:
+        \(typeName):
           "#Directory": [test, social, follows]
 
           id: string
@@ -172,7 +177,7 @@ struct SchemaDefinitionIntegrationTests {
         let catalog = try SchemaFileParser.parseYAML(yaml)
         try await registry.persist(catalog)
 
-        let retrieved = try await registry.load(typeName: "TestFollow")
+        let retrieved = try await registry.load(typeName: typeName)
         #expect(retrieved != nil)
 
         let graphIndex = retrieved?.indexes.first { $0.kindIdentifier == "graph" }
@@ -181,16 +186,17 @@ struct SchemaDefinitionIntegrationTests {
         #expect(graphIndex?.kind.metadata["strategy"]?.stringValue == "adjacency")
 
         // Clean up
-        try await registry.delete(typeName: "TestFollow")
+        try await registry.delete(typeName: typeName)
     }
 
     @Test("Apply schema with dynamic directory")
     func testApplyDynamicDirectory() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
+        let typeName = uniqueTypeName("SchemaOrder")
 
         let yaml = """
-        TestOrder:
+        \(typeName):
           "#Directory":
             - test
             - orders
@@ -204,13 +210,13 @@ struct SchemaDefinitionIntegrationTests {
         let catalog = try SchemaFileParser.parseYAML(yaml)
         try await registry.persist(catalog)
 
-        let retrieved = try await registry.load(typeName: "TestOrder")
+        let retrieved = try await registry.load(typeName: typeName)
         #expect(retrieved != nil)
         #expect(retrieved?.hasDynamicDirectory == true)
         #expect(retrieved?.dynamicFieldNames == ["tenantId"])
 
         // Clean up
-        try await registry.delete(typeName: "TestOrder")
+        try await registry.delete(typeName: typeName)
     }
 
     @Test("Apply multiple schemas")
@@ -305,16 +311,17 @@ struct SchemaDefinitionIntegrationTests {
     func testOverwriteSchema() async throws {
         let database = try await FDBTestSetup.shared.makeEngine()
         let registry = SchemaRegistry(database: database)
+        let typeName = uniqueTypeName("SchemaOverwrite")
 
         let yaml1 = """
-        TestOverwrite:
+        \(typeName):
           "#Directory": [test, overwrite]
           id: string
           name: string
         """
 
         let yaml2 = """
-        TestOverwrite:
+        \(typeName):
           "#Directory": [test, overwrite]
           id: string
           name: string
@@ -325,18 +332,18 @@ struct SchemaDefinitionIntegrationTests {
         let catalog1 = try SchemaFileParser.parseYAML(yaml1)
         try await registry.persist(catalog1)
 
-        let retrieved1 = try await registry.load(typeName: "TestOverwrite")
+        let retrieved1 = try await registry.load(typeName: typeName)
         #expect(retrieved1?.fields.count == 2)
 
         // Overwrite with second version
         let catalog2 = try SchemaFileParser.parseYAML(yaml2)
         try await registry.persist(catalog2)
 
-        let retrieved2 = try await registry.load(typeName: "TestOverwrite")
+        let retrieved2 = try await registry.load(typeName: typeName)
         #expect(retrieved2?.fields.count == 3)
 
         // Clean up
-        try await registry.delete(typeName: "TestOverwrite")
+        try await registry.delete(typeName: typeName)
     }
 }
 #endif

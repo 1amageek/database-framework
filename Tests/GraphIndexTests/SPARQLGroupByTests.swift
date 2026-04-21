@@ -16,7 +16,7 @@ import TestSupport
 
 @Persistable
 struct SocialEdgeForGroupBy {
-    #Directory<SocialEdgeForGroupBy>("test", "sparql", "groupby")
+    #Directory<SocialEdgeForGroupBy>("sparql_group_by_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -49,7 +49,16 @@ struct SPARQLGroupByTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SocialEdgeForGroupBy.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
+        if try await database.directoryService.exists(path: ["sparql_group_by_tests"]) {
+            try await database.directoryService.remove(path: ["sparql_group_by_tests"])
+        }
+        try await container.ensureIndexesReady()
+        return container
     }
 
     private func insertEdges(_ edges: [SocialEdgeForGroupBy], context: FDBContext) async throws {

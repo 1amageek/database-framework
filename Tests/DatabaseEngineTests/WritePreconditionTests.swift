@@ -30,7 +30,7 @@ import TestSupport
 
 @Persistable
 struct WPUser {
-    #Directory<WPUser>("test", "write_precondition", "users")
+    #Directory<WPUser>("write_precondition_tests", "users")
 
     var id: String = UUID().uuidString
     var email: String = ""
@@ -51,14 +51,18 @@ struct WritePreconditionTests {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([WPUser.self])
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
+            security: .disabled,
         )
     }
 
     private func cleanup(_ container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "write_precondition", "users"])
+        let subspace = try await container.resolveDirectory(for: WPUser.self)
+        let (begin, end) = subspace.range()
+        try await container.engine.withTransaction { transaction in
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
         try await container.ensureIndexesReady()
     }
 

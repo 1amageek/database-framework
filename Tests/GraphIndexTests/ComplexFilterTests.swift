@@ -19,7 +19,7 @@ import TestSupport
 
 @Persistable
 struct FilterTestEdge {
-    #Directory<FilterTestEdge>("test", "sparql", "complexfilter")
+    #Directory<FilterTestEdge>("complex_filter_tests")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -51,7 +51,11 @@ struct ComplexFilterTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([FilterTestEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func insertEdges(_ edges: [FilterTestEdge], context: FDBContext) async throws {

@@ -6,10 +6,10 @@ import Testing
 import Foundation
 import Core
 import Graph
-import DatabaseEngine
 import StorageKit
 import FDBStorage
 import TestSupport
+@testable import DatabaseEngine
 @testable import GraphIndex
 
 @Suite("GraphPropertyScanner Tests", .serialized, .heartbeat)
@@ -19,7 +19,7 @@ struct GraphPropertyScannerTests {
 
     @Persistable
     struct SocialEdge {
-        #Directory<SocialEdge>("test", "social_edges")
+        #Directory<SocialEdge>("graph_property_scanner_social_edges")
 
         var id: String = UUID().uuidString
         var from: String = ""
@@ -67,10 +67,15 @@ struct GraphPropertyScannerTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([SocialEdge.self], version: Schema.Version(1, 0, 0))
-        let container = try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        let container = try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
 
-
-        try? await database.directoryService.remove(path: ["test", "social_edges"])
+        if try await database.directoryService.exists(path: ["graph_property_scanner_social_edges"]) {
+            try await database.directoryService.remove(path: ["graph_property_scanner_social_edges"])
+        }
         try await container.ensureIndexesReady()
 
         return container

@@ -22,7 +22,7 @@ typealias PropertyPath = GraphIndex.ExecutionPropertyPath
 
 @Persistable
 struct AdvancedPathEdge {
-    #Directory<AdvancedPathEdge>("test", "sparql", "advancedpath")
+    #Directory<AdvancedPathEdge>("property_path_advanced", "edges")
     var id: String = UUID().uuidString
     var from: String = ""
     var relationship: String = ""
@@ -54,7 +54,11 @@ struct PropertyPathAdvancedTests {
     private func setupContainer() async throws -> DBContainer {
         let database = try await FDBTestSetup.shared.makeEngine()
         let schema = Schema([AdvancedPathEdge.self], version: Schema.Version(1, 0, 0))
-        return try await DBContainer(for: schema, configuration: .init(backend: .custom(database)), security: .disabled)
+        return try await DBContainer(
+            testing: schema,
+            configuration: .init(backend: .custom(database)),
+            security: .disabled,
+        )
     }
 
     private func insertEdges(_ edges: [AdvancedPathEdge], context: FDBContext) async throws {

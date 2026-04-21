@@ -24,7 +24,7 @@ struct FDBContextTests {
     /// Uses unique path "test/fdbcontext" to avoid conflicts with other test suites
     @Persistable
     struct TestUser {
-        #Directory<TestUser>("test", "fdbcontext", "users")
+        #Directory<TestUser>("fdb_context_test_users")
         var id: String = ULID().ulidString
         var name: String
         var email: String
@@ -34,7 +34,7 @@ struct FDBContextTests {
 
     @Persistable
     struct TestProduct {
-        #Directory<TestProduct>("test", "fdbcontext", "products")
+        #Directory<TestProduct>("fdb_context_test_products")
         var id: String = ULID().ulidString
         var name: String
         var price: Double
@@ -50,17 +50,21 @@ struct FDBContextTests {
         let schema = Schema([TestUser.self, TestProduct.self], version: Schema.Version(1, 0, 0))
 
         return try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
-            )
+            security: .disabled,
+        )
     }
 
     /// Clean up test data - call at START of each test that modifies data
     /// Uses DirectoryLayer.remove() to handle old format data
     private func cleanup(container: DBContainer) async throws {
-        try? await container.engine.directoryService.remove(path: ["test", "fdbcontext", "users"])
-        try? await container.engine.directoryService.remove(path: ["test", "fdbcontext", "products"])
+        if try await container.engine.directoryService.exists(path: ["fdb_context_test_users"]) {
+            try await container.engine.directoryService.remove(path: ["fdb_context_test_users"])
+        }
+        if try await container.engine.directoryService.exists(path: ["fdb_context_test_products"]) {
+            try await container.engine.directoryService.remove(path: ["fdb_context_test_products"])
+        }
     }
 
     // MARK: - Autosave Tests

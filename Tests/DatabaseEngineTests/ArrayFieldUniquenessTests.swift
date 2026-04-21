@@ -29,7 +29,7 @@ struct ArrayFieldUniquenessTests {
     /// Model with unique constraint on array field (tags)
     @Persistable
     struct TaggedDocument {
-        #Directory<TaggedDocument>("test", "array_uniqueness", "documents")
+        #Directory<TaggedDocument>("array_uniqueness_tests", "documents")
         #Index(ScalarIndexKind<TaggedDocument>(fields: [\.tags]), unique: true, name: "TaggedDocument_tags")
 
         var id: String = ULID().ulidString
@@ -40,7 +40,7 @@ struct ArrayFieldUniquenessTests {
     /// Model with unique constraint on scalar field (for comparison)
     @Persistable
     struct UniqueEmail {
-        #Directory<UniqueEmail>("test", "array_uniqueness", "emails")
+        #Directory<UniqueEmail>("array_uniqueness_tests", "emails")
         #Index(ScalarIndexKind<UniqueEmail>(fields: [\.email]), unique: true, name: "UniqueEmail_email")
 
         var id: String = ULID().ulidString
@@ -52,7 +52,7 @@ struct ArrayFieldUniquenessTests {
     /// Tests that Tuple equality works for non-String/Int64 ID types
     @Persistable
     struct UUIDTaggedDocument {
-        #Directory<UUIDTaggedDocument>("test", "array_uniqueness", "uuid_docs")
+        #Directory<UUIDTaggedDocument>("array_uniqueness_tests", "uuid_docs")
         #Index(ScalarIndexKind<UUIDTaggedDocument>(fields: [\.tags]), unique: true, name: "UUIDTaggedDocument_tags")
 
         var id: UUID = UUID()
@@ -63,7 +63,7 @@ struct ArrayFieldUniquenessTests {
     /// Model with Int64 ID type (baseline for ID comparison)
     @Persistable
     struct Int64TaggedDocument {
-        #Directory<Int64TaggedDocument>("test", "array_uniqueness", "int64_docs")
+        #Directory<Int64TaggedDocument>("array_uniqueness_tests", "int64_docs")
         #Index(ScalarIndexKind<Int64TaggedDocument>(fields: [\.tags]), unique: true, name: "Int64TaggedDocument_tags")
 
         var id: Int64 = Int64(Date().timeIntervalSince1970 * 1000000) + Int64.random(in: 0..<1000000)
@@ -87,10 +87,10 @@ struct ArrayFieldUniquenessTests {
         )
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
-            )
+            security: .disabled,
+        )
 
         // Make indexes readable via store
         let tagStore = try await container.store(for: TaggedDocument.self)
