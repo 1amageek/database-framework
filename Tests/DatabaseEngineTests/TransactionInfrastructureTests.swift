@@ -75,6 +75,45 @@ final class AtomicArray<T: Sendable>: Sendable {
     }
 }
 
+/// Tracks whether async work overlaps without relying on wall-clock thresholds.
+final class ConcurrentExecutionTracker: Sendable {
+    private struct State {
+        var active = 0
+        var maxActive = 0
+        var starts = 0
+        var finishes = 0
+    }
+
+    private let state = Mutex(State())
+
+    func enter() {
+        state.withLock {
+            $0.active += 1
+            $0.starts += 1
+            $0.maxActive = max($0.maxActive, $0.active)
+        }
+    }
+
+    func leave() {
+        state.withLock {
+            $0.active -= 1
+            $0.finishes += 1
+        }
+    }
+
+    var maxActive: Int {
+        state.withLock { $0.maxActive }
+    }
+
+    var starts: Int {
+        state.withLock { $0.starts }
+    }
+
+    var finishes: Int {
+        state.withLock { $0.finishes }
+    }
+}
+
 // MARK: - CommitCheck Tests
 
 @Suite("CommitCheck Tests", .serialized, .heartbeat)
@@ -395,21 +434,23 @@ struct PostCommitTests {
     @Test("PostCommitRegistry runs concurrent hooks in parallel")
     func concurrentHooksRunInParallel() async {
         let registry = PostCommitRegistry()
-        let startTime = Date()
+        let tracker = ConcurrentExecutionTracker()
 
-        // Add 3 concurrent hooks that each take 50ms
         for i in 0..<3 {
             registry.add(name: "concurrent-\(i)", priority: 100, runConcurrently: true) {
-                try await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                tracker.enter()
+                defer { tracker.leave() }
+                try await Task.sleep(nanoseconds: 100_000_000)
             }
         }
 
-        _ = await registry.executeAll()
-        let totalDuration = Date().timeIntervalSince(startTime)
+        let results = await registry.executeAll()
 
-        // If truly parallel, total time should be ~50ms, not 150ms
-        // Allow some slack for scheduling
-        #expect(totalDuration < 0.15) // Should complete in less than 150ms
+        #expect(results.count == 3)
+        #expect(results.allSatisfy { $0.success })
+        #expect(tracker.starts == 3)
+        #expect(tracker.finishes == 3)
+        #expect(tracker.maxActive > 1)
     }
 
     // MARK: - RetryingPostCommit Tests
@@ -487,19 +528,19 @@ struct PostCommitTests {
 
     @Test("CompositePostCommit runs hooks concurrently")
     func compositeRunsConcurrently() async throws {
-        let startTime = Date()
+        let tracker = ConcurrentExecutionTracker()
 
         let composite = CompositePostCommit(hooks: [
-            SleepingPostCommit(milliseconds: 50),
-            SleepingPostCommit(milliseconds: 50),
-            SleepingPostCommit(milliseconds: 50)
+            TrackingPostCommit(tracker: tracker, milliseconds: 100),
+            TrackingPostCommit(tracker: tracker, milliseconds: 100),
+            TrackingPostCommit(tracker: tracker, milliseconds: 100)
         ], runConcurrently: true)
 
         try await composite.run()
-        let duration = Date().timeIntervalSince(startTime)
 
-        // Should complete in ~50ms if parallel, not 150ms
-        #expect(duration < 0.15)
+        #expect(tracker.starts == 3)
+        #expect(tracker.finishes == 3)
+        #expect(tracker.maxActive > 1)
     }
 }
 
@@ -1069,6 +1110,17 @@ struct SleepingPostCommit: PostCommit {
     let milliseconds: UInt64
 
     func run() async throws {
+        try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
+    }
+}
+
+struct TrackingPostCommit: PostCommit {
+    let tracker: ConcurrentExecutionTracker
+    let milliseconds: UInt64
+
+    func run() async throws {
+        tracker.enter()
+        defer { tracker.leave() }
         try await Task.sleep(nanoseconds: milliseconds * 1_000_000)
     }
 }
