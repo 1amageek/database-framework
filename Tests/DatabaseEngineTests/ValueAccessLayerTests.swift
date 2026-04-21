@@ -148,6 +148,59 @@ struct VALNestedItem: Persistable {
     }
 }
 
+/// Model with an array field for QueryRow encoding/decoding tests.
+struct VALVectorItem: Persistable {
+    typealias ID = String
+
+    var id: String
+    var embedding: [Float]
+
+    init(
+        id: String = UUID().uuidString,
+        embedding: [Float] = []
+    ) {
+        self.id = id
+        self.embedding = embedding
+    }
+
+    static var persistableType: String { "VALVectorItem" }
+    static var allFields: [String] { ["id", "embedding"] }
+    static var indexDescriptors: [IndexDescriptor] { [] }
+    static func fieldNumber(for fieldName: String) -> Int? { nil }
+    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
+
+    subscript(dynamicMember member: String) -> (any Sendable)? {
+        switch member {
+        case "id": return id
+        case "embedding": return embedding
+        default: return nil
+        }
+    }
+
+    static func fieldName<Value>(for keyPath: KeyPath<VALVectorItem, Value>) -> String {
+        switch keyPath {
+        case \VALVectorItem.id: return "id"
+        case \VALVectorItem.embedding: return "embedding"
+        default: return "\(keyPath)"
+        }
+    }
+
+    static func fieldName(for keyPath: PartialKeyPath<VALVectorItem>) -> String {
+        switch keyPath {
+        case \VALVectorItem.id: return "id"
+        case \VALVectorItem.embedding: return "embedding"
+        default: return "\(keyPath)"
+        }
+    }
+
+    static func fieldName(for keyPath: AnyKeyPath) -> String {
+        if let partial = keyPath as? PartialKeyPath<VALVectorItem> {
+            return fieldName(for: partial)
+        }
+        return "\(keyPath)"
+    }
+}
+
 // MARK: - FieldReader Tests
 
 @Suite("FieldReader Tests", .heartbeat)
@@ -267,6 +320,26 @@ struct FieldReaderTests {
         let item = VALTestItem(tag: nil)
         let fv = FieldReader.readFieldValue(from: item, fieldName: "tag")
         #expect(fv == .null)
+    }
+
+    @Test("readFieldValue converts FieldValueConvertible arrays")
+    func readFieldValueArray() {
+        let item = VALVectorItem(embedding: [1.0, 0.5, 0.0])
+        let fv = FieldReader.readFieldValue(from: item, fieldName: "embedding")
+
+        #expect(fv == .array([.double(1.0), .double(0.5), .double(0.0)]))
+    }
+
+    @Test("QueryRowCodec round-trips array fields")
+    func queryRowCodecRoundTripsArrayFields() throws {
+        let item = VALVectorItem(id: "vector-1", embedding: [1.0, 0.5, 0.0])
+
+        let row = QueryRowCodec.encodeAny(item)
+        let decoded = try QueryRowCodec.decode(row, as: VALVectorItem.self)
+
+        #expect(row.fields["embedding"] == .array([.double(1.0), .double(0.5), .double(0.0)]))
+        #expect(decoded.id == item.id)
+        #expect(decoded.embedding == item.embedding)
     }
 }
 

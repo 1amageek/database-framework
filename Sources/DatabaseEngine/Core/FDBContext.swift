@@ -1499,11 +1499,15 @@ public final class FDBContext: Sendable {
 
                 // Write using pre-serialized data (handles compression + external storage for >90KB)
                 try await storage.write(serialized.data, for: polyKey)
+                let descriptors = container.schema.polymorphicIndexDescriptors(
+                    identifier: group.identifier,
+                    memberType: modelType
+                )
                 try await maintenanceService.updateIndexesUntyped(
                     oldModel: oldModel,
                     newModel: serialized.model,
                     id: compositeID,
-                    descriptors: container.schema.polymorphicIndexDescriptors(identifier: group.identifier),
+                    descriptors: descriptors,
                     logicalTypeName: group.identifier,
                     transaction: transaction
                 )
@@ -1536,11 +1540,15 @@ public final class FDBContext: Sendable {
                 let polyKey = itemSubspace.pack(compositeID)
 
                 // Delete (handles external blob chunks)
+                let descriptors = container.schema.polymorphicIndexDescriptors(
+                    identifier: group.identifier,
+                    memberType: modelType
+                )
                 try await maintenanceService.updateIndexesUntyped(
                     oldModel: model,
                     newModel: nil as (any Persistable)?,
                     id: compositeID,
-                    descriptors: container.schema.polymorphicIndexDescriptors(identifier: group.identifier),
+                    descriptors: descriptors,
                     logicalTypeName: group.identifier,
                     transaction: transaction
                 )
@@ -1596,7 +1604,11 @@ public final class FDBContext: Sendable {
 
     private func scheduleAutosave() {
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+            do {
+                try await Task.sleep(nanoseconds: 10_000_000)  // 10ms
+            } catch {
+                return
+            }
 
             guard let self = self else { return }
 
@@ -2094,14 +2106,15 @@ extension FDBContext {
         }
         let typeCode = polyType.typeCode(for: typeName)
 
+        let group = try container.polymorphicGroup(identifier: P.polymorphableType)
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeSubspace = itemSubspace.subspace(typeCode)
 
         let validatedID = try item.validateIDForStorage()
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
-        let key = typeSubspace.pack(idTuple)
+        let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
+        let key = itemSubspace.pack(compositeID)
 
         let data = try DataAccess.serialize(item)
 
@@ -2113,11 +2126,14 @@ extension FDBContext {
             )
             return try await storage.read(for: key)
         }
+        let oldItem: T?
         if let oldBytes = oldData {
-            let oldItem: T = try DataAccess.deserialize(oldBytes)
-            try container.securityDelegate?.evaluateUpdate(oldItem, newResource: item)
+            let decodedOldItem: T = try DataAccess.deserialize(oldBytes)
+            try container.securityDelegate?.evaluateUpdate(decodedOldItem, newResource: item)
+            oldItem = decodedOldItem
         } else {
             try container.securityDelegate?.evaluateCreate(item)
+            oldItem = nil
         }
 
         try await self.withRawTransaction(configuration: .default) { transaction in
@@ -2127,6 +2143,23 @@ extension FDBContext {
             )
             // Save (handles compression + external storage for >90KB)
             try await storage.write(data, for: key)
+
+            let descriptors = self.container.schema.polymorphicIndexDescriptors(
+                identifier: group.identifier,
+                memberType: T.self
+            )
+            let maintenanceService = self.makePolymorphicIndexMaintenanceService(
+                group: group,
+                subspace: subspace
+            )
+            try await maintenanceService.updateIndexesUntyped(
+                oldModel: oldItem,
+                newModel: item,
+                id: compositeID,
+                descriptors: descriptors,
+                logicalTypeName: group.identifier,
+                transaction: transaction
+            )
         }
     }
 
@@ -2167,15 +2200,17 @@ extension FDBContext {
         }
         let typeCode = polyType.typeCode(for: typeName)
 
+        let group = try container.polymorphicGroup(identifier: P.polymorphableType)
         let subspace = try await container.resolvePolymorphicDirectory(for: P.self)
         let itemSubspace = subspace.subspace(SubspaceKey.items)
         let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
-        let typeSubspace = itemSubspace.subspace(typeCode)
 
         let idTuple = Tuple([id])
-        let key = typeSubspace.pack(idTuple)
+        let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
+        let key = itemSubspace.pack(compositeID)
 
         // Security: Fetch existing item to evaluate DELETE permission
+        let oldItem: T?
         if let oldData: Bytes = try await self.withRawTransaction(configuration: .default, { transaction in
             let storage = ItemStorage(
                 transaction: transaction,
@@ -2183,8 +2218,11 @@ extension FDBContext {
             )
             return try await storage.read(for: key)
         }) {
-            let oldItem: T = try DataAccess.deserialize(oldData)
-            try container.securityDelegate?.evaluateDelete(oldItem)
+            let decodedOldItem: T = try DataAccess.deserialize(oldData)
+            try container.securityDelegate?.evaluateDelete(decodedOldItem)
+            oldItem = decodedOldItem
+        } else {
+            oldItem = nil
         }
 
         try await self.withRawTransaction(configuration: .default) { transaction in
@@ -2192,6 +2230,24 @@ extension FDBContext {
                 transaction: transaction,
                 blobsSubspace: blobsSubspace
             )
+            if let oldItem {
+                let descriptors = self.container.schema.polymorphicIndexDescriptors(
+                    identifier: group.identifier,
+                    memberType: T.self
+                )
+                let maintenanceService = self.makePolymorphicIndexMaintenanceService(
+                    group: group,
+                    subspace: subspace
+                )
+                try await maintenanceService.updateIndexesUntyped(
+                    oldModel: oldItem,
+                    newModel: nil as (any Persistable)?,
+                    id: compositeID,
+                    descriptors: descriptors,
+                    logicalTypeName: group.identifier,
+                    transaction: transaction
+                )
+            }
             // Delete (handles external blob chunks)
             try await storage.delete(for: key)
         }

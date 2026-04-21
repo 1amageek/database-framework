@@ -76,6 +76,12 @@ public struct FieldReader: Sendable {
         from model: T, fieldName: String
     ) -> FieldValue {
         guard let raw = read(from: model, fieldName: fieldName) else { return .null }
+        if let fieldValue = raw as? FieldValue {
+            return fieldValue
+        }
+        if let convertible = raw as? any FieldValueConvertible {
+            return convertible.toFieldValue()
+        }
         return FieldValue(raw) ?? .null
     }
 }

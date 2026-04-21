@@ -258,10 +258,33 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         fieldName: String
     ) throws -> String? {
         let group = try context.container.polymorphicGroup(identifier: groupIdentifier)
+        if let descriptor = context.container.schema.polymorphicIndexDescriptors(identifier: group.identifier).first(where: {
+            $0.kindIdentifier == kindIdentifier
+                && descriptorFields($0.fieldNames, contain: fieldName)
+        }) {
+            return descriptor.name
+        }
         return group.indexes.first { descriptor in
             descriptor.kindIdentifier == kindIdentifier
-                && descriptor.fieldNames.contains(fieldName)
+                && descriptorFields(descriptor.fieldNames, contain: fieldName)
         }?.name
+    }
+
+    private func descriptorFields(_ fieldNames: [String], contain fieldName: String) -> Bool {
+        fieldNames.contains { descriptorFieldName in
+            descriptorFieldName == fieldName
+                || normalizedDescriptorFieldName(descriptorFieldName) == fieldName
+        }
+    }
+
+    private func normalizedDescriptorFieldName(_ fieldName: String) -> String {
+        guard fieldName.hasPrefix("\\"),
+              let rootSeparatorIndex = fieldName.firstIndex(of: ".") else {
+            return fieldName
+        }
+
+        let fieldStartIndex = fieldName.index(after: rootSeparatorIndex)
+        return String(fieldName[fieldStartIndex...])
     }
 }
 

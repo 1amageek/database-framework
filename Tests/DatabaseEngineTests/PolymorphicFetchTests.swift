@@ -5,9 +5,11 @@ import Foundation
 import StorageKit
 import FDBStorage
 import FoundationDB
+import FullText
 import TestSupport
 @testable import DatabaseEngine
 @testable import Core
+@testable import FullTextIndex
 
 // MARK: - Test Types
 //
@@ -27,6 +29,26 @@ extension PolymorphicFetchDocument {
 
     public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
         [Path("polymorphic_fetch_tests_shared")]
+    }
+
+    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
+        [
+            IndexDescriptor(
+                name: "PolymorphicFetchDocument_title",
+                keyPaths: [\Self.title],
+                kind: ScalarIndexKind<Self>(fields: [\Self.title])
+            ),
+            IndexDescriptor(
+                name: "PolymorphicFetchDocument_id",
+                keyPaths: [\Self.id],
+                kind: ScalarIndexKind<Self>(fields: [\Self.id])
+            ),
+            IndexDescriptor(
+                name: "PolymorphicFetchDocument_title_fulltext",
+                keyPaths: [\Self.title],
+                kind: FullTextIndexKind<Self>(fields: [\Self.title], tokenizer: .simple)
+            ),
+        ]
     }
 }
 
@@ -99,6 +121,32 @@ struct PolymorphicFetchTests {
             if try await container.engine.directoryService.exists(path: path) {
                 try await container.engine.directoryService.remove(path: path)
             }
+        }
+        try await container.ensureIndexesReady()
+    }
+
+    private func countPolymorphicIndexEntries(
+        container: DBContainer,
+        indexName: String,
+        valuePrefix: String? = nil
+    ) async throws -> Int {
+        let group = try container.polymorphicGroup(identifier: PolymorphicFetchArticle.polymorphableType)
+        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        var indexSubspace = groupSubspace
+            .subspace(SubspaceKey.indexes)
+            .subspace(indexName)
+
+        if let valuePrefix {
+            indexSubspace = indexSubspace.subspace(valuePrefix)
+        }
+
+        return try await container.engine.withTransaction { transaction -> Int in
+            let (begin, end) = indexSubspace.range()
+            var count = 0
+            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                count += 1
+            }
+            return count
         }
     }
 
@@ -175,6 +223,196 @@ struct PolymorphicFetchTests {
         #expect(items.count == 5)
         #expect(items.compactMap { $0 as? PolymorphicFetchArticle }.count == 3)
         #expect(items.compactMap { $0 as? PolymorphicFetchReport }.count == 2)
+    }
+
+    @Test("findPolymorphic decodes mixed rows with ordering and continuation")
+    func findPolymorphicDecodesMixedRowsWithContinuation() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+
+        let gamma = PolymorphicFetchArticle(title: "Gamma", body: "third")
+        let alpha = PolymorphicFetchReport(title: "Alpha", pageCount: 1)
+        let beta = PolymorphicFetchArticle(title: "Beta", body: "second")
+
+        context.insert(gamma)
+        context.insert(alpha)
+        context.insert(beta)
+        try await context.save()
+
+        let firstPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .orderBy(\.title)
+            .pageSize(2)
+            .executePage()
+
+        #expect(firstPage.results.map { $0.fields["title"]?.stringValue } == ["Alpha", "Beta"])
+        #expect(firstPage.results.first?.item(as: PolymorphicFetchReport.self)?.id == alpha.id)
+        #expect(firstPage.results.dropFirst().first?.item(as: PolymorphicFetchArticle.self)?.id == beta.id)
+        #expect(firstPage.continuation != nil)
+
+        let secondPage = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .orderBy(\.title)
+            .pageSize(2)
+            .continuing(from: firstPage.continuation)
+            .executePage()
+
+        #expect(secondPage.results.map { $0.fields["title"]?.stringValue } == ["Gamma"])
+        #expect(secondPage.results.first?.item(as: PolymorphicFetchArticle.self)?.id == gamma.id)
+        #expect(secondPage.continuation == nil)
+    }
+
+    // MARK: - Shared Index E2E
+
+    @Test("dual-write maintains shared polymorphic scalar indexes")
+    func dualWriteMaintainsSharedPolymorphicScalarIndexes() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+
+        let article = PolymorphicFetchArticle(title: "Indexed Article", body: "Body")
+        let report = PolymorphicFetchReport(title: "Indexed Report", pageCount: 4)
+
+        context.insert(article)
+        context.insert(report)
+        try await context.save()
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title"
+        ) == 2)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_id"
+        ) == 2)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title",
+            valuePrefix: "Indexed Article"
+        ) == 1)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title",
+            valuePrefix: "Indexed Report"
+        ) == 1)
+    }
+
+    @Test("savePolymorphic update and delete maintain shared scalar indexes")
+    func savePolymorphicUpdateAndDeleteMaintainSharedScalarIndexes() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+
+        var article = PolymorphicFetchArticle(title: "Direct Indexed", body: "Saved directly")
+        try await context.savePolymorphic(article, as: PolymorphicFetchArticle.self)
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title"
+        ) == 1)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title",
+            valuePrefix: "Direct Indexed"
+        ) == 1)
+
+        article.title = "Direct Indexed Updated"
+        try await context.savePolymorphic(article, as: PolymorphicFetchArticle.self)
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title"
+        ) == 1)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title",
+            valuePrefix: "Direct Indexed"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title",
+            valuePrefix: "Direct Indexed Updated"
+        ) == 1)
+
+        try await context.deletePolymorphic(
+            PolymorphicFetchArticle.self,
+            id: article.id,
+            as: PolymorphicFetchArticle.self
+        )
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_title"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "PolymorphicFetchDocument_id"
+        ) == 0)
+    }
+
+    @Test("polymorphic full-text query resolves shared descriptor and maintains indexes")
+    func polymorphicFullTextQueryResolvesSharedDescriptorAndMaintainsIndexes() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+
+        let article = PolymorphicFetchArticle(title: "Needle Article", body: "Body")
+        var report = PolymorphicFetchReport(title: "Needle Report", pageCount: 4)
+        let unrelated = PolymorphicFetchReport(title: "Haystack", pageCount: 8)
+
+        context.insert(article)
+        context.insert(report)
+        context.insert(unrelated)
+        try await context.save()
+
+        let initial = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .fullText(\.title)
+            .term("needle")
+            .execute()
+        let initialIDs = Set(initial.compactMap { result -> String? in
+            if let article = result.item(as: PolymorphicFetchArticle.self) {
+                return article.id
+            }
+            if let report = result.item(as: PolymorphicFetchReport.self) {
+                return report.id
+            }
+            return nil
+        })
+
+        #expect(initialIDs == Set([article.id, report.id]))
+
+        report.title = "Beacon Report"
+        try await context.savePolymorphic(report, as: PolymorphicFetchReport.self)
+
+        let afterUpdateNeedle = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .fullText(\.title)
+            .term("needle")
+            .execute()
+        let afterUpdateBeacon = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .fullText(\.title)
+            .term("beacon")
+            .execute()
+
+        #expect(afterUpdateNeedle.count == 1)
+        #expect(afterUpdateNeedle.first?.item(as: PolymorphicFetchArticle.self)?.id == article.id)
+        #expect(afterUpdateBeacon.count == 1)
+        #expect(afterUpdateBeacon.first?.item(as: PolymorphicFetchReport.self)?.id == report.id)
+
+        try await context.deletePolymorphic(
+            PolymorphicFetchArticle.self,
+            id: article.id,
+            as: PolymorphicFetchArticle.self
+        )
+
+        let afterDeleteNeedle = try await context.findPolymorphic(PolymorphicFetchArticle.self)
+            .fullText(\.title)
+            .term("needle")
+            .execute()
+
+        #expect(afterDeleteNeedle.isEmpty)
     }
 
     // MARK: - savePolymorphic + fetchPolymorphic Consistency
