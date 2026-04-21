@@ -42,7 +42,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.4.0"),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            branch: "main",
+            from: "26.0421.0",
             traits: [
                 .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
                 .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),
@@ -54,7 +54,7 @@ let package = Package(
         .package(url: "https://github.com/apple/swift-crypto.git", from: "4.2.0"),
         .package(url: "https://github.com/apple/swift-configuration.git", from: "1.0.0"),
         .package(url: "https://github.com/apple/swift-argument-parser.git", from: "1.5.0"),
-        .package(url: "https://github.com/1amageek/swift-yaml.git", branch: "main"),
+        .package(url: "https://github.com/1amageek/swift-yaml.git", from: "1.0.1"),
         .package(url: "https://github.com/1amageek/swift-testing-heartbeat.git", from: "0.1.0"),
     ],
     targets: [
