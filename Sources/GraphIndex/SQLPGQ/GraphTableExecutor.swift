@@ -343,7 +343,7 @@ public struct GraphTableExecutor<T: Persistable>: Sendable {
         switch strategy {
         case .adjacency, .hexastore:
             return true
-        case .tripleStore:
+        case .tripleStore, .namedGraphStore:
             return false
         }
     }

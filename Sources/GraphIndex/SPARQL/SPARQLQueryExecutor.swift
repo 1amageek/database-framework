@@ -1027,23 +1027,32 @@ public struct SPARQLQueryExecutor: Sendable {
         let subjectBound = pattern.subject.isBound
         let predicateBound = pattern.predicate.isBound
         let objectBound = pattern.object.isBound
+        let graphFirst = strategy == .namedGraphStore
 
         switch (subjectBound, predicateBound, objectBound) {
         case (true, true, true):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, true, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, false, true):
+            if graphFirst { return .gosp }
             return strategy == .hexastore ? .sop : .osp
         case (false, true, true):
+            if graphFirst { return .gpos }
             return strategy == .adjacency ? .in : .pos
         case (true, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (false, true, false):
+            if graphFirst { return .gpos }
             return strategy == .hexastore ? .pso : .pos
         case (false, false, true):
+            if graphFirst { return .gosp }
             return strategy == .adjacency ? .in : .osp
         case (false, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         }
     }
@@ -1065,6 +1074,9 @@ public struct SPARQLQueryExecutor: Sendable {
         case .sop: key = 5
         case .pso: key = 6
         case .ops: key = 7
+        case .gspo: key = 8
+        case .gpos: key = 9
+        case .gosp: key = 10
         }
         return key
     }
@@ -1088,6 +1100,12 @@ public struct SPARQLQueryExecutor: Sendable {
         let terms = [pattern.subject, pattern.predicate, pattern.object]
 
         var prefixValues: [FieldValue] = []
+        if ordering.isGraphFirst {
+            if let graphLiteral = pattern.graph?.literalValue {
+                prefixValues.append(graphLiteral)
+            }
+        }
+
         var allTripleFieldsBound = true
         for idx in elementOrder {
             let term = terms[idx]
@@ -1102,7 +1120,8 @@ public struct SPARQLQueryExecutor: Sendable {
         // Legacy scanner always applies graph as post-filter, never in scan prefix.
         if !storedFieldNames.isEmpty,
            allTripleFieldsBound,
-           let graphLiteral = pattern.graph?.literalValue {
+           let graphLiteral = pattern.graph?.literalValue,
+           !ordering.isGraphFirst {
             prefixValues.append(graphLiteral)
         }
 
@@ -1151,6 +1170,13 @@ public struct SPARQLQueryExecutor: Sendable {
         let elementOrder = ordering.elementOrder
         let terms = [pattern.subject, pattern.predicate, pattern.object]
 
+        if ordering.isGraphFirst {
+            guard let graphValue = pattern.graph?.literalValue else {
+                return subspace.range()
+            }
+            prefixElements.append(graphValue.toTupleElement())
+        }
+
         // Build prefix from bound terms in index order
         // Stop at first unbound term (variable or wildcard)
         for idx in elementOrder {
@@ -1171,7 +1197,8 @@ public struct SPARQLQueryExecutor: Sendable {
         } else {
             let prefixKey = subspace.pack(Tuple(prefixElements))
 
-            if prefixElements.count == 3 {
+            let fullPrefixCount = ordering.isGraphFirst ? 4 : 3
+            if prefixElements.count == fullPrefixCount {
                 // Fully bound: exact key lookup
                 // Subspace.range() returns (prefix+0x00, prefix+0xFF) which EXCLUDES the exact key
                 // Use [prefixKey, strinc(prefixKey)) to include the exact key
@@ -1214,9 +1241,20 @@ public struct SPARQLQueryExecutor: Sendable {
         var fromValue: FieldValue?
         var edgeValue: FieldValue?
         var toValue: FieldValue?
+        var graphValue: FieldValue?
+        let tupleOffset = ordering.isGraphFirst ? 1 : 0
+
+        if ordering.isGraphFirst {
+            guard let graphElement = tuple[0],
+                  let value = FieldValue(tupleElement: graphElement) else {
+                return nil
+            }
+            graphValue = value
+        }
 
         for (tupleIdx, componentIdx) in elementOrder.enumerated() {
-            guard tupleIdx < tuple.count, let element = tuple[tupleIdx] else {
+            let actualTupleIndex = tupleIdx + tupleOffset
+            guard actualTupleIndex < tuple.count, let element = tuple[actualTupleIndex] else {
                 continue
             }
 
@@ -1247,13 +1285,18 @@ public struct SPARQLQueryExecutor: Sendable {
 
         // Graph field: read from the end of the key tuple (after s/p/o elements)
         if let patternGraph = pattern.graph, graphFieldName != nil {
-            let graphIndex = elementOrder.count
-            if graphIndex < tuple.count,
-               let graphElement = tuple[graphIndex],
-               let graphValue = FieldValue(tupleElement: graphElement) {
+            if ordering.isGraphFirst {
+                guard let graphValue else { return nil }
                 if !matchTerm(patternGraph, against: graphValue, binding: &binding) { return nil }
             } else {
-                return nil
+                let graphIndex = elementOrder.count
+                if graphIndex < tuple.count,
+                   let graphElement = tuple[graphIndex],
+                   let graphValue = FieldValue(tupleElement: graphElement) {
+                    if !matchTerm(patternGraph, against: graphValue, binding: &binding) { return nil }
+                } else {
+                    return nil
+                }
             }
         }
 

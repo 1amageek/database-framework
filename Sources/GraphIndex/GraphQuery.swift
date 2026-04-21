@@ -266,23 +266,32 @@ public struct GraphQueryExecutor: Sendable {
         let fromBound = isBound(fromPattern)
         let edgeBound = isBound(edgePattern)
         let toBound = isBound(toPattern)
+        let graphFirst = strategy == .namedGraphStore
 
         switch (fromBound, edgeBound, toBound) {
         case (true, true, true):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, true, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, false, true):
+            if graphFirst { return .gosp }
             return strategy == .hexastore ? .sop : .osp
         case (false, true, true):
+            if graphFirst { return .gpos }
             return strategy == .adjacency ? .in : .pos
         case (true, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (false, true, false):
+            if graphFirst { return .gpos }
             return strategy == .hexastore ? .pso : .pos
         case (false, false, true):
+            if graphFirst { return .gosp }
             return strategy == .adjacency ? .in : .osp
         case (false, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         }
     }
@@ -334,6 +343,9 @@ public struct GraphQueryExecutor: Sendable {
         case .sop: key = 5
         case .pso: key = 6
         case .ops: key = 7
+        case .gspo: key = 8
+        case .gpos: key = 9
+        case .gosp: key = 10
         }
         return base.subspace(key)
     }
@@ -342,6 +354,12 @@ public struct GraphQueryExecutor: Sendable {
         var prefixElements: [any TupleElement] = []
         let elementOrder = ordering.elementOrder
         let patterns = [fromPattern, edgePattern, toPattern]
+
+        if ordering.isGraphFirst {
+            // This query builder has no graph parameter, so namedGraphStore scans
+            // all named graphs and applies only triple-position filters.
+            return subspace.range()
+        }
 
         for idx in elementOrder {
             let pattern = patterns[idx]
@@ -389,9 +407,11 @@ public struct GraphQueryExecutor: Sendable {
         var fromValue: String?
         var edgeValue: String?
         var toValue: String?
+        let tupleOffset = ordering.isGraphFirst ? 1 : 0
 
         for (tupleIdx, componentIdx) in elementOrder.enumerated() {
-            guard tupleIdx < tuple.count, let element = tuple[tupleIdx] else {
+            let actualTupleIndex = tupleIdx + tupleOffset
+            guard actualTupleIndex < tuple.count, let element = tuple[actualTupleIndex] else {
                 continue
             }
 

@@ -427,6 +427,30 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
                     }
                 }
             }
+
+        case .namedGraphStore:
+            // Key format: [gspo]/[graph]/[from]/[edge]/[to]
+            let gspoSubspace = subspace.subspace(Int64(8))
+            let (beginKey, endKey) = gspoSubspace.range()
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for (key, _) in stream {
+                let unpacked = try gspoSubspace.unpack(key)
+                guard unpacked.count >= 4,
+                      let fromNode = unpacked[1] as? String,
+                      let edgeValue = unpacked[2] as? String,
+                      let target = unpacked[3] as? String,
+                      fromNode == from else {
+                    continue
+                }
+                if let edge = edgeType, edgeValue != edge {
+                    continue
+                }
+                results.append(target)
+            }
         }
 
         return results
@@ -497,8 +521,32 @@ public struct Connected<T: Persistable>: FusionQuery, Sendable {
                         }
                     } else {
                         results.append(from)
-                    }
+	                    }
+	                }
+	            }
+
+        case .namedGraphStore:
+            // Key format: [gosp]/[graph]/[to]/[from]/[edge]
+            let gospSubspace = subspace.subspace(Int64(10))
+            let (beginKey, endKey) = gospSubspace.range()
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for (key, _) in stream {
+                let unpacked = try gospSubspace.unpack(key)
+                guard unpacked.count >= 4,
+                      let toNode = unpacked[1] as? String,
+                      let source = unpacked[2] as? String,
+                      let edgeValue = unpacked[3] as? String,
+                      toNode == to else {
+                    continue
                 }
+                if let edge = edgeType, edgeValue != edge {
+                    continue
+                }
+                results.append(source)
             }
         }
 

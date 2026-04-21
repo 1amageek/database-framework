@@ -139,6 +139,12 @@ public struct GraphEdgeScanner: Sendable {
             self.outgoingSubspace = indexSubspace.subspace(Int64(2))  // SPO
             self.incomingSubspace = indexSubspace.subspace(Int64(3))  // POS
             self.incomingWildcardSubspace = indexSubspace.subspace(Int64(4))  // OSP
+        case .namedGraphStore:
+            // NamedGraphStore is graph-first. Graph-agnostic graph algorithms use
+            // full scans over the graph-first subspaces and filter in memory.
+            self.outgoingSubspace = indexSubspace.subspace(Int64(8))  // GSPO
+            self.incomingSubspace = indexSubspace.subspace(Int64(9))  // GPOS
+            self.incomingWildcardSubspace = indexSubspace.subspace(Int64(10))  // GOSP
         }
     }
 
@@ -242,7 +248,7 @@ public struct GraphEdgeScanner: Sendable {
                             transaction: transaction,
                             continuation: continuation
                         )
-                    case .tripleStore, .hexastore:
+                    case .tripleStore, .hexastore, .namedGraphStore:
                         try await self.scanAllEdgesTripleStore(
                             edgeLabel: edgeLabel,
                             transaction: transaction,
@@ -316,6 +322,25 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
+        if strategy == .namedGraphStore {
+            let (beginKey, endKey) = outgoingSubspace.range()
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for (key, _) in stream {
+                if let edgeInfo = try self.extractEdgeFromFullScanNamedGraphStore(
+                    key: key,
+                    subspace: outgoingSubspace,
+                    filterEdgeLabel: edgeLabel
+                ) {
+                    continuation.yield(edgeInfo)
+                }
+            }
+            return
+        }
+
         if let label = edgeLabel {
             // Optimized: Use POS index for specific label
             // POS key structure: [edge]/[to]/[from]
@@ -438,6 +463,45 @@ public struct GraphEdgeScanner: Sendable {
         return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
     }
 
+    /// Extract edge info from GSPO key with optional label filter.
+    ///
+    /// Key structure: [graph]/[from]/[edge]/[to]
+    private func extractEdgeFromFullScanNamedGraphStore(
+        key: [UInt8],
+        subspace: Subspace,
+        filterEdgeLabel: String?
+    ) throws -> EdgeInfo? {
+        let elements = try subspace.unpack(key)
+        guard elements.count >= 4 else { return nil }
+        guard let fromElement = elements[1],
+              let edgeElement = elements[2],
+              let toElement = elements[3] else { return nil }
+
+        guard let source = fromElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: fromElement))
+            )
+        }
+        guard let edgeLabel = edgeElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: edgeElement))
+            )
+        }
+        guard let target = toElement as? String else {
+            throw GraphIndexError.unexpectedElementType(
+                expected: "String",
+                actual: String(describing: type(of: toElement))
+            )
+        }
+
+        if let filter = filterEdgeLabel, edgeLabel != filter {
+            return nil
+        }
+        return EdgeInfo(source: source, target: target, edgeLabel: edgeLabel)
+    }
+
     /// Batch scan outgoing edges for multiple source nodes
     ///
     /// More efficient than scanning one node at a time when using specific labels.
@@ -523,7 +587,7 @@ public struct GraphEdgeScanner: Sendable {
                             transaction: transaction,
                             continuation: continuation
                         )
-                    case .tripleStore, .hexastore:
+                    case .tripleStore, .hexastore, .namedGraphStore:
                         try await self.scanEdgesTripleStore(
                             nodeID: nodeID,
                             edgeLabel: edgeLabel,
@@ -612,6 +676,33 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any Transaction,
         continuation: AsyncThrowingStream<EdgeInfo, Error>.Continuation
     ) async throws {
+        if strategy == .namedGraphStore {
+            let (beginKey, endKey) = outgoingSubspace.range()
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for (key, _) in stream {
+                guard let edgeInfo = try self.extractEdgeFromFullScanNamedGraphStore(
+                    key: key,
+                    subspace: outgoingSubspace,
+                    filterEdgeLabel: edgeLabel
+                ) else {
+                    continue
+                }
+                switch direction {
+                case .outgoing where edgeInfo.source == nodeID:
+                    continuation.yield(edgeInfo)
+                case .incoming where edgeInfo.target == nodeID:
+                    continuation.yield(edgeInfo)
+                default:
+                    continue
+                }
+            }
+            return
+        }
+
         if direction == .outgoing {
             // Use SPO index: [from]/[edge]/[to]
             if let label = edgeLabel {
@@ -765,7 +856,7 @@ public struct GraphEdgeScanner: Sendable {
                 direction: direction,
                 transaction: transaction
             )
-        case .tripleStore, .hexastore:
+        case .tripleStore, .hexastore, .namedGraphStore:
             return try await batchScanTripleStore(
                 nodeIDs: nodeIDs,
                 edgeLabel: edgeLabel,
@@ -812,6 +903,34 @@ public struct GraphEdgeScanner: Sendable {
         transaction: any Transaction
     ) async throws -> [EdgeInfo] {
         var results: [EdgeInfo] = []
+
+        if strategy == .namedGraphStore {
+            let filterNodeIDs = Set(nodeIDs)
+            let (beginKey, endKey) = outgoingSubspace.range()
+            let stream = try await transaction.collectRange(
+                from: .firstGreaterOrEqual(beginKey),
+                to: .firstGreaterOrEqual(endKey),
+                snapshot: true
+            )
+            for (key, _) in stream {
+                guard let edgeInfo = try extractEdgeFromFullScanNamedGraphStore(
+                    key: key,
+                    subspace: outgoingSubspace,
+                    filterEdgeLabel: edgeLabel
+                ) else {
+                    continue
+                }
+                switch direction {
+                case .outgoing where filterNodeIDs.contains(edgeInfo.source):
+                    results.append(edgeInfo)
+                case .incoming where filterNodeIDs.contains(edgeInfo.target):
+                    results.append(edgeInfo)
+                default:
+                    continue
+                }
+            }
+            return results
+        }
 
         if direction == .outgoing {
             // Use SPO index: [from]/[edge]/[to]

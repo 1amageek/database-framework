@@ -264,6 +264,7 @@ public struct GraphPropertyScanner: Sendable {
             from: from,
             edge: edge,
             to: to,
+            graph: graph,
             strategy: strategy
         )
 
@@ -355,28 +356,39 @@ public struct GraphPropertyScanner: Sendable {
         from: String?,
         edge: String?,
         to: String?,
+        graph: String?,
         strategy: GraphIndexStrategy
     ) -> GraphIndexOrdering {
         let fromBound = from != nil
         let edgeBound = edge != nil
         let toBound = to != nil
 
+        let graphFirst = strategy == .namedGraphStore
+
         switch (fromBound, edgeBound, toBound) {
         case (true, true, true):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, true, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (true, false, true):
+            if graphFirst { return .gosp }
             return strategy == .hexastore ? .sop : .osp
         case (false, true, true):
+            if graphFirst { return .gpos }
             return strategy == .adjacency ? .in : .pos
         case (true, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         case (false, true, false):
+            if graphFirst { return .gpos }
             return strategy == .hexastore ? .pso : .pos
         case (false, false, true):
+            if graphFirst { return .gosp }
             return strategy == .adjacency ? .in : .osp
         case (false, false, false):
+            if graphFirst { return .gspo }
             return strategy == .adjacency ? .out : .spo
         }
     }
@@ -393,6 +405,9 @@ public struct GraphPropertyScanner: Sendable {
         case .sop: key = 5
         case .pso: key = 6
         case .ops: key = 7
+        case .gspo: key = 8
+        case .gpos: key = 9
+        case .gosp: key = 10
         }
         return base.subspace(key)
     }
@@ -412,6 +427,13 @@ public struct GraphPropertyScanner: Sendable {
         let elementOrder = ordering.elementOrder
         let values = [from, edge, to]
 
+        if ordering.isGraphFirst {
+            guard let graph else {
+                return subspace.range()
+            }
+            prefixElements.append(graph)
+        }
+
         var allFieldsBound = true
         for idx in elementOrder {
             if let value = values[idx] {
@@ -425,7 +447,7 @@ public struct GraphPropertyScanner: Sendable {
         // Add graph field ONLY if all triple fields (from, edge, to) are bound
         // If any field is unbound, graph filtering must be done post-scan
         // (otherwise graph would fill the position of an unbound field)
-        if let graphValue = graph, allFieldsBound {
+        if let graphValue = graph, allFieldsBound, !ordering.isGraphFirst {
             prefixElements.append(graphValue)
         }
 
@@ -464,9 +486,23 @@ public struct GraphPropertyScanner: Sendable {
         var fromValue: String?
         var edgeValue: String?
         var toValue: String?
+        var graphValue: String? = nil
+        let tupleOffset = ordering.isGraphFirst ? 1 : 0
+
+        if ordering.isGraphFirst {
+            guard let graphElement = tuple[0] else { return nil }
+            guard let graphString = graphElement as? String else {
+                throw GraphIndexError.unexpectedElementType(
+                    expected: "String",
+                    actual: String(describing: type(of: graphElement))
+                )
+            }
+            graphValue = graphString.isEmpty ? nil : graphString
+        }
 
         for (tupleIdx, componentIdx) in elementOrder.enumerated() {
-            guard tupleIdx < tuple.count, let element = tuple[tupleIdx] else {
+            let actualTupleIndex = tupleIdx + tupleOffset
+            guard actualTupleIndex < tuple.count, let element = tuple[actualTupleIndex] else {
                 continue
             }
 
@@ -487,10 +523,9 @@ public struct GraphPropertyScanner: Sendable {
 
         // Extract graph field if present (quad support)
         // Note: All strategies (including adjacency) can have graph field as 4th element
-        var graphValue: String? = nil
-        if tuple.count > 3 {
+        if !ordering.isGraphFirst, tuple.count > 3 {
             if let graphElement = tuple[3], let graphString = graphElement as? String {
-                graphValue = graphString
+                graphValue = graphString.isEmpty ? nil : graphString
             }
         }
 

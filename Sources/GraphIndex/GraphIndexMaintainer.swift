@@ -188,6 +188,8 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return try buildTripleStoreKeys(from: from, edge: edge, to: to, graph: graph)
         case .hexastore:
             return try buildHexastoreKeys(from: from, edge: edge, to: to, graph: graph)
+        case .namedGraphStore:
+            return try buildNamedGraphStoreKeys(from: from, edge: edge, to: to, graph: graph)
         }
     }
 
@@ -318,6 +320,34 @@ public struct GraphIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return keys
     }
 
+    /// Build namedGraphStore strategy keys (3 graph-first indexes: GSPO/GPOS/GOSP)
+    private func buildNamedGraphStoreKeys(
+        from: any TupleElement,
+        edge: any TupleElement,
+        to: any TupleElement,
+        graph: (any TupleElement)?
+    ) throws -> [Bytes] {
+        var keys: [Bytes] = []
+        keys.reserveCapacity(3)
+
+        // Empty string represents the default graph when no graph field value is present.
+        let graphElement: any TupleElement = graph ?? ""
+
+        let gspoKey = strategySubspaces.gspo.pack(Tuple([graphElement, from, edge, to]))
+        try validateKeySize(gspoKey)
+        keys.append(gspoKey)
+
+        let gposKey = strategySubspaces.gpos.pack(Tuple([graphElement, edge, to, from]))
+        try validateKeySize(gposKey)
+        keys.append(gposKey)
+
+        let gospKey = strategySubspaces.gosp.pack(Tuple([graphElement, to, from, edge]))
+        try validateKeySize(gospKey)
+        keys.append(gospKey)
+
+        return keys
+    }
+
     /// Extract edge field value (or empty string if no edge field)
     private func extractEdgeField(from item: Item) throws -> any TupleElement {
         if edgeField.isEmpty {
@@ -392,6 +422,11 @@ struct StrategySubspaces: Sendable {
     let pso: Subspace
     let ops: Subspace
 
+    // Named graph orderings (GSPO/GPOS/GOSP)
+    let gspo: Subspace
+    let gpos: Subspace
+    let gosp: Subspace
+
     /// Initialize subspaces based on strategy
     ///
     /// Only creates subspaces needed for the given strategy to minimize memory.
@@ -406,6 +441,9 @@ struct StrategySubspaces: Sendable {
         self.sop = base.subspace(Int64(5))
         self.pso = base.subspace(Int64(6))
         self.ops = base.subspace(Int64(7))
+        self.gspo = base.subspace(Int64(8))
+        self.gpos = base.subspace(Int64(9))
+        self.gosp = base.subspace(Int64(10))
     }
 }
 
