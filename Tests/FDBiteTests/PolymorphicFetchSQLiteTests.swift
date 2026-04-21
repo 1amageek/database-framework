@@ -205,6 +205,56 @@ struct PolymorphicFetchSQLiteTests {
         return nil
     }
 
+    @Test("public SQLite container reopen keeps polymorphic data and shared indexes queryable")
+    func publicSQLiteContainerReopenKeepsPolymorphicDataAndSharedIndexesQueryable() async throws {
+        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let schema = Schema(
+            [SQLitePolymorphicArticle.self, SQLitePolymorphicReport.self],
+            version: Schema.Version(1, 0, 0)
+        )
+        let initialContainer = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            security: .disabled
+        )
+        let initialContext = initialContainer.newContext()
+
+        var article = SQLitePolymorphicArticle(title: "Catalog Needle Article", body: "Body")
+        article.id = "sqlite-polymorphic-reopen-article"
+        var report = SQLitePolymorphicReport(title: "Catalog Needle Report", pageCount: 3)
+        report.id = "sqlite-polymorphic-reopen-report"
+
+        initialContext.insert(article)
+        initialContext.insert(report)
+        try await initialContext.save()
+
+        let registry = SchemaRegistry(database: engine)
+        let persistedEntities = try await registry.loadAll()
+        let persistedEntityNames = persistedEntities.map(\.name)
+        #expect(persistedEntityNames.contains(SQLitePolymorphicArticle.persistableType))
+        #expect(persistedEntityNames.contains(SQLitePolymorphicReport.persistableType))
+
+        let reopenedContainer = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            security: .disabled
+        )
+        let reopenedContext = reopenedContainer.newContext()
+        let fetched = try await reopenedContext.fetchPolymorphic(SQLitePolymorphicArticle.self)
+        let fullTextResults = try await reopenedContext.findPolymorphic(SQLitePolymorphicArticle.self)
+            .fullText(\.title)
+            .term("needle")
+            .execute()
+        let fullTextIDs = Set(fullTextResults.compactMap(sqlitePolymorphicResultID))
+
+        #expect(fetched.count == 2)
+        #expect(fullTextIDs == Set([article.id, report.id]))
+        #expect(try await countPolymorphicIndexEntries(
+            container: reopenedContainer,
+            indexName: "SQLitePolymorphicDocument_title"
+        ) == 2)
+    }
+
     @Test("fetchPolymorphic returns SQLite items written via dual-write")
     func fetchPolymorphicScanAfterDualWrite() async throws {
         let container = try await setupContainer()

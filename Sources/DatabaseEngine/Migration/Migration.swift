@@ -210,6 +210,11 @@ public struct MigrationContext: Sendable {
     /// - Parameter batchSize: Number of items to process per batch (default: 100)
     /// - Throws: Error if index addition fails or target entity cannot be determined
     public func addIndex(_ indexDescriptor: IndexDescriptor, batchSize: Int = 100) async throws {
+        if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: schema) {
+            try await addPolymorphicIndex(indexDescriptor, group: group, batchSize: batchSize)
+            return
+        }
+
         // 1. Identify target entity from Schema
         let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: schema)
 
@@ -319,6 +324,11 @@ public struct MigrationContext: Sendable {
             )
         }
 
+        if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: sourceSchema) {
+            try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion)
+            return
+        }
+
         // 2. Identify target entity
         let targetEntity = try identifyTargetEntity(for: indexDescriptor, in: sourceSchema)
 
@@ -385,6 +395,11 @@ public struct MigrationContext: Sendable {
             throw FDBRuntimeError.indexNotFound(
                 "Index '\(indexName)' not found in schema"
             )
+        }
+
+        if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: schema) {
+            try await rebuildPolymorphicIndex(indexName: indexName, group: group, batchSize: batchSize)
+            return
         }
 
         // 2. Identify target entity
@@ -455,6 +470,182 @@ public struct MigrationContext: Sendable {
                 "Ensure DBContainer is created with Schema([YourType.self, ...]) " +
                 "or manually register using IndexBuilderRegistry.shared.register(YourType.self)"
             )
+        }
+    }
+
+    private func addPolymorphicIndex(
+        _ indexDescriptor: IndexDescriptor,
+        group: PolymorphicGroup,
+        batchSize: Int
+    ) async throws {
+        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let stateManager = IndexStateManager(container: container, subspace: subspace)
+        let currentState = try await stateManager.state(of: indexDescriptor.name)
+
+        switch currentState {
+        case .disabled:
+            try await stateManager.enable(indexDescriptor.name)
+        case .readable:
+            return
+        case .writeOnly:
+            break
+        }
+
+        try await buildPolymorphicIndexEntries(
+            indexName: indexDescriptor.name,
+            group: group,
+            subspace: subspace,
+            stateManager: stateManager,
+            batchSize: batchSize
+        )
+        try await stateManager.makeReadable(indexDescriptor.name)
+    }
+
+    private func removePolymorphicIndex(
+        indexName: String,
+        group: PolymorphicGroup,
+        addedVersion: Schema.Version
+    ) async throws {
+        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let stateManager = IndexStateManager(container: container, subspace: subspace)
+        let formerIndexKey = subspace
+            .subspace("storeInfo")
+            .subspace("formerIndexes")
+            .pack(Tuple(indexName))
+        let indexRange = subspace
+            .subspace(SubspaceKey.indexes)
+            .subspace(indexName)
+            .range()
+
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
+            let timestamp = Date().timeIntervalSince1970
+            transaction.setValue(
+                Tuple(
+                    Int64(addedVersion.major),
+                    Int64(addedVersion.minor),
+                    Int64(addedVersion.patch),
+                    timestamp
+                ).pack(),
+                for: formerIndexKey
+            )
+
+            try await stateManager.disable(indexName, transaction: transaction)
+            transaction.clearRange(
+                beginKey: indexRange.begin,
+                endKey: indexRange.end
+            )
+        }
+    }
+
+    private func rebuildPolymorphicIndex(
+        indexName: String,
+        group: PolymorphicGroup,
+        batchSize: Int
+    ) async throws {
+        let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        let stateManager = IndexStateManager(container: container, subspace: subspace)
+        let indexRange = subspace
+            .subspace(SubspaceKey.indexes)
+            .subspace(indexName)
+            .range()
+
+        try await container.engine.withTransaction(configuration: .batch) { transaction in
+            try await stateManager.disable(indexName, transaction: transaction)
+            transaction.clearRange(
+                beginKey: indexRange.begin,
+                endKey: indexRange.end
+            )
+            try await stateManager.enable(indexName, transaction: transaction)
+        }
+
+        try await buildPolymorphicIndexEntries(
+            indexName: indexName,
+            group: group,
+            subspace: subspace,
+            stateManager: stateManager,
+            batchSize: batchSize
+        )
+        try await stateManager.makeReadable(indexName)
+    }
+
+    private func buildPolymorphicIndexEntries(
+        indexName: String,
+        group: PolymorphicGroup,
+        subspace: Subspace,
+        stateManager: IndexStateManager,
+        batchSize: Int
+    ) async throws {
+        let itemSubspace = subspace.subspace(SubspaceKey.items)
+        let blobsSubspace = subspace.subspace(SubspaceKey.blobs)
+        let configurations = indexConfigurations[indexName] ?? []
+        let maintenanceService = IndexMaintenanceService(
+            indexStateManager: stateManager,
+            violationTracker: UniquenessViolationTracker(
+                container: container,
+                metadataSubspace: subspace.subspace(SubspaceKey.metadata)
+            ),
+            indexSubspace: subspace.subspace(SubspaceKey.indexes),
+            configurations: configurations
+        )
+        let memberTypeNames = Set(group.memberTypeNames)
+
+        for entity in schema.entities where memberTypeNames.contains(entity.name) {
+            guard let persistableType = entity.persistableType,
+                  let polymorphicType = persistableType as? any Polymorphable.Type else {
+                continue
+            }
+
+            let descriptors = schema.polymorphicIndexDescriptors(
+                identifier: group.identifier,
+                memberType: persistableType
+            ).filter { $0.name == indexName }
+            guard !descriptors.isEmpty else { continue }
+
+            let typeCode = polymorphicType.typeCode(for: entity.name)
+            let typeRange = itemSubspace.subspace(typeCode).range()
+            var begin = typeRange.begin
+
+            while true {
+                let batchBegin = begin
+                let (itemsInBatch, lastProcessedKey) = try await container.engine.withTransaction(
+                    configuration: .batch
+                ) { transaction -> (Int, [UInt8]?) in
+                    let storage = ItemStorage(
+                        transaction: transaction,
+                        blobsSubspace: blobsSubspace
+                    )
+                    let scanSequence = storage.scan(
+                        begin: batchBegin,
+                        end: typeRange.end,
+                        snapshot: false,
+                        limit: batchSize
+                    )
+
+                    var itemsInBatch = 0
+                    var lastProcessedKey: [UInt8]?
+                    for try await (key, data) in scanSequence {
+                        let item = try DataAccess.deserializeAny(data, as: persistableType)
+                        let compositeID = try itemSubspace.unpack(key)
+                        try await maintenanceService.updateIndexesUntyped(
+                            oldModel: nil as (any Persistable)?,
+                            newModel: item,
+                            id: compositeID,
+                            descriptors: descriptors,
+                            logicalTypeName: group.identifier,
+                            transaction: transaction
+                        )
+                        lastProcessedKey = Array(key)
+                        itemsInBatch += 1
+                    }
+
+                    return (itemsInBatch, lastProcessedKey)
+                }
+
+                guard itemsInBatch == batchSize, let lastProcessedKey else {
+                    break
+                }
+                begin = lastProcessedKey + [0]
+            }
         }
     }
 
@@ -761,6 +952,26 @@ public struct MigrationContext: Sendable {
     }
 
     // MARK: - Private Helpers
+
+    private func identifyPolymorphicTargetGroup(
+        for descriptor: IndexDescriptor,
+        in schema: Schema
+    ) throws -> PolymorphicGroup? {
+        let matchingGroups = schema.polymorphicGroups.filter { group in
+            schema.polymorphicIndexDescriptors(identifier: group.identifier)
+                .contains { $0.name == descriptor.name }
+        }
+
+        guard matchingGroups.count <= 1 else {
+            throw FDBRuntimeError.internalError(
+                "Index '\(descriptor.name)' is associated with multiple polymorphic groups: " +
+                "\(matchingGroups.map(\.identifier).joined(separator: ", ")). " +
+                "Index names must be unique across all polymorphic groups."
+            )
+        }
+
+        return matchingGroups.first
+    }
 
     /// Identify target entity for an index descriptor
     ///
