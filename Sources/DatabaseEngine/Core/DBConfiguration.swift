@@ -8,13 +8,9 @@ import Core
 /// Database configuration
 ///
 /// Configures the storage backend and runtime index parameters.
-/// Defaults to FoundationDB when no backend is specified.
 ///
 /// **Example usage**:
 /// ```swift
-/// // Default (FDB)
-/// let container = try await DBContainer(for: schema)
-///
 /// // FDB with specific database instance
 /// let config = DBConfiguration(
 ///     backend: .fdb(.init(database: db))
@@ -28,6 +24,7 @@ import Core
 ///
 /// // With index configurations
 /// let config = DBConfiguration(
+///     backend: .fdb(),
 ///     indexConfigurations: [
 ///         VectorIndexConfiguration<Document>(
 ///             keyPath: \.embedding,
@@ -66,7 +63,7 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
     /// Configuration name (optional, for debugging)
     public let name: String?
 
-    /// Storage backend (default: .fdb())
+    /// Storage backend
     public let backend: StorageBackend
 
     /// Index configurations for runtime parameters
@@ -82,26 +79,10 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
 
     /// Create database configuration
     ///
-    /// All parameters have defaults, enabling zero-configuration usage:
-    /// ```swift
-    /// let container = try await DBContainer(for: schema)
-    /// ```
-    ///
     /// - Parameters:
     ///   - name: Configuration name for debugging (default: nil)
-    ///   - backend: Storage backend (default: .fdb())
+    ///   - backend: Storage backend
     ///   - indexConfigurations: Runtime index configurations (default: [])
-    #if FOUNDATION_DB
-    public init(
-        name: String? = nil,
-        backend: StorageBackend = .fdb(),
-        indexConfigurations: [any IndexConfiguration] = []
-    ) {
-        self.name = name
-        self.backend = backend
-        self.indexConfigurations = indexConfigurations
-    }
-    #else
     public init(
         name: String? = nil,
         backend: StorageBackend,
@@ -111,7 +92,6 @@ public struct DBConfiguration: DataStoreConfiguration, Sendable {
         self.backend = backend
         self.indexConfigurations = indexConfigurations
     }
-    #endif
 }
 
 // MARK: - CustomDebugStringConvertible

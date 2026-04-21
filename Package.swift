@@ -270,11 +270,14 @@ let package = Package(
                          condition: .when(traits: ["FoundationDB"])),
                 .product(name: "SQLiteStorage", package: "storage-kit",
                          condition: .when(traits: ["SQLite"])),
+                .product(name: "PostgreSQLStorage", package: "storage-kit",
+                         condition: .when(traits: ["PostgreSQL"])),
             ],
             exclude: ["README.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
                 .define("SQLITE", .when(traits: ["SQLite"])),
+                .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
             ]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure

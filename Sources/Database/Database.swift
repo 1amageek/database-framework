@@ -22,6 +22,9 @@
 #if SQLITE
 @_exported import SQLiteStorage
 #endif
+#if POSTGRESQL
+@_exported import PostgreSQLStorage
+#endif
 
 // database-framework (execution layer)
 @_exported import DatabaseEngine

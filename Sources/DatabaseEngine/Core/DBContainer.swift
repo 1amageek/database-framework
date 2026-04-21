@@ -53,7 +53,10 @@ import Logging
 ///
 /// // 2. Create container (async - connects to DB and initializes indexes)
 /// let schema = Schema([User.self])
-/// let container = try await DBContainer(for: schema)
+/// let container = try await DBContainer(
+///     for: schema,
+///     configuration: DBConfiguration(backend: .custom(engine))
+/// )
 ///
 /// // 3. Use context
 /// let context = container.newContext()
@@ -111,26 +114,23 @@ public final class DBContainer: Sendable {
     ///
     /// **Example**:
     /// ```swift
-    /// // Default FDB backend
-    /// let container = try await DBContainer(for: schema)
+    /// // Explicit backend configuration
+    /// let container = try await DBContainer(
+    ///     for: schema,
+    ///     configuration: .init(backend: .custom(engine))
+    /// )
     ///
     /// // With security
     /// let container = try await DBContainer(
     ///     for: schema,
+    ///     configuration: .init(backend: .custom(engine)),
     ///     security: .enabled(adminRoles: ["admin"])
-    /// )
-    ///
-    /// // Custom backend
-    /// let engine = try SQLiteStorageEngine(configuration: .inMemory)
-    /// let container = try await DBContainer(
-    ///     for: schema,
-    ///     configuration: .init(backend: .custom(engine))
     /// )
     /// ```
     ///
     /// - Parameters:
     ///   - schema: The schema defining all entities
-    ///   - configuration: Database configuration (default: FDB backend)
+    ///   - configuration: Database configuration
     ///   - security: Security configuration (default: enabled)
     /// - Throws: Error if engine creation or index initialization fails
     ///
@@ -138,17 +138,7 @@ public final class DBContainer: Sendable {
     ///   1. **Index initialization** — transitions all indexes to `readable` state via `ensureIndexesReady()`
     ///   2. **Schema persistence** — writes `Schema.Entity` via `SchemaRegistry.persist()`,
     ///      enabling CLI and dynamic tools to discover schemas without compiled Swift types
-    #if FOUNDATION_DB
-    /// Initialize with default FDB backend
-    public convenience init(
-        for schema: Schema,
-        security: SecurityConfiguration = .enabled()
-    ) async throws {
-        try await self.init(for: schema, configuration: DBConfiguration(), security: security)
-    }
-    #endif
-
-    /// Initialize with explicit configuration
+    /// Initialize DBContainer with schema, configuration, and security.
     public convenience init(
         for schema: Schema,
         configuration: DBConfiguration,
@@ -159,6 +149,21 @@ public final class DBContainer: Sendable {
             configuration: configuration,
             security: security,
             persistSchemaCatalog: true
+        )
+    }
+
+    internal convenience init(
+        testing schema: Schema,
+        configuration: DBConfiguration,
+        security: SecurityConfiguration = .enabled(),
+        initializeIndexes: Bool = true
+    ) async throws {
+        try await self.init(
+            for: schema,
+            configuration: configuration,
+            security: security,
+            persistSchemaCatalog: false,
+            initializeIndexes: initializeIndexes
         )
     }
 
@@ -758,14 +763,15 @@ extension DBContainer {
     public convenience init<S: VersionedSchema, P: SchemaMigrationPlan>(
         for schema: S.Type,
         migrationPlan: P.Type,
-        configuration: DBConfiguration
+        configuration: DBConfiguration,
+        security: SecurityConfiguration = .enabled()
     ) async throws {
         try P.validate()
         let schemaInstance = S.makeSchema()
         try await self.init(
             for: schemaInstance,
             configuration: configuration,
-            security: .enabled(),
+            security: security,
             persistSchemaCatalog: false,
             initializeIndexes: false
         )

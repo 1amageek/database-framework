@@ -21,7 +21,7 @@ struct DBConfigurationTests {
 
     @Persistable
     struct ConfigTestUser {
-        #Directory<ConfigTestUser>("test", "config", "users")
+        #Directory<ConfigTestUser>("config_tests", "users")
         #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.name]))
         #Index(ScalarIndexKind<ConfigTestUser>(fields: [\.embedding]))
 
@@ -39,7 +39,7 @@ struct DBConfigurationTests {
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
@@ -51,7 +51,7 @@ struct DBConfigurationTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .disabled,
         )
 
         #expect(container.indexConfigurations.count == 1)
@@ -67,7 +67,7 @@ struct DBConfigurationTests {
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
@@ -77,7 +77,7 @@ struct DBConfigurationTests {
                     TestVectorConfig(fieldName: "embedding", modelTypeName: "ConfigTestUser", dimensions: 256, testValue: "test")
                 ]
             ),
-            security: .disabled
+            security: .disabled,
         )
 
         #expect(container.indexConfigurations.count == 2)
@@ -93,9 +93,9 @@ struct DBConfigurationTests {
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(backend: .custom(database)),
-            security: .disabled
+            security: .disabled,
         )
 
         #expect(container.indexConfigurations.isEmpty)
@@ -111,7 +111,7 @@ struct DBConfigurationTests {
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
@@ -123,7 +123,7 @@ struct DBConfigurationTests {
                     )
                 ]
             ),
-            security: .disabled
+            security: .disabled,
         )
 
         let vectorConfig = container.indexConfiguration(
@@ -144,7 +144,7 @@ struct DBConfigurationTests {
         let schema = Schema([ConfigTestUser.self])
 
         let container = try await DBContainer(
-            for: schema,
+            testing: schema,
             configuration: .init(
                 backend: .custom(database),
                 indexConfigurations: [
@@ -152,7 +152,7 @@ struct DBConfigurationTests {
                     TestFullTextConfig(fieldName: "name", modelTypeName: "ConfigTestUser", language: "ja")
                 ]
             ),
-            security: .disabled
+            security: .disabled,
         )
 
         let ftConfigs = container.indexConfigurations(
@@ -174,7 +174,7 @@ struct DBConfigurationPropertiesTests {
 
     @Persistable
     struct ConfigTestUser {
-        #Directory<ConfigTestUser>("test", "config", "users")
+        #Directory<ConfigTestUser>("config_tests", "users")
         var name: String = ""
         var embedding: [Float] = []
     }
@@ -187,6 +187,7 @@ struct DBConfigurationPropertiesTests {
 
         let config = DBConfiguration(
             name: "test-config",
+            backend: .fdb(),
             indexConfigurations: configs
         )
 
@@ -194,9 +195,9 @@ struct DBConfigurationPropertiesTests {
         #expect(config.indexConfigurations.count == 1)
     }
 
-    @Test("DBConfiguration convenience initializer sets defaults")
-    func convenienceInitializerDefaults() {
-        let config = DBConfiguration()
+    @Test("DBConfiguration initializer stores common defaults")
+    func initializerDefaults() {
+        let config = DBConfiguration(backend: .fdb())
 
         #expect(config.name == nil)
         #expect(config.indexConfigurations.isEmpty)
@@ -206,6 +207,7 @@ struct DBConfigurationPropertiesTests {
     func debugDescriptionComplete() {
         let config = DBConfiguration(
             name: "debug-test",
+            backend: .fdb(),
             indexConfigurations: [
                 TestVectorConfig(fieldName: "embedding", modelTypeName: "ConfigTestUser", dimensions: 64, testValue: "test")
             ]
