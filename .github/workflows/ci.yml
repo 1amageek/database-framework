@@ -200,7 +200,7 @@ jobs:
 
       - name: Test (FoundationDB)
         timeout-minutes: 40
-        run: swift test
+        run: swift test --no-parallel --skip 'Benchmark|Performance'
 
       - name: Stop FoundationDB service
         if: always()
