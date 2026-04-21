@@ -269,9 +269,22 @@ public struct Histogram: Sendable, Codable {
             }
         }
 
-        // Full overlap check
-        let minCovered = rangeMin == nil || rangeMin! <= bucketLower
-        let maxCovered = rangeMax == nil || rangeMax! >= bucketUpper
+        // Full overlap check — must respect inclusivity flags to stay consistent
+        // with the no-overlap checks above. Otherwise a half-open range whose
+        // boundary coincides with a bucket boundary is treated as fully covering
+        // the bucket, overestimating selectivity by up to one bucket.
+        let minCovered: Bool
+        if let rangeMin = rangeMin {
+            minCovered = minInclusive ? rangeMin <= bucketLower : rangeMin < bucketLower
+        } else {
+            minCovered = true
+        }
+        let maxCovered: Bool
+        if let rangeMax = rangeMax {
+            maxCovered = maxInclusive ? rangeMax >= bucketUpper : rangeMax > bucketUpper
+        } else {
+            maxCovered = true
+        }
 
         if minCovered && maxCovered {
             return 1.0  // Full bucket overlap

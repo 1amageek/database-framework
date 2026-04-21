@@ -81,7 +81,23 @@ public struct DirectoryPath<T: Persistable>: @unchecked Sendable {
         }
     }
 
-    /// Resolve to path string components
+    /// Resolve to path string components.
+    ///
+    /// - Precondition: `validate()` has succeeded for this path. Unresolved
+    ///   `Field` components are **silently skipped** — this is intentional, so
+    ///   that `resolve()` stays non-throwing and callable from pure-sync
+    ///   contexts (e.g. cache-key generation). Call sites MUST NOT feed the
+    ///   result into a live directory subspace or compare it to another
+    ///   partition's resolved path without first calling `validate()`, because
+    ///   a partial path like `["R", "Order"]` (tenant field missing) can
+    ///   collide with an unrelated valid path and silently cross-contaminate
+    ///   data or cache entries.
+    ///
+    /// The engine's `resolveDirectory` path enforces this by always calling
+    /// `validate()` before using the resolved components for I/O; cache-key
+    /// generation only consults caches that were themselves populated from
+    /// validated paths, so a lookup with an invalid path cannot hit. If you
+    /// introduce a new call site, preserve this invariant.
     internal func resolve() -> [String] {
         var path: [String] = []
         for component in T.directoryPathComponents {
@@ -93,6 +109,7 @@ public struct DirectoryPath<T: Persistable>: @unchecked Sendable {
                 if let field = fieldValues.first(where: { $0.keyPath == fieldElement.value }) {
                     path.append(directoryPathString(from: field.value))
                 }
+                // else: silently skipped — see precondition above.
             }
         }
         return path
@@ -208,6 +225,12 @@ public struct AnyDirectoryPath: @unchecked Sendable {
         }
     }
 
+    /// Resolve to path string components.
+    ///
+    /// Shares the precondition of `DirectoryPath<T>.resolve()`: unresolved
+    /// dynamic `Field` components are silently skipped, so callers must call
+    /// `validate()` first before using the result for anything other than
+    /// looking up caches that were themselves populated from validated paths.
     public func resolve() -> [String] {
         _resolve()
     }

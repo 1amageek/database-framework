@@ -159,8 +159,22 @@ public struct SchemaRegistry: Sendable {
         of entities: [Schema.Entity],
         mode: SchemaRegistryPersistMode
     ) async throws {
-        let existingEntities = try await loadAllFromStorage()
-        let existingByName = Dictionary(uniqueKeysWithValues: existingEntities.map { ($0.name, $0) })
+        let names = Array(Set(entities.map(\.name)))
+        let existingByName: [String: Schema.Entity] = try await database.withTransaction { transaction in
+            var existing: [String: Schema.Entity] = [:]
+            let decoder = JSONDecoder()
+
+            for name in names {
+                let key = Self.key(for: name)
+                guard let value = try await transaction.getValue(for: key, snapshot: true) else {
+                    continue
+                }
+                let entity = try decoder.decode(Schema.Entity.self, from: Data(value))
+                existing[name] = entity
+            }
+
+            return existing
+        }
 
         for entity in entities {
             guard let existing = existingByName[entity.name] else {

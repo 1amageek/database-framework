@@ -5,6 +5,7 @@
 // Provides callbacks that execute after successful transaction commit.
 
 import Foundation
+import Logging
 import StorageKit
 import Synchronization
 
@@ -184,22 +185,48 @@ public struct RetryingPostCommit: PostCommit {
     }
 }
 
-/// Composite post-commit that runs multiple hooks
+/// Composite post-commit that runs multiple hooks.
+///
+/// Two execution modes with different error semantics:
+///
+/// | Mode | Ordering | Error behavior |
+/// |------|----------|----------------|
+/// | `runConcurrently: false` (default) | Sequential, in declaration order | First throw propagates; remaining hooks are skipped |
+/// | `runConcurrently: true` | Parallel via `TaskGroup` | Each hook's failure is **logged and swallowed** — other hooks still run, and `run()` always succeeds |
+///
+/// Concurrent mode is intentionally best-effort: post-commit hooks are observational
+/// (cache invalidation, notifications, etc.) and one failing hook should not cancel
+/// peers that might be doing unrelated work. Callers that require strict failure
+/// propagation across multiple hooks must use sequential mode.
 public struct CompositePostCommit: PostCommit {
     private let hooks: [any PostCommit]
     private let runConcurrently: Bool
+    private let logger: Logger
 
-    public init(hooks: [any PostCommit], runConcurrently: Bool = false) {
+    public init(
+        hooks: [any PostCommit],
+        runConcurrently: Bool = false,
+        logger: Logger = Logger(label: "com.db.transaction.postcommit")
+    ) {
         self.hooks = hooks
         self.runConcurrently = runConcurrently
+        self.logger = logger
     }
 
     public func run() async throws {
         if runConcurrently {
+            // Best-effort: log per-hook failures but never propagate them, so that
+            // one failing observational hook does not cancel its peers. See type
+            // docstring for the full contract.
+            let logger = logger
             await withTaskGroup(of: Void.self) { group in
                 for hook in hooks {
                     group.addTask {
-                        try? await hook.run()
+                        do {
+                            try await hook.run()
+                        } catch {
+                            logger.error("post-commit hook failed: \(error)")
+                        }
                     }
                 }
             }

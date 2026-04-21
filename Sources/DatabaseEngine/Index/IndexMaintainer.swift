@@ -121,7 +121,12 @@ public protocol IndexMaintainer<Item>: Sendable {
     /// - Returns: Array of index keys that should exist for this item
     /// - Throws: Error if computation fails
     ///
-    /// **Default**: Empty array (verification skipped for this maintainer)
+    /// **Default**: Empty array — treated by the scrubber as
+    /// "verification opt-out for this maintainer". Maintainers whose index keys
+    /// depend on transactional state that cannot be reproduced from `item` + `id`
+    /// alone (e.g. HNSW's monotonically-allocated integer labels, or indexes that
+    /// must read cross-type data) return `[]` here and override the transaction-aware
+    /// variant below instead.
     ///
     /// **Implementation Notes**:
     /// - For VALUE indexes: Return key like [indexSubspace]/[indexName]/[value]/[id]
@@ -164,9 +169,11 @@ extension IndexMaintainer {
         return nil
     }
 
-    /// Default: empty array (verification skipped for this maintainer)
-    ///
-    /// Concrete implementations should override this to enable scrubber verification.
+    /// Default: empty array — interpreted by the scrubber as "skip verification
+    /// for this maintainer". Concrete implementations should override this to
+    /// enable scrubber verification. Returning `[]` is a deliberate opt-out,
+    /// not an error condition — see the protocol requirement's docstring for
+    /// when this is appropriate.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple

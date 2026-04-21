@@ -180,12 +180,34 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         }
     }
 
+    /// HNSW cannot compute index keys without a transaction: the persistent key
+    /// uses a monotonically-allocated `UInt64` label, and the label-for-primary-key
+    /// mapping lives in FDB under `labelsSubspace`. Without transactional access
+    /// we cannot read the mapping (see `getLabelForPrimaryKey` — it returns `nil`
+    /// whenever `transaction == nil`), so this variant always returns `[]`, which
+    /// the `OnlineIndexScrubber` interprets as "verification opted out for this
+    /// item through this code path".
+    ///
+    /// The scrubber's real entry point is the transaction-aware overload below,
+    /// which this maintainer overrides to produce the actual key. Keeping this
+    /// variant explicit (rather than inheriting the `IndexMaintainer` default)
+    /// documents the opt-out at the point of decision so future refactors don't
+    /// mistake it for an oversight.
     public func computeIndexKeys(
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        // Return the vector storage key
-        guard let label = try? await getLabelForPrimaryKey(primaryKey: id, transaction: nil) else {
+        return []
+    }
+
+    public func computeIndexKeys(
+        for item: Item,
+        id: Tuple,
+        transaction: any Transaction
+    ) async throws -> [Bytes] {
+        guard let label = try await getLabelForPrimaryKey(primaryKey: id, transaction: transaction) else {
+            // No label assigned yet — either the item was never indexed (sparse/unseen)
+            // or it was deleted. Either way there is no key to verify.
             return []
         }
         return [vectorsSubspace.pack(Tuple(Int64(label)))]

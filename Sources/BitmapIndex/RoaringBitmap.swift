@@ -32,10 +32,22 @@ public struct RoaringBitmap: Sendable, Codable, Equatable {
     private var containers: [UInt16: Container]
 
     /// Container storage types
+    ///
+    /// **NOTE on `run` encoding**: In `(start, length)`, `length` is the
+    /// **end offset (inclusive)**, not the element count — this follows the
+    /// original Roaring paper (Lemire et al., 2016). Specifically:
+    ///
+    /// - Run covers `[start, start + length]`, so its cardinality is `length + 1`.
+    /// - A single element is `(start: v, length: 0)`.
+    /// - The full `UInt16` range is encoded as `(start: 0, length: 65535)` —
+    ///   relying on `length: UInt16` wrap to implicitly represent "all 65536 values".
+    ///
+    /// Any code iterating a run must therefore use `start...start + length`
+    /// (inclusive) and any code computing cardinality must add 1.
     enum Container: Sendable, Codable, Equatable {
         case array([UInt16])           // Sorted array of low 16 bits
         case bitmap([UInt64])          // 1024 × 64-bit words
-        case run([(start: UInt16, length: UInt16)])  // Run-length encoded
+        case run([(start: UInt16, length: UInt16)])  // Run-length encoded (length = end offset inclusive)
 
         // Manual Equatable conformance (tuples don't auto-conform)
         static func == (lhs: Container, rhs: Container) -> Bool {
