@@ -46,3 +46,162 @@ jobs:
       - name: Test (SQLite)
         timeout-minutes: 15
         run: swift test --traits SQLite --filter FDBiteTests
+
+  postgresql:
+    name: PostgreSQL trait (macOS)
+    # Same macOS runner constraint as SQLite job.
+    # Docker Desktop is not available on GitHub macOS runners, so PostgreSQL
+    # is installed via Homebrew and started as a service.
+    runs-on: macos-26
+    timeout-minutes: 45
+    env:
+      POSTGRES_TEST_HOST: localhost
+      POSTGRES_TEST_PORT: "5432"
+      POSTGRES_TEST_PASSWORD: test
+      POSTGRES_TEST_DB: database_framework_test
+    steps:
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report Swift version
+        run: swift --version
+
+      - name: Install PostgreSQL 16
+        run: |
+          brew install postgresql@16
+          echo "/opt/homebrew/opt/postgresql@16/bin" >> "$GITHUB_PATH"
+
+      - name: Start PostgreSQL service
+        run: |
+          brew services start postgresql@16
+          for i in $(seq 1 30); do
+            if pg_isready -h localhost -p 5432 >/dev/null 2>&1; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            echo "Waiting for PostgreSQL... ($i/30)"
+            sleep 1
+          done
+          echo "PostgreSQL failed to start within 30s" >&2
+          brew services info postgresql@16 || true
+          tail -200 "$(brew --prefix)/var/log/postgresql@16.log" || true
+          exit 1
+
+      - name: Provision postgres role and test database
+        # Homebrew's postgresql@16 creates a superuser matching $USER (e.g. "runner"),
+        # not "postgres". Create the "postgres" role expected by PostgreSQLTestSetup.
+        run: |
+          psql -d postgres -v ON_ERROR_STOP=1 <<'SQL'
+          DO $$
+          BEGIN
+            IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'postgres') THEN
+              CREATE ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'test';
+            ELSE
+              ALTER ROLE postgres WITH SUPERUSER LOGIN PASSWORD 'test';
+            END IF;
+          END
+          $$;
+          SQL
+          # CREATE DATABASE cannot run inside a transaction / DO block, so gate it manually.
+          if ! psql -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'database_framework_test'" | grep -q 1; then
+            psql -d postgres -v ON_ERROR_STOP=1 -c "CREATE DATABASE database_framework_test OWNER postgres;"
+          fi
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-swiftpm-postgresql-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: ${{ runner.os }}-swiftpm-postgresql-
+
+      - name: Resolve dependencies
+        run: swift package --traits PostgreSQL resolve
+
+      - name: Build (PostgreSQL)
+        run: swift build --traits PostgreSQL
+
+      - name: Test (PostgreSQL)
+        timeout-minutes: 20
+        run: swift test --traits PostgreSQL --filter PostgreSQLTests
+
+      - name: Stop PostgreSQL service
+        if: always()
+        run: brew services stop postgresql@16 || true
+
+  foundationdb:
+    name: FoundationDB trait (macOS)
+    # Installs FoundationDB from the official .pkg installer. The installer
+    # places libfdb_c.dylib at /usr/local/lib (where the linker expects it)
+    # and starts a single-server local cluster via fdbmonitor/launchd.
+    runs-on: macos-26
+    timeout-minutes: 60
+    env:
+      FDB_VERSION: "7.3.69"
+      FDB_CLUSTER_FILE: /usr/local/etc/foundationdb/fdb.cluster
+    steps:
+      - name: Select latest stable Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Report Swift version
+        run: swift --version
+
+      - name: Install FoundationDB
+        # Apple Silicon runner → arm64 installer. The .pkg drops:
+        #   /usr/local/libexec/foundationdb/     server binaries
+        #   /usr/local/lib/libfdb_c.dylib        client library (linker path)
+        #   /usr/local/etc/foundationdb/         fdb.cluster + foundationdb.conf
+        # and registers com.foundationdb.fdbmonitor with launchd.
+        run: |
+          curl -fL --retry 3 -o "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" \
+            "https://github.com/apple/foundationdb/releases/download/${FDB_VERSION}/FoundationDB-${FDB_VERSION}_arm64.pkg"
+          sudo installer -pkg "/tmp/FoundationDB-${FDB_VERSION}_arm64.pkg" -target /
+
+      - name: Wait for FoundationDB to be ready
+        run: |
+          # fdbcli is installed to /usr/local/bin (already on PATH).
+          for i in $(seq 1 60); do
+            if fdbcli -C "${FDB_CLUSTER_FILE}" --exec "status minimal" --timeout 5 2>/dev/null | grep -q "available"; then
+              echo "FoundationDB is ready"
+              fdbcli -C "${FDB_CLUSTER_FILE}" --exec "status" --timeout 5 || true
+              exit 0
+            fi
+            echo "Waiting for FoundationDB... ($i/60)"
+            sleep 2
+          done
+          echo "FoundationDB failed to start within 120s" >&2
+          fdbcli -C "${FDB_CLUSTER_FILE}" --exec "status" --timeout 5 || true
+          cat "${FDB_CLUSTER_FILE}" || true
+          sudo launchctl list | grep -i foundationdb || true
+          sudo tail -200 /usr/local/foundationdb/logs/* 2>/dev/null || true
+          exit 1
+
+      - name: Cache SwiftPM build
+        uses: actions/cache@v4
+        with:
+          path: .build
+          key: ${{ runner.os }}-swiftpm-fdb-${{ hashFiles('Package.resolved', 'Package.swift') }}
+          restore-keys: ${{ runner.os }}-swiftpm-fdb-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build (FoundationDB)
+        run: swift build
+
+      - name: Test (FoundationDB)
+        timeout-minutes: 40
+        run: swift test
+
+      - name: Stop FoundationDB service
+        if: always()
+        run: sudo launchctl unload /Library/LaunchDaemons/com.foundationdb.fdbmonitor.plist 2>/dev/null || true
