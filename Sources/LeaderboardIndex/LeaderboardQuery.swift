@@ -124,12 +124,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     ///
     /// - Returns: Array of (item, score) tuples sorted by score descending
     public func execute() async throws -> [(item: T, score: Int64)] {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         let results: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
 
             let grouping = self.groupingValues?.map { $0 as any TupleElement }
 
@@ -175,12 +179,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     ///
     /// - Returns: Array of (item, score) tuples sorted by score ascending
     public func executeBottom() async throws -> [(item: T, score: Int64)] {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         let results: [(pk: Tuple, score: Int64)] = try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
 
             let grouping = self.groupingValues?.map { $0 as any TupleElement }
 
@@ -227,12 +235,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     /// - Parameter id: The item's ID
     /// - Returns: Rank (1-based) or nil if not found
     public func rank<ID: TupleElement>(for id: ID) async throws -> Int? {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
             let grouping = self.groupingValues?.map { $0 as any TupleElement }
 
             return try await maintainer.getRank(
@@ -258,12 +270,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     /// - Parameter id: The item's ID
     /// - Returns: Dense rank (1-based) or nil if not found
     public func denseRank<ID: TupleElement>(for id: ID) async throws -> Int? {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
             let grouping = self.groupingValues?.map { $0 as any TupleElement }
 
             return try await maintainer.getRankDense(
@@ -284,12 +300,16 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     /// - Parameter percentile: Percentile value between 0.0 and 1.0 (e.g., 0.5 for median)
     /// - Returns: Score at the given percentile, or nil if no entries
     public func percentile(_ percentile: Double) async throws -> Int64? {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
             let grouping = self.groupingValues?.map { $0 as any TupleElement }
 
             if let wid = self.windowId {
@@ -313,54 +333,67 @@ public struct LeaderboardQueryBuilder<T: Persistable, Score: Comparable & Numeri
     ///
     /// - Returns: Array of window IDs (newest first)
     public func availableWindows() async throws -> [Int64] {
-        let indexName = buildIndexName()
+        let (descriptor, indexKind) = try resolveIndexDescriptorAndKind()
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
-        let indexSubspace = typeSubspace.subspace(indexName)
+        let indexSubspace = typeSubspace.subspace(descriptor.name)
 
         return try await queryContext.withTransaction { transaction in
-            let maintainer = self.createMaintainer(indexSubspace: indexSubspace)
+            let maintainer = self.createMaintainer(
+                indexSubspace: indexSubspace,
+                descriptor: descriptor,
+                indexKind: indexKind
+            )
             return try await maintainer.getAvailableWindows(transaction: transaction)
         }
     }
 
     // MARK: - Private Methods
 
-    private func buildIndexName() -> String {
-        "\(T.persistableType)_leaderboard_\(scoreFieldName)"
+    private func resolveIndexDescriptorAndKind() throws -> (
+        descriptor: IndexDescriptor,
+        kind: TimeWindowLeaderboardIndexKind<T, Int64>
+    ) {
+        guard let result = findIndexDescriptorAndKind() else {
+            throw LeaderboardQueryError.indexNotFound("\(T.persistableType).\(scoreFieldName)")
+        }
+        return result
     }
 
-    private func createMaintainer(indexSubspace: Subspace) -> TimeWindowLeaderboardIndexMaintainer<T, Int64> {
-        let indexName = buildIndexName()
-
-        // Find the IndexDescriptor and extract actual configuration
-        let (window, windowCount, groupByFieldNames): (LeaderboardWindowType, Int, [String]) = {
-            for descriptor in T.indexDescriptors {
-                if descriptor.name == indexName,
-                   let leaderboardKind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> {
-                    return (leaderboardKind.window, leaderboardKind.windowCount, leaderboardKind.groupByFieldNames)
-                }
+    private func findIndexDescriptorAndKind() -> (
+        descriptor: IndexDescriptor,
+        kind: TimeWindowLeaderboardIndexKind<T, Int64>
+    )? {
+        for descriptor in T.indexDescriptors {
+            guard descriptor.kindIdentifier == TimeWindowLeaderboardIndexKind<T, Int64>.identifier else {
+                continue
             }
-            // Fallback to defaults if not found
-            return (.daily, 7, [])
-        }()
+            guard let kind = descriptor.kind as? TimeWindowLeaderboardIndexKind<T, Int64> else {
+                continue
+            }
+            if kind.scoreFieldName == scoreFieldName {
+                return (descriptor, kind)
+            }
+        }
+        return nil
+    }
 
+    private func createMaintainer(
+        indexSubspace: Subspace,
+        descriptor: IndexDescriptor,
+        indexKind: TimeWindowLeaderboardIndexKind<T, Int64>
+    ) -> TimeWindowLeaderboardIndexMaintainer<T, Int64> {
         return TimeWindowLeaderboardIndexMaintainer<T, Int64>(
             index: Index(
-                name: indexName,
-                kind: TimeWindowLeaderboardIndexKind<T, Int64>(
-                    scoreFieldName: scoreFieldName,
-                    scoreTypeName: "Int64",
-                    groupByFieldNames: groupByFieldNames,
-                    window: window,
-                    windowCount: windowCount
-                ),
+                name: descriptor.name,
+                kind: indexKind,
                 rootExpression: FieldKeyExpression(fieldName: scoreFieldName),
-                keyPaths: []
+                keyPaths: descriptor.keyPaths,
+                subspaceKey: descriptor.name
             ),
             subspace: indexSubspace,
             idExpression: FieldKeyExpression(fieldName: "id"),
-            window: window,
-            windowCount: windowCount
+            window: indexKind.window,
+            windowCount: indexKind.windowCount
         )
     }
 }

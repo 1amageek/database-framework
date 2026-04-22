@@ -108,23 +108,6 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         return copy
     }
 
-    /// Append an ORDER BY clause using a shared field name.
-    public func orderBy(
-        _ fieldName: String,
-        direction: SortDirection = .ascending,
-        nulls: NullOrdering? = nil
-    ) -> Self {
-        var copy = self
-        copy.orderBy.append(
-            SortKey(
-                .column(ColumnRef(column: fieldName)),
-                direction: direction,
-                nulls: nulls
-            )
-        )
-        return copy
-    }
-
     /// Append an ORDER BY clause using a key path on the concrete member type.
     ///
     /// The key path should refer to a field that is shared across the polymorphic
@@ -134,7 +117,15 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
         direction: SortDirection = .ascending,
         nulls: NullOrdering? = nil
     ) -> Self {
-        orderBy(Member.fieldName(for: keyPath), direction: direction, nulls: nulls)
+        var copy = self
+        copy.orderBy.append(
+            SortKey(
+                .column(ColumnRef(column: Member.fieldName(for: keyPath))),
+                direction: direction,
+                nulls: nulls
+            )
+        )
+        return copy
     }
 
     /// Set the canonical read consistency.
@@ -171,7 +162,13 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     /// Build the canonical query for this polymorphic logical source.
-    public func makeSelectQuery(accessPath: AccessPath? = nil) -> SelectQuery {
+    public func makeSelectQuery() -> SelectQuery {
+        makeSelectQuery(accessPath: nil)
+    }
+
+    /// Build the canonical query for this polymorphic logical source.
+    @_spi(PolymorphicRuntime)
+    public func makeSelectQuery(accessPath: AccessPath?) -> SelectQuery {
         SelectQuery(
             projection: .all,
             source: .logical(
@@ -188,7 +185,13 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     /// Execute the logical query and return canonical rows.
-    public func query(accessPath: AccessPath? = nil) async throws -> QueryResponse {
+    public func query() async throws -> QueryResponse {
+        try await query(accessPath: nil)
+    }
+
+    /// Execute the logical query and return canonical rows.
+    @_spi(PolymorphicRuntime)
+    public func query(accessPath: AccessPath?) async throws -> QueryResponse {
         try await context.query(
             makeSelectQuery(accessPath: accessPath),
             options: options
@@ -196,7 +199,13 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     /// Execute the logical query and decode polymorphic rows into concrete items.
-    public func executePage(accessPath: AccessPath? = nil) async throws -> PolymorphicQueryPage {
+    public func executePage() async throws -> PolymorphicQueryPage {
+        try await executePage(accessPath: nil)
+    }
+
+    /// Execute the logical query and decode polymorphic rows into concrete items.
+    @_spi(PolymorphicRuntime)
+    public func executePage(accessPath: AccessPath?) async throws -> PolymorphicQueryPage {
         let response = try await query(accessPath: accessPath)
         return try decodePage(from: response)
     }
@@ -207,7 +216,13 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     /// Execute the logical query and return the first decoded result.
-    public func first(accessPath: AccessPath? = nil) async throws -> PolymorphicQueryResult? {
+    public func first() async throws -> PolymorphicQueryResult? {
+        try await executePage().results.first
+    }
+
+    /// Execute the logical query and return the first decoded result.
+    @_spi(PolymorphicRuntime)
+    public func first(accessPath: AccessPath?) async throws -> PolymorphicQueryResult? {
         try await executePage(accessPath: accessPath).results.first
     }
 
@@ -253,17 +268,12 @@ public struct PolymorphicQuery<Member: Persistable & Polymorphable>: Sendable {
     }
 
     /// Resolve a shared index name from polymorphic group metadata.
+    @_spi(PolymorphicRuntime)
     public func resolveIndexName(
         kindIdentifier: String,
         fieldName: String
     ) throws -> String? {
         let group = try context.container.polymorphicGroup(identifier: groupIdentifier)
-        if let descriptor = context.container.schema.polymorphicIndexDescriptors(identifier: group.identifier).first(where: {
-            $0.kindIdentifier == kindIdentifier
-                && descriptorFields($0.fieldNames, contain: fieldName)
-        }) {
-            return descriptor.name
-        }
         return group.indexes.first { descriptor in
             descriptor.kindIdentifier == kindIdentifier
                 && descriptorFields(descriptor.fieldNames, contain: fieldName)

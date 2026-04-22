@@ -2,7 +2,7 @@
 // FullTextIndex - Query extension for full-text search
 
 import Foundation
-import DatabaseEngine
+@_spi(PolymorphicRuntime) import DatabaseEngine
 import Core
 import QueryIR
 import DatabaseClientProtocol
@@ -741,7 +741,7 @@ public enum PolymorphicFullTextQueryError: Error, Sendable, CustomStringConverti
         case .indexNotFound(let groupIdentifier, let fieldName):
             return """
                 No polymorphic full-text index was found for group '\(groupIdentifier)' and field '\(fieldName)'.
-                Declare the shared full-text index on the polymorphic group metadata, or use .index(...) as an explicit escape hatch.
+                Declare the shared full-text index on the polymorphic group metadata with a KeyPath-based descriptor.
                 """
         }
     }
@@ -754,7 +754,6 @@ public enum PolymorphicFullTextQueryError: Error, Sendable, CustomStringConverti
 public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphable>: Sendable {
     private var base: PolymorphicQuery<Member>
     private let fieldName: String
-    private var indexName: String?
     private var searchTerms: [String] = []
     private var matchMode: TextMatchMode = .all
     private var returnScores = false
@@ -785,13 +784,6 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
     /// Set search terms using a variadic API.
     public func terms(_ terms: String..., mode: TextMatchMode = .all) -> Self {
         self.terms(terms, mode: mode)
-    }
-
-    /// Use an explicit polymorphic full-text index name as an escape hatch.
-    public func index(_ name: String) -> Self {
-        var copy = self
-        copy.indexName = name
-        return copy
     }
 
     /// Limit the number of matching rows.
@@ -881,10 +873,6 @@ public struct PolymorphicFullTextQueryBuilder<Member: Persistable & Polymorphabl
     }
 
     private func buildIndexName() throws -> String {
-        if let indexName {
-            return indexName
-        }
-
         if let resolvedIndexName = try base.resolveIndexName(
             kindIdentifier: FullTextIndexKind<Member>.identifier,
             fieldName: fieldName

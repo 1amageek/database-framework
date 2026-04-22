@@ -196,6 +196,48 @@ struct Document {
 // Only documents with embeddings appear in search results
 ```
 
+### Polymorphic Vector Search
+
+Polymorphic vector search is used when several concrete models share one
+logical source and one vector space. The public interface stays KeyPath-based:
+callers choose the shared vector field with `\.embedding`, not with a raw field
+name string.
+
+```swift
+protocol Entity: Polymorphable {
+    var embedding: [Float] { get set }
+}
+
+extension Entity where Self: Persistable {
+    static var polymorphicIndexDescriptors: [IndexDescriptor] {
+        [
+            IndexDescriptor(
+                name: "Entity_vector_embedding",
+                keyPaths: [\Self.embedding],
+                kind: VectorIndexKind<Self>(
+                    embedding: \Self.embedding,
+                    dimensions: 256,
+                    metric: .cosine
+                )
+            )
+        ]
+    }
+}
+
+let page = try await context.findPolymorphic(Person.self)
+    .vector(\.embedding, dimensions: 256)
+    .query(queryEmbedding, k: 10)
+    .metric(.cosine)
+    .executePage()
+```
+
+The schema keeps one descriptor per concrete member type. That preserves the
+concrete `PartialKeyPath<Person>` and `PartialKeyPath<Organization>` values
+needed by write-side extraction, while the shared descriptor name keeps the
+read path pointed at the same logical index. The vector query builder converts
+the KeyPath to the canonical read parameter internally after validating it
+against the model metadata.
+
 ## Implementation Status
 
 | Feature | Status | Notes |
@@ -207,6 +249,7 @@ struct Document {
 | Dot product | ✅ Complete | Inner product |
 | ACORN filtering | ✅ Complete | Predicate-agnostic filtering |
 | Sparse index (nil) | ✅ Complete | nil vectors not indexed |
+| Polymorphic vector search | ✅ Complete | KeyPath public API, shared logical index |
 | IVF (inverted file) | ❌ Not implemented | Cluster-based ANN |
 | Quantization (PQ) | ❌ Not implemented | Memory compression |
 | Batch query | ⚠️ Partial | Multiple queries in one call |

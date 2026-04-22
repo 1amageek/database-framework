@@ -240,11 +240,10 @@ public final class DBContainer: Sendable {
             try await stateManager.ensureReadable(indexNames)
         }
         for group in schema.polymorphicGroups {
-            let descriptors = schema.polymorphicIndexDescriptors(identifier: group.identifier)
-            guard !descriptors.isEmpty else { continue }
+            guard !group.indexes.isEmpty else { continue }
             let subspace = try await resolvePolymorphicDirectory(for: group.identifier)
             let stateManager = IndexStateManager(container: self, subspace: subspace)
-            let indexNames = descriptors.map(\.name)
+            let indexNames = group.indexes.map(\.name)
             try await stateManager.ensureReadable(indexNames)
         }
     }
@@ -868,9 +867,17 @@ extension DBContainer {
             try await willMigrate(context)
         }
 
-        for descriptor in stage.addedIndexDescriptors {
-            logger.info("Adding index: \(descriptor.name)")
-            try await context.addIndex(descriptor)
+        for indexName in stage.indexChanges.added {
+            logger.info("Adding index: \(indexName)")
+            if let descriptor = targetSchema.indexDescriptor(named: indexName) {
+                try await context.addIndex(descriptor)
+            } else if targetSchema.polymorphicGroup(containingIndexNamed: indexName) != nil {
+                try await context.addPolymorphicIndex(indexName: indexName)
+            } else {
+                throw FDBRuntimeError.indexNotFound(
+                    "Index '\(indexName)' not found in target schema"
+                )
+            }
         }
 
         for indexName in stage.indexChanges.removed {

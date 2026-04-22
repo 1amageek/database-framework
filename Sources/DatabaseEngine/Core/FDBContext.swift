@@ -1574,9 +1574,8 @@ public final class FDBContext: Sendable {
         group: PolymorphicGroup,
         subspace: Subspace
     ) -> IndexMaintenanceService {
-        let groupDescriptors = container.schema.polymorphicIndexDescriptors(identifier: group.identifier)
-        let groupConfigurations = groupDescriptors.flatMap { descriptor in
-            container.indexConfigurations[descriptor.name] ?? []
+        let groupConfigurations = group.indexes.flatMap { index in
+            container.indexConfigurations[index.name] ?? []
         }
         return IndexMaintenanceService(
             indexStateManager: IndexStateManager(container: container, subspace: subspace),

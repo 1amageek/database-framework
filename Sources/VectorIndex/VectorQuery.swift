@@ -2,7 +2,7 @@
 // VectorIndex - Query extension for vector similarity search
 
 import Foundation
-import DatabaseEngine
+@_spi(PolymorphicRuntime) import DatabaseEngine
 import Core
 import QueryIR
 import DatabaseClientProtocol
@@ -624,6 +624,162 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         }
         // Fallback to conventional format
         return "\(T.persistableType)_vector_\(fieldName)"
+    }
+}
+
+// MARK: - Polymorphic Vector Query Builder
+
+public enum PolymorphicVectorQueryError: Error, Sendable, CustomStringConvertible {
+    case indexNotFound(groupIdentifier: String, fieldName: String)
+
+    public var description: String {
+        switch self {
+        case .indexNotFound(let groupIdentifier, let fieldName):
+            return """
+                No polymorphic vector index was found for group '\(groupIdentifier)' and field '\(fieldName)'.
+                Declare the shared vector index on the polymorphic group metadata with a KeyPath-based descriptor.
+                """
+        }
+    }
+}
+
+/// Builder for vector similarity search across a polymorphic logical group.
+///
+/// Use `context.findPolymorphic(ConcreteType.self)` to start the query, then
+/// narrow by a vector field that is shared across the conforming models.
+public struct PolymorphicVectorQueryBuilder<Member: Persistable & Polymorphable>: Sendable {
+    private var base: PolymorphicQuery<Member>
+    private let fieldName: String
+    private let dimensions: Int
+    private var queryVector: [Float]?
+    private var k: Int = 10
+    private var distanceMetric: VectorDistanceMetric = .cosine
+
+    internal init(
+        base: PolymorphicQuery<Member>,
+        fieldName: String,
+        dimensions: Int
+    ) {
+        VectorQueryRuntime.ensureRegistered()
+        self.base = base
+        self.fieldName = fieldName
+        self.dimensions = dimensions
+    }
+
+    /// Set the query vector and number of nearest neighbors.
+    public func query(_ vector: [Float], k: Int) -> Self {
+        var copy = self
+        copy.queryVector = vector
+        copy.k = k
+        copy.base = copy.base.limit(k)
+        return copy
+    }
+
+    /// Set the vector distance metric.
+    public func metric(_ metric: VectorDistanceMetric) -> Self {
+        var copy = self
+        copy.distanceMetric = metric
+        return copy
+    }
+
+    /// Set canonical read consistency for the search.
+    public func consistency(_ consistency: ReadConsistency?) -> Self {
+        var copy = self
+        copy.base = copy.base.consistency(consistency)
+        return copy
+    }
+
+    /// Set canonical page size for the search.
+    public func pageSize(_ count: Int?) -> Self {
+        var copy = self
+        copy.base = copy.base.pageSize(count)
+        return copy
+    }
+
+    /// Continue from a previous polymorphic continuation token.
+    public func continuing(from continuation: QueryContinuation?) -> Self {
+        var copy = self
+        copy.base = copy.base.continuing(from: continuation)
+        return copy
+    }
+
+    /// Execute the polymorphic vector search.
+    public func execute() async throws -> [PolymorphicQueryResult] {
+        try await executePage().results
+    }
+
+    /// Execute the polymorphic vector search and return page metadata.
+    public func executePage() async throws -> PolymorphicQueryPage {
+        try await base.executePage(accessPath: .index(try makeIndexScan()))
+    }
+
+    /// Execute the polymorphic vector search and return the first result.
+    public func first() async throws -> PolymorphicQueryResult? {
+        try await executePage().results.first
+    }
+
+    private func makeIndexScan() throws -> IndexScanSource {
+        guard let vector = queryVector else {
+            throw VectorQueryError.noQueryVector
+        }
+
+        guard vector.count == dimensions else {
+            throw VectorQueryError.dimensionMismatch(expected: dimensions, actual: vector.count)
+        }
+
+        let parameters: [String: QueryParameterValue] = [
+            VectorReadParameter.fieldName: .string(fieldName),
+            VectorReadParameter.dimensions: .int(Int64(dimensions)),
+            VectorReadParameter.queryVector: .array(vector.map { .double(Double($0)) }),
+            VectorReadParameter.k: .int(Int64(k)),
+            VectorReadParameter.metric: .string(distanceMetric.rawValue)
+        ]
+
+        return IndexScanSource(
+            indexName: try buildIndexName(),
+            kindIdentifier: VectorIndexKind<Member>.identifier,
+            parameters: parameters
+        )
+    }
+
+    private func buildIndexName() throws -> String {
+        if let resolvedIndexName = try base.resolveIndexName(
+            kindIdentifier: VectorIndexKind<Member>.identifier,
+            fieldName: fieldName
+        ) {
+            return resolvedIndexName
+        }
+
+        throw PolymorphicVectorQueryError.indexNotFound(
+            groupIdentifier: base.identifier,
+            fieldName: fieldName
+        )
+    }
+}
+
+public extension PolymorphicQuery where Member: Persistable & Polymorphable {
+    /// Search a shared vector field across all members of the polymorphic group.
+    func vector(
+        _ keyPath: KeyPath<Member, [Float]>,
+        dimensions: Int
+    ) -> PolymorphicVectorQueryBuilder<Member> {
+        PolymorphicVectorQueryBuilder(
+            base: self,
+            fieldName: Member.fieldName(for: keyPath),
+            dimensions: dimensions
+        )
+    }
+
+    /// Search a shared optional vector field across all members of the polymorphic group.
+    func vector(
+        _ keyPath: KeyPath<Member, [Float]?>,
+        dimensions: Int
+    ) -> PolymorphicVectorQueryBuilder<Member> {
+        PolymorphicVectorQueryBuilder(
+            base: self,
+            fieldName: Member.fieldName(for: keyPath),
+            dimensions: dimensions
+        )
     }
 }
 

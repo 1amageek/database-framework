@@ -170,9 +170,12 @@ extension MigrationStage {
         return toVersion.indexChanges(from: fromVersion)
     }
 
-    /// Get added index descriptors for this migration stage
+    /// Get added concrete index descriptors for this migration stage.
     ///
-    /// - Returns: Array of IndexDescriptor objects to add
+    /// Polymorphic logical indexes are represented by `indexChanges.added` and
+    /// resolved through `Schema.polymorphicGroup(containingIndexNamed:)`.
+    ///
+    /// - Returns: Array of concrete IndexDescriptor objects to add
     public var addedIndexDescriptors: [IndexDescriptor] {
         let addedNames = indexChanges.added
         return toVersion.allIndexDescriptors.filter { addedNames.contains($0.name) }

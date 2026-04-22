@@ -100,7 +100,7 @@ public final class ReadVersionCache: Sendable {
     /// Returns the cached version based on policy:
     /// - `.server`: Always returns `nil` (no cache)
     /// - `.cached`: Returns cached version regardless of age
-    /// - `.stale(N)`: Returns cached version only if age ≤ N seconds
+    /// - `.stale(N)`: Returns cached version only if age is younger than N seconds
     ///
     /// - Parameter policy: The cache policy
     /// - Returns: The cached version, or `nil` if not valid
@@ -118,6 +118,8 @@ public final class ReadVersionCache: Sendable {
 
         case .stale(let seconds):
             // Use cache only if fresh enough
+            guard seconds > 0 else { return nil }
+
             return cache.withLock { cached in
                 guard let cached = cached else { return nil }
 
@@ -125,7 +127,7 @@ public final class ReadVersionCache: Sendable {
                 let ageNanos = now - cached.timestamp
                 let ageSeconds = Double(ageNanos) / 1_000_000_000
 
-                guard ageSeconds <= seconds else { return nil }
+                guard ageSeconds < seconds else { return nil }
 
                 return cached.version
             }

@@ -211,7 +211,7 @@ public struct MigrationContext: Sendable {
     /// - Throws: Error if index addition fails or target entity cannot be determined
     public func addIndex(_ indexDescriptor: IndexDescriptor, batchSize: Int = 100) async throws {
         if let group = try identifyPolymorphicTargetGroup(for: indexDescriptor, in: schema) {
-            try await addPolymorphicIndex(indexDescriptor, group: group, batchSize: batchSize)
+            try await addPolymorphicIndex(indexName: indexDescriptor.name, group: group, batchSize: batchSize)
             return
         }
 
@@ -301,6 +301,16 @@ public struct MigrationContext: Sendable {
         }
     }
 
+    /// Add a new logical polymorphic index and build it online.
+    public func addPolymorphicIndex(indexName: String, batchSize: Int = 100) async throws {
+        guard let group = schema.polymorphicGroup(containingIndexNamed: indexName) else {
+            throw FDBRuntimeError.indexNotFound(
+                "Polymorphic index '\(indexName)' not found in target schema"
+            )
+        }
+        try await addPolymorphicIndex(indexName: indexName, group: group, batchSize: batchSize)
+    }
+
     /// Remove an index and add FormerIndex entry
     ///
     /// **Implementation** (all in single atomic transaction):
@@ -319,6 +329,10 @@ public struct MigrationContext: Sendable {
     ) async throws {
         // 1. Find index descriptor in source schema to identify target entity
         guard let indexDescriptor = sourceSchema.indexDescriptor(named: indexName) else {
+            if let group = sourceSchema.polymorphicGroup(containingIndexNamed: indexName) {
+                try await removePolymorphicIndex(indexName: indexName, group: group, addedVersion: addedVersion)
+                return
+            }
             throw FDBRuntimeError.indexNotFound(
                 "Index '\(indexName)' not found in source schema. Cannot determine target entity."
             )
@@ -392,6 +406,10 @@ public struct MigrationContext: Sendable {
     public func rebuildIndex(indexName: String, batchSize: Int = 100) async throws {
         // 1. Find index descriptor in schema
         guard let indexDescriptor = schema.indexDescriptor(named: indexName) else {
+            if let group = schema.polymorphicGroup(containingIndexNamed: indexName) {
+                try await rebuildPolymorphicIndex(indexName: indexName, group: group, batchSize: batchSize)
+                return
+            }
             throw FDBRuntimeError.indexNotFound(
                 "Index '\(indexName)' not found in schema"
             )
@@ -474,17 +492,17 @@ public struct MigrationContext: Sendable {
     }
 
     private func addPolymorphicIndex(
-        _ indexDescriptor: IndexDescriptor,
+        indexName: String,
         group: PolymorphicGroup,
         batchSize: Int
     ) async throws {
         let subspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
         let stateManager = IndexStateManager(container: container, subspace: subspace)
-        let currentState = try await stateManager.state(of: indexDescriptor.name)
+        let currentState = try await stateManager.state(of: indexName)
 
         switch currentState {
         case .disabled:
-            try await stateManager.enable(indexDescriptor.name)
+            try await stateManager.enable(indexName)
         case .readable:
             return
         case .writeOnly:
@@ -492,13 +510,13 @@ public struct MigrationContext: Sendable {
         }
 
         try await buildPolymorphicIndexEntries(
-            indexName: indexDescriptor.name,
+            indexName: indexName,
             group: group,
             subspace: subspace,
             stateManager: stateManager,
             batchSize: batchSize
         )
-        try await stateManager.makeReadable(indexDescriptor.name)
+        try await stateManager.makeReadable(indexName)
     }
 
     private func removePolymorphicIndex(
@@ -958,8 +976,7 @@ public struct MigrationContext: Sendable {
         in schema: Schema
     ) throws -> PolymorphicGroup? {
         let matchingGroups = schema.polymorphicGroups.filter { group in
-            schema.polymorphicIndexDescriptors(identifier: group.identifier)
-                .contains { $0.name == descriptor.name }
+            group.indexes.contains { $0.name == descriptor.name }
         }
 
         guard matchingGroups.count <= 1 else {

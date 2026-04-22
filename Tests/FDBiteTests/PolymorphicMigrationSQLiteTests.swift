@@ -264,8 +264,8 @@ enum SQLitePolymorphicRebuildMigrationPlan: SchemaMigrationPlan {
 
 @Suite("Polymorphic Migration SQLite Tests", .serialized, .heartbeat)
 struct PolymorphicMigrationSQLiteTests {
-    @Test("VersionedSchema exposes polymorphic descriptors for migration diffing")
-    func versionedSchemaExposesPolymorphicDescriptorsForMigrationDiffing() throws {
+    @Test("VersionedSchema exposes polymorphic logical indexes for migration diffing")
+    func versionedSchemaExposesPolymorphicLogicalIndexesForMigrationDiffing() throws {
         let changes = SQLitePolymorphicMigrationSchemaV2.indexChanges(
             from: SQLitePolymorphicMigrationSchemaV1.self
         )
@@ -278,6 +278,9 @@ struct PolymorphicMigrationSQLiteTests {
             toVersion: SQLitePolymorphicMigrationSchemaV2.self
         )
         let schema = SQLitePolymorphicMigrationSchemaV2.makeSchema()
+        let logicalDescriptors = schema.polymorphicIndexCatalog(
+            identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType
+        )
         let articleDescriptors = schema.polymorphicIndexDescriptors(
             identifier: SQLitePolymorphicMigrationArticleV2.polymorphableType,
             memberType: SQLitePolymorphicMigrationArticleV2.self
@@ -288,7 +291,11 @@ struct PolymorphicMigrationSQLiteTests {
         )
 
         #expect(changes.added == expectedAdded)
-        #expect(Set(stage.addedIndexDescriptors.map(\.name)) == expectedAdded)
+        #expect(stage.indexChanges.added == expectedAdded)
+        #expect(stage.addedIndexDescriptors.isEmpty)
+        #expect(Set(logicalDescriptors.map(\.name)) == expectedAdded)
+        #expect(schema.indexDescriptor(named: "SQLitePolymorphicMigrationDocument_title") == nil)
+        #expect(schema.polymorphicGroup(containingIndexNamed: "SQLitePolymorphicMigrationDocument_title") != nil)
         #expect(articleDescriptors.map(\.name) == reportDescriptors.map(\.name))
         #expect(articleDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationArticleV2> != nil)
         #expect(articleDescriptors.first?.keyPaths.first as? PartialKeyPath<SQLitePolymorphicMigrationReportV2> == nil)
