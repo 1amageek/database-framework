@@ -38,6 +38,10 @@ public struct SPARQLQueryExecutor: Sendable {
     /// `.inverse()` consults owl:inverseOf, and transitive properties use BFS.
     private let ontologyContext: OntologyContext?
 
+    /// Implicit named-graph scope applied to triples without an explicit graph term.
+    /// Used by federated queries to keep each source's scan bound to a single graph.
+    private let defaultGraph: String?
+
     /// Reusable scan signature for substituted triple patterns.
     ///
     /// Two patterns can reuse a single index scan only when they produce the same scan range
@@ -89,6 +93,10 @@ public struct SPARQLQueryExecutor: Sendable {
     ///   - toFieldName: Name of the to/object field
     ///   - graphFieldName: Name of the graph field (nil = no graph support)
     ///   - storedFieldNames: Property field names stored in CoveringValue (empty = no properties)
+    ///   - ontologyContext: Optional ontology context for property hierarchy evaluation
+    ///   - defaultGraph: Implicit named-graph scope; injected into triples without an explicit
+    ///                   graph term so scans are bound to this graph only. Ignored when
+    ///                   `graphFieldName` is nil.
     public init(
         database: any StorageEngine,
         indexSubspace: Subspace,
@@ -98,7 +106,8 @@ public struct SPARQLQueryExecutor: Sendable {
         toFieldName: String,
         graphFieldName: String? = nil,
         storedFieldNames: [String] = [],
-        ontologyContext: OntologyContext? = nil
+        ontologyContext: OntologyContext? = nil,
+        defaultGraph: String? = nil
     ) {
         self.database = database
         self.indexSubspace = indexSubspace
@@ -109,6 +118,7 @@ public struct SPARQLQueryExecutor: Sendable {
         self.graphFieldName = graphFieldName
         self.storedFieldNames = storedFieldNames
         self.ontologyContext = ontologyContext
+        self.defaultGraph = defaultGraph
     }
 
     // MARK: - Result Type
@@ -152,16 +162,45 @@ public struct SPARQLQueryExecutor: Sendable {
         limit: Int?,
         offset: Int
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        let effectivePattern = applyDefaultGraph(to: pattern)
         let evalResult = try await database.withTransaction { transaction in
             try await self.evaluate(
-                pattern: pattern,
+                pattern: effectivePattern,
                 indexSubspace: self.indexSubspace,
                 strategy: self.strategy,
                 transaction: transaction
             )
         }
 
-        // Apply offset and limit
+        return applyOffsetLimit(evalResult, offset: offset, limit: limit)
+    }
+
+    /// Evaluate a pattern inside a caller-supplied transaction.
+    ///
+    /// Used by federated queries so every source sees the same read version and
+    /// snapshot. `offset`/`limit` behave identically to `execute(pattern:limit:offset:)`.
+    public func executeInTransaction(
+        pattern: ExecutionPattern,
+        transaction: any Transaction,
+        limit: Int?,
+        offset: Int
+    ) async throws -> ([VariableBinding], ExecutionStatistics) {
+        let effectivePattern = applyDefaultGraph(to: pattern)
+        let evalResult = try await self.evaluate(
+            pattern: effectivePattern,
+            indexSubspace: self.indexSubspace,
+            strategy: self.strategy,
+            transaction: transaction
+        )
+
+        return applyOffsetLimit(evalResult, offset: offset, limit: limit)
+    }
+
+    private func applyOffsetLimit(
+        _ evalResult: EvaluationResult,
+        offset: Int,
+        limit: Int?
+    ) -> ([VariableBinding], ExecutionStatistics) {
         var bindings = evalResult.bindings
         if offset > 0 {
             bindings = Array(bindings.dropFirst(offset))
@@ -169,8 +208,55 @@ public struct SPARQLQueryExecutor: Sendable {
         if let limit = limit {
             bindings = Array(bindings.prefix(limit))
         }
-
         return (bindings, evalResult.stats)
+    }
+
+    /// Inject `defaultGraph` into triples that have no explicit graph term.
+    ///
+    /// Only applied when the executor has a graph field; otherwise returns the
+    /// pattern unchanged.
+    private func applyDefaultGraph(to pattern: ExecutionPattern) -> ExecutionPattern {
+        guard graphFieldName != nil, let defaultGraph else { return pattern }
+        let graphTerm = ExecutionTerm.value(.string(defaultGraph))
+        return Self.fillDefaultGraph(in: pattern, graphTerm: graphTerm)
+    }
+
+    private static func fillDefaultGraph(
+        in pattern: ExecutionPattern,
+        graphTerm: ExecutionTerm
+    ) -> ExecutionPattern {
+        switch pattern {
+        case .basic(let triples):
+            return .basic(triples.map { triple in
+                triple.graph == nil ? triple.withGraph(graphTerm) : triple
+            })
+        case .join(let left, let right):
+            return .join(fillDefaultGraph(in: left, graphTerm: graphTerm),
+                         fillDefaultGraph(in: right, graphTerm: graphTerm))
+        case .optional(let left, let right):
+            return .optional(fillDefaultGraph(in: left, graphTerm: graphTerm),
+                             fillDefaultGraph(in: right, graphTerm: graphTerm))
+        case .union(let left, let right):
+            return .union(fillDefaultGraph(in: left, graphTerm: graphTerm),
+                          fillDefaultGraph(in: right, graphTerm: graphTerm))
+        case .filter(let inner, let expr):
+            return .filter(fillDefaultGraph(in: inner, graphTerm: graphTerm), expr)
+        case .groupBy(let inner, let groupVars, let aggs, let having):
+            return .groupBy(
+                fillDefaultGraph(in: inner, graphTerm: graphTerm),
+                groupVariables: groupVars,
+                aggregates: aggs,
+                having: having
+            )
+        case .minus(let left, let right):
+            return .minus(fillDefaultGraph(in: left, graphTerm: graphTerm),
+                          fillDefaultGraph(in: right, graphTerm: graphTerm))
+        case .propertyPath:
+            return pattern
+        case .lateral(let left, let right):
+            return .lateral(fillDefaultGraph(in: left, graphTerm: graphTerm),
+                            fillDefaultGraph(in: right, graphTerm: graphTerm))
+        }
     }
 
     // MARK: - Pattern Evaluation

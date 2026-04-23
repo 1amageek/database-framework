@@ -132,6 +132,31 @@ extension FDBContext {
         SPARQLEntryPoint(queryContext: indexQueryContext)
     }
 
+    /// Start a graph-scoped SPARQL query that unions all triple-producing
+    /// indexes bound to the named graph.
+    ///
+    /// Prefer this API over `sparql(T.self)` when the query is graph-scoped
+    /// rather than type-scoped — e.g., memory recall over a knowledge graph
+    /// that spans multiple entity types. Both `OWLTripleIndexKind` subspaces
+    /// whose descriptor graph matches and `GraphIndexKind` tables with a
+    /// graph column participate in the union.
+    ///
+    /// **Usage**:
+    /// ```swift
+    /// let result = try await context.sparql(graph: "memory:default")
+    ///     .where("?entity", "rdfs:label", "?label")
+    ///     .filter("?label", contains: keyword)
+    ///     .select("?entity")
+    ///     .execute()
+    /// ```
+    ///
+    /// - Parameter graph: Named-graph IRI to scope the query to. Defaults to
+    ///   `"default"` to match `OWLTripleIndexKind`'s default graph value.
+    /// - Returns: A `FederatedSPARQLBuilder` ready to accept patterns.
+    public func sparql(graph: String = "default") -> FederatedSPARQLBuilder {
+        FederatedSPARQLBuilder(queryContext: indexQueryContext, graph: graph)
+    }
+
     /// Execute a pre-built ExecutionPattern directly
     ///
     /// Used by higher-level modules (e.g., Database) that convert parsed

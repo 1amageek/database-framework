@@ -119,6 +119,34 @@ public struct IndexQueryContext: Sendable {
         return fdbStore.indexSubspace
     }
 
+    /// Get the index subspace for an entity resolved by name.
+    ///
+    /// This is the type-erased counterpart of `indexSubspace(for:)`. It looks the
+    /// entity up in the schema and dispatches through `_openExistential` so callers
+    /// that don't hold a generic `T` (e.g. federated SPARQL queries) can still
+    /// resolve the right subspace.
+    ///
+    /// - Parameter entityName: The entity name as registered in the schema
+    /// - Returns: The index subspace for that entity
+    /// - Throws: `IndexQueryContextError.indexNotFound` when the entity is absent
+    ///   or its `persistableType` is nil (e.g. wire-decoded schemas).
+    public func indexSubspace(forEntityName entityName: String) async throws -> Subspace {
+        guard let entity = schema.entitiesByName[entityName] else {
+            throw IndexQueryContextError.indexNotFound(entityName)
+        }
+        guard let persistableType = entity.persistableType else {
+            throw IndexQueryContextError.indexNotFound(
+                "Entity '\(entityName)' has no runtime persistableType"
+            )
+        }
+
+        func helper<T: Persistable>(_ type: T.Type) async throws -> Subspace {
+            try await indexSubspace(for: type)
+        }
+
+        return try await _openExistential(persistableType, do: helper)
+    }
+
     /// Get a StorageReader for a type
     ///
     /// Use this to access index data via IndexSearcher classes.
