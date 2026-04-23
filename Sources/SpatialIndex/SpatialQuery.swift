@@ -7,7 +7,7 @@ import Foundation
 import DatabaseEngine
 import Core
 import StorageKit
-import Spatial
+import Geospatial
 
 // MARK: - Spatial Query Result
 

@@ -38,7 +38,7 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
-        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0422.0"),
+        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0423.0"),
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.4.0"),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
@@ -130,7 +130,7 @@ let package = Package(
             dependencies: [
                 "DatabaseEngine",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "Spatial", package: "database-kit"),
+                .product(name: "Geospatial", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
             ],
             exclude: ["README.md"]
@@ -380,7 +380,7 @@ let package = Package(
                 "TestSupport",
                 .product(name: "Vector", package: "database-kit"),
                 .product(name: "FullText", package: "database-kit"),
-                .product(name: "Spatial", package: "database-kit"),
+                .product(name: "Geospatial", package: "database-kit"),
                 .product(name: "Rank", package: "database-kit"),
                 .product(name: "Permuted", package: "database-kit"),
                 .product(name: "Graph", package: "database-kit"),
@@ -500,7 +500,7 @@ let package = Package(
                 "SpatialIndex",
                 "TestSupport",
                 .product(name: "Core", package: "database-kit"),
-                .product(name: "Spatial", package: "database-kit"),
+                .product(name: "Geospatial", package: "database-kit"),
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
             ],
             swiftSettings: [

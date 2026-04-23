@@ -6,7 +6,7 @@
 
 import Foundation
 import DatabaseEngine
-import Spatial
+import Geospatial
 
 /// Winding Number algorithm for robust point-in-polygon testing
 ///

@@ -8,10 +8,10 @@ import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
-import Spatial
+import Geospatial
 
 // Re-export SpatialIndexModel types for convenience
-@_exported import Spatial
+@_exported import Geospatial
 
 // MARK: - IndexKindMaintainable Conformance
 

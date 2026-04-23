@@ -7,7 +7,7 @@ import FDBStorage
 import Core
 import Vector
 import FullText
-import Spatial
+import Geospatial
 import Rank
 import Permuted
 import Graph

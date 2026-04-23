@@ -7,7 +7,7 @@ import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
-import Spatial
+import Geospatial
 
 // MARK: - SpatialCellScanner
 

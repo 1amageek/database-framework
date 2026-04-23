@@ -7,7 +7,7 @@ import Foundation
 import StorageKit
 import FDBStorage
 import Core
-import Spatial
+import Geospatial
 import TestSupport
 @testable import DatabaseEngine
 @testable import SpatialIndex

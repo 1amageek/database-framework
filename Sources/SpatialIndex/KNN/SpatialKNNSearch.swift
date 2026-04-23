@@ -8,7 +8,7 @@ import Foundation
 import Core
 import DatabaseEngine
 import StorageKit
-import Spatial
+import Geospatial
 
 /// True K-Nearest Neighbors search using Priority Queue + Cell Pruning
 ///
