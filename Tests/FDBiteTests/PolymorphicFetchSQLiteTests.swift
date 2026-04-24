@@ -58,6 +58,81 @@ struct SQLitePolymorphicReport: SQLitePolymorphicDocument {
     var pageCount: Int
 }
 
+protocol SQLiteSecurePolymorphicDocument: Polymorphable {
+    var id: String { get }
+    var title: String { get }
+    var ownerID: String { get }
+}
+
+extension SQLiteSecurePolymorphicDocument {
+    public static var polymorphableType: String { "SQLiteSecurePolymorphicDocument" }
+
+    public static var polymorphicDirectoryPathComponents: [any DirectoryPathElement] {
+        [Path("sqlite_secure_polymorphic_shared")]
+    }
+
+    public static var polymorphicIndexDescriptors: [IndexDescriptor] {
+        [
+            IndexDescriptor(
+                name: "SQLiteSecurePolymorphicDocument_title",
+                keyPaths: [\Self.title],
+                kind: ScalarIndexKind<Self>(fields: [\Self.title])
+            )
+        ]
+    }
+}
+
+@Persistable
+struct SQLiteSecurePolymorphicArticle: SQLiteSecurePolymorphicDocument, SecurityPolicy {
+    #Directory<SQLiteSecurePolymorphicArticle>("sqlite_secure_polymorphic_articles")
+
+    var id: String = ULID().ulidString
+    var title: String
+    var ownerID: String
+    var body: String
+
+    static func allowGet(
+        resource: SQLiteSecurePolymorphicArticle,
+        auth: (any AuthContext)?
+    ) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+
+    static func allowList(
+        query: SecurityQuery<SQLiteSecurePolymorphicArticle>,
+        auth: (any AuthContext)?
+    ) -> Bool {
+        auth != nil
+    }
+
+    static func allowCreate(
+        newResource: SQLiteSecurePolymorphicArticle,
+        auth: (any AuthContext)?
+    ) -> Bool {
+        newResource.ownerID == auth?.userID
+    }
+
+    static func allowUpdate(
+        resource: SQLiteSecurePolymorphicArticle,
+        newResource: SQLiteSecurePolymorphicArticle,
+        auth: (any AuthContext)?
+    ) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+
+    static func allowDelete(
+        resource: SQLiteSecurePolymorphicArticle,
+        auth: (any AuthContext)?
+    ) -> Bool {
+        resource.ownerID == auth?.userID
+    }
+}
+
+private struct SQLitePolymorphicTestAuth: AuthContext {
+    let userID: String
+    var roles: Set<String> = []
+}
+
 protocol SQLitePolymorphicVectorDocument: Polymorphable {
     var id: String { get }
     var title: String { get }
@@ -248,6 +323,32 @@ struct PolymorphicFetchSQLiteTests {
         let indexSubspace = groupSubspace
             .subspace(SubspaceKey.indexes)
             .subspace("SQLitePolymorphicVectorDocument_embedding")
+
+        return try await container.engine.withTransaction { transaction -> Int in
+            let (begin, end) = indexSubspace.range()
+            var count = 0
+            for try await _ in transaction.getRange(begin: begin, end: end, snapshot: true) {
+                count += 1
+            }
+            return count
+        }
+    }
+
+    private func countSecurePolymorphicIndexEntries(
+        container: DBContainer,
+        valuePrefix: String? = nil
+    ) async throws -> Int {
+        let group = try container.polymorphicGroup(
+            identifier: SQLiteSecurePolymorphicArticle.polymorphableType
+        )
+        let groupSubspace = try await container.resolvePolymorphicDirectory(for: group.identifier)
+        var indexSubspace = groupSubspace
+            .subspace(SubspaceKey.indexes)
+            .subspace("SQLiteSecurePolymorphicDocument_title")
+
+        if let valuePrefix {
+            indexSubspace = indexSubspace.subspace(valuePrefix)
+        }
 
         return try await container.engine.withTransaction { transaction -> Int in
             let (begin, end) = indexSubspace.range()
@@ -515,6 +616,218 @@ struct PolymorphicFetchSQLiteTests {
             container: container,
             indexName: "SQLitePolymorphicDocument_id"
         ) == 0)
+    }
+
+    @Test("context stale delete removes current SQLite shared polymorphic scalar index entries")
+    func contextStaleDeleteRemovesCurrentSharedPolymorphicScalarIndexEntries() async throws {
+        let container = try await setupContainer()
+
+        var original = SQLitePolymorphicArticle(
+            title: "Shared Stale Original",
+            body: "original body"
+        )
+        original.id = "sqlite-polymorphic-stale-delete-article"
+
+        let seedContext = container.newContext()
+        seedContext.insert(original)
+        try await seedContext.save()
+
+        var current = original
+        current.title = "Shared Stale Current"
+        current.body = "current body"
+        let updateContext = container.newContext()
+        updateContext.replace(old: original, with: current)
+        try await updateContext.save()
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Shared Stale Original"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Shared Stale Current"
+        ) == 1)
+
+        let deleteContext = container.newContext()
+        deleteContext.delete(original)
+        try await deleteContext.save()
+
+        let afterDelete = try await container.newContext()
+            .fetchPolymorphic(SQLitePolymorphicArticle.self, id: original.id)
+
+        #expect(afterDelete == nil)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Shared Stale Original"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Shared Stale Current"
+        ) == 0)
+    }
+
+    @Test("clearAll removes only the target concrete type from SQLite shared polymorphic indexes")
+    func clearAllRemovesOnlyTargetConcreteTypeFromSharedPolymorphicIndexes() async throws {
+        let container = try await setupContainer()
+        let context = container.newContext()
+
+        var article = SQLitePolymorphicArticle(
+            title: "Clear Target Article",
+            body: "Body"
+        )
+        article.id = "sqlite-polymorphic-clear-target-article"
+        var report = SQLitePolymorphicReport(
+            title: "Clear Survivor Report",
+            pageCount: 12
+        )
+        report.id = "sqlite-polymorphic-clear-survivor-report"
+
+        context.insert(article)
+        context.insert(report)
+        try await context.save()
+
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title"
+        ) == 2)
+
+        try await context.clearAll(SQLitePolymorphicArticle.self)
+
+        let remaining = try await context.fetchPolymorphic(SQLitePolymorphicArticle.self)
+        let remainingIDs = Set(remaining.compactMap { item -> String? in
+            if let article = item as? SQLitePolymorphicArticle {
+                return article.id
+            }
+            if let report = item as? SQLitePolymorphicReport {
+                return report.id
+            }
+            return nil
+        })
+
+        #expect(remainingIDs == Set([report.id]))
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title"
+        ) == 1)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Clear Target Article"
+        ) == 0)
+        #expect(try await countPolymorphicIndexEntries(
+            container: container,
+            indexName: "SQLitePolymorphicDocument_title",
+            valuePrefix: "Clear Survivor Report"
+        ) == 1)
+    }
+
+    @Test("savePolymorphic and deletePolymorphic evaluate security against stored rows")
+    func saveAndDeletePolymorphicEvaluateSecurityAgainstStoredRows() async throws {
+        let engine = try SQLiteStorageEngine(configuration: .inMemory)
+        let schema = Schema(
+            [SQLiteSecurePolymorphicArticle.self],
+            version: Schema.Version(1, 0, 0)
+        )
+        let container = try await DBContainer(
+            for: schema,
+            configuration: .init(backend: .custom(engine)),
+            security: .enabled()
+        )
+
+        var original = SQLiteSecurePolymorphicArticle(
+            title: "Secure Original",
+            ownerID: "alice",
+            body: "Created by Alice"
+        )
+        original.id = "sqlite-secure-polymorphic-article"
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+            try await container.newContext().savePolymorphic(
+                original,
+                as: SQLiteSecurePolymorphicArticle.self
+            )
+        }
+
+        var transferred = original
+        transferred.title = "Secure Transferred"
+        transferred.ownerID = "bob"
+        transferred.body = "Transferred to Bob"
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+            try await container.newContext().savePolymorphic(
+                transferred,
+                as: SQLiteSecurePolymorphicArticle.self
+            )
+        }
+
+        var deniedUpdate = transferred
+        deniedUpdate.title = "Secure Unauthorized"
+        deniedUpdate.body = "Alice should not be able to update after transfer"
+        do {
+            try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+                try await container.newContext().savePolymorphic(
+                    deniedUpdate,
+                    as: SQLiteSecurePolymorphicArticle.self
+                )
+            }
+            Issue.record("Expected transferred polymorphic update to be denied")
+        } catch let error as SecurityError {
+            #expect(error.operation == .update)
+            #expect(error.userID == "alice")
+        }
+
+        do {
+            try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "alice")) {
+                try await container.newContext().deletePolymorphic(
+                    SQLiteSecurePolymorphicArticle.self,
+                    id: original.id,
+                    as: SQLiteSecurePolymorphicArticle.self
+                )
+            }
+            Issue.record("Expected transferred polymorphic delete to be denied")
+        } catch let error as SecurityError {
+            #expect(error.operation == .delete)
+            #expect(error.resourceID == original.id)
+            #expect(error.userID == "alice")
+        }
+
+        #expect(try await countSecurePolymorphicIndexEntries(
+            container: container,
+            valuePrefix: "Secure Original"
+        ) == 0)
+        #expect(try await countSecurePolymorphicIndexEntries(
+            container: container,
+            valuePrefix: "Secure Transferred"
+        ) == 1)
+        #expect(try await countSecurePolymorphicIndexEntries(
+            container: container,
+            valuePrefix: "Secure Unauthorized"
+        ) == 0)
+
+        let fetchedAsBob = try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "bob")) {
+            try await container.newContext().fetchPolymorphic(
+                SQLiteSecurePolymorphicArticle.self,
+                id: original.id
+            )
+        }
+        #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.title == "Secure Transferred")
+        #expect((fetchedAsBob as? SQLiteSecurePolymorphicArticle)?.ownerID == "bob")
+
+        try await AuthContextKey.$current.withValue(SQLitePolymorphicTestAuth(userID: "bob")) {
+            try await container.newContext().deletePolymorphic(
+                SQLiteSecurePolymorphicArticle.self,
+                id: original.id,
+                as: SQLiteSecurePolymorphicArticle.self
+            )
+        }
+
+        #expect(try await countSecurePolymorphicIndexEntries(container: container) == 0)
     }
 
     @Test("polymorphic SQLite full-text query resolves shared descriptor and maintains indexes")

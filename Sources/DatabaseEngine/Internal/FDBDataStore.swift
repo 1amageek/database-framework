@@ -1622,11 +1622,6 @@ internal final class FDBDataStore: DataStore, Sendable {
         let encoder = ProtobufEncoder()
         var serializedModels: [SerializedModel] = []
 
-        // Process deletes first (security evaluation)
-        for model in deletes {
-            try securityDelegate?.evaluateDelete(model)
-        }
-
         // Process inserts with single encoder
         for (index, model) in inserts.enumerated() {
             let precondition = insertPreconditions.indices.contains(index)
@@ -1796,16 +1791,25 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         if let providedOld {
             // Replace path: caller supplies the pre-image. For preconditions that
-            // need to verify current storage state (`.exists`, `.notExists`), do a
-            // lightweight existence probe; otherwise we trust providedOld.
+            // need to verify current storage state (`.exists`, `.notExists`), read
+            // the current row and use it for index cleanup. A stale caller-provided
+            // pre-image must not leave the current index entry behind.
             let needsExistenceProbe = precondition.requiresExistenceRead
             if needsExistenceProbe {
-                existingRowPresent = try await storage.read(for: key) != nil
+                if let oldData = try await storage.read(for: key) {
+                    oldModel = try DataAccess.deserializeAny(oldData, as: modelType)
+                    existingRowPresent = true
+                } else {
+                    oldModel = providedOld
+                    existingRowPresent = false
+                }
             } else {
                 existingRowPresent = true  // trusted
+                oldModel = providedOld
             }
-            oldModel = providedOld
-            try securityDelegate?.evaluateUpdate(providedOld, newResource: model)
+            if let oldModel {
+                try securityDelegate?.evaluateUpdate(oldModel, newResource: model)
+            }
             isNewRecord = false
         } else if skipExistingCheck {
             // Fast path: caller guarantees this is a new insert with no security checks needed
@@ -1918,24 +1922,41 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         let key = itemKey(for: persistableType, id: idTuple)
 
-        // Phase 2: evaluate write precondition before touching storage.
-        if precondition.requiresExistenceRead {
+        // Phase 2: evaluate write precondition before touching storage. Indexed
+        // deletes and secured deletes also need the current row so stale
+        // caller-provided models do not leave the current index entry behind or
+        // authorize deletion against stale field values.
+        var indexOldModel = model
+        let needsCurrentRow = precondition.requiresExistenceRead
+            || !type(of: model).indexDescriptors.isEmpty
+            || securityDelegate != nil
+        if needsCurrentRow {
             let storageProbe = ItemStorage(
                 transaction: transaction,
                 blobsSubspace: self.blobsSubspace
             )
-            let existingRowPresent = try await storageProbe.read(for: key) != nil
-            try Self.evaluateWritePrecondition(
-                precondition,
-                existingRowPresent: existingRowPresent,
-                typeName: persistableType,
-                idDescription: String(describing: model.id)
-            )
+            let existingRowPresent: Bool
+            if let existingData = try await storageProbe.read(for: key) {
+                indexOldModel = try DataAccess.deserializeAny(existingData, as: type(of: model))
+                existingRowPresent = true
+            } else {
+                existingRowPresent = false
+            }
+            if precondition.requiresExistenceRead {
+                try Self.evaluateWritePrecondition(
+                    precondition,
+                    existingRowPresent: existingRowPresent,
+                    typeName: persistableType,
+                    idDescription: String(describing: model.id)
+                )
+            }
         }
+
+        try securityDelegate?.evaluateDelete(indexOldModel)
 
         // Remove index entries first via IndexMaintenanceService (efficient diff-based update)
         try await indexMaintenanceService.updateIndexesUntyped(
-            oldModel: model,
+            oldModel: indexOldModel,
             newModel: nil,
             id: idTuple,
             transaction: transaction

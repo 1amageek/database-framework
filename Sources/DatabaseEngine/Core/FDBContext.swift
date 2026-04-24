@@ -658,13 +658,40 @@ public final class FDBContext: Sendable {
             let polyDirectory = polymorphicType.polymorphicDirectoryPathComponents.map { "\($0)" }.joined(separator: "/")
 
             if typeDirectory != polyDirectory {
-                // Different directory - need to clear polymorphic data too
+                // Different directory - need to clear polymorphic data and shared indexes too.
                 let polySubspace = try await container.resolvePolymorphicDirectory(for: polymorphicType)
                 let typeCode = polymorphicType.typeCode(for: T.persistableType)
-                let polyItemSubspace = polySubspace.subspace(SubspaceKey.items).subspace(typeCode)
+                let itemSubspace = polySubspace.subspace(SubspaceKey.items)
+                let polyItemSubspace = itemSubspace.subspace(typeCode)
+                let blobsSubspace = polySubspace.subspace(SubspaceKey.blobs)
+                let group = try container.polymorphicGroup(identifier: polymorphicType.polymorphableType)
+                let descriptors = container.schema.polymorphicIndexDescriptors(
+                    identifier: group.identifier,
+                    memberType: T.self
+                )
+                let maintenanceService = makePolymorphicIndexMaintenanceService(
+                    group: group,
+                    subspace: polySubspace
+                )
 
                 try await self.withRawTransaction(configuration: .batch) { transaction in
+                    let storage = ItemStorage(
+                        transaction: transaction,
+                        blobsSubspace: blobsSubspace
+                    )
                     let (polyBegin, polyEnd) = polyItemSubspace.range()
+                    for try await (key, data) in storage.scan(begin: polyBegin, end: polyEnd, snapshot: false) {
+                        let item = try DataAccess.deserializeAny(data, as: T.self)
+                        let compositeID = try itemSubspace.unpack(key)
+                        try await maintenanceService.updateIndexesUntyped(
+                            oldModel: item,
+                            newModel: nil as (any Persistable)?,
+                            id: compositeID,
+                            descriptors: descriptors,
+                            logicalTypeName: group.identifier,
+                            transaction: transaction
+                        )
+                    }
                     transaction.clearRange(beginKey: polyBegin, endKey: polyEnd)
                 }
             }
@@ -1228,9 +1255,22 @@ public final class FDBContext: Sendable {
             // share the same ModelKey by construction (merge rule invariant).
             let modelType = type(of: staged.new)
             let typeName = modelType.persistableType
-            let resolvedPath = resolvePartitionPath(for: staged.new)
-            let key = StoreKey(typeName: typeName, resolvedPath: resolvedPath)
-            replacesByStore[key, default: []].append(staged)
+            let oldResolvedPath = resolvePartitionPath(for: staged.old)
+            let newResolvedPath = resolvePartitionPath(for: staged.new)
+
+            if hasDynamicDirectory(modelType), oldResolvedPath != newResolvedPath {
+                let oldKey = StoreKey(typeName: typeName, resolvedPath: oldResolvedPath)
+                let newKey = StoreKey(typeName: typeName, resolvedPath: newResolvedPath)
+                deletesByStore[oldKey, default: []].append(
+                    StagedDelete(model: staged.old, precondition: staged.precondition)
+                )
+                insertsByStore[newKey, default: []].append(
+                    StagedInsert(model: staged.new, strict: false, precondition: .none)
+                )
+            } else {
+                let key = StoreKey(typeName: typeName, resolvedPath: newResolvedPath)
+                replacesByStore[key, default: []].append(staged)
+            }
         }
 
         for staged in deletesSnapshot {
@@ -1539,13 +1579,20 @@ public final class FDBContext: Sendable {
                 let compositeID = makePolymorphicCompositeID(typeCode: typeCode, idTuple: idTuple)
                 let polyKey = itemSubspace.pack(compositeID)
 
+                let oldModel: (any Persistable)
+                if let existingData = try await storage.read(for: polyKey) {
+                    oldModel = try DataAccess.deserializeAny(existingData, as: modelType)
+                } else {
+                    oldModel = model
+                }
+
                 // Delete (handles external blob chunks)
                 let descriptors = container.schema.polymorphicIndexDescriptors(
                     identifier: group.identifier,
                     memberType: modelType
                 )
                 try await maintenanceService.updateIndexesUntyped(
-                    oldModel: model,
+                    oldModel: oldModel,
                     newModel: nil as (any Persistable)?,
                     id: compositeID,
                     descriptors: descriptors,

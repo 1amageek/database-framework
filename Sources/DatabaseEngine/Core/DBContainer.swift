@@ -233,6 +233,7 @@ public final class DBContainer: Sendable {
     public func ensureIndexesReady() async throws {
         for entity in schema.entities {
             guard !entity.indexDescriptors.isEmpty else { continue }
+            guard !entity.hasDynamicDirectory else { continue }
             guard let persistableType = entity.persistableType else { continue }
             let subspace = try await resolveDirectory(for: persistableType)
             let stateManager = IndexStateManager(container: self, subspace: subspace)
@@ -349,6 +350,7 @@ public final class DBContainer: Sendable {
         }
 
         let subspace = try await resolveDirectory(for: type, path: path)
+        try await ensureIndexesReady(for: type, subspace: subspace)
         let store = FDBDataStore(
             container: self,
             subspace: subspace,
@@ -394,6 +396,7 @@ public final class DBContainer: Sendable {
         }
 
         let subspace = try await resolveDirectory(for: type, path: path)
+        try await ensureIndexesReady(for: type, subspace: subspace)
         let store = FDBDataStore(
             container: self,
             subspace: subspace,
@@ -403,6 +406,17 @@ public final class DBContainer: Sendable {
         )
         dataStoreCache.withLock { $0[cacheKey] = store }
         return store
+    }
+
+    private func ensureIndexesReady(
+        for type: any Persistable.Type,
+        subspace: Subspace
+    ) async throws {
+        let indexNames = type.indexDescriptors.map(\.name)
+        guard !indexNames.isEmpty else { return }
+
+        let stateManager = IndexStateManager(container: self, subspace: subspace)
+        try await stateManager.ensureReadable(indexNames)
     }
 
     private func storeCacheKey(

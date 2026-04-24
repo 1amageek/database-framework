@@ -113,23 +113,27 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     }
 
     public func delete<T: Persistable>(_ model: T) async throws {
-        // DELETE security evaluation
-        try securityDelegate?.evaluateDelete(model)
-
         let validatedID = try model.validateIDForStorage()
         let idTuple = (validatedID as? Tuple) ?? Tuple([validatedID])
 
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
-        // Remove index entries first
-        try await updateScalarIndexes(oldModel: model, newModel: nil as T?, id: idTuple)
-
-        // Delete the record (handles external blob chunks)
         let storage = ItemStorage(
             transaction: transaction,
             blobsSubspace: blobsSubspace
         )
+        let oldData = try await storage.read(for: key)
+        let oldModel: T? = try oldData.map { try DataAccess.deserialize($0) }
+        let modelToDelete = oldModel ?? model
+
+        // DELETE security evaluation
+        try securityDelegate?.evaluateDelete(modelToDelete)
+
+        // Remove index entries first
+        try await updateScalarIndexes(oldModel: modelToDelete, newModel: nil as T?, id: idTuple)
+
+        // Delete the record (handles external blob chunks)
         try await storage.delete(for: key)
     }
 

@@ -347,19 +347,22 @@ public final class TransactionContext: @unchecked Sendable {
         let typeSubspace = subspaces.itemSubspace.subspace(T.persistableType)
         let key = typeSubspace.pack(idTuple)
 
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: subspaces.blobsSubspace
+        )
+        let oldData = try await storage.read(for: key)
+        let oldModel: T? = try oldData.map { try DataAccess.deserialize($0) }
+
         // Remove scalar index entries
         try await updateScalarIndexes(
-            oldModel: model,
+            oldModel: oldModel ?? model,
             newModel: nil as T?,
             id: idTuple,
             indexSubspace: subspaces.indexSubspace
         )
 
         // Delete record (handles external blob chunks)
-        let storage = ItemStorage(
-            transaction: transaction,
-            blobsSubspace: subspaces.blobsSubspace
-        )
         try await storage.delete(for: key)
     }
 
