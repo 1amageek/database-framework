@@ -50,6 +50,7 @@ coverage/
 
 # Local FoundationDB instance
 .database/
+.fdb-test/
 
 # Misc
 *.log

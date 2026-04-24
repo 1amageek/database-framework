@@ -54,6 +54,7 @@ public final class TransactionContext: @unchecked Sendable {
 
     /// Resolved subspaces for a type
     private struct ResolvedSubspaces {
+        let rootSubspace: Subspace
         let itemSubspace: Subspace
         let indexSubspace: Subspace
         let blobsSubspace: Subspace
@@ -98,6 +99,7 @@ public final class TransactionContext: @unchecked Sendable {
         // Resolve directory from container
         let subspace = try await container.resolveDirectory(for: type)
         let resolved = ResolvedSubspaces(
+            rootSubspace: subspace,
             itemSubspace: subspace.subspace(SubspaceKey.items),
             indexSubspace: subspace.subspace(SubspaceKey.indexes),
             blobsSubspace: subspace.subspace(SubspaceKey.blobs)
@@ -131,6 +133,7 @@ public final class TransactionContext: @unchecked Sendable {
         // Resolve directory from container with path
         let subspace = try await container.resolveDirectory(for: type, path: path)
         let resolved = ResolvedSubspaces(
+            rootSubspace: subspace,
             itemSubspace: subspace.subspace(SubspaceKey.items),
             indexSubspace: subspace.subspace(SubspaceKey.indexes),
             blobsSubspace: subspace.subspace(SubspaceKey.blobs)
@@ -319,12 +322,12 @@ public final class TransactionContext: @unchecked Sendable {
         // Write record (handles compression + external storage for >90KB)
         try await storage.write(data, for: key)
 
-        // Update scalar indexes using diff-based approach
-        try await updateScalarIndexes(
+        // Update all indexes using the same maintainers as FDBContext.save().
+        try await updateIndexes(
             oldModel: oldModel,
             newModel: model,
             id: idTuple,
-            indexSubspace: subspaces.indexSubspace
+            subspaces: subspaces
         )
     }
 
@@ -354,73 +357,47 @@ public final class TransactionContext: @unchecked Sendable {
         let oldData = try await storage.read(for: key)
         let oldModel: T? = try oldData.map { try DataAccess.deserialize($0) }
 
-        // Remove scalar index entries
-        try await updateScalarIndexes(
+        // Remove index entries
+        try await updateIndexes(
             oldModel: oldModel ?? model,
             newModel: nil as T?,
             id: idTuple,
-            indexSubspace: subspaces.indexSubspace
+            subspaces: subspaces
         )
 
         // Delete record (handles external blob chunks)
         try await storage.delete(for: key)
     }
 
-    // MARK: - Private: Scalar Index Maintenance
+    // MARK: - Private: Index Maintenance
 
-    /// Update scalar indexes using diff-based approach
-    ///
-    /// Only handles scalar indexes. Aggregation indexes (count, sum, min/max)
-    /// and uniqueness constraints are not enforced in TransactionContext.
-    private func updateScalarIndexes<T: Persistable>(
+    private func updateIndexes<T: Persistable>(
         oldModel: T?,
         newModel: T?,
         id: Tuple,
-        indexSubspace: Subspace
+        subspaces: ResolvedSubspaces
     ) async throws {
-        let indexDescriptors = T.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
+        let indexStateManager = IndexStateManager(
+            container: container,
+            subspace: subspaces.rootSubspace
+        )
+        let violationTracker = UniquenessViolationTracker(
+            container: container,
+            metadataSubspace: subspaces.rootSubspace.subspace(SubspaceKey.metadata)
+        )
+        let maintenanceService = IndexMaintenanceService(
+            indexStateManager: indexStateManager,
+            violationTracker: violationTracker,
+            indexSubspace: subspaces.indexSubspace,
+            configurations: container.indexConfigurations.values.flatMap { $0 }
+        )
 
-        for descriptor in indexDescriptors {
-            // Skip non-scalar indexes (count, sum, min, max)
-            let kindIdentifier = type(of: descriptor.kind).identifier
-            guard kindIdentifier == "scalar" || kindIdentifier == "version" else {
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-            let keyPathCount = descriptor.keyPaths.count
-
-            // Compute old index keys
-            var oldKeys: Set<[UInt8]> = []
-            if let old = oldModel {
-                let oldValues = try IndexMaintenanceService.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: oldValues, id: id, keyPathCount: keyPathCount) {
-                        oldKeys.insert(key)
-                    }
-                }
-            }
-
-            // Compute new index keys
-            var newKeys: Set<[UInt8]> = []
-            if let new = newModel {
-                let newValues = try IndexMaintenanceService.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-                if !newValues.isEmpty {
-                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: newValues, id: id, keyPathCount: keyPathCount) {
-                        newKeys.insert(key)
-                    }
-                }
-            }
-
-            // Apply diff
-            for key in oldKeys.subtracting(newKeys) {
-                transaction.clear(key: key)
-            }
-            for key in newKeys.subtracting(oldKeys) {
-                transaction.setValue([], for: key)
-            }
-        }
+        try await maintenanceService.updateIndexes(
+            oldModel: oldModel,
+            newModel: newModel,
+            id: id,
+            transaction: transaction
+        )
     }
 
     /// Delete a model by ID (static directory types)

@@ -109,7 +109,12 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         try await storage.write(data, for: key)
 
         // Update indexes
-        try await updateScalarIndexes(oldModel: oldModel, newModel: model, id: idTuple)
+        try await indexMaintenanceService.updateIndexes(
+            oldModel: oldModel,
+            newModel: model,
+            id: idTuple,
+            transaction: transaction
+        )
     }
 
     public func delete<T: Persistable>(_ model: T) async throws {
@@ -131,7 +136,12 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         try securityDelegate?.evaluateDelete(modelToDelete)
 
         // Remove index entries first
-        try await updateScalarIndexes(oldModel: modelToDelete, newModel: nil as T?, id: idTuple)
+        try await indexMaintenanceService.updateIndexes(
+            oldModel: modelToDelete,
+            newModel: nil as T?,
+            id: idTuple,
+            transaction: transaction
+        )
 
         // Delete the record (handles external blob chunks)
         try await storage.delete(for: key)
@@ -148,56 +158,4 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
         transaction
     }
 
-    // MARK: - Private: Index Maintenance
-
-    /// Update scalar indexes using diff-based approach
-    private func updateScalarIndexes<T: Persistable>(
-        oldModel: T?,
-        newModel: T?,
-        id: Tuple
-    ) async throws {
-        let indexDescriptors = T.indexDescriptors
-        guard !indexDescriptors.isEmpty else { return }
-
-        for descriptor in indexDescriptors {
-            // Skip non-scalar indexes
-            let kindIdentifier = type(of: descriptor.kind).identifier
-            guard kindIdentifier == "scalar" || kindIdentifier == "version" else {
-                continue
-            }
-
-            let indexSubspaceForIndex = indexSubspace.subspace(descriptor.name)
-            let keyPathCount = descriptor.keyPaths.count
-
-            // Compute old index keys
-            var oldKeys: Set<[UInt8]> = []
-            if let old = oldModel {
-                let oldValues = try IndexMaintenanceService.extractIndexValues(from: old, keyPaths: descriptor.keyPaths)
-                if !oldValues.isEmpty {
-                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: oldValues, id: id, keyPathCount: keyPathCount) {
-                        oldKeys.insert(key)
-                    }
-                }
-            }
-
-            // Compute new index keys
-            var newKeys: Set<[UInt8]> = []
-            if let new = newModel {
-                let newValues = try IndexMaintenanceService.extractIndexValues(from: new, keyPaths: descriptor.keyPaths)
-                if !newValues.isEmpty {
-                    for key in IndexMaintenanceService.buildIndexKeys(subspace: indexSubspaceForIndex, values: newValues, id: id, keyPathCount: keyPathCount) {
-                        newKeys.insert(key)
-                    }
-                }
-            }
-
-            // Apply diff
-            for key in oldKeys.subtracting(newKeys) {
-                transaction.clear(key: key)
-            }
-            for key in newKeys.subtracting(oldKeys) {
-                transaction.setValue([], for: key)
-            }
-        }
-    }
 }

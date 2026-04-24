@@ -63,7 +63,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
 
-        try applyDelta(oldData: oldData, newData: newData, transaction: transaction)
+        try await applyDelta(oldData: oldData, newData: newData, transaction: transaction)
     }
 
     public func scanItem(
@@ -94,13 +94,13 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
 
         let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
 
-        atomicAdd(
+        try await atomicAdd(
             key: sumKey,
             int64Value: numericValue.int64,
             doubleValue: numericValue.double,
             transaction: transaction
         )
-        atomicIncrementCount(key: countKey, transaction: transaction)
+        try await atomicIncrementCount(key: countKey, transaction: transaction)
     }
 
     /// Compute expected index keys for this item
@@ -253,7 +253,7 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
         oldData: AggregationData?,
         newData: AggregationData?,
         transaction: any Transaction
-    ) throws {
+    ) async throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new)) where old.groupingTuple.pack() == new.groupingTuple.pack():
             // Same group: apply sum delta only (count unchanged)
@@ -261,12 +261,12 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
             if isFloatingPointValue {
                 let delta = (new.doubleValue ?? 0) - (old.doubleValue ?? 0)
                 if delta != 0 {
-                    atomicAddDouble(key: sumKey, value: delta, transaction: transaction)
+                    try await atomicAddDouble(key: sumKey, value: delta, transaction: transaction)
                 }
             } else {
                 let delta = (new.int64Value ?? 0) - (old.int64Value ?? 0)
                 if delta != 0 {
-                    atomicAddInt64(key: sumKey, value: delta, transaction: transaction)
+                    try await atomicAddInt64(key: sumKey, value: delta, transaction: transaction)
                 }
             }
 
@@ -279,33 +279,33 @@ public struct AverageIndexMaintainer<Item: Persistable, Value: Numeric & Codable
 
             // Subtract from old
             if isFloatingPointValue {
-                atomicAddDouble(key: oldSumKey, value: -(old.doubleValue ?? 0), transaction: transaction)
+                try await atomicAddDouble(key: oldSumKey, value: -(old.doubleValue ?? 0), transaction: transaction)
             } else {
-                atomicAddInt64(key: oldSumKey, value: -(old.int64Value ?? 0), transaction: transaction)
+                try await atomicAddInt64(key: oldSumKey, value: -(old.int64Value ?? 0), transaction: transaction)
             }
-            atomicDecrementCount(key: oldCountKey, transaction: transaction)
+            try await atomicDecrementCount(key: oldCountKey, transaction: transaction)
 
             // Add to new
-            atomicAdd(key: newSumKey, int64Value: new.int64Value, doubleValue: new.doubleValue, transaction: transaction)
-            atomicIncrementCount(key: newCountKey, transaction: transaction)
+            try await atomicAdd(key: newSumKey, int64Value: new.int64Value, doubleValue: new.doubleValue, transaction: transaction)
+            try await atomicIncrementCount(key: newCountKey, transaction: transaction)
 
         case let (nil, .some(new)):
             // Insert
             let sumKey = try buildSumKey(groupingTuple: new.groupingTuple)
             let countKey = try buildCountKey(groupingTuple: new.groupingTuple)
-            atomicAdd(key: sumKey, int64Value: new.int64Value, doubleValue: new.doubleValue, transaction: transaction)
-            atomicIncrementCount(key: countKey, transaction: transaction)
+            try await atomicAdd(key: sumKey, int64Value: new.int64Value, doubleValue: new.doubleValue, transaction: transaction)
+            try await atomicIncrementCount(key: countKey, transaction: transaction)
 
         case let (.some(old), nil):
             // Delete
             let sumKey = try buildSumKey(groupingTuple: old.groupingTuple)
             let countKey = try buildCountKey(groupingTuple: old.groupingTuple)
             if isFloatingPointValue {
-                atomicAddDouble(key: sumKey, value: -(old.doubleValue ?? 0), transaction: transaction)
+                try await atomicAddDouble(key: sumKey, value: -(old.doubleValue ?? 0), transaction: transaction)
             } else {
-                atomicAddInt64(key: sumKey, value: -(old.int64Value ?? 0), transaction: transaction)
+                try await atomicAddInt64(key: sumKey, value: -(old.int64Value ?? 0), transaction: transaction)
             }
-            atomicDecrementCount(key: countKey, transaction: transaction)
+            try await atomicDecrementCount(key: countKey, transaction: transaction)
 
         case (nil, nil):
             break

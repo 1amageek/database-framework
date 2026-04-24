@@ -1,0 +1,295 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+STATE_DIR="${FDB_TEST_STATE_DIR:-"$ROOT_DIR/.fdb-test"}"
+PORT="${FDB_TEST_PORT:-4699}"
+CLUSTER_FILE="$STATE_DIR/fdb.cluster"
+DATA_DIR="$STATE_DIR/data"
+LOG_DIR="$STATE_DIR/logs"
+PID_FILE="$STATE_DIR/fdb.pid"
+ENV_FILE="$STATE_DIR/env"
+
+FDBSERVER="${FDBSERVER:-}"
+FDBCLI="${FDBCLI:-}"
+
+usage() {
+  cat <<EOF
+Usage:
+  scripts/fdb-test-env start [--clean]
+  scripts/fdb-test-env stop [--clean]
+  scripts/fdb-test-env status
+  scripts/fdb-test-env env
+  scripts/fdb-test-env run [--clean] -- <command> [args...]
+  scripts/fdb-test-env shell [--clean]
+
+Environment:
+  FDB_TEST_PORT       Port for the isolated local cluster. Default: 4699
+  FDB_TEST_STATE_DIR  State directory. Default: .fdb-test
+  FDBSERVER           Override fdbserver path
+  FDBCLI              Override fdbcli path
+EOF
+}
+
+find_executable() {
+  local configured="$1"
+  local name="$2"
+  shift 2
+
+  if [[ -n "$configured" && -x "$configured" ]]; then
+    printf '%s\n' "$configured"
+    return 0
+  fi
+
+  local path
+  for path in "$@"; do
+    if [[ -x "$path" ]]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+
+  if command -v "$name" >/dev/null 2>&1; then
+    command -v "$name"
+    return 0
+  fi
+
+  echo "error: $name not found" >&2
+  return 1
+}
+
+fdbserver_path() {
+  find_executable "$FDBSERVER" fdbserver \
+    /usr/local/libexec/fdbserver \
+    /usr/local/libexec/foundationdb/fdbserver \
+    /opt/homebrew/libexec/fdbserver \
+    /opt/homebrew/libexec/foundationdb/fdbserver \
+    /usr/sbin/fdbserver \
+    /usr/local/sbin/fdbserver
+}
+
+fdbcli_path() {
+  find_executable "$FDBCLI" fdbcli \
+    /usr/local/bin/fdbcli \
+    /opt/homebrew/bin/fdbcli \
+    /usr/local/libexec/foundationdb/fdbcli \
+    /opt/homebrew/libexec/foundationdb/fdbcli \
+    /usr/bin/fdbcli
+}
+
+timeout_cmd() {
+  local seconds="$1"
+  shift
+  perl -e 'alarm shift; exec @ARGV' "$seconds" "$@"
+}
+
+is_alive() {
+  [[ -f "$PID_FILE" ]] || return 1
+  local pid
+  pid="$(tr -d '[:space:]' < "$PID_FILE")"
+  [[ -n "$pid" ]] || return 1
+  kill -0 "$pid" >/dev/null 2>&1
+}
+
+is_configured() {
+  [[ -f "$CLUSTER_FILE" ]] || return 1
+  timeout_cmd 5 "$(fdbcli_path)" -C "$CLUSTER_FILE" --exec 'status minimal' >/dev/null 2>&1
+}
+
+wait_for_configured() {
+  local deadline=$((SECONDS + 20))
+  while (( SECONDS < deadline )); do
+    if is_configured; then
+      return 0
+    fi
+    sleep 0.5
+  done
+
+  echo "error: FoundationDB did not become available" >&2
+  echo "cluster: $CLUSTER_FILE" >&2
+  echo "last logs:" >&2
+  find "$LOG_DIR" -maxdepth 1 -type f -name 'trace*.xml' -print0 2>/dev/null \
+    | xargs -0 ls -t 2>/dev/null \
+    | head -1 \
+    | xargs tail -80 2>/dev/null || true
+  return 1
+}
+
+configure_cluster() {
+  local cli="$1"
+  local deadline=$((SECONDS + 30))
+  local output="$STATE_DIR/configure.out"
+  local error_output="$STATE_DIR/configure.err"
+
+  while (( SECONDS < deadline )); do
+    if timeout_cmd 5 "$cli" -C "$CLUSTER_FILE" --exec 'configure new single memory' >"$output" 2>"$error_output"; then
+      return 0
+    fi
+
+    if grep -qi 'already.*configured\\|database.*exists' "$output" "$error_output" 2>/dev/null; then
+      return 0
+    fi
+
+    sleep 0.5
+  done
+
+  echo "error: FoundationDB configure did not complete" >&2
+  cat "$output" >&2 2>/dev/null || true
+  cat "$error_output" >&2 2>/dev/null || true
+  return 1
+}
+
+write_env_file() {
+  cat > "$ENV_FILE" <<EOF
+export FDB_CLUSTER_FILE="$CLUSTER_FILE"
+EOF
+}
+
+start_cluster() {
+  local clean="$1"
+  local server
+  local cli
+  server="$(fdbserver_path)"
+  cli="$(fdbcli_path)"
+
+  if is_alive; then
+    if is_configured; then
+      write_env_file
+      echo "FoundationDB test cluster already running"
+      echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
+      return 0
+    fi
+    stop_cluster false
+  fi
+
+  if [[ "$clean" == true ]]; then
+    rm -rf "$STATE_DIR"
+  fi
+
+  mkdir -p "$DATA_DIR/$PORT" "$LOG_DIR"
+  printf 'local:local%s@127.0.0.1:%s\n' "$(date +%s)" "$PORT" > "$CLUSTER_FILE"
+
+  nohup "$server" \
+    -p "auto:$PORT" \
+    -C "$CLUSTER_FILE" \
+    -d "$DATA_DIR/$PORT" \
+    -L "$LOG_DIR" \
+    --machine-id test \
+    --datacenter-id test \
+    --class storage \
+    >"$STATE_DIR/fdbserver.out" 2>&1 &
+
+  local pid=$!
+  printf '%s\n' "$pid" > "$PID_FILE"
+  disown "$pid" 2>/dev/null || true
+
+  sleep 1
+  configure_cluster "$cli"
+  wait_for_configured
+  write_env_file
+
+  echo "FoundationDB test cluster running"
+  echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
+}
+
+stop_cluster() {
+  local clean="$1"
+
+  if is_alive; then
+    local pid
+    pid="$(tr -d '[:space:]' < "$PID_FILE")"
+    kill "$pid" >/dev/null 2>&1 || true
+
+    local deadline=$((SECONDS + 10))
+    while kill -0 "$pid" >/dev/null 2>&1 && (( SECONDS < deadline )); do
+      sleep 0.2
+    done
+    if kill -0 "$pid" >/dev/null 2>&1; then
+      kill -9 "$pid" >/dev/null 2>&1 || true
+    fi
+    wait "$pid" 2>/dev/null || true
+  fi
+
+  rm -f "$PID_FILE"
+  if [[ "$clean" == true ]]; then
+    rm -rf "$STATE_DIR"
+  fi
+}
+
+status_cluster() {
+  if ! [[ -f "$CLUSTER_FILE" ]]; then
+    echo "FoundationDB test cluster is not initialized"
+    return 1
+  fi
+
+  if is_alive && is_configured; then
+    "$(fdbcli_path)" -C "$CLUSTER_FILE" --exec 'status minimal'
+    echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
+    return 0
+  fi
+
+  echo "FoundationDB test cluster is not running or not healthy"
+  echo "FDB_CLUSTER_FILE=$CLUSTER_FILE"
+  return 1
+}
+
+print_env() {
+  if [[ -f "$ENV_FILE" ]]; then
+    cat "$ENV_FILE"
+  else
+    echo "export FDB_CLUSTER_FILE=\"$CLUSTER_FILE\""
+  fi
+}
+
+command="${1:-}"
+shift || true
+
+clean=false
+if [[ "${1:-}" == "--clean" ]]; then
+  clean=true
+  shift
+fi
+
+case "$command" in
+  start)
+    start_cluster "$clean"
+    ;;
+  stop)
+    stop_cluster "$clean"
+    ;;
+  status)
+    status_cluster
+    ;;
+  env)
+    print_env
+    ;;
+  run)
+    if [[ "${1:-}" == "--clean" ]]; then
+      clean=true
+      shift
+    fi
+    if [[ "${1:-}" == "--" ]]; then
+      shift
+    fi
+    if [[ $# -eq 0 ]]; then
+      usage
+      exit 2
+    fi
+    start_cluster "$clean"
+    trap 'stop_cluster false' EXIT
+    FDB_CLUSTER_FILE="$CLUSTER_FILE" "$@"
+    ;;
+  shell)
+    start_cluster "$clean"
+    trap 'stop_cluster false' EXIT
+    echo "Entering shell with FDB_CLUSTER_FILE=$CLUSTER_FILE"
+    FDB_CLUSTER_FILE="$CLUSTER_FILE" "${SHELL:-/bin/sh}"
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

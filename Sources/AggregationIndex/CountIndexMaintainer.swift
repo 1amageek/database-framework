@@ -56,16 +56,16 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
 
         case let (.some(old), .some(new)):
             // Different groups - decrement old, increment new
-            decrementCount(key: old, transaction: transaction)
-            incrementCount(key: new, transaction: transaction)
+            try await decrementCount(key: old, transaction: transaction)
+            try await incrementCount(key: new, transaction: transaction)
 
         case let (nil, .some(new)):
             // Insert - increment new group
-            incrementCount(key: new, transaction: transaction)
+            try await incrementCount(key: new, transaction: transaction)
 
         case let (.some(old), nil):
             // Delete - decrement old group
-            decrementCount(key: old, transaction: transaction)
+            try await decrementCount(key: old, transaction: transaction)
 
         case (nil, nil):
             break
@@ -79,7 +79,7 @@ public struct CountIndexMaintainer<Item: Persistable>: CountAggregationMaintaine
     ) async throws {
         let groupingValues = try evaluateIndexFields(from: item)
         let countKey = try buildGroupingKey(groupingValues)
-        incrementCount(key: countKey, transaction: transaction)
+        try await incrementCount(key: countKey, transaction: transaction)
     }
 
     public func computeIndexKeys(

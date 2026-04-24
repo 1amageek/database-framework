@@ -75,27 +75,27 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         switch (oldData, newData) {
         case (nil, let new?) where !new.isNull:
             // Insert with non-null value
-            incrementCount(key: new.groupingKey, transaction: transaction)
+            try await incrementCount(key: new.groupingKey, transaction: transaction)
 
         case (let old?, nil) where !old.isNull:
             // Delete with non-null value
-            decrementCount(key: old.groupingKey, transaction: transaction)
+            try await decrementCount(key: old.groupingKey, transaction: transaction)
 
         case (let old?, let new?):
             // Update - handle null transitions
             switch (old.isNull, new.isNull) {
             case (true, false):
                 // null → non-null: increment
-                incrementCount(key: new.groupingKey, transaction: transaction)
+                try await incrementCount(key: new.groupingKey, transaction: transaction)
 
             case (false, true):
                 // non-null → null: decrement
-                decrementCount(key: old.groupingKey, transaction: transaction)
+                try await decrementCount(key: old.groupingKey, transaction: transaction)
 
             case (false, false) where old.groupingKey != new.groupingKey:
                 // non-null → non-null, different group
-                decrementCount(key: old.groupingKey, transaction: transaction)
-                incrementCount(key: new.groupingKey, transaction: transaction)
+                try await decrementCount(key: old.groupingKey, transaction: transaction)
+                try await incrementCount(key: new.groupingKey, transaction: transaction)
 
             default:
                 // No change needed
@@ -116,7 +116,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
 
         let groupingValues = try evaluateGroupingFields(from: item)
         let key = try buildGroupingKey(groupingValues)
-        incrementCount(key: key, transaction: transaction)
+        try await incrementCount(key: key, transaction: transaction)
     }
 
     public func computeIndexKeys(

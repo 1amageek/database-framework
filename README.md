@@ -42,6 +42,25 @@ brew install foundationdb
 brew services start foundationdb
 ```
 
+### Stable FoundationDB Test Environment
+
+For repeatable local tests, use the isolated test cluster wrapper instead of the shared system FoundationDB service:
+
+```bash
+# Start an isolated single-process FoundationDB cluster, run tests, then stop it.
+scripts/fdb-test-env run --clean -- perl -e 'alarm shift; exec @ARGV' 240 swift test --filter FDBContextTests
+```
+
+The wrapper writes its own cluster file under `.fdb-test/`, configures a fresh `single memory` database, exports `FDB_CLUSTER_FILE` to the test command, and tears the process down after the command exits.
+
+For several commands against the same isolated cluster, enter a shell owned by the wrapper. The cluster is stopped when the shell exits:
+
+```bash
+scripts/fdb-test-env shell --clean
+perl -e 'alarm shift; exec @ARGV' 240 swift test --filter FDBContextTests
+exit
+```
+
 ### Swift Package Manager
 
 ```swift

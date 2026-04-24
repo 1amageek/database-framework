@@ -454,13 +454,34 @@ internal final class FDBDataStore: DataStore, Sendable {
             }
 
             if matchCount >= 2 {
-                // Use first condition for this compound index
-                if let firstKeyPath = descriptor.keyPaths.first,
-                   let partialKeyPath = firstKeyPath as? PartialKeyPath<T> {
-                    let firstFieldName = T.fieldName(for: partialKeyPath)
-                    if let condition = conditionsByField[firstFieldName] {
-                        return condition
+                var tupleElements: [any TupleElement] = []
+                var firstFieldName: String?
+
+                for keyPath in descriptor.keyPaths.prefix(matchCount) {
+                    guard let partialKeyPath = keyPath as? PartialKeyPath<T> else {
+                        break
                     }
+                    let fieldName = T.fieldName(for: partialKeyPath)
+                    guard let condition = conditionsByField[fieldName],
+                          condition.op == .equal else {
+                        break
+                    }
+                    if firstFieldName == nil {
+                        firstFieldName = fieldName
+                    }
+                    for index in 0..<condition.valueTuple.count {
+                        if let element = condition.valueTuple[index] {
+                            tupleElements.append(element)
+                        }
+                    }
+                }
+
+                if tupleElements.count == matchCount, let firstFieldName {
+                    return IndexableCondition(
+                        fieldName: firstFieldName,
+                        op: .equal,
+                        valueTuple: Tuple(tupleElements)
+                    )
                 }
             }
         }
@@ -665,7 +686,7 @@ internal final class FDBDataStore: DataStore, Sendable {
 
         // Try index-optimized fetch
         if let predicate = combinedPredicate,
-           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: query.fetchLimit) {
+           let indexResult = try await fetchUsingIndex(predicate, type: T.self, limit: nil) {
             results = indexResult.models
 
             // If index didn't cover all predicate conditions, apply remaining filters

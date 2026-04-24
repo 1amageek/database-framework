@@ -64,7 +64,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         let oldData = try extractAggregationData(from: oldItem)
         let newData = try extractAggregationData(from: newItem)
 
-        try applyDelta(oldData: oldData, newData: newData, transaction: transaction)
+        try await applyDelta(oldData: oldData, newData: newData, transaction: transaction)
     }
 
     public func scanItem(
@@ -93,7 +93,7 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         let sumKey = try buildGroupingKey(groupingValues)
         let numericValue = try NumericValueExtractor.extractNumeric(from: valueElement, as: Value.self)
 
-        atomicAdd(
+        try await atomicAdd(
             key: sumKey,
             int64Value: numericValue.int64,
             doubleValue: numericValue.double,
@@ -218,35 +218,35 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         oldData: AggregationData?,
         newData: AggregationData?,
         transaction: any Transaction
-    ) throws {
+    ) async throws {
         switch (oldData, newData) {
         case let (.some(old), .some(new)) where old.groupingKey == new.groupingKey:
             // Same group: apply delta only
             if isFloatingPointValue {
                 let delta = (new.doubleValue ?? 0) - (old.doubleValue ?? 0)
                 if delta != 0 {
-                    atomicAddDouble(key: new.groupingKey, value: delta, transaction: transaction)
+                    try await atomicAddDouble(key: new.groupingKey, value: delta, transaction: transaction)
                 }
             } else {
                 let delta = (new.int64Value ?? 0) - (old.int64Value ?? 0)
                 if delta != 0 {
-                    atomicAddInt64(key: new.groupingKey, value: delta, transaction: transaction)
+                    try await atomicAddInt64(key: new.groupingKey, value: delta, transaction: transaction)
                 }
             }
 
         case let (.some(old), .some(new)):
             // Different groups: subtract from old, add to new
             if isFloatingPointValue {
-                atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
-                atomicAddDouble(key: new.groupingKey, value: new.doubleValue ?? 0, transaction: transaction)
+                try await atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
+                try await atomicAddDouble(key: new.groupingKey, value: new.doubleValue ?? 0, transaction: transaction)
             } else {
-                atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
-                atomicAddInt64(key: new.groupingKey, value: new.int64Value ?? 0, transaction: transaction)
+                try await atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
+                try await atomicAddInt64(key: new.groupingKey, value: new.int64Value ?? 0, transaction: transaction)
             }
 
         case let (nil, .some(new)):
             // Insert: add to new group
-            atomicAdd(
+            try await atomicAdd(
                 key: new.groupingKey,
                 int64Value: new.int64Value,
                 doubleValue: new.doubleValue,
@@ -256,9 +256,9 @@ public struct SumIndexMaintainer<Item: Persistable, Value: Numeric & Codable & S
         case let (.some(old), nil):
             // Delete: subtract from old group
             if isFloatingPointValue {
-                atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
+                try await atomicAddDouble(key: old.groupingKey, value: -(old.doubleValue ?? 0), transaction: transaction)
             } else {
-                atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
+                try await atomicAddInt64(key: old.groupingKey, value: -(old.int64Value ?? 0), transaction: transaction)
             }
 
         case (nil, nil):

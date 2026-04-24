@@ -89,9 +89,14 @@ extension AtomicSumSupport {
         key: Bytes,
         value: Int64,
         transaction: any Transaction
-    ) {
-        let bytes = ByteConversion.int64ToBytes(value)
-        transaction.atomicOp(key: key, param: bytes, mutationType: .add)
+    ) async throws {
+        let current: Int64
+        if let bytes = try await transaction.getValue(for: key) {
+            current = ByteConversion.bytesToInt64(bytes)
+        } else {
+            current = 0
+        }
+        transaction.setValue(ByteConversion.int64ToBytes(current + value), for: key)
     }
 
     /// Add Double value to aggregation key using atomic operation
@@ -108,9 +113,15 @@ extension AtomicSumSupport {
         key: Bytes,
         value: Double,
         transaction: any Transaction
-    ) {
-        let bytes = ByteConversion.doubleToScaledBytes(value)
-        transaction.atomicOp(key: key, param: bytes, mutationType: .add)
+    ) async throws {
+        let delta = ByteConversion.bytesToInt64(ByteConversion.doubleToScaledBytes(value))
+        let current: Int64
+        if let bytes = try await transaction.getValue(for: key) {
+            current = ByteConversion.bytesToInt64(bytes)
+        } else {
+            current = 0
+        }
+        transaction.setValue(ByteConversion.int64ToBytes(current + delta), for: key)
     }
 
     /// Add numeric value using the appropriate atomic operation
@@ -125,11 +136,11 @@ extension AtomicSumSupport {
         int64Value: Int64? = nil,
         doubleValue: Double? = nil,
         transaction: any Transaction
-    ) {
+    ) async throws {
         if isFloatingPointValue, let value = doubleValue {
-            atomicAddDouble(key: key, value: value, transaction: transaction)
+            try await atomicAddDouble(key: key, value: value, transaction: transaction)
         } else if let value = int64Value {
-            atomicAddInt64(key: key, value: value, transaction: transaction)
+            try await atomicAddInt64(key: key, value: value, transaction: transaction)
         }
     }
 
@@ -141,8 +152,8 @@ extension AtomicSumSupport {
     public func atomicIncrementCount(
         key: Bytes,
         transaction: any Transaction
-    ) {
-        atomicAddInt64(key: key, value: 1, transaction: transaction)
+    ) async throws {
+        try await atomicAddInt64(key: key, value: 1, transaction: transaction)
     }
 
     /// Decrement count by 1 using atomic operation
@@ -153,8 +164,8 @@ extension AtomicSumSupport {
     public func atomicDecrementCount(
         key: Bytes,
         transaction: any Transaction
-    ) {
-        atomicAddInt64(key: key, value: -1, transaction: transaction)
+    ) async throws {
+        try await atomicAddInt64(key: key, value: -1, transaction: transaction)
     }
 }
 
@@ -256,18 +267,28 @@ extension CountAggregationMaintainer {
     public func incrementCount(
         key: Bytes,
         transaction: any Transaction
-    ) {
-        let increment = ByteConversion.int64ToBytes(1)
-        transaction.atomicOp(key: key, param: increment, mutationType: .add)
+    ) async throws {
+        let current: Int64
+        if let bytes = try await transaction.getValue(for: key) {
+            current = ByteConversion.bytesToInt64(bytes)
+        } else {
+            current = 0
+        }
+        transaction.setValue(ByteConversion.int64ToBytes(current + 1), for: key)
     }
 
     /// Decrement count for a grouping key
     public func decrementCount(
         key: Bytes,
         transaction: any Transaction
-    ) {
-        let decrement = ByteConversion.int64ToBytes(-1)
-        transaction.atomicOp(key: key, param: decrement, mutationType: .add)
+    ) async throws {
+        let current: Int64
+        if let bytes = try await transaction.getValue(for: key) {
+            current = ByteConversion.bytesToInt64(bytes)
+        } else {
+            current = 0
+        }
+        transaction.setValue(ByteConversion.int64ToBytes(current - 1), for: key)
     }
 
     /// Read count value from bytes
@@ -324,4 +345,3 @@ extension CountAggregationMaintainer {
         return results
     }
 }
-
