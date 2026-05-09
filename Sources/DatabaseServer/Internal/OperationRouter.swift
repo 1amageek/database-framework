@@ -13,9 +13,14 @@ final class OperationRouter: Sendable {
 
     private let container: DBContainer
     private let handlers: [String: EntityHandler]
+    private let operationRegistry: OperationRegistry
 
-    init(container: DBContainer) {
+    init(
+        container: DBContainer,
+        operationRegistry: OperationRegistry
+    ) {
         self.container = container
+        self.operationRegistry = operationRegistry
         BuiltinReadRuntime.registerBuiltins()
 
         // Build handlers for each entity type in the schema
@@ -62,6 +67,10 @@ final class OperationRouter: Sendable {
         switch envelope.operationID {
         case "save":
             let request = try decoder.decode(SaveRequest.self, from: envelope.payload)
+            let preconditionsByEntity = try Self.preconditionsByEntity(
+                request.preconditions,
+                changes: request.changes
+            )
 
             // Group changes by entity name
             let grouped = Dictionary(grouping: request.changes, by: \.entityName)
@@ -78,11 +87,25 @@ final class OperationRouter: Sendable {
                         errorMessage: "Entity '\(entityName)' not found in schema"
                     )
                 }
-                try await handler.applyChanges(context, changes)
+                try await handler.applyChanges(
+                    context,
+                    changes,
+                    preconditionsByEntity[entityName] ?? [:]
+                )
             }
 
             // Commit all changes in one transaction
-            try await context.save()
+            do {
+                try await context.save()
+            } catch let error as FDBContextError {
+                if case .preconditionFailed = error {
+                    throw ServiceError(
+                        code: "PRECONDITION_FAILED",
+                        message: error.description
+                    )
+                }
+                throw error
+            }
 
             return ServiceEnvelope(
                 responseTo: envelope.requestID,
@@ -113,11 +136,64 @@ final class OperationRouter: Sendable {
             )
 
         default:
+            if let handler = operationRegistry.resolve(envelope.operationID) {
+                return try await handler.handle(
+                    envelope,
+                    context: ServiceOperationContext(container: container)
+                )
+            }
+
             return ServiceEnvelope(
                 responseTo: envelope.requestID,
                 operationID: envelope.operationID,
                 errorCode: "UNKNOWN_OPERATION",
                 errorMessage: "Operation '\(envelope.operationID)' is not supported"
+            )
+        }
+    }
+
+    private static func preconditionsByEntity(
+        _ entries: [WritePreconditionEntry],
+        changes: [ChangeSet.Change]
+    ) throws -> [String: [String: WritePrecondition]] {
+        let changedKeys = Set(changes.map { "\($0.entityName)\u{0}\($0.id)" })
+        var result: [String: [String: WritePrecondition]] = [:]
+
+        for entry in entries {
+            guard case .string(let id) = entry.key.id else {
+                throw ServiceError(
+                    code: "PRECONDITION_FAILED",
+                    message: "Save preconditions currently require string record ids"
+                )
+            }
+
+            guard changedKeys.contains("\(entry.key.entityName)\u{0}\(id)") else {
+                throw ServiceError(
+                    code: "PRECONDITION_FAILED",
+                    message: "Save preconditions must target records included in the same SaveRequest; use command operations for cross-record checks"
+                )
+            }
+
+            result[entry.key.entityName, default: [:]][id] = try writePrecondition(from: entry.precondition)
+        }
+
+        return result
+    }
+
+    private static func writePrecondition(
+        from spec: WritePreconditionSpec
+    ) throws -> WritePrecondition {
+        switch spec.kind {
+        case .none:
+            return .none
+        case .notExists:
+            return .notExists
+        case .exists:
+            return .exists
+        case .matchesStored, .matchesStoredOrAbsent:
+            throw ServiceError(
+                code: "PRECONDITION_FAILED",
+                message: "Version preconditions require record version metadata and are not yet supported"
             )
         }
     }

@@ -40,8 +40,18 @@ public final class DatabaseEndpoint: Sendable {
     /// Creates a new FDBContext per request for stateless processing.
     ///
     /// - Parameter container: The DBContainer managing database resources
-    public init(container: DBContainer) {
-        self.router = OperationRouter(container: container)
+    public init(
+        container: DBContainer,
+        operationRegistry: OperationRegistry = OperationRegistry(),
+        commandRegistry: CommandRegistry? = nil
+    ) {
+        if let commandRegistry {
+            operationRegistry.register(CommandOperationHandler(commandRegistry: commandRegistry))
+        }
+        self.router = OperationRouter(
+            container: container,
+            operationRegistry: operationRegistry
+        )
         self.middlewares = []
     }
 
