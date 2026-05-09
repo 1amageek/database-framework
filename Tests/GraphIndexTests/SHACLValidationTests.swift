@@ -708,6 +708,53 @@ struct SHACLValidationTests {
         try await cleanup(container: container)
     }
 
+    @Test("Invalid sh:pattern throws SHACLError")
+    func testInvalidPatternThrows() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+
+        try await insertStatements([
+            makeStatement(subject: "ex:Alice", predicate: "rdf:type", object: "ex:Person"),
+            makeStatement(subject: "ex:Alice", predicate: "ex:email", object: RDFTerm.string("alice@example.com").encoded),
+        ], context: context)
+
+        let shapesGraph = SHACLShapesGraph(
+            iri: "ex:InvalidPatternShapes",
+            shapes: [
+                .node(NodeShape(
+                    iri: "ex:InvalidEmailPatternShape",
+                    targets: [.class_("ex:Person")],
+                    propertyShapes: [
+                        PropertyShape(
+                            path: .predicate("ex:email"),
+                            constraints: [.pattern("[", flags: nil)]
+                        )
+                    ]
+                ))
+            ]
+        )
+        try await context.shacl.loadShapes(shapesGraph)
+
+        do {
+            _ = try await context.shacl.validate(
+                SHACLTestStatement.self,
+                against: "ex:InvalidPatternShapes"
+            )
+            Issue.record("Expected SHACLError.invalidPattern to be thrown")
+        } catch let error as SHACLError {
+            if case .invalidPattern(let regex, let reason) = error {
+                #expect(regex == "[")
+                #expect(!reason.isEmpty)
+            } else {
+                Issue.record("Expected invalidPattern, got \(error)")
+            }
+        }
+
+        try await cleanup(container: container)
+    }
+
     @Test("sh:languageIn validates language tags on literals")
     func testLanguageInConstraint() async throws {
         let container = try await setupContainer()

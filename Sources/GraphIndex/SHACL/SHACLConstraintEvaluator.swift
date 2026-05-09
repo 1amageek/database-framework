@@ -87,7 +87,7 @@ struct SHACLConstraintEvaluator: Sendable {
         case .maxLength(let len):
             return evaluateStringLength(min: nil, max: len, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .pattern(let regex, let flags):
-            return evaluatePattern(regex, flags: flags, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
+            return try evaluatePattern(regex, flags: flags, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .languageIn(let langs):
             return evaluateLanguageIn(langs, focusNode: focusNode, valueNodes: valueNodes, path: path, severity: severity, messages: messages, sourceShape: sourceShape)
         case .uniqueLang:
@@ -346,7 +346,7 @@ struct SHACLConstraintEvaluator: Sendable {
         _ regex: String, flags: String?,
         focusNode: String, valueNodes: [RDFTerm], path: SHACLPath?,
         severity: SHACLSeverity, messages: [String], sourceShape: String?
-    ) -> [SHACLValidationResult] {
+    ) throws -> [SHACLValidationResult] {
         var results: [SHACLValidationResult] = []
         var options: NSRegularExpression.Options = []
         if let flags = flags {
@@ -356,9 +356,7 @@ struct SHACLConstraintEvaluator: Sendable {
             if flags.contains("x") { options.insert(.allowCommentsAndWhitespace) }
         }
 
-        guard let nsRegex = try? NSRegularExpression(pattern: regex, options: options) else {
-            return []
-        }
+        let nsRegex = try Self.compilePattern(regex, options: options)
 
         for value in valueNodes {
             let str: String
@@ -376,6 +374,17 @@ struct SHACLConstraintEvaluator: Sendable {
             }
         }
         return results
+    }
+
+    static func compilePattern(
+        _ regex: String,
+        options: NSRegularExpression.Options
+    ) throws -> NSRegularExpression {
+        do {
+            return try NSRegularExpression(pattern: regex, options: options)
+        } catch {
+            throw SHACLError.invalidPattern(regex: regex, reason: error.localizedDescription)
+        }
     }
 
     private func evaluateLanguageIn(

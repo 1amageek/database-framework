@@ -10,6 +10,7 @@ import Testing
 import TestHeartbeat
 import Foundation
 import Graph
+@testable import GraphIndex
 
 // MARK: - RDFTerm Tests
 
@@ -409,6 +410,21 @@ struct SHACLConstraintTests {
 
         for (constraint, expectedIRI) in cases {
             #expect(constraint.componentIRI == expectedIRI)
+        }
+    }
+
+    @Test("Invalid pattern throws typed SHACL error")
+    func testInvalidPatternThrowsTypedError() throws {
+        do {
+            _ = try SHACLConstraintEvaluator.compilePattern("[", options: [])
+            Issue.record("Expected SHACLError.invalidPattern to be thrown")
+        } catch let error as SHACLError {
+            if case .invalidPattern(let regex, let reason) = error {
+                #expect(regex == "[")
+                #expect(!reason.isEmpty)
+            } else {
+                Issue.record("Expected invalidPattern, got \(error)")
+            }
         }
     }
 

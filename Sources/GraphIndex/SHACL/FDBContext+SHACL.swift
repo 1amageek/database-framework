@@ -310,6 +310,9 @@ public enum SHACLError: Error, CustomStringConvertible {
     /// Graph index not configured on the Persistable type
     case graphIndexNotFound(String)
 
+    /// Invalid regular expression in a SHACL pattern constraint
+    case invalidPattern(regex: String, reason: String)
+
     public var description: String {
         switch self {
         case .shapesGraphNotFound(let iri):
@@ -320,6 +323,8 @@ public enum SHACLError: Error, CustomStringConvertible {
             return "Ontology not found (required for OWL entailment): \(iri)"
         case .graphIndexNotFound(let typeName):
             return "GraphIndexKind not configured on type \(typeName)"
+        case .invalidPattern(let regex, let reason):
+            return "Invalid SHACL pattern '\(regex)': \(reason)"
         }
     }
 }
