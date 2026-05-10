@@ -12,13 +12,16 @@ import DatabaseClientProtocol
 public struct BridgedRow: Sendable {
     public let fields: [String: FieldValue]
     public let annotations: [String: FieldValue]
+    public let version: RecordVersionToken?
 
     public init(
         fields: [String: FieldValue],
-        annotations: [String: FieldValue] = [:]
+        annotations: [String: FieldValue] = [:],
+        version: RecordVersionToken? = nil
     ) {
         self.fields = fields
         self.annotations = annotations
+        self.version = version
     }
 
     public static func encoding<T: Persistable>(
@@ -26,7 +29,7 @@ public struct BridgedRow: Sendable {
         annotations: [String: FieldValue] = [:]
     ) -> BridgedRow {
         let row = QueryRowCodec.encodeAny(item, annotations: annotations)
-        return BridgedRow(fields: row.fields, annotations: row.annotations)
+        return BridgedRow(fields: row.fields, annotations: row.annotations, version: row.version)
     }
 
     public static func encoding(
@@ -34,7 +37,7 @@ public struct BridgedRow: Sendable {
         annotations: [String: FieldValue] = [:]
     ) -> BridgedRow {
         let row = QueryRowCodec.encodeAny(item, annotations: annotations)
-        return BridgedRow(fields: row.fields, annotations: row.annotations)
+        return BridgedRow(fields: row.fields, annotations: row.annotations, version: row.version)
     }
 }
 

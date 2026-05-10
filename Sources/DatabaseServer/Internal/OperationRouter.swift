@@ -67,6 +67,14 @@ final class OperationRouter: Sendable {
         switch envelope.operationID {
         case "save":
             let request = try decoder.decode(SaveRequest.self, from: envelope.payload)
+            if request.idempotencyKey != nil || request.clientMutationID != nil {
+                return ServiceEnvelope(
+                    responseTo: envelope.requestID,
+                    operationID: envelope.operationID,
+                    errorCode: "UNSUPPORTED_SAVE_IDEMPOTENCY",
+                    errorMessage: "SaveRequest idempotency is not supported until save replay state can be committed atomically; use command operations for retry-safe mutations"
+                )
+            }
             let preconditionsByEntity = try Self.preconditionsByEntity(
                 request.preconditions,
                 changes: request.changes
@@ -114,7 +122,12 @@ final class OperationRouter: Sendable {
 
         case "query":
             let request = try decoder.decode(QueryRequest.self, from: envelope.payload)
-            let response = try await handleQuery(request)
+            let response: QueryResponse
+            do {
+                response = try await handleQuery(request)
+            } catch let error as CanonicalReadError {
+                throw Self.serviceError(from: error)
+            }
             let payload = try JSONEncoder().encode(response)
             return ServiceEnvelope(
                 responseTo: envelope.requestID,
@@ -148,6 +161,26 @@ final class OperationRouter: Sendable {
                 operationID: envelope.operationID,
                 errorCode: "UNKNOWN_OPERATION",
                 errorMessage: "Operation '\(envelope.operationID)' is not supported"
+            )
+        }
+    }
+
+    private static func serviceError(from error: CanonicalReadError) -> ServiceError {
+        switch error {
+        case .invalidContinuation:
+            return ServiceError(
+                code: "INVALID_CONTINUATION",
+                message: "Invalid query continuation"
+            )
+        case .unsupportedSelectQuery(let reason):
+            return ServiceError(
+                code: "UNSUPPORTED_SELECT_QUERY",
+                message: reason
+            )
+        default:
+            return ServiceError(
+                code: "CANONICAL_READ_ERROR",
+                message: error.localizedDescription
             )
         }
     }
@@ -190,10 +223,32 @@ final class OperationRouter: Sendable {
             return .notExists
         case .exists:
             return .exists
-        case .matchesStored, .matchesStoredOrAbsent:
+        case .matchesStored:
+            guard let version = spec.version else {
+                throw ServiceError(
+                    code: "PRECONDITION_FAILED",
+                    message: "matchesStored requires a record version token"
+                )
+            }
+            return .matchesStored(version: try versionDigest(from: version))
+        case .matchesStoredOrAbsent:
+            guard let version = spec.version else {
+                throw ServiceError(
+                    code: "PRECONDITION_FAILED",
+                    message: "matchesStoredOrAbsent requires a record version token"
+                )
+            }
+            return .matchesStoredOrAbsent(version: try versionDigest(from: version))
+        }
+    }
+
+    private static func versionDigest(from token: RecordVersionToken) throws -> [UInt8] {
+        do {
+            return try RecordVersionTokenCodec.digest(from: token)
+        } catch {
             throw ServiceError(
                 code: "PRECONDITION_FAILED",
-                message: "Version preconditions require record version metadata and are not yet supported"
+                message: "Invalid record version token"
             )
         }
     }

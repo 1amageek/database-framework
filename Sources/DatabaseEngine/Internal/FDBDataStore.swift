@@ -1854,6 +1854,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         try Self.evaluateWritePrecondition(
             precondition,
             existingRowPresent: existingRowPresent,
+            currentVersion: existingRowPresent ? oldModel.map(Self.recordVersionDigest) : nil,
             typeName: persistableType,
             idDescription: String(describing: model.id)
         )
@@ -1883,13 +1884,12 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// mutation. Violations throw `FDBContextError.preconditionFailed` so
     /// the enclosing transaction is aborted cleanly — no silent fallback.
     ///
-    /// `.matchesStored` / `.matchesStoredOrAbsent` require a stored
-    /// versionstamp which is not yet wired into the row envelope; these
-    /// cases throw a "not yet supported" precondition failure so callers
-    /// get a clear signal instead of a silent no-op.
+    /// `.matchesStored` / `.matchesStoredOrAbsent` compare the caller's
+    /// server-issued row digest against the current stored row before writing.
     private static func evaluateWritePrecondition(
         _ precondition: WritePrecondition,
         existingRowPresent: Bool,
+        currentVersion: [UInt8]?,
         typeName: String,
         idDescription: String
     ) throws {
@@ -1914,14 +1914,44 @@ internal final class FDBDataStore: DataStore, Sendable {
                     reason: "row not found"
                 )
             }
-        case .matchesStored, .matchesStoredOrAbsent:
-            throw FDBContextError.preconditionFailed(
-                typeName: typeName,
-                idDescription: idDescription,
-                precondition: precondition,
-                reason: "versionstamp-based precondition is not yet supported"
-            )
+        case .matchesStored(let version):
+            guard let currentVersion else {
+                throw FDBContextError.preconditionFailed(
+                    typeName: typeName,
+                    idDescription: idDescription,
+                    precondition: precondition,
+                    reason: "row not found"
+                )
+            }
+            if currentVersion != version {
+                throw FDBContextError.preconditionFailed(
+                    typeName: typeName,
+                    idDescription: idDescription,
+                    precondition: precondition,
+                    reason: "record version changed"
+                )
+            }
+        case .matchesStoredOrAbsent(let version):
+            guard let currentVersion else { return }
+            if currentVersion != version {
+                throw FDBContextError.preconditionFailed(
+                    typeName: typeName,
+                    idDescription: idDescription,
+                    precondition: precondition,
+                    reason: "record version changed"
+                )
+            }
         }
+    }
+
+    private static func recordVersionDigest(for model: any Persistable) -> [UInt8] {
+        let modelType = type(of: model)
+        let fields = Dictionary(
+            uniqueKeysWithValues: modelType.allFields.map { fieldName in
+                (fieldName, FieldReader.readFieldValue(from: model, fieldName: fieldName))
+            }
+        )
+        return Array(RecordVersionTokenCodec.digest(fields: fields))
     }
 
     /// Delete model without type parameter (for batch operations)
@@ -1967,6 +1997,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 try Self.evaluateWritePrecondition(
                     precondition,
                     existingRowPresent: existingRowPresent,
+                    currentVersion: existingRowPresent ? Self.recordVersionDigest(for: indexOldModel) : nil,
                     typeName: persistableType,
                     idDescription: String(describing: model.id)
                 )

@@ -146,8 +146,62 @@ private enum CommandPreconditionEvaluator {
                 throw preconditionError("Record '\(entry.key.entityName)' with id '\(entry.key.id)' must not exist")
             }
         case .matchesStored, .matchesStoredOrAbsent:
-            throw preconditionError("Version preconditions require record version metadata and are not yet supported")
+            let currentVersion = try await recordVersion(
+                entry.key,
+                container: container,
+                transaction: transaction
+            )
+            guard let expectedVersion = entry.precondition.version else {
+                throw preconditionError("\(entry.precondition.kind.rawValue) requires a record version token")
+            }
+            let expectedDigest: [UInt8]
+            do {
+                expectedDigest = try RecordVersionTokenCodec.digest(from: expectedVersion)
+            } catch {
+                throw preconditionError("Invalid record version token")
+            }
+
+            if currentVersion == nil, entry.precondition.kind == .matchesStoredOrAbsent {
+                return
+            }
+            guard let currentVersion else {
+                throw preconditionError("Record '\(entry.key.entityName)' with id '\(entry.key.id)' must exist")
+            }
+            guard currentVersion == expectedDigest else {
+                throw preconditionError("Record '\(entry.key.entityName)' with id '\(entry.key.id)' changed")
+            }
         }
+    }
+
+    private static func recordVersion(
+        _ key: RecordKey,
+        container: DBContainer,
+        transaction: any Transaction
+    ) async throws -> [UInt8]? {
+        guard let type = container.schema.entity(named: key.entityName)?.persistableType else {
+            throw preconditionError("Entity '\(key.entityName)' is not registered in the runtime schema")
+        }
+
+        let path = try directoryPath(for: type, partitionValues: key.partitionValues)
+        let directory = try await container.resolveDirectory(for: type, path: path)
+        let storageKey = directory
+            .subspace(SubspaceKey.items)
+            .subspace(type.persistableType)
+            .pack(try idTuple(from: key.id))
+        let storage = ItemStorage(
+            transaction: transaction,
+            blobsSubspace: directory.subspace(SubspaceKey.blobs)
+        )
+        guard let data = try await storage.read(for: storageKey) else {
+            return nil
+        }
+        let item = try DataAccess.deserializeAny(data, as: type)
+        let row = QueryRowCodec.encodeAny(item)
+        guard let token = row.version,
+              let digest = Data(base64Encoded: token.value) else {
+            throw preconditionError("Stored row has no record version token")
+        }
+        return Array(digest)
     }
 
     private static func recordExists(

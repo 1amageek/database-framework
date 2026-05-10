@@ -7,35 +7,45 @@ private struct CanonicalSourceRow: Sendable {
     let fields: [String: FieldValue]
     let scopedFields: [String: [String: FieldValue]]
     let annotations: [String: FieldValue]
+    let version: RecordVersionToken?
 
     init(
         fields: [String: FieldValue],
         scopedFields: [String: [String: FieldValue]] = [:],
-        annotations: [String: FieldValue] = [:]
+        annotations: [String: FieldValue] = [:],
+        version: RecordVersionToken? = nil
     ) {
         self.fields = fields
         self.scopedFields = scopedFields
         self.annotations = annotations
+        self.version = version
     }
 
     static func fromBaseFields(
         _ fields: [String: FieldValue],
         sourceName: String?,
-        annotations: [String: FieldValue] = [:]
+        annotations: [String: FieldValue] = [:],
+        version: RecordVersionToken? = nil
     ) -> CanonicalSourceRow {
         guard let sourceName else {
-            return CanonicalSourceRow(fields: fields, annotations: annotations)
+            return CanonicalSourceRow(fields: fields, annotations: annotations, version: version)
         }
         return CanonicalSourceRow(
             fields: fields,
             scopedFields: [sourceName: fields],
-            annotations: annotations
+            annotations: annotations,
+            version: version
         )
     }
 
     func applyingAlias(_ alias: String?) -> CanonicalSourceRow {
         guard let alias else { return self }
-        return CanonicalSourceRow(fields: fields, scopedFields: [alias: fields], annotations: annotations)
+        return CanonicalSourceRow(
+            fields: fields,
+            scopedFields: [alias: fields],
+            annotations: annotations,
+            version: version
+        )
     }
 
     func merged(with other: CanonicalSourceRow) -> CanonicalSourceRow {
@@ -43,7 +53,8 @@ private struct CanonicalSourceRow: Sendable {
         return CanonicalSourceRow(
             fields: CanonicalSourceRow.flatten(scopedFields: mergedScopes),
             scopedFields: mergedScopes,
-            annotations: annotations.merging(other.annotations) { current, _ in current }
+            annotations: annotations.merging(other.annotations) { current, _ in current },
+            version: nil
         )
     }
 
@@ -190,8 +201,8 @@ extension FDBContext {
             projectedRows = canonicalUniqueRows(projectedRows)
         }
 
-        let page = try CanonicalOffsetPagination.window(
-            items: projectedRows,
+        let page = try CanonicalQueryPagination.window(
+            rows: projectedRows,
             selectQuery: selectQuery,
             options: options
         )
@@ -292,7 +303,8 @@ extension FDBContext {
             CanonicalSourceRow.fromBaseFields(
                 bridged.fields,
                 sourceName: sourceName,
-                annotations: bridged.annotations
+                annotations: bridged.annotations,
+                version: bridged.version
             )
         }
 
@@ -315,8 +327,8 @@ extension FDBContext {
             projected = canonicalUniqueRows(projected)
         }
 
-        let page = try CanonicalOffsetPagination.window(
-            items: projected,
+        let page = try CanonicalQueryPagination.window(
+            rows: projected,
             selectQuery: selectQuery,
             options: options
         )
@@ -372,7 +384,7 @@ extension FDBContext {
         }
 
         // When LIMIT/OFFSET are pushed down to the typed fetch, strip them from the
-        // pagination input so `CanonicalOffsetPagination.window` doesn't re-apply them.
+        // pagination input so pagination doesn't re-apply them.
         let paginationQuery: SelectQuery
         if pushdown.limitPushed || pushdown.offsetPushed {
             var modified = selectQuery
@@ -383,8 +395,8 @@ extension FDBContext {
             paginationQuery = selectQuery
         }
 
-        let page = try CanonicalOffsetPagination.window(
-            items: projectedRows,
+        let page = try CanonicalQueryPagination.window(
+            rows: projectedRows,
             selectQuery: paginationQuery,
             options: options
         )
@@ -452,7 +464,8 @@ extension FDBContext {
                 return CanonicalSourceRow.fromBaseFields(
                     row.fields,
                     sourceName: sourceName,
-                    annotations: row.annotations
+                    annotations: row.annotations,
+                    version: row.version
                 )
             }
             return CanonicalTableSourceRows(
@@ -531,7 +544,8 @@ extension FDBContext {
             return CanonicalSourceRow.fromBaseFields(
                 row.fields,
                 sourceName: nil,
-                annotations: row.annotations
+                annotations: row.annotations,
+                version: row.version
             )
         }
 
@@ -548,8 +562,8 @@ extension FDBContext {
         if selectQuery.distinct {
             projectedRows = canonicalUniqueRows(projectedRows)
         }
-        let page = try CanonicalOffsetPagination.window(
-            items: projectedRows,
+        let page = try CanonicalQueryPagination.window(
+            rows: projectedRows,
             selectQuery: selectQuery,
             options: options
         )
@@ -574,7 +588,12 @@ extension FDBContext {
                 )
                 let alias = tableRef.alias ?? named.name
                 return response.rows.map {
-                    CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias, annotations: $0.annotations)
+                    CanonicalSourceRow.fromBaseFields(
+                        $0.fields,
+                        sourceName: alias,
+                        annotations: $0.annotations,
+                        version: $0.version
+                    )
                 }
             }
 
@@ -590,7 +609,12 @@ extension FDBContext {
             )
             let sourceName = tableRef.alias ?? tableRef.effectiveName
             return response.rows.map {
-                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: sourceName, annotations: $0.annotations)
+                CanonicalSourceRow.fromBaseFields(
+                    $0.fields,
+                    sourceName: sourceName,
+                    annotations: $0.annotations,
+                    version: $0.version
+                )
             }
 
         case .logical(let logicalSource):
@@ -620,7 +644,8 @@ extension FDBContext {
                 return CanonicalSourceRow.fromBaseFields(
                     row.fields,
                     sourceName: sourceName,
-                    annotations: row.annotations
+                    annotations: row.annotations,
+                    version: row.version
                 )
             }
 
@@ -632,7 +657,12 @@ extension FDBContext {
                 partitionMode: partitionMode
             )
             return response.rows.map {
-                CanonicalSourceRow.fromBaseFields($0.fields, sourceName: alias, annotations: $0.annotations)
+                CanonicalSourceRow.fromBaseFields(
+                    $0.fields,
+                    sourceName: alias,
+                    annotations: $0.annotations,
+                    version: $0.version
+                )
             }
 
         case .join(let clause):
@@ -1076,14 +1106,16 @@ extension FDBContext {
     ) throws -> [QueryRow] {
         switch projection {
         case .all:
-            return rows.map { QueryRow(fields: $0.fields, annotations: $0.annotations) }
+            return rows.map {
+                QueryRow(fields: $0.fields, annotations: $0.annotations, version: $0.version)
+            }
 
         case .allFrom(let sourceName):
             return try rows.map { row in
                 guard let fields = row.fields(for: sourceName) else {
                     throw CanonicalReadError.unsupportedSelectQuery("Projection source '\(sourceName)' not found")
                 }
-                return QueryRow(fields: fields, annotations: row.annotations)
+                return QueryRow(fields: fields, annotations: row.annotations, version: row.version)
             }
 
         case .items(let items):

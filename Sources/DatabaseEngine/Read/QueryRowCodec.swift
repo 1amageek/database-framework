@@ -12,7 +12,11 @@ public enum QueryRowCodec {
                 (fieldName, FieldReader.readFieldValue(from: item, fieldName: fieldName))
             }
         )
-        return QueryRow(fields: fields, annotations: annotations)
+        return QueryRow(
+            fields: fields,
+            annotations: annotations,
+            version: RecordVersionTokenCodec.token(for: fields)
+        )
     }
 
     public static func decode<T: Persistable>(
@@ -38,7 +42,11 @@ public enum QueryRowCodec {
                 (fieldName, FieldReader.readFieldValue(from: item, fieldName: fieldName))
             }
         )
-        return QueryRow(fields: fields, annotations: annotations)
+        return QueryRow(
+            fields: fields,
+            annotations: annotations,
+            version: RecordVersionTokenCodec.token(for: fields)
+        )
     }
 
     private static func jsonValue(for value: FieldValue) throws -> Any {

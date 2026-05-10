@@ -6,6 +6,7 @@ import DatabaseServer
 import Foundation
 import Testing
 import Core
+import QueryIR
 import Synchronization
 
 @Persistable
@@ -356,6 +357,412 @@ struct OperationRegistryTests {
         #expect(duplicate.errorMessage?.contains("Precondition") == true)
     }
 
+    @Test("save operation rejects unsupported idempotency")
+    func saveOperationRejectsUnsupportedIdempotency() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        let endpoint = DatabaseEndpoint(container: container)
+
+        let change = ChangeSet.Change(
+            entityName: OperationRegistryTestRecord.persistableType,
+            id: "idempotent-save-1",
+            operation: .insert,
+            fields: ["id": .string("idempotent-save-1"), "name": .string("created")]
+        )
+        let response = try await sendSave(
+            changes: [change],
+            preconditions: [],
+            idempotencyKey: "save-1",
+            clientMutationID: "mutation-1",
+            endpoint: endpoint
+        )
+
+        #expect(response.isError == true)
+        #expect(response.errorCode == "UNSUPPORTED_SAVE_IDEMPOTENCY")
+    }
+
+    @Test("save operation rejects idempotency key without client mutation id")
+    func saveOperationRejectsIdempotencyKeyWithoutClientMutationID() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        let endpoint = DatabaseEndpoint(container: container)
+
+        let change = ChangeSet.Change(
+            entityName: OperationRegistryTestRecord.persistableType,
+            id: "idempotent-save-key-only",
+            operation: .insert,
+            fields: ["id": .string("idempotent-save-key-only"), "name": .string("created")]
+        )
+        let response = try await sendSave(
+            changes: [change],
+            preconditions: [],
+            idempotencyKey: "save-key-only",
+            endpoint: endpoint
+        )
+
+        #expect(response.isError == true)
+        #expect(response.errorCode == "UNSUPPORTED_SAVE_IDEMPOTENCY")
+    }
+
+    @Test("save operation rejects client mutation id without idempotency key")
+    func saveOperationRejectsClientMutationIDWithoutIdempotencyKey() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        let endpoint = DatabaseEndpoint(container: container)
+
+        let change = ChangeSet.Change(
+            entityName: OperationRegistryTestRecord.persistableType,
+            id: "idempotent-save-mutation-only",
+            operation: .insert,
+            fields: ["id": .string("idempotent-save-mutation-only"), "name": .string("created")]
+        )
+        let response = try await sendSave(
+            changes: [change],
+            preconditions: [],
+            clientMutationID: "mutation-only",
+            endpoint: endpoint
+        )
+
+        #expect(response.isError == true)
+        #expect(response.errorCode == "UNSUPPORTED_SAVE_IDEMPOTENCY")
+    }
+
+    @Test("save operation enforces record version preconditions")
+    func saveOperationEnforcesRecordVersionPreconditions() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        let endpoint = DatabaseEndpoint(container: container)
+
+        let create = ChangeSet.Change(
+            entityName: OperationRegistryTestRecord.persistableType,
+            id: "versioned-1",
+            operation: .insert,
+            fields: ["id": .string("versioned-1"), "name": .string("created")]
+        )
+        _ = try await sendSave(
+            changes: [create],
+            preconditions: [
+                WritePreconditionEntry(
+                    key: RecordKey(entityName: OperationRegistryTestRecord.persistableType, id: .string("versioned-1")),
+                    precondition: .notExists
+                )
+            ],
+            endpoint: endpoint
+        )
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            filter: .equal(.column(ColumnRef(column: "id")), .literal(.string("versioned-1"))),
+            limit: 1
+        )
+        let queryResponse = try await container.newContext().query(query)
+        let version = try #require(queryResponse.rows.first?.version)
+
+        let update = ChangeSet.Change(
+            entityName: OperationRegistryTestRecord.persistableType,
+            id: "versioned-1",
+            operation: .update,
+            fields: ["id": .string("versioned-1"), "name": .string("updated")]
+        )
+        let success = try await sendSave(
+            changes: [update],
+            preconditions: [
+                WritePreconditionEntry(
+                    key: RecordKey(entityName: OperationRegistryTestRecord.persistableType, id: .string("versioned-1")),
+                    precondition: .matchesStored(version)
+                )
+            ],
+            endpoint: endpoint
+        )
+        let stale = try await sendSave(
+            changes: [update],
+            preconditions: [
+                WritePreconditionEntry(
+                    key: RecordKey(entityName: OperationRegistryTestRecord.persistableType, id: .string("versioned-1")),
+                    precondition: .matchesStored(version)
+                )
+            ],
+            endpoint: endpoint
+        )
+
+        #expect(success.isError == false)
+        #expect(stale.isError == true)
+        #expect(stale.errorCode == "PRECONDITION_FAILED")
+    }
+
+    @Test("canonical query keyset continuation skips newly inserted earlier rows")
+    func canonicalQueryKeysetContinuationSkipsNewlyInsertedEarlierRows() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "keyset-1", name: "b"))
+        context.insert(record(id: "keyset-2", name: "c"))
+        context.insert(record(id: "keyset-3", name: "d"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ]
+        )
+        let first = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: QueryContinuation("keyset:v1")
+            )
+        )
+
+        let mutationContext = container.newContext()
+        mutationContext.insert(record(id: "keyset-0", name: "a"))
+        try await mutationContext.save()
+
+        let continuation = try #require(first.continuation)
+        let second = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: continuation
+            )
+        )
+
+        #expect(first.rows.map { $0.fields["id"] } == [.string("keyset-1"), .string("keyset-2")])
+        #expect(second.rows.map { $0.fields["id"] } == [.string("keyset-3")])
+        #expect(second.continuation == nil)
+    }
+
+    @Test("canonical query keyset continuation supports descending sort")
+    func canonicalQueryKeysetContinuationSupportsDescendingSort() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "keyset-desc-1", name: "a"))
+        context.insert(record(id: "keyset-desc-2", name: "b"))
+        context.insert(record(id: "keyset-desc-3", name: "c"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .descending)
+            ]
+        )
+        let first = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: QueryContinuation("keyset:v1")
+            )
+        )
+
+        let mutationContext = container.newContext()
+        mutationContext.insert(record(id: "keyset-desc-0", name: "d"))
+        try await mutationContext.save()
+
+        guard let continuation = first.continuation else {
+            Issue.record("Expected keyset continuation")
+            return
+        }
+        let second = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: continuation
+            )
+        )
+
+        #expect(first.rows.map { $0.fields["id"] } == [.string("keyset-desc-3"), .string("keyset-desc-2")])
+        #expect(second.rows.map { $0.fields["id"] } == [.string("keyset-desc-1")])
+        #expect(second.continuation == nil)
+    }
+
+    @Test("canonical query keyset continuation uses id tie breaker")
+    func canonicalQueryKeysetContinuationUsesIDTieBreaker() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "keyset-tie-1", name: "same"))
+        context.insert(record(id: "keyset-tie-2", name: "same"))
+        context.insert(record(id: "keyset-tie-3", name: "same"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ]
+        )
+        let first = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: QueryContinuation("keyset:v1")
+            )
+        )
+
+        let mutationContext = container.newContext()
+        mutationContext.insert(record(id: "keyset-tie-0", name: "same"))
+        try await mutationContext.save()
+
+        guard let continuation = first.continuation else {
+            Issue.record("Expected keyset continuation")
+            return
+        }
+        let second = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: continuation
+            )
+        )
+
+        #expect(first.rows.map { $0.fields["id"] } == [.string("keyset-tie-1"), .string("keyset-tie-2")])
+        #expect(second.rows.map { $0.fields["id"] } == [.string("keyset-tie-3")])
+        #expect(second.continuation == nil)
+    }
+
+    @Test("canonical query keyset continuation stops at query limit")
+    func canonicalQueryKeysetContinuationStopsAtQueryLimit() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "keyset-limit-1", name: "a"))
+        context.insert(record(id: "keyset-limit-2", name: "b"))
+        context.insert(record(id: "keyset-limit-3", name: "c"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ],
+            limit: 2
+        )
+        let response = try await container.newContext().query(
+            query,
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: QueryContinuation("keyset:v1")
+            )
+        )
+
+        #expect(response.rows.map { $0.fields["id"] } == [.string("keyset-limit-1"), .string("keyset-limit-2")])
+        #expect(response.continuation == nil)
+    }
+
+    @Test("canonical query keyset continuation rejects malformed token")
+    func canonicalQueryKeysetContinuationRejectsMalformedToken() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ]
+        )
+
+        await #expect(throws: CanonicalReadError.self) {
+            _ = try await container.newContext().query(
+                query,
+                options: ReadExecutionOptions(
+                    pageSize: 2,
+                    continuation: QueryContinuation("keyset:v1:not-base64")
+                )
+            )
+        }
+    }
+
+    @Test("query operation maps malformed keyset continuation to service error")
+    func queryOperationMapsMalformedKeysetContinuationToServiceError() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+        let endpoint = DatabaseEndpoint(container: container)
+
+        let query = SelectQuery(
+            projection: .all,
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ]
+        )
+        let request = QueryRequest(
+            statement: .select(query),
+            options: ReadExecutionOptions(
+                pageSize: 2,
+                continuation: QueryContinuation("keyset:v1:not-base64")
+            )
+        )
+        let envelope = ServiceEnvelope(
+            operationID: "query",
+            payload: try JSONEncoder().encode(request)
+        )
+        let responseData = await endpoint.handleRequest(try JSONEncoder().encode(envelope))
+        let response = try JSONDecoder().decode(ServiceEnvelope.self, from: responseData)
+
+        #expect(response.isError == true)
+        #expect(response.errorCode == "INVALID_CONTINUATION")
+    }
+
+    @Test("canonical query keyset continuation requires projected sort column")
+    func canonicalQueryKeysetContinuationRequiresProjectedSortColumn() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "keyset-projection-1", name: "a"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .items([.column("id")]),
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            orderBy: [
+                SortKey(.column(ColumnRef(column: "name")), direction: .ascending)
+            ]
+        )
+
+        await #expect(throws: CanonicalReadError.self) {
+            _ = try await container.newContext().query(
+                query,
+                options: ReadExecutionOptions(
+                    pageSize: 2,
+                    continuation: QueryContinuation("keyset:v1")
+                )
+            )
+        }
+    }
+
+    @Test("canonical projected rows do not expose record version tokens")
+    func canonicalProjectedRowsDoNotExposeRecordVersionTokens() async throws {
+        let schema = Schema([OperationRegistryTestRecord.self], version: Schema.Version(1, 0, 0))
+        let container = try await DBContainer.inMemory(for: schema, security: .disabled)
+
+        let context = container.newContext()
+        context.insert(record(id: "projected-version-1", name: "versioned"))
+        try await context.save()
+
+        let query = SelectQuery(
+            projection: .items([.column("id")]),
+            source: .table(TableRef(table: OperationRegistryTestRecord.persistableType)),
+            filter: .equal(.column(ColumnRef(column: "id")), .literal(.string("projected-version-1")))
+        )
+        let response = try await container.newContext().query(query)
+
+        #expect(response.rows.first?.fields["id"] == .string("projected-version-1"))
+        #expect(response.rows.first?.version == nil)
+    }
+
     private func sendCommand(
         _ request: EchoCommandRequest,
         idempotencyKey: IdempotencyKey?,
@@ -405,11 +812,15 @@ struct OperationRegistryTests {
     private func sendSave(
         changes: [ChangeSet.Change],
         preconditions: [WritePreconditionEntry],
+        idempotencyKey: IdempotencyKey? = nil,
+        clientMutationID: String? = nil,
         endpoint: DatabaseEndpoint
     ) async throws -> ServiceEnvelope {
         let request = SaveRequest(
             changes: changes,
-            preconditions: preconditions
+            preconditions: preconditions,
+            idempotencyKey: idempotencyKey,
+            clientMutationID: clientMutationID
         )
         let envelope = ServiceEnvelope(
             operationID: "save",
@@ -417,6 +828,13 @@ struct OperationRegistryTests {
         )
         let responseData = await endpoint.handleRequest(try JSONEncoder().encode(envelope))
         return try JSONDecoder().decode(ServiceEnvelope.self, from: responseData)
+    }
+
+    private func record(id: String, name: String) -> OperationRegistryTestRecord {
+        var record = OperationRegistryTestRecord()
+        record.id = id
+        record.name = name
+        return record
     }
 }
 #endif

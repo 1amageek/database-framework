@@ -142,6 +142,47 @@ struct WritePreconditionTests {
         #expect(byNew.first?.id == user.id)
     }
 
+    @Test("replace with matching stored version succeeds and stale version fails")
+    func replaceWithMatchingStoredVersionSucceedsAndStaleVersionFails() async throws {
+        let container = try await makeContainer()
+        try await cleanup(container)
+        let context = container.newContext()
+
+        let oldEmail = uniq("old") + "@example.com"
+        var user = WPUser(email: oldEmail)
+        user.id = uniq("U")
+        context.upsert(user)
+        try await context.save()
+
+        let version = try RecordVersionTokenCodec.digest(
+            from: #require(QueryRowCodec.encode(user).version)
+        )
+
+        var firstUpdate = user
+        firstUpdate.email = uniq("first") + "@example.com"
+        context.replace(
+            old: user,
+            with: firstUpdate,
+            precondition: .matchesStored(version: version)
+        )
+        try await context.save()
+
+        var staleUpdate = firstUpdate
+        staleUpdate.email = uniq("stale") + "@example.com"
+        context.replace(
+            old: firstUpdate,
+            with: staleUpdate,
+            precondition: .matchesStored(version: version)
+        )
+
+        await #expect(throws: FDBContextError.self) {
+            try await context.save()
+        }
+
+        let stored = try await context.fetch(WPUser.self).where(\.id == user.id).execute()
+        #expect(stored.first?.email == firstUpdate.email)
+    }
+
     @Test("replace on missing key throws preconditionFailed")
     func replaceOnMissingKeyThrowsPreconditionFailed() async throws {
         let container = try await makeContainer()

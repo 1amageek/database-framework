@@ -18,8 +18,8 @@ import Foundation
 /// | `.none` | No existence check. Blind write. |
 /// | `.notExists` | The key must not exist in storage. Used by `create`. |
 /// | `.exists` | The key must exist in storage. Used by `replace` and `delete`. |
-/// | `.matchesStored(version:)` | The stored row's versionstamp must equal the given bytes. Optimistic concurrency control. |
-/// | `.matchesStoredOrAbsent(version:)` | Either the row is absent, or its versionstamp matches. Idempotent OCC. |
+/// | `.matchesStored(version:)` | The stored row's version token must equal the given bytes. Optimistic concurrency control. |
+/// | `.matchesStoredOrAbsent(version:)` | Either the row is absent, or its version token matches. Idempotent OCC. |
 public enum WritePrecondition: Sendable, Equatable {
     /// No check. The write proceeds unconditionally.
     case none
@@ -30,10 +30,10 @@ public enum WritePrecondition: Sendable, Equatable {
     /// The key must be present in storage at commit time.
     case exists
 
-    /// The stored row's versionstamp must equal the given bytes.
+    /// The stored row's version token must equal the given bytes.
     case matchesStored(version: [UInt8])
 
-    /// Either the key is absent, or its versionstamp matches the given bytes.
+    /// Either the key is absent, or its version token matches the given bytes.
     case matchesStoredOrAbsent(version: [UInt8])
 
     /// Whether evaluating this precondition requires reading the row from
