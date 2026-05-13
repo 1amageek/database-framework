@@ -1553,8 +1553,9 @@ internal final class FDBDataStore: DataStore, Sendable {
     ///
     /// Mirrors the FDBContext fast path for the same safe subset:
     /// exactly one insert or delete, security disabled, and no indexes.
-    /// In that case, we can use auto-commit and skip the existing-record read,
-    /// because overwrite semantics are identical for no-index/no-security types.
+    /// In that case, we can skip the existing-record read because overwrite
+    /// semantics are identical for no-index/no-security types. The write still
+    /// runs through TransactionRunner so retry/backoff policy remains centralized.
     private func executeBatchFastPathIfEligible(
         inserts: [any Persistable],
         deletes: [any Persistable]
@@ -1568,7 +1569,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         guard type(of: model).indexDescriptors.isEmpty else { return nil }
 
         if isSingleInsert {
-            _ = try await withAutoCommit { transaction in
+            _ = try await withRawTransaction { transaction in
                 try await self.executeBatchInTransaction(
                     inserts: inserts,
                     deletes: [],
@@ -1577,7 +1578,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 )
             }
         } else {
-            _ = try await withAutoCommit { transaction in
+            _ = try await withRawTransaction { transaction in
                 try await self.executeBatchInTransaction(
                     inserts: [],
                     deletes: deletes,
@@ -1739,8 +1740,8 @@ internal final class FDBDataStore: DataStore, Sendable {
     /// across multiple DataStores in a single atomic transaction.
     ///
     /// **Design Intent - No ReadVersionCache**:
-    /// This method uses `container.engine.withTransaction()` directly, bypassing
-    /// any ReadVersionCache. This is intentional because:
+    /// This method uses TransactionRunner directly, bypassing any ReadVersionCache.
+    /// This is intentional because:
     ///
     /// 1. **Write operations need latest data**: FDBDataStore primarily handles writes
     ///    (`save()`, `delete()`) which require strong consistency, not stale cached reads.
@@ -1756,17 +1757,17 @@ internal final class FDBDataStore: DataStore, Sendable {
     func withRawTransaction<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {
-        // Use StorageEngine.withTransaction directly for eager connection acquisition.
-        // This avoids the TransactionRunner → createTransaction → lazy connection path,
-        // which adds overhead from Task + withCheckedContinuation for deferred
-        // connection pool access.
-        return try await container.engine.withTransaction(body)
+        let runner = TransactionRunner(database: container.engine)
+        return try await runner.run(
+            configuration: .default,
+            operationDescription: "FDBDataStore.withRawTransaction",
+            operation: body
+        )
     }
 
-    /// Execute an operation in auto-commit mode (no BEGIN/COMMIT).
+    /// Execute a low-level single-read optimization in auto-commit mode.
     ///
-    /// Delegates to StorageEngine.withAutoCommit() which skips BEGIN/COMMIT
-    /// for PostgreSQL, saving 2 SQL round-trips per operation.
+    /// Write paths use TransactionRunner through `withRawTransaction(_:)`.
     func withAutoCommit<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {

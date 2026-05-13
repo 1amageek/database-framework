@@ -250,7 +250,7 @@ public struct GraphQueryExecutor: Sendable {
     public func execute() async throws -> [GraphEdge] {
         let ordering = selectOptimalOrdering(strategy: strategy)
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             try await self.scanIndex(
                 ordering: ordering,
                 indexSubspace: self.indexSubspace,
@@ -641,7 +641,7 @@ public struct GraphQueryBuilder<T: Persistable>: Sendable {
         let toValue = toPattern.exactValue
 
         // Execute scan with property filters
-        return try await queryContext.context.container.engine.withTransaction { transaction in
+        return try await queryContext.context.container.engine.withTransaction(configuration: .default) { transaction in
             let stream = scanner.scanEdges(
                 from: fromValue,
                 edge: edgeValue,

@@ -20,8 +20,8 @@ import Configuration
 ///
 /// **Environment Variables**:
 /// - `DATABASE_TRANSACTION_RETRY_LIMIT`: Max retry attempts (default: 5)
-/// - `DATABASE_TRANSACTION_MAX_RETRY_DELAY`: Max delay between retries in ms (default: 1000)
-/// - `DATABASE_TRANSACTION_INITIAL_DELAY`: Initial backoff delay in ms (default: 300)
+/// - `DATABASE_TRANSACTION_MAX_RETRY_DELAY`: Max delay between retries in ms (default: 250)
+/// - `DATABASE_TRANSACTION_INITIAL_DELAY`: Initial backoff delay in ms (default: 10)
 /// - `DATABASE_TRANSACTION_TIMEOUT`: Default timeout in ms (default: nil = FDB default ~5s)
 ///
 /// **Usage**:
@@ -46,13 +46,13 @@ public struct DatabaseConfiguration: Sendable {
     /// Maximum delay between retries in milliseconds
     ///
     /// Caps the exponential backoff delay.
-    /// Default: 1000ms
+    /// Default: 250ms
     public let transactionMaxRetryDelay: Int
 
     /// Initial backoff delay in milliseconds
     ///
     /// The base delay before the first retry, which doubles with each subsequent attempt.
-    /// Default: 300ms
+    /// Default: 10ms
     public let transactionInitialDelay: Int
 
     /// Default transaction timeout in milliseconds
@@ -69,13 +69,13 @@ public struct DatabaseConfiguration: Sendable {
     ///
     /// - Parameters:
     ///   - transactionRetryLimit: Max retry attempts (default: 5)
-    ///   - transactionMaxRetryDelay: Max delay between retries in ms (default: 1000)
-    ///   - transactionInitialDelay: Initial backoff delay in ms (default: 300)
+    ///   - transactionMaxRetryDelay: Max delay between retries in ms (default: 250)
+    ///   - transactionInitialDelay: Initial backoff delay in ms (default: 10)
     ///   - transactionTimeout: Default timeout in ms (default: nil = FDB default)
     public init(
         transactionRetryLimit: Int = 5,
-        transactionMaxRetryDelay: Int = 1000,
-        transactionInitialDelay: Int = 300,
+        transactionMaxRetryDelay: Int = 250,
+        transactionInitialDelay: Int = 10,
         transactionTimeout: Int? = nil
     ) {
         self.transactionRetryLimit = transactionRetryLimit
@@ -105,8 +105,8 @@ public struct DatabaseConfiguration: Sendable {
                 name: "database-defaults",
                 values: [
                     "database.transaction.retry_limit": 5,
-                    "database.transaction.max_retry_delay": 1000,
-                    "database.transaction.initial_delay": 300,
+                    "database.transaction.max_retry_delay": 250,
+                    "database.transaction.initial_delay": 10,
                 ]
             )
         ])
@@ -115,8 +115,8 @@ public struct DatabaseConfiguration: Sendable {
 
         return DatabaseConfiguration(
             transactionRetryLimit: dbConfig.int(forKey: "retry_limit", default: 5),
-            transactionMaxRetryDelay: dbConfig.int(forKey: "max_retry_delay", default: 1000),
-            transactionInitialDelay: dbConfig.int(forKey: "initial_delay", default: 300),
+            transactionMaxRetryDelay: dbConfig.int(forKey: "max_retry_delay", default: 250),
+            transactionInitialDelay: dbConfig.int(forKey: "initial_delay", default: 10),
             transactionTimeout: dbConfig.int(forKey: "timeout")
         )
     }()

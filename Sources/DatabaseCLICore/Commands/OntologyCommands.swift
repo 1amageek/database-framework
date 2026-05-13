@@ -161,14 +161,14 @@ public struct OntologyCommands: Sendable {
 
     private func loadOntology() async throws -> OWLOntology {
         let store = OntologyStore.default()
-        let iris = try await database.withTransaction { tx in
+        let iris = try await database.withTransaction(configuration: .default) { tx in
             try await store.listOntologies(transaction: tx)
         }
         guard let firstIRI = iris.first else {
             output.info("(no ontology registered)")
             throw CLIError.invalidArguments("No ontology found in ontology store.")
         }
-        guard let ontology = try await database.withTransaction({ tx in
+        guard let ontology = try await database.withTransaction(configuration: .default, { tx in
             try await store.reconstruct(iri: firstIRI, transaction: tx)
         }) else {
             throw CLIError.invalidArguments("Failed to reconstruct ontology: \(firstIRI)")

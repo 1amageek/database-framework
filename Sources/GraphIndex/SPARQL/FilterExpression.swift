@@ -307,7 +307,10 @@ public indirect enum FilterExpression: Sendable {
             options.insert(.dotMatchesLineSeparators)
         }
 
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+        let regex: NSRegularExpression
+        do {
+            regex = try NSRegularExpression(pattern: pattern, options: options)
+        } catch {
             return false
         }
 

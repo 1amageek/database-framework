@@ -163,7 +163,7 @@ public struct SPARQLQueryExecutor: Sendable {
         offset: Int
     ) async throws -> ([VariableBinding], ExecutionStatistics) {
         let effectivePattern = applyDefaultGraph(to: pattern)
-        let evalResult = try await database.withTransaction { transaction in
+        let evalResult = try await database.withTransaction(configuration: .default) { transaction in
             try await self.evaluate(
                 pattern: effectivePattern,
                 indexSubspace: self.indexSubspace,
@@ -1550,7 +1550,7 @@ public struct SPARQLQueryExecutor: Sendable {
         }
 
         // Execute source pattern
-        let evalResult = try await database.withTransaction { transaction in
+        let evalResult = try await database.withTransaction(configuration: .default) { transaction in
             try await self.evaluate(
                 pattern: sourcePattern,
                 indexSubspace: self.indexSubspace,

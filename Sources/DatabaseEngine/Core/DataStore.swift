@@ -229,10 +229,10 @@ public protocol DataStore: AnyObject, Sendable {
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T
 
-    /// Execute an operation in auto-commit mode (no explicit BEGIN/COMMIT).
+    /// Execute a low-level single-read optimization in auto-commit mode.
     ///
-    /// Suitable for single read or single write operations that don't need
-    /// multi-statement atomicity. Saves 2 SQL round-trips on PostgreSQL.
+    /// Write paths must use `withRawTransaction(_:)` so retry policy,
+    /// backoff, and instrumentation stay centralized in `TransactionRunner`.
     ///
     /// - Parameter body: The closure to execute
     /// - Returns: Result of the closure
@@ -259,7 +259,7 @@ extension DataStore {
         )
     }
 
-    /// Default: falls back to `withRawTransaction()`
+    /// Default: falls back to `withRawTransaction()`.
     public func withAutoCommit<T: Sendable>(
         _ body: @Sendable @escaping (any Transaction) async throws -> T
     ) async throws -> T {

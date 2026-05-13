@@ -385,7 +385,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         storedFieldNames: [String]
     ) async throws -> SPARQLResult {
         // Execute using database transaction (shares snapshot with parent SQL transaction)
-        return try await context.container.engine.withTransaction { transaction in
+        return try await context.container.engine.withTransaction(configuration: .default) { transaction in
             try await executeSPARQLString(
                 sparqlQuery,
                 database: context.container.engine,

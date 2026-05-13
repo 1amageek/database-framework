@@ -1183,18 +1183,18 @@ public final class FDBContext: Sendable {
         // Reuse the container-wide store cache directly for single-operation contexts.
         let store = try await singleOperationStore(for: modelType)
 
-        // Execute in auto-commit mode (no BEGIN/COMMIT for single operations)
-        if !isDelete {
-            _ = try await store.withAutoCommit { transaction in
+        // Execute through TransactionRunner even for single-operation fast paths.
+        // The fast path skips unnecessary reads/index work, but it must not bypass
+        // retry/backoff semantics.
+        _ = try await self.withRawTransaction { transaction in
+            if !isDelete {
                 try await store.executeBatchInTransaction(
                     inserts: [model],
                     deletes: [],
                     transaction: transaction,
                     skipExistingCheck: true
                 )
-            }
-        } else {
-            _ = try await store.withAutoCommit { transaction in
+            } else {
                 try await store.executeBatchInTransaction(
                     inserts: [],
                     deletes: [model],
@@ -1845,7 +1845,8 @@ extension FDBContext {
         let runner = TransactionRunner(database: container.engine)
         return try await runner.run(
             configuration: configuration,
-            readVersionCache: readVersionCache
+            readVersionCache: readVersionCache,
+            operationDescription: "FDBContext.withTransaction"
         ) { transaction in
             let context = TransactionContext(
                 transaction: transaction,
@@ -1880,6 +1881,7 @@ extension FDBContext {
         return try await runner.run(
             configuration: configuration,
             readVersionCache: readVersionCache,
+            operationDescription: "FDBContext.withRawTransaction",
             operation: operation
         )
     }

@@ -40,6 +40,10 @@ extension StorageEngine {
         _ operation: @Sendable (any Transaction) async throws -> T
     ) async throws -> T {
         let runner = TransactionRunner(database: self)
-        return try await runner.run(configuration: configuration, operation: operation)
+        return try await runner.run(
+            configuration: configuration,
+            operationDescription: "StorageEngine.withTransaction(configuration:)",
+            operation: operation
+        )
     }
 }

@@ -59,7 +59,7 @@ public struct CatalogDataAccess: Sendable {
         let key = typeSubspace.pack(Tuple([id]))
 
         // Get raw bytes inside transaction
-        let rawValue: Bytes? = try await database.withTransaction { transaction in
+        let rawValue: Bytes? = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -81,7 +81,7 @@ public struct CatalogDataAccess: Sendable {
         let (begin, end) = typeSubspace.range()
 
         // Collect raw key-value pairs inside transaction
-        let rawPairs: [(key: Bytes, value: Bytes)] = try await database.withTransaction { transaction in
+        let rawPairs: [(key: Bytes, value: Bytes)] = try await database.withTransaction(configuration: .default) { transaction in
             var pairs: [(key: Bytes, value: Bytes)] = []
             let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
@@ -131,7 +131,7 @@ public struct CatalogDataAccess: Sendable {
 
         let key = typeSubspace.pack(Tuple([id]))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.setValue(envelopeBytes, for: key)
         }
     }
@@ -144,7 +144,7 @@ public struct CatalogDataAccess: Sendable {
         let typeSubspace = try await itemSubspace(for: entity, partitionValues: partitionValues)
         let key = typeSubspace.pack(Tuple([id]))
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.clear(key: key)
         }
     }
@@ -195,7 +195,7 @@ public struct CatalogDataAccess: Sendable {
         let entity = try entity(for: typeName)
         let subspace = try await resolveSubspace(for: entity, partitionValues: partitionValues)
         let (begin, end) = subspace.range()
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.clearRange(beginKey: begin, endKey: end)
         }
     }

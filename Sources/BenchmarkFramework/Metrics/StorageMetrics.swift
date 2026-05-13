@@ -1,4 +1,5 @@
 import Foundation
+import DatabaseEngine
 import StorageKit
 
 public struct StorageMetrics: Codable, Sendable, Hashable {
@@ -21,7 +22,7 @@ public struct StorageMetrics: Codable, Sendable, Hashable {
     ) async throws -> StorageMetrics {
         let range = subspace.range()
 
-        let totalBytes = try await database.withTransaction { transaction in
+        let totalBytes = try await database.withTransaction(configuration: .default) { transaction in
             var bytes = 0
 
             let kvs = try await transaction.collectRange(from: .firstGreaterOrEqual(range.begin), to: .firstGreaterOrEqual(range.end))

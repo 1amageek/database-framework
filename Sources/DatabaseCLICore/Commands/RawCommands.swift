@@ -38,7 +38,7 @@ public struct RawCommands {
 
         let key = encodeKey(keyString)
 
-        let value = try await database.withTransaction { transaction in
+        let value = try await database.withTransaction(configuration: .default) { transaction in
             try await transaction.getValue(for: key, snapshot: false)
         }
 
@@ -64,7 +64,7 @@ public struct RawCommands {
         let key = encodeKey(keyString)
         let value = Array(valueString.utf8)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.setValue(value, for: key)
         }
 
@@ -80,7 +80,7 @@ public struct RawCommands {
 
         let key = encodeKey(keyString)
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.clear(key: key)
         }
 
@@ -103,18 +103,19 @@ public struct RawCommands {
                 limit = n
             }
         }
+        let effectiveLimit = limit
 
         let prefix = encodeKey(prefixString)
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        let results: [(key: Bytes, value: Bytes)] = try await database.withTransaction { transaction in
+        let results: [(key: Bytes, value: Bytes)] = try await database.withTransaction(configuration: .default) { transaction in
             var collected: [(key: Bytes, value: Bytes)] = []
 
             let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
             for (key, value) in sequence {
                 collected.append((key: key, value: value))
-                if collected.count >= limit { break }
+                if collected.count >= effectiveLimit { break }
             }
 
             return collected

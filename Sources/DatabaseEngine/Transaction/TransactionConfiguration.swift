@@ -110,7 +110,7 @@ public struct TransactionConfiguration: Sendable, Hashable {
     ///
     /// Caps the exponential backoff delay.
     ///
-    /// Default: `DatabaseConfiguration.shared.transactionMaxRetryDelay` (1000ms)
+    /// Default: `DatabaseConfiguration.shared.transactionMaxRetryDelay` (250ms)
     public let maxRetryDelay: Int
 
     /// Transaction priority
@@ -456,7 +456,7 @@ extension TransactionConfiguration: CustomStringConvertible {
         if retryLimit != 5 {
             parts.append("retryLimit: \(retryLimit)")
         }
-        if maxRetryDelay != 1000 {
+        if maxRetryDelay != 250 {
             parts.append("maxRetryDelay: \(maxRetryDelay)ms")
         }
         if priority != .default {

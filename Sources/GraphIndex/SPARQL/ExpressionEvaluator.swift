@@ -532,7 +532,10 @@ public struct ExpressionEvaluator: Sendable {
             if flags.contains("s") { options.insert(.dotMatchesLineSeparators) }
             if flags.contains("x") { options.insert(.allowCommentsAndWhitespace) }
         }
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+        let regex: NSRegularExpression
+        do {
+            regex = try NSRegularExpression(pattern: pattern, options: options)
+        } catch {
             return false
         }
         let range = NSRange(string.startIndex..., in: string)
@@ -551,7 +554,10 @@ public struct ExpressionEvaluator: Sendable {
             if flags.contains("m") { options.insert(.anchorsMatchLines) }
             if flags.contains("s") { options.insert(.dotMatchesLineSeparators) }
         }
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+        let regex: NSRegularExpression
+        do {
+            regex = try NSRegularExpression(pattern: pattern, options: options)
+        } catch {
             return string
         }
         let range = NSRange(string.startIndex..., in: string)

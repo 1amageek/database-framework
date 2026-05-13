@@ -42,7 +42,7 @@ let package = Package(
         .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "0.4.0"),
         .package(
             url: "https://github.com/1amageek/storage-kit.git",
-            from: "26.0421.0",
+            from: "26.0513.0",
             traits: [
                 .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
                 .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),

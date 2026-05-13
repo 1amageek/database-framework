@@ -308,6 +308,27 @@ public final class InstrumentedTransaction: @unchecked Sendable {
         }
     }
 
+    /// Finalize metrics after an external transaction runner committed the
+    /// wrapped transaction.
+    ///
+    /// This keeps instrumentation as an observer instead of letting it own
+    /// commit/retry policy.
+    func recordExternalCommit(commitNanos: UInt64) {
+        let pending = pendingWrites.withLock { $0 }
+
+        state.withLock { state in
+            state.committed = true
+            state.endTime = Date()
+            state.commitNanos = commitNanos
+            state.writeCount += pending.count
+            state.bytesWritten += pending.bytes
+        }
+
+        if let timer = timer {
+            metrics.export(to: timer)
+        }
+    }
+
     /// Cancel the transaction
     public func cancel() {
         transaction.cancel()
@@ -323,7 +344,6 @@ public final class InstrumentedTransaction: @unchecked Sendable {
         state.withLock { state in
             state.retryCount += 1
         }
-        timer?.increment(.retries)
     }
 
     // MARK: - Read Version
@@ -402,47 +422,37 @@ extension StorageEngine {
         timer: StoreTimer? = nil,
         _ operation: @Sendable (InstrumentedTransaction) async throws -> T
     ) async throws -> (result: T, metrics: TransactionMetrics) {
-        // Use DatabaseConfiguration for retry settings (configurable via environment variables)
-        let config = DatabaseConfiguration.shared
-        let maxRetries = max(1, config.transactionRetryLimit)
-        let maxDelayMs = config.transactionMaxRetryDelay
-        let initialDelayMs = config.transactionInitialDelay
+        let retryCount = Mutex<Int>(0)
+        let current = Mutex<InstrumentedTransaction?>(nil)
+        let runner = TransactionRunner(database: self)
 
-        for attempt in 0..<maxRetries {
-            let transaction = try createTransaction()
-
+        let result = try await runner.run(
+            configuration: .default,
+            operationDescription: "StorageEngine.withInstrumentedTransaction",
+            onRetry: { _, _ in
+                retryCount.withLock { $0 += 1 }
+            },
+            onCancel: { _ in
+                current.withLock { $0 }?.cancel()
+            },
+            onCommitSuccess: { _, commitNanos in
+                current.withLock { $0 }?.recordExternalCommit(commitNanos: commitNanos)
+            }
+        ) { transaction in
             let instrumented = InstrumentedTransaction(wrapping: transaction, timer: timer)
-
-            if attempt > 0 {
+            let retries = retryCount.withLock { $0 }
+            for _ in 0..<retries {
                 instrumented.recordRetry()
             }
+            current.withLock { $0 = instrumented }
 
-            do {
-                let result = try await operation(instrumented)
-                try await instrumented.commit()
-                return (result, instrumented.metrics)
-            } catch {
-                instrumented.cancel()
-
-                if let storageError = error as? StorageError, storageError.isRetryable {
-                    if attempt < maxRetries - 1 {
-                        // Exponential backoff: initialDelay * 2^attempt, capped by maxDelay
-                        let exponent = min(attempt, 10)
-                        let exponentialDelay = initialDelayMs * (1 << exponent)
-                        let cappedDelay = min(exponentialDelay, maxDelayMs)
-                        // Add jitter (0-50% of delay) to prevent thundering herd
-                        let jitter = Int.random(in: 0...(cappedDelay / 2))
-                        let delay = cappedDelay + jitter
-                        try await Task.sleep(nanoseconds: UInt64(delay) * 1_000_000)
-                        continue
-                    }
-                }
-
-                throw error
-            }
+            return try await operation(instrumented)
         }
 
-        throw StorageError.transactionTooOld
+        guard let metrics = current.withLock({ $0?.metrics }) else {
+            throw StorageError.invalidOperation("Instrumented transaction did not run")
+        }
+        return (result, metrics)
     }
 }
 

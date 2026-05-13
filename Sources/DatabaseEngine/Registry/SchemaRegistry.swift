@@ -38,7 +38,7 @@ public struct SchemaRegistry: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             // Persist entity metadata
             for entity in entities {
                 let key = Self.key(for: entity.name)
@@ -77,7 +77,7 @@ public struct SchemaRegistry: Sendable {
     public func load(typeName: String) async throws -> Schema.Entity? {
         let key = Self.key(for: typeName)
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             guard let value = try await transaction.getValue(for: key, snapshot: true) else {
                 return nil
             }
@@ -100,7 +100,7 @@ public struct SchemaRegistry: Sendable {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
 
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             let key = Self.key(for: entity.name)
             let data = try encoder.encode(entity)
             let value = Array(data)
@@ -117,7 +117,7 @@ public struct SchemaRegistry: Sendable {
     /// No-op if entry doesn't exist.
     public func delete(typeName: String) async throws {
         let key = Self.key(for: typeName)
-        try await database.withTransaction { transaction in
+        try await database.withTransaction(configuration: .default) { transaction in
             transaction.clear(key: key)
         }
 
@@ -137,7 +137,7 @@ public struct SchemaRegistry: Sendable {
         let subspace = Subspace(prefix: prefix)
         let (begin, end) = subspace.range()
 
-        return try await database.withTransaction { transaction in
+        return try await database.withTransaction(configuration: .default) { transaction in
             var entities: [Schema.Entity] = []
             let decoder = JSONDecoder()
 
@@ -160,7 +160,7 @@ public struct SchemaRegistry: Sendable {
         mode: SchemaRegistryPersistMode
     ) async throws {
         let names = Array(Set(entities.map(\.name)))
-        let existingByName: [String: Schema.Entity] = try await database.withTransaction { transaction in
+        let existingByName: [String: Schema.Entity] = try await database.withTransaction(configuration: .default) { transaction in
             var existing: [String: Schema.Entity] = [:]
             let decoder = JSONDecoder()
 

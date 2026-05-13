@@ -324,7 +324,7 @@ public struct FederatedSPARQLBuilder: Sendable {
         let needsAllResults = hasOrderBy || isDistinct
         let pushdownLimit: Int? = needsAllResults ? nil : limitCount.map { $0 + offsetCount }
 
-        return try await engine.withTransaction { sharedTxn in
+        return try await engine.withTransaction(configuration: .default) { sharedTxn in
             if sources.count == 1 {
                 let source = sources[0]
                 let executor = Self.makeExecutor(
