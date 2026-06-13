@@ -38,7 +38,7 @@ private func collectRange(
     return result
 }
 
-@Suite("PostgreSQL Concurrency Tests", .serialized, .heartbeat)
+@Suite("PostgreSQL Concurrency Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct PostgreSQLConcurrencyTests {
 
     private func uniqueID(_ prefix: String) -> String {

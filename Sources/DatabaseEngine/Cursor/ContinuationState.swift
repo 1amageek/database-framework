@@ -169,17 +169,17 @@ internal struct ContinuationState: Sendable {
             return []
         }
 
-        guard let versionInt = extractInt(tuple[0]),
-              let scanTypeInt = extractInt(tuple[1]),
-              let lastKeyBytes = extractBytes(tuple[2]),
+        guard let versionInt = extractInt(tuple[0] as Any),
+              let scanTypeInt = extractInt(tuple[1] as Any),
+              let lastKeyBytes = extractBytes(tuple[2] as Any),
               let reverseFlag = tuple[3] as? Bool,
-              let remainingLimitInt = extractInt(tuple[4]),
-              let originalLimitInt = extractInt(tuple[5]) else {
+              let remainingLimitInt = extractInt(tuple[4] as Any),
+              let originalLimitInt = extractInt(tuple[5] as Any) else {
             throw ContinuationError.corruptedToken
         }
 
         // Fingerprint can be empty
-        let fingerprintBytes = extractBytes(tuple[6]) ?? []
+        let fingerprintBytes = extractBytes(tuple[6] as Any) ?? []
 
         let version = UInt8(versionInt)
         guard version == ContinuationToken.currentVersion else {
@@ -198,7 +198,7 @@ internal struct ContinuationState: Sendable {
 
         var operatorState: OperatorContinuationState? = nil
         if tuple.count > 7 {
-            if let stateBytes = extractBytes(tuple[7]), !stateBytes.isEmpty {
+            if let stateBytes = extractBytes(tuple[7] as Any), !stateBytes.isEmpty {
                 operatorState = try OperatorContinuationState.deserialize(stateBytes)
             }
         }
@@ -299,7 +299,7 @@ internal struct OperatorContinuationState: Sendable {
         }
 
         let unionChildIndex: Int?
-        if let idx = extractInt(tuple[0]), idx >= 0 {
+        if let idx = extractInt(tuple[0] as Any), idx >= 0 {
             unionChildIndex = Int(idx)
         } else {
             unionChildIndex = nil
@@ -317,7 +317,7 @@ internal struct OperatorContinuationState: Sendable {
         if tuple.count > 2 {
             var exhausted: [Int] = []
             for i in 2..<tuple.count {
-                if let idx = extractInt(tuple[i]) {
+                if let idx = extractInt(tuple[i] as Any) {
                     exhausted.append(Int(idx))
                 }
             }

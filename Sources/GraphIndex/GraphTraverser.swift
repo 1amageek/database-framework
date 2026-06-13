@@ -252,7 +252,7 @@ public final class GraphTraverser<Edge: Persistable>: Sendable {
     // MARK: - Properties
 
     /// Database connection (internally thread-safe)
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let subspace: Subspace
 
     /// Edge scanner for neighbor lookups

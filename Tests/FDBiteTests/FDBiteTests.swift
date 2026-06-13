@@ -27,6 +27,14 @@ struct FDBiteNote {
 @Suite("FDBite Tests", .serialized, .heartbeat)
 struct FDBiteTests {
 
+    private func makeItemContainer() async throws -> DBContainer {
+        let schema = Schema([FDBiteItem.self], version: Schema.Version(1, 0, 0))
+        return try await DBContainer.inMemory(
+            for: schema,
+            security: .disabled
+        )
+    }
+
     // MARK: - Container Creation
 
     @Test("Container creation with in-memory SQLite")
@@ -64,8 +72,13 @@ struct FDBiteTests {
         #expect(results.count == 1)
         #expect(results.first?.name == "Persisted")
 
-        // Cleanup
-        try? FileManager.default.removeItem(atPath: dbPath)
+        if FileManager.default.fileExists(atPath: dbPath) {
+            do {
+                try FileManager.default.removeItem(atPath: dbPath)
+            } catch {
+                Issue.record("Failed to remove SQLite test database: \(error)")
+            }
+        }
     }
 
     @Test("Container creation with multiple entity types")
@@ -216,6 +229,153 @@ struct FDBiteTests {
 
         let afterDelete = try await context.fetch(FDBiteItem.self).execute()
         #expect(afterDelete.isEmpty)
+    }
+
+    // MARK: - Context Consistency
+
+    @Test("Pending insert is visible only inside the staging context until save")
+    func pendingInsertVisibilityIsContextScopedUntilSave() async throws {
+        let container = try await makeItemContainer()
+        let writer = container.newContext()
+        let itemID = "pending-insert-\(UUID().uuidString.prefix(8))"
+
+        var item = FDBiteItem()
+        item.id = itemID
+        item.name = "Pending"
+        item.age = 42
+
+        writer.insert(item)
+
+        let staged = try await writer.model(for: itemID, as: FDBiteItem.self)
+        let isolatedBeforeSave = try await container.newContext().model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+
+        #expect(staged?.name == "Pending")
+        #expect(isolatedBeforeSave == nil)
+
+        try await writer.save()
+
+        let persisted = try await container.newContext().model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+        #expect(persisted?.name == "Pending")
+        #expect(persisted?.age == 42)
+    }
+
+    @Test("Pending delete hides the persisted row only inside the staging context")
+    func pendingDeleteVisibilityIsContextScopedUntilSave() async throws {
+        let container = try await makeItemContainer()
+        let itemID = "pending-delete-\(UUID().uuidString.prefix(8))"
+
+        var item = FDBiteItem()
+        item.id = itemID
+        item.name = "Stored"
+        item.age = 31
+
+        let seedContext = container.newContext()
+        seedContext.insert(item)
+        try await seedContext.save()
+
+        let deletingContext = container.newContext()
+        let stored = try #require(
+            try await deletingContext.model(for: itemID, as: FDBiteItem.self)
+        )
+        deletingContext.delete(stored)
+
+        let hiddenInDeletingContext = try await deletingContext.model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+        let visibleBeforeSave = try await container.newContext().model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+
+        #expect(hiddenInDeletingContext == nil)
+        #expect(visibleBeforeSave?.name == "Stored")
+
+        try await deletingContext.save()
+
+        let visibleAfterSave = try await container.newContext().model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+        #expect(visibleAfterSave == nil)
+    }
+
+    @Test("Delete cancels a pending insert before save")
+    func deleteCancelsPendingInsertBeforeSave() async throws {
+        let container = try await makeItemContainer()
+        let context = container.newContext()
+        let itemID = "insert-delete-\(UUID().uuidString.prefix(8))"
+
+        var item = FDBiteItem()
+        item.id = itemID
+        item.name = "Transient"
+        item.age = 19
+
+        context.insert(item)
+        context.delete(item)
+
+        let stagedView = try await context.model(for: itemID, as: FDBiteItem.self)
+        #expect(stagedView == nil)
+
+        try await context.save()
+
+        let persisted = try await container.newContext().model(
+            for: itemID,
+            as: FDBiteItem.self
+        )
+        let allItems = try await container.newContext().fetch(FDBiteItem.self).execute()
+
+        #expect(persisted == nil)
+        #expect(allItems.isEmpty)
+    }
+
+    @Test("Rollback discards pending insert and delete mutations")
+    func rollbackDiscardsPendingMutations() async throws {
+        let container = try await makeItemContainer()
+
+        var storedItem = FDBiteItem()
+        storedItem.id = "rollback-stored-\(UUID().uuidString.prefix(8))"
+        storedItem.name = "Stored"
+        storedItem.age = 28
+
+        let seedContext = container.newContext()
+        seedContext.insert(storedItem)
+        try await seedContext.save()
+
+        let context = container.newContext()
+        let stored = try #require(
+            try await context.model(for: storedItem.id, as: FDBiteItem.self)
+        )
+        context.delete(stored)
+
+        var newItem = FDBiteItem()
+        newItem.id = "rollback-new-\(UUID().uuidString.prefix(8))"
+        newItem.name = "New"
+        newItem.age = 35
+        context.insert(newItem)
+
+        #expect(try await context.model(for: storedItem.id, as: FDBiteItem.self) == nil)
+        #expect(try await context.model(for: newItem.id, as: FDBiteItem.self)?.name == "New")
+
+        context.rollback()
+
+        #expect(try await context.model(for: storedItem.id, as: FDBiteItem.self)?.name == "Stored")
+        #expect(try await context.model(for: newItem.id, as: FDBiteItem.self) == nil)
+
+        try await context.save()
+
+        let verificationContext = container.newContext()
+        #expect(
+            try await verificationContext.model(for: storedItem.id, as: FDBiteItem.self)?.name
+                == "Stored"
+        )
+        #expect(try await verificationContext.model(for: newItem.id, as: FDBiteItem.self) == nil)
     }
 
     // MARK: - Query Operations

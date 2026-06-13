@@ -158,7 +158,7 @@ public struct GraphQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let fromFieldName: String

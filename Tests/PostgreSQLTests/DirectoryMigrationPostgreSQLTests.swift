@@ -69,7 +69,7 @@ enum PGDirectoryMigrationCopyPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Directory Migration PostgreSQL Tests", .serialized, .heartbeat)
+@Suite("Directory Migration PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct DirectoryMigrationPostgreSQLTests {
     @Test("Custom migration copies data across changed #Directory paths on PostgreSQL")
     func customMigrationCopiesAcrossDirectoryChange() async throws {

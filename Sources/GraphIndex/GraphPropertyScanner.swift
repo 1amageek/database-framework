@@ -80,7 +80,15 @@ public struct PropertyFilter: Sendable {
     /// - Parameter rawValue: Property value from CoveringValue (TupleElement)
     /// - Returns: true if value passes filter, false otherwise
     public func evaluate(on rawValue: any Sendable) -> Bool {
-        let fieldValue = FieldValue(rawValue) ?? .null
+        evaluate(on: Optional(rawValue))
+    }
+
+    /// Evaluate filter against an optional raw property value.
+    ///
+    /// Missing values are treated as null so `.isNil` and `.isNotNil` keep their
+    /// expected query semantics.
+    public func evaluate(on rawValue: (any Sendable)?) -> Bool {
+        let fieldValue = rawValue.map { FieldValue($0) ?? .null } ?? .null
 
         // Handle nil check operators
         switch op {
@@ -325,7 +333,7 @@ public struct GraphPropertyScanner: Sendable {
                 for filter in filters {
                     // Get field value (nil is a valid value for .isNil/.isNotNil operators)
                     // CoveringValueBuilder.decode() ensures all storedFieldNames are present in dictionary
-                    let fieldValue: any Sendable = properties[filter.fieldName] ?? nil
+                    let fieldValue = properties[filter.fieldName]
 
                     // Evaluate filter using PropertyFilter.evaluate()
                     let matches = filter.evaluate(on: fieldValue)

@@ -132,7 +132,7 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let scanner: GraphEdgeScanner
     private let configuration: SCCConfiguration
 
@@ -244,17 +244,8 @@ public final class SCCFinder: Sendable {
 
     // MARK: - Tarjan's Algorithm
 
-    /// Internal state for Tarjan's algorithm
-    ///
-    /// **Thread-Safety Note**: Marked as `@unchecked Sendable` because:
-    /// 1. The state is created at the start of `runTarjan`
-    /// 2. All mutations occur synchronously within that single method call
-    /// 3. The state is never shared across concurrent contexts
-    /// 4. After `runTarjan` returns, the state is no longer accessible
-    ///
-    /// This is safe because the entire lifecycle (create → mutate → consume)
-    /// happens within a single synchronous execution path.
-    private final class TarjanState: @unchecked Sendable {
+    /// Internal state for Tarjan's algorithm.
+    private struct TarjanState {
         var index: Int = 0
         var nodeIndex: [String: Int] = [:]
         var nodeLowLink: [String: Int] = [:]
@@ -270,6 +261,13 @@ public final class SCCFinder: Sendable {
         var neighborsCache: [String: [String]] = [:]
     }
 
+    private struct TarjanPrefetch: Sendable {
+        let neighborsCache: [String: [String]]
+        let nodesExplored: Int
+        let isComplete: Bool
+        let limitReason: SCCLimitReason?
+    }
+
     private struct TarjanResult {
         let components: [[String]]
         let nodeToComponent: [String: Int]
@@ -282,14 +280,16 @@ public final class SCCFinder: Sendable {
         nodes: Set<String>,
         edgeLabel: String?
     ) async throws -> TarjanResult {
-        let state = TarjanState()
+        let prefetch = try await database.withTransaction(configuration: .default) { transaction in
+            var neighborsCache: [String: [String]] = [:]
+            var nodesExplored = 0
+            var isComplete = true
+            var limitReason: SCCLimitReason?
 
-        // Pre-fetch all edges
-        try await database.withTransaction(configuration: .default) { transaction in
             for node in nodes {
-                if state.nodesExplored >= self.configuration.maxNodes {
-                    state.isComplete = false
-                    state.limitReason = .maxNodesReached
+                if nodesExplored >= self.configuration.maxNodes {
+                    isComplete = false
+                    limitReason = .maxNodesReached
                     break
                 }
 
@@ -299,10 +299,23 @@ public final class SCCFinder: Sendable {
                     transaction: transaction
                 )
 
-                state.neighborsCache[node] = neighbors.map { $0.target }
-                state.nodesExplored += 1
+                neighborsCache[node] = neighbors.map { $0.target }
+                nodesExplored += 1
             }
+
+            return TarjanPrefetch(
+                neighborsCache: neighborsCache,
+                nodesExplored: nodesExplored,
+                isComplete: isComplete,
+                limitReason: limitReason
+            )
         }
+
+        var state = TarjanState()
+        state.neighborsCache = prefetch.neighborsCache
+        state.nodesExplored = prefetch.nodesExplored
+        state.isComplete = prefetch.isComplete
+        state.limitReason = prefetch.limitReason
 
         // Run Tarjan's DFS
         for node in nodes {
@@ -313,7 +326,7 @@ public final class SCCFinder: Sendable {
             }
 
             if state.nodeIndex[node] == nil {
-                strongConnect(node, state: state)
+                strongConnect(node, state: &state)
             }
         }
 
@@ -327,7 +340,7 @@ public final class SCCFinder: Sendable {
     }
 
     /// Core of Tarjan's algorithm - iterative version to avoid stack overflow
-    private func strongConnect(_ start: String, state: TarjanState) {
+    private func strongConnect(_ start: String, state: inout TarjanState) {
         // Use explicit stack to avoid recursion depth issues
         var callStack: [(node: String, phase: Int, neighborIndex: Int)] = [(start, 0, 0)]
 

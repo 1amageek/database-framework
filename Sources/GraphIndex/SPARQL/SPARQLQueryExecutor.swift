@@ -24,7 +24,7 @@ public struct SPARQLQueryExecutor: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let indexSubspace: Subspace
     private let strategy: GraphIndexStrategy
     private let fromFieldName: String
@@ -2263,10 +2263,7 @@ public struct SPARQLQueryExecutor: Sendable {
         )
 
         for (key, _) in stream {
-            // Parse key to get edge and target
-            guard let tuple = try? prefixSubspace.unpack(key) else {
-                continue
-            }
+            let tuple = try prefixSubspace.unpack(key)
 
             // After unpacking with prefixSubspace, we get just (edge, to) or (predicate, object)
             // The source/subject was part of the prefix

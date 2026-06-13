@@ -87,7 +87,7 @@ public final class IncrementalReasoner: Sendable {
 
     // MARK: - Properties
 
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
     private let ontologyStore: OntologyStore
     private let materializer: OWL2RLMaterializer
     private let configuration: Configuration

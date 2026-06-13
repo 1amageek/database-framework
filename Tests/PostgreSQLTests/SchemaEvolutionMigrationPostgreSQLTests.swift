@@ -122,7 +122,7 @@ enum PGCustomMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Schema Evolution Migration PostgreSQL Tests", .serialized, .heartbeat)
+@Suite("Schema Evolution Migration PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct SchemaEvolutionMigrationPostgreSQLTests {
     @Test("Lightweight migration keeps existing PostgreSQL data readable end-to-end")
     func lightweightMigrationPreservesExistingDataEndToEnd() async throws {

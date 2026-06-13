@@ -6,6 +6,7 @@
 /// - W3C SPARQL 1.2 (Draft)
 
 import Foundation
+import Synchronization
 
 /// SPARQL Parser for converting SPARQL strings to AST
 public final class SPARQLParser {
@@ -96,12 +97,12 @@ public final class SPARQLParser {
     ]
 
     /// Enable debug logging
-    nonisolated(unsafe) private static var debugEnabled = false
+    private static let debugEnabled = Mutex(false)
     public static func enableDebug(_ enabled: Bool) {
-        debugEnabled = enabled
+        debugEnabled.withLock { $0 = enabled }
     }
     private func log(_ message: String) {
-        if Self.debugEnabled {
+        if Self.debugEnabled.withLock({ $0 }) {
             print("[SPARQLParser] \(message)")
         }
     }
@@ -2482,7 +2483,7 @@ extension SPARQLParser {
         deletePattern: [Quad]? = nil,
         insertPattern: [Quad]? = nil
     ) throws -> QueryStatement {
-        var delPat = deletePattern
+        let delPat = deletePattern
         var insPat = insertPattern
 
         // If we haven't parsed delete/insert blocks yet (INSERT-only form)

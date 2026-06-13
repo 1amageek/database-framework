@@ -89,7 +89,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     // MARK: - Properties
 
     /// Database connection (internally thread-safe)
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
 
     /// Index subspace
     private let subspace: Subspace

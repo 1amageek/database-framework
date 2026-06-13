@@ -13,20 +13,8 @@ import PostgreSQLStorage
 @testable import Core
 import TestSupport
 
-@Suite("PostgreSQL Partition Tests", .serialized, .heartbeat)
-struct PostgreSQLPartitionTests {
-
-    private func uniqueID(_ prefix: String) -> String {
-        "\(prefix)-\(UUID().uuidString.prefix(8))"
-    }
-
-    private func setupContainer() async throws -> DBContainer {
-        let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
-        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
-    }
-
-    // MARK: - hasDynamicDirectory Tests
-
+@Suite("PostgreSQL Partition Metadata Tests")
+struct PostgreSQLPartitionMetadataTests {
     @Test("TenantOrder has dynamic directory on PostgreSQL")
     func tenantOrderHasDynamicDirectory() {
         #expect(TenantOrder.hasDynamicDirectory == true)
@@ -37,6 +25,46 @@ struct PostgreSQLPartitionTests {
     func playerHasStaticDirectory() {
         #expect(Player.hasDynamicDirectory == false)
         #expect(Player.directoryFieldNames.isEmpty)
+    }
+
+    @Test("DirectoryPath validates missing fields")
+    func directoryPathValidatesMissingFields() {
+        let binding = DirectoryPath<TenantOrder>()
+
+        #expect(throws: DirectoryPathError.self) {
+            try binding.validate()
+        }
+    }
+
+    @Test("DirectoryPath validates complete binding")
+    func directoryPathValidatesCompleteBinding() {
+        var binding = DirectoryPath<TenantOrder>()
+        binding.set(\.tenantID, to: "tenant_123")
+
+        #expect(throws: Never.self) {
+            try binding.validate()
+        }
+    }
+
+    @Test("DirectoryPath.from extracts values from model")
+    func directoryPathFromModel() {
+        let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
+        let binding = DirectoryPath<TenantOrder>.from(order)
+
+        #expect(binding.value(for: \.tenantID) == "tenant_xyz")
+    }
+}
+
+@Suite("PostgreSQL Partition Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
+struct PostgreSQLPartitionTests {
+
+    private func uniqueID(_ prefix: String) -> String {
+        "\(prefix)-\(UUID().uuidString.prefix(8))"
+    }
+
+    private func setupContainer() async throws -> DBContainer {
+        let schema = Schema([Player.self, TenantOrder.self], version: Schema.Version(1, 0, 0))
+        return try await PostgreSQLTestSetup.shared.makeContainer(schema: schema)
     }
 
     // MARK: - Save Tests
@@ -279,36 +307,6 @@ struct PostgreSQLPartitionTests {
             }
             #expect(found)
         }
-    }
-
-    // MARK: - DirectoryPath Tests
-
-    @Test("DirectoryPath validates missing fields")
-    func directoryPathValidatesMissingFields() {
-        let binding = DirectoryPath<TenantOrder>()
-
-        #expect(throws: DirectoryPathError.self) {
-            try binding.validate()
-        }
-    }
-
-    @Test("DirectoryPath validates complete binding")
-    func directoryPathValidatesCompleteBinding() {
-        var binding = DirectoryPath<TenantOrder>()
-        binding.set(\.tenantID, to: "tenant_123")
-
-        // Should not throw
-        #expect(throws: Never.self) {
-            try binding.validate()
-        }
-    }
-
-    @Test("DirectoryPath.from extracts values from model")
-    func directoryPathFromModel() {
-        let order = TenantOrder(tenantID: "tenant_xyz", status: "pending", total: 50.0)
-        let binding = DirectoryPath<TenantOrder>.from(order)
-
-        #expect(binding.value(for: \.tenantID) == "tenant_xyz")
     }
 
     // MARK: - Static Directory Types (Regression)

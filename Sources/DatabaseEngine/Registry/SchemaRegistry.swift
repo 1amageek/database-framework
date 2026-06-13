@@ -10,7 +10,7 @@ import Core
 
 /// Manages persistence and retrieval of Schema.Entity entries in FDB
 public struct SchemaRegistry: Sendable {
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
 
     /// Schema key prefix
     private static let catalogPrefix = "_schema"

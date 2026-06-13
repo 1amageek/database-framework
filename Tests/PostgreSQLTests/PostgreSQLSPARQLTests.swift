@@ -33,7 +33,7 @@ struct PGStatement {
     ))
 }
 
-@Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat)
+@Suite("PostgreSQL SPARQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct PostgreSQLSPARQLTests {
 
     // MARK: - Setup
@@ -45,7 +45,7 @@ struct PostgreSQLSPARQLTests {
 
     private func cleanupAndSetup() async throws -> (DBContainer, FDBContext) {
         let container = try await setupContainer()
-        try? await container.engine.directoryService.remove(path: ["test", "pg", "sparql", "statements"])
+        try await container.engine.directoryService.remove(path: ["test", "pg", "sparql", "statements"])
         let container2 = try await setupContainer()
         let context = container2.newContext()
         return (container2, context)

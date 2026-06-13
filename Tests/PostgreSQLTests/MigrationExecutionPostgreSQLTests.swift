@@ -193,7 +193,7 @@ enum PGStageFailureMigrationPlan: SchemaMigrationPlan {
     }
 }
 
-@Suite("Migration Execution PostgreSQL Tests", .serialized, .heartbeat)
+@Suite("Migration Execution PostgreSQL Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct MigrationExecutionPostgreSQLTests {
     @Test("Multi-stage migration executes in order and persists stage boundaries on PostgreSQL")
     func multiStageMigrationExecutesInOrderAndPersistsBetweenStages() async throws {

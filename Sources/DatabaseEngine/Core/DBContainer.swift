@@ -71,7 +71,7 @@ public final class DBContainer: Sendable {
     /// Thread-safe: storage engines handle thread safety internally.
     /// Used for system operations (DirectoryLayer, Migration).
     /// Application transactions should use FDBContext.withTransaction().
-    nonisolated(unsafe) public let engine: any StorageEngine
+    public let engine: any StorageEngine
 
     /// Schema (version, entities, indexes)
     public let schema: Schema
@@ -103,7 +103,7 @@ public final class DBContainer: Sendable {
     private let dataStoreCache: Mutex<[String: FDBDataStore]>
 
     /// Migration plan
-    nonisolated(unsafe) private var _migrationPlan: (any SchemaMigrationPlan.Type)?
+    private let migrationPlanStorage: Mutex<(any SchemaMigrationPlan.Type)?>
 
     // MARK: - Initialization
 
@@ -200,7 +200,7 @@ public final class DBContainer: Sendable {
         let autoConfigs = Self.generateAutoConfigurations(schema: schema, database: engine)
         self.indexConfigurations = Self.aggregateIndexConfigurations(userConfigs + autoConfigs)
 
-        self._migrationPlan = nil
+        self.migrationPlanStorage = Mutex(nil)
         self.logger = Logger(label: "com.db.runtime.container")
         self.directoryCache = Mutex([:])
         self.dataStoreCache = Mutex([:])
@@ -603,10 +603,8 @@ public final class DBContainer: Sendable {
                     continue
                 }
 
-                // Create the item loader closure
-                // Captures database (nonisolated unsafe - storage engines handle thread safety internally)
-                // and schema (value type)
-                nonisolated(unsafe) let capturedDatabase = database
+                // Create the item loader closure.
+                let capturedDatabase = database
                 let itemLoader: GenericItemLoader = { typeName, id, transaction in
                     try await Self.loadItemByTypeName(
                         typeName: typeName,
@@ -788,12 +786,12 @@ extension DBContainer {
             persistSchemaCatalog: false,
             initializeIndexes: false
         )
-        self._migrationPlan = migrationPlan
+        self.migrationPlanStorage.withLock { $0 = migrationPlan }
     }
 
     /// Migrate to the current schema version if needed
     public func migrateIfNeeded() async throws {
-        guard let plan = _migrationPlan else { return }
+        guard let plan = migrationPlanStorage.withLock({ $0 }) else { return }
 
         guard let targetVersion = plan.currentVersion else {
             throw FDBRuntimeError.internalError("Migration plan has no schemas")

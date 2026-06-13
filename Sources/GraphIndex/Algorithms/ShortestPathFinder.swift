@@ -67,7 +67,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
     // MARK: - Properties
 
     /// Database connection (internally thread-safe)
-    nonisolated(unsafe) private let database: any StorageEngine
+    private let database: any StorageEngine
 
     /// Edge scanner for neighbor lookups (centralizes key structure knowledge)
     private let scanner: GraphEdgeScanner

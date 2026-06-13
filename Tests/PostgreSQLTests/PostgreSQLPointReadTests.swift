@@ -57,7 +57,7 @@ private struct PGTestAuth: AuthContext {
     var roles: Set<String> = []
 }
 
-@Suite("PostgreSQL Point Read Tests", .serialized, .heartbeat)
+@Suite("PostgreSQL Point Read Tests", .serialized, .heartbeat, .enabled(if: PostgreSQLTestSetup.isConfigured))
 struct PostgreSQLPointReadTests {
 
     private func uniqueID(_ prefix: String) -> String {

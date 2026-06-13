@@ -40,6 +40,10 @@ import Core
 public actor PostgreSQLTestSetup {
     public static let shared = PostgreSQLTestSetup()
 
+    public nonisolated static var isConfigured: Bool {
+        ProcessInfo.processInfo.environment["POSTGRES_TEST_HOST"] != nil
+    }
+
     private enum InitState {
         case uninitialized
         case initializing([CheckedContinuation<Void, Error>])

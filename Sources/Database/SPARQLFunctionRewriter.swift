@@ -248,7 +248,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
         let graphIndex = try resolver.findGraphIndex(for: entity)
 
         // 3. Extract graph index metadata via AnyGraphIndexKind
-        guard let graphKind = graphIndex.kind as? AnyGraphIndexKind else {
+        guard let graphKind = graphIndex.kind as? any AnyGraphIndexKind else {
             throw SPARQLFunctionError.invalidGraphIndex(entity.name)
         }
 
@@ -353,7 +353,7 @@ internal struct SPARQLFunctionRewriter: Sendable {
     private func resolveTypeDirectory(_ persistableType: any Persistable.Type) async throws -> Subspace {
         // Check for dynamic directory components (not supported in SPARQL function)
         let hasDynamicComponent = persistableType.directoryPathComponents.contains { component in
-            component is DynamicDirectoryElement
+            component is any DynamicDirectoryElement
         }
 
         if hasDynamicComponent {
