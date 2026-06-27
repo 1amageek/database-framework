@@ -10,6 +10,7 @@ let package = Package(
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
         .library(name: "DatabaseRuntime", targets: ["DatabaseRuntime"]),
+        .library(name: "DatabaseFrameworkWasm", targets: ["DatabaseFrameworkWasm"]),
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
         .library(name: "FullTextIndex", targets: ["FullTextIndex"]),
@@ -75,6 +76,12 @@ let package = Package(
             exclude: ["README.md"],
             swiftSettings: [
                 .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ]
+        ),
+        .target(
+            name: "DatabaseFrameworkWasm",
+            dependencies: [
+                .product(name: "DatabaseKitWasmCore", package: "database-kit"),
             ]
         ),
         .target(
@@ -402,6 +409,13 @@ let package = Package(
                 "DatabaseRuntime",
                 "DatabaseEngine",
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ]
+        ),
+        .testTarget(
+            name: "DatabaseFrameworkWasmTests",
+            dependencies: [
+                "DatabaseFrameworkWasm",
+                .product(name: "DatabaseKitWasmCore", package: "database-kit"),
             ]
         ),
         // ScalarIndex tests
