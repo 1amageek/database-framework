@@ -42,10 +42,16 @@ let package = Package(
         .trait(name: "FoundationDB"),
         .trait(name: "SQLite"),
         .trait(name: "PostgreSQL"),
+        .trait(name: "CxxBackend"),
     ],
     dependencies: [
         .package(path: "../database-kit"),
-        .package(path: "../swift-hnsw"),
+        .package(
+            path: "../swift-hnsw",
+            traits: [
+                .trait(name: "CxxBackend", condition: .when(traits: ["CxxBackend"])),
+            ]
+        ),
         .package(
             path: "../storage-kit",
             traits: [
@@ -67,16 +73,16 @@ let package = Package(
             name: "DatabaseEngine",
             dependencies: [
                 .product(name: "DatabaseWire", package: "database-kit"),
-                .product(name: "QueryIR", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Core", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "DatabaseClientProtocol", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "StorageKit", package: "storage-kit", condition: .when(platforms: hostPlatforms)),
+                .product(name: "QueryIR", package: "database-kit"),
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "DatabaseClientProtocol", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
-                .product(name: "Logging", package: "swift-log", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Metrics", package: "swift-metrics", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Crypto", package: "swift-crypto", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Configuration", package: "swift-configuration", condition: .when(platforms: hostPlatforms)),
+                .product(name: "Logging", package: "swift-log"),
+                .product(name: "Metrics", package: "swift-metrics"),
+                .product(name: "Crypto", package: "swift-crypto"),
+                .product(name: "Configuration", package: "swift-configuration"),
             ],
             exclude: ["README.md"],
             swiftSettings: [
@@ -251,27 +257,27 @@ let package = Package(
         .target(
             name: "Database",
             dependencies: [
-                .product(name: "Core", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Graph", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .product(name: "Relationship", package: "database-kit", condition: .when(platforms: hostPlatforms)),
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Graph", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
                 "DatabaseEngine",
-                .target(name: "DatabaseRuntime", condition: .when(platforms: hostPlatforms)),
-                .target(name: "ScalarIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "VectorIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "FullTextIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "SpatialIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "RankIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "PermutedIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "GraphIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "AggregationIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "VersionIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "BitmapIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "LeaderboardIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "RelationshipIndex", condition: .when(platforms: hostPlatforms)),
-                .target(name: "OntologyIndex", condition: .when(platforms: hostPlatforms)),
-                .product(name: "QueryIR", package: "database-kit", condition: .when(platforms: hostPlatforms)),
-                .target(name: "QueryAST", condition: .when(platforms: hostPlatforms)),
-                .product(name: "StorageKit", package: "storage-kit", condition: .when(platforms: hostPlatforms)),
+                "DatabaseRuntime",
+                "ScalarIndex",
+                "VectorIndex",
+                "FullTextIndex",
+                "SpatialIndex",
+                "RankIndex",
+                "PermutedIndex",
+                "GraphIndex",
+                "AggregationIndex",
+                "VersionIndex",
+                "BitmapIndex",
+                "LeaderboardIndex",
+                "RelationshipIndex",
+                "OntologyIndex",
+                .product(name: "QueryIR", package: "database-kit"),
+                "QueryAST",
+                .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
                          condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
                 .product(name: "SQLiteStorage", package: "storage-kit",
@@ -308,12 +314,12 @@ let package = Package(
                 .product(name: "Graph", package: "database-kit"),
                 .product(name: "StorageKit", package: "storage-kit"),
                 .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(traits: ["FoundationDB"])),
+                         condition: .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
                 .product(name: "YAML", package: "swift-yaml"),
             ],
             exclude: ["README.md"],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
             ]
         ),
         // DatabaseServer - Remote client endpoint library
@@ -339,11 +345,11 @@ let package = Package(
             ],
             exclude: ["README.md"],
             swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                .define("FOUNDATION_DB", .when(platforms: hostPlatforms, traits: ["FoundationDB"])),
             ],
             linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+                .unsafeFlags(["-L/usr/local/lib"], .when(platforms: hostPlatforms)),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"], .when(platforms: hostPlatforms))
             ]
         ),
         // Test Support (shared test utilities)

@@ -240,7 +240,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Load existing graph, add vector, and save back
         let hnswIndex = try await loadOrCreateIndex(transaction: transaction)
-        try hnswIndex.add(vector, label: label)
+        try vector.withUnsafeBufferPointer { buffer in
+            try hnswIndex.add(buffer, label: label)
+        }
         try await saveIndex(hnswIndex, transaction: transaction)
     }
 
@@ -307,7 +309,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Search
         let results: [SearchResult]
         do {
-            results = try hnswIndex.search(queryVector, k: k)
+            results = try queryVector.withUnsafeBufferPointer { buffer in
+                try hnswIndex.search(buffer, k: k)
+            }
         } catch {
             // Empty index or other error
             return []
@@ -406,7 +410,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Search with expanded k
         let results: [SearchResult]
         do {
-            results = try hnswIndex.search(queryVector, k: expandedK)
+            results = try queryVector.withUnsafeBufferPointer { buffer in
+                try hnswIndex.search(buffer, k: expandedK)
+            }
         } catch {
             return []
         }

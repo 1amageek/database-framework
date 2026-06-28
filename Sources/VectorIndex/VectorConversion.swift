@@ -172,10 +172,19 @@ extension VectorConversion {
     public static func cosineDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        let dotProduct = zip(v1, v2).map { Double($0) * Double($1) }.reduce(0, +)
-        let norm1 = sqrt(v1.map { Double($0) * Double($0) }.reduce(0, +))
-        let norm2 = sqrt(v2.map { Double($0) * Double($0) }.reduce(0, +))
+        var dotProduct = 0.0
+        var norm1Squared = 0.0
+        var norm2Squared = 0.0
+        for index in 0..<v1.count {
+            let lhs = Double(v1[index])
+            let rhs = Double(v2[index])
+            dotProduct += lhs * rhs
+            norm1Squared += lhs * lhs
+            norm2Squared += rhs * rhs
+        }
 
+        let norm1 = sqrt(norm1Squared)
+        let norm2 = sqrt(norm2Squared)
         guard norm1 > 0 && norm2 > 0 else { return 2.0 }
         let cosineSimilarity = dotProduct / (norm1 * norm2)
         return 1.0 - cosineSimilarity
@@ -185,7 +194,11 @@ extension VectorConversion {
     public static func euclideanDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        let sumSquares = zip(v1, v2).map { pow(Double($0) - Double($1), 2) }.reduce(0, +)
+        var sumSquares = 0.0
+        for index in 0..<v1.count {
+            let diff = Double(v1[index]) - Double(v2[index])
+            sumSquares += diff * diff
+        }
         return sqrt(sumSquares)
     }
 
@@ -219,7 +232,10 @@ extension VectorConversion {
     public static func dotProductDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        let dotProduct = zip(v1, v2).map { Double($0) * Double($1) }.reduce(0, +)
+        var dotProduct = 0.0
+        for index in 0..<v1.count {
+            dotProduct += Double(v1[index]) * Double(v2[index])
+        }
         return -dotProduct  // Negate for min-heap (higher similarity = lower distance)
     }
 }
