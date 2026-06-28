@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // TypeValidationTests.swift
 // FDBIndexing Tests - TypeValidation helper function tests
@@ -161,4 +162,6 @@ struct TypeValidationTests {
         #expect(!TypeValidation.isComparable([Float32].self))
     }
 }
+#endif
+
 #endif

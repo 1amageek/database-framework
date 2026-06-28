@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // FieldSecurityTests.swift
 // Tests for field-level security functionality
@@ -483,4 +484,6 @@ struct RestrictedFieldMetadataTests {
         )
     }
 }
+#endif
+
 #endif

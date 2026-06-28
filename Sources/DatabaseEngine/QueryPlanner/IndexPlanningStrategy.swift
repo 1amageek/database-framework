@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexPlanningStrategy.swift
 // QueryPlanner - Index-specific planning strategies
 
@@ -633,3 +634,5 @@ public struct IndexStrategyRegistry: Sendable {
         ]
     }
 }
+
+#endif

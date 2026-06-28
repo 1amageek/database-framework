@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FDBContext+UniquenessViolation.swift
 // DatabaseEngine - Uniqueness violation API extension for FDBContext
 //
@@ -358,3 +359,5 @@ extension FDBContext {
         )
     }
 }
+
+#endif

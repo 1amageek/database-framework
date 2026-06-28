@@ -1,6 +1,6 @@
 import Testing
 import Synchronization
-import DatabaseKitWasmCore
+import DatabaseWire
 @testable import DatabaseEngine
 
 @Suite("DatabaseEngine Tests")
@@ -17,17 +17,17 @@ struct DatabaseEngineWireTests {
         )
 
         let putResponse = try runtime.handle(
-            DatabaseKitWasmCodec.encode(request: .putRecord(record))
+            DatabaseWireCodec.encode(request: .putRecord(record))
         )
-        #expect(try DatabaseKitWasmCodec.decodeResponse(putResponse) == .empty)
+        #expect(try DatabaseWireCodec.decodeResponse(putResponse) == .empty)
 
         let getResponse = try runtime.handle(
-            DatabaseKitWasmCodec.encode(
+            DatabaseWireCodec.encode(
                 request: .getRecord(typeName: "Article", id: "article-1")
             )
         )
 
-        #expect(try DatabaseKitWasmCodec.decodeResponse(getResponse) == .record(record))
+        #expect(try DatabaseWireCodec.decodeResponse(getResponse) == .record(record))
     }
 
     @Test func queryWithoutPredicateAppliesStorageLimit() throws {
@@ -43,7 +43,7 @@ struct DatabaseEngineWireTests {
         )
 
         let response = try runtime.execute(
-            .query(DatabaseKitWasmQueryRequest(typeName: "Article", predicate: nil, limit: 2))
+            .query(DatabaseWireQueryRequest(typeName: "Article", predicate: nil, limit: 2))
         )
 
         #expect(response == .records([
@@ -64,7 +64,7 @@ struct DatabaseEngineWireTests {
             ],
             into: runtime
         )
-        let query = DatabaseKitWasmQueryRequest(
+        let query = DatabaseWireQueryRequest(
             typeName: "Article",
             predicate: .and([
                 .comparison(field: "status", op: .equal, value: .string("published")),
@@ -80,6 +80,32 @@ struct DatabaseEngineWireTests {
         ]))
     }
 
+    @Test func queryPostFilterScansAcrossStorageBatchesBeforeLimit() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage, queryScanBatchSize: 2)
+        try put(
+            [
+                article(id: "a", status: "draft", score: 1, title: "A", tags: []),
+                article(id: "b", status: "draft", score: 2, title: "B", tags: []),
+                article(id: "c", status: "draft", score: 3, title: "C", tags: []),
+                article(id: "d", status: "draft", score: 4, title: "D", tags: []),
+                article(id: "e", status: "published", score: 5, title: "E", tags: [])
+            ],
+            into: runtime
+        )
+        let query = DatabaseWireQueryRequest(
+            typeName: "Article",
+            predicate: .comparison(field: "status", op: .equal, value: .string("published")),
+            limit: 1
+        )
+
+        let response = try runtime.execute(.query(query))
+
+        #expect(response == .records([
+            article(id: "e", status: "published", score: 5, title: "E", tags: [])
+        ]))
+    }
+
     @Test func querySupportsDisjunctionNegationAndContains() throws {
         let storage = MemoryStorage()
         let runtime = DatabaseEngineRuntime(storage: storage)
@@ -92,7 +118,7 @@ struct DatabaseEngineWireTests {
             ],
             into: runtime
         )
-        let query = DatabaseKitWasmQueryRequest(
+        let query = DatabaseWireQueryRequest(
             typeName: "Article",
             predicate: .and([
                 .or([
@@ -113,23 +139,184 @@ struct DatabaseEngineWireTests {
         ]))
     }
 
+    @Test func querySupportsComparisonOperatorVariants() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
+        try put(
+            [
+                article(id: "a", status: "draft", score: 1, title: "A", tags: []),
+                article(id: "b", status: "published", score: 2, title: "B", tags: []),
+                article(id: "c", status: "archived", score: 3, title: "C", tags: [])
+            ],
+            into: runtime
+        )
+
+        #expect(try query(runtime, field: "score", op: .lessThan, value: .int64(2)) == [
+            article(id: "a", status: "draft", score: 1, title: "A", tags: [])
+        ])
+        #expect(try query(runtime, field: "score", op: .lessThanOrEqual, value: .int64(2)) == [
+            article(id: "a", status: "draft", score: 1, title: "A", tags: []),
+            article(id: "b", status: "published", score: 2, title: "B", tags: [])
+        ])
+        #expect(try query(runtime, field: "score", op: .greaterThan, value: .int64(2)) == [
+            article(id: "c", status: "archived", score: 3, title: "C", tags: [])
+        ])
+        #expect(try query(runtime, field: "status", op: .notEqual, value: .string("draft")) == [
+            article(id: "b", status: "published", score: 2, title: "B", tags: []),
+            article(id: "c", status: "archived", score: 3, title: "C", tags: [])
+        ])
+        #expect(try query(runtime, field: "missing", op: .equal, value: .string("value")) == [])
+    }
+
+    @Test func vectorQueryReturnsNearestRecordsWithDistancesAndPredicate() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
+        _ = try runtime.execute(.applySchema(vectorSchema()))
+        try put(
+            [
+                vectorDocument(id: "near", status: "published", title: "Near", embedding: [1, 0, 0]),
+                vectorDocument(id: "middle", status: "published", title: "Middle", embedding: [0.8, 0.2, 0]),
+                vectorDocument(id: "far", status: "published", title: "Far", embedding: [0, 1, 0]),
+                vectorDocument(id: "draft-near", status: "draft", title: "Draft", embedding: [1, 0, 0])
+            ],
+            into: runtime
+        )
+
+        let response = try runtime.execute(.vectorQuery(DatabaseWireVectorQueryRequest(
+            typeName: "Document",
+            fieldName: "embedding",
+            dimensions: 3,
+            metric: .cosine,
+            queryVector: [1, 0, 0],
+            k: 2,
+            predicate: .comparison(field: "status", op: .equal, value: .string("published"))
+        )))
+
+        guard case .scoredRecords(let records) = response else {
+            Issue.record("Expected scored records response")
+            return
+        }
+        #expect(records.map(\.record.id) == ["near", "middle"])
+        #expect(records[0].distance == 0)
+        #expect(records[1].distance > records[0].distance)
+    }
+
+    @Test func vectorQueryRequiresAppliedVectorSchema() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
+
+        let responseBytes = try runtime.handle(
+            DatabaseWireCodec.encode(request: .vectorQuery(DatabaseWireVectorQueryRequest(
+                typeName: "Document",
+                fieldName: "embedding",
+                dimensions: 3,
+                metric: .cosine,
+                queryVector: [1, 0, 0],
+                k: 1
+            )))
+        )
+
+        #expect(try DatabaseWireCodec.decodeResponse(responseBytes) == .failure(
+            status: .executionFailure,
+            message: "schema not applied"
+        ))
+    }
+
+    @Test func vectorQueryRejectsDimensionMismatch() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
+        _ = try runtime.execute(.applySchema(vectorSchema()))
+
+        let responseBytes = try runtime.handle(
+            DatabaseWireCodec.encode(request: .vectorQuery(DatabaseWireVectorQueryRequest(
+                typeName: "Document",
+                fieldName: "embedding",
+                dimensions: 3,
+                metric: .cosine,
+                queryVector: [1, 0],
+                k: 1
+            )))
+        )
+
+        #expect(try DatabaseWireCodec.decodeResponse(responseBytes) == .failure(
+            status: .executionFailure,
+            message: "query vector dimension mismatch. Expected: 3, Got: 2"
+        ))
+    }
+
+    @Test func queryRejectsUnsupportedOrderedComparisons() throws {
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
+        try put(
+            [
+                DatabaseWireRecord(
+                    typeName: "Article",
+                    id: "nan",
+                    fields: [
+                        DatabaseWireNamedValue(name: "score", value: .double(.nan))
+                    ]
+                )
+            ],
+            into: runtime
+        )
+
+        let responseBytes = try runtime.handle(
+            DatabaseWireCodec.encode(
+                request: .query(
+                    DatabaseWireQueryRequest(
+                        typeName: "Article",
+                        predicate: .comparison(field: "score", op: .greaterThan, value: .double(1)),
+                        limit: 10
+                    )
+                )
+            )
+        )
+
+        #expect(try DatabaseWireCodec.decodeResponse(responseBytes) == .failure(
+            status: .executionFailure,
+            message: "unsupported predicate comparison"
+        ))
+    }
+
     @Test func malformedRequestReturnsInvalidRequestFailureEnvelope() throws {
         let storage = MemoryStorage()
         let runtime = DatabaseEngineRuntime(storage: storage)
 
-        let responseBytes = try runtime.handle([0x01, 0xFF])
-        let response = try DatabaseKitWasmCodec.decodeResponse(responseBytes)
+        let responseBytes = try runtime.handle([DatabaseWireCodec.protocolVersion, 0xFF])
+        let response = try DatabaseWireCodec.decodeResponse(responseBytes)
 
         #expect(response == .failure(status: .invalidRequest, message: "unknown operation"))
     }
 
     private func put(
-        _ records: [DatabaseKitWasmRecord],
+        _ records: [DatabaseWireRecord],
         into runtime: DatabaseEngineRuntime<MemoryStorage>
     ) throws {
         for record in records {
             _ = try runtime.execute(.putRecord(record))
         }
+    }
+
+    private func query(
+        _ runtime: DatabaseEngineRuntime<MemoryStorage>,
+        field: String,
+        op: DatabaseWireComparisonOperator,
+        value: DatabaseWireFieldValue
+    ) throws -> [DatabaseWireRecord] {
+        let response = try runtime.execute(
+            .query(
+                DatabaseWireQueryRequest(
+                    typeName: "Article",
+                    predicate: .comparison(field: field, op: op, value: value),
+                    limit: 10
+                )
+            )
+        )
+        guard case .records(let records) = response else {
+            Issue.record("Expected records response")
+            return []
+        }
+        return records
     }
 
     private func article(
@@ -138,17 +325,64 @@ struct DatabaseEngineWireTests {
         score: Int64,
         title: String,
         tags: [String]
-    ) -> DatabaseKitWasmRecord {
-        DatabaseKitWasmRecord(
+    ) -> DatabaseWireRecord {
+        DatabaseWireRecord(
             typeName: "Article",
             id: id,
             fields: [
-                DatabaseKitWasmNamedValue(name: "status", value: .string(status)),
-                DatabaseKitWasmNamedValue(name: "score", value: .int64(score)),
-                DatabaseKitWasmNamedValue(name: "title", value: .string(title)),
-                DatabaseKitWasmNamedValue(
+                DatabaseWireNamedValue(name: "status", value: .string(status)),
+                DatabaseWireNamedValue(name: "score", value: .int64(score)),
+                DatabaseWireNamedValue(name: "title", value: .string(title)),
+                DatabaseWireNamedValue(
                     name: "tags",
                     value: .array(tags.map { .string($0) })
+                )
+            ]
+        )
+    }
+
+    private func vectorSchema() -> DatabaseWireSchema {
+        DatabaseWireSchema(
+            entities: [
+                DatabaseWireEntitySchema(
+                    typeName: "Document",
+                    version: 1,
+                    fields: [
+                        DatabaseWireFieldSchema(name: "status", type: .string, isOptional: false, fieldNumber: 1),
+                        DatabaseWireFieldSchema(name: "title", type: .string, isOptional: false, fieldNumber: 2),
+                        DatabaseWireFieldSchema(name: "embedding", type: .array, isOptional: false, fieldNumber: 3)
+                    ],
+                    indexes: [
+                        DatabaseWireIndexDescriptor(
+                            name: "Document.embedding.vector",
+                            kind: .vector,
+                            fields: ["embedding"],
+                            parameters: [
+                                DatabaseWireNamedValue(name: "dimensions", value: .int64(3)),
+                                DatabaseWireNamedValue(name: "metric", value: .string("cosine"))
+                            ]
+                        )
+                    ]
+                )
+            ]
+        )
+    }
+
+    private func vectorDocument(
+        id: String,
+        status: String,
+        title: String,
+        embedding: [Double]
+    ) -> DatabaseWireRecord {
+        DatabaseWireRecord(
+            typeName: "Document",
+            id: id,
+            fields: [
+                DatabaseWireNamedValue(name: "status", value: .string(status)),
+                DatabaseWireNamedValue(name: "title", value: .string(title)),
+                DatabaseWireNamedValue(
+                    name: "embedding",
+                    value: .array(embedding.map { .double($0) })
                 )
             ]
         )

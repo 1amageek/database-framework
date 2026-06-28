@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -661,4 +662,6 @@ struct UniquenessEnforcementTests {
         #expect(index.isUnique == true)
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // WritePreconditionTests.swift
 // Regression tests for Phase 2: the explicit operation APIs on FDBContext
@@ -289,4 +290,6 @@ struct WritePreconditionTests {
         #expect(byNew.count == 1)
     }
 }
+#endif
+
 #endif

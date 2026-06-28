@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexRebuildConsistencyTests.swift
 // Verifies that all IndexKind implementations produce identical subspace layouts
@@ -510,4 +511,6 @@ struct IndexRebuildConsistencyTests {
         }
     }
 }
+#endif
+
 #endif

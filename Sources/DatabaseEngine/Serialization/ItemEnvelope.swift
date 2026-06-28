@@ -1,3 +1,4 @@
+#if !os(WASI)
 // ItemEnvelope.swift
 // DatabaseEngine - Item envelope format for storage
 //
@@ -305,3 +306,5 @@ public enum ItemEnvelopeError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // ValueAccessLayerTests.swift
 // Tests for the 3-layer value access architecture:
@@ -896,4 +897,6 @@ struct OptionalStringPredicateTests {
         }
     }
 }
+#endif
+
 #endif

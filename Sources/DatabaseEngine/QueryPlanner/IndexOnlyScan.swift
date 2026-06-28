@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexOnlyScan.swift
 // QueryPlanner - Index-only scan (covering index) optimization
 //
@@ -543,3 +544,5 @@ extension Query {
         nil
     }
 }
+
+#endif

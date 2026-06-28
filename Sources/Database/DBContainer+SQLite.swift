@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if SQLITE
 import DatabaseEngine
 import SQLiteStorage
@@ -44,4 +45,6 @@ extension DBContainer {
         )
     }
 }
+#endif
+
 #endif

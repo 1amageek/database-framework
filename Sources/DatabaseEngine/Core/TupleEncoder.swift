@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TupleEncoder.swift
 // DatabaseEngine - Encode Swift types to FoundationDB TupleElement
 //
@@ -225,3 +226,5 @@ extension Optional: _OptionalProtocol {
         }
     }
 }
+
+#endif

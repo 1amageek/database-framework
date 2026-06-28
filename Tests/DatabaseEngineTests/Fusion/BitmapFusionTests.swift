@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // BitmapFusionTests.swift
 // Tests for BitmapIndex Fusion query (Bitmap)
@@ -532,4 +533,6 @@ struct BitmapFusionDeduplicationTests {
         #expect(deduplicated[0].name == "FirstAlice")  // First occurrence preserved
     }
 }
+#endif
+
 #endif

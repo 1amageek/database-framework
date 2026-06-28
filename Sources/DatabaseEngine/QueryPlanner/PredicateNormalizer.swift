@@ -1,3 +1,4 @@
+#if !os(WASI)
 // PredicateNormalizer.swift
 // QueryPlanner - Predicate normalization (CNF/DNF conversion)
 
@@ -344,3 +345,5 @@ extension PredicateNormalizer {
         return .and(predicates)
     }
 }
+
+#endif

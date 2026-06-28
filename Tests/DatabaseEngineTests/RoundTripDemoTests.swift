@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // RoundTripDemoTests.swift
 // Demonstrates Create -> Read -> Update -> Delete round-trip
@@ -103,4 +104,6 @@ struct RoundTripDemoTests {
         print("\n🎉 ラウンドトリップ完了!")
     }
 }
+#endif
+
 #endif

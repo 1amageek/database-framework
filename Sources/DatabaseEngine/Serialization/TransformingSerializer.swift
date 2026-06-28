@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TransformingSerializer.swift
 // DatabaseEngine - Serializer with compression and encryption support
 //
@@ -714,3 +715,5 @@ public struct TransformStatistics: Sendable {
         transformedSize < originalSize
     }
 }
+
+#endif

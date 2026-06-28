@@ -1,3 +1,4 @@
+#if !os(WASI)
 import StorageKit
 
 /// Visitor pattern for traversing and evaluating KeyExpressions
@@ -91,3 +92,5 @@ extension LiteralKeyExpression: LiteralKeyExpressionBase {
         return value
     }
 }
+
+#endif

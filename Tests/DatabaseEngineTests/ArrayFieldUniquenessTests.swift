@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -523,4 +524,6 @@ struct ArrayFieldUniquenessTests {
         }
     }
 }
+#endif
+
 #endif

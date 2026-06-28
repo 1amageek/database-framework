@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SubspaceIndexMaintainer.swift
 // DatabaseEngine - Protocol for subspace-based IndexMaintainers
 //
@@ -126,3 +127,5 @@ extension SubspaceIndexMaintainer {
         )
     }
 }
+
+#endif

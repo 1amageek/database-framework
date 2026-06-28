@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Testing
 import StorageKit
 import Synchronization
@@ -193,3 +194,5 @@ private final class FlakyCreateTransactionEngine: StorageEngine, Sendable {
         engine.directoryService
     }
 }
+
+#endif

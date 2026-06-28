@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import DatabaseEngine
 import FDBStorage
@@ -12,4 +13,6 @@ extension FDBStorageEngine.Configuration: DatabaseContainerConfiguration {
         )
     }
 }
+#endif
+
 #endif

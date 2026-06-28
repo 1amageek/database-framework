@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // PartitionedDirectoryTests.swift
 // Tests for Dynamic Directory (Partitioned Directory) support
@@ -461,4 +462,6 @@ struct PartitionedDirectoryTests {
         }
     }
 }
+#endif
+
 #endif

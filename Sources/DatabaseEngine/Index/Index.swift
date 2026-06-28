@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Core
 
 /// Index definition
@@ -133,3 +134,5 @@ public struct Index: @unchecked Sendable {
         self.storedFieldNames = storedFieldNames
     }
 }
+
+#endif

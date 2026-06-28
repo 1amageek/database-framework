@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SecureTransactionContext.swift
 // DatabaseEngine - Security-aware transaction context
 
@@ -159,3 +160,5 @@ internal final class SecureTransactionContext: TransactionContextProtocol, @unch
     }
 
 }
+
+#endif

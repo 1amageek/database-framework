@@ -1,3 +1,4 @@
+#if !os(WASI)
 // StoreTimer.swift
 // DatabaseEngine - Detailed instrumentation for database operations
 //
@@ -480,3 +481,5 @@ public struct StoreTimerSnapshot: Sendable {
         return result
     }
 }
+
+#endif

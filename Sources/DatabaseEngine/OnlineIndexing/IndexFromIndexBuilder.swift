@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexFromIndexBuilder.swift
 // DatabaseEngine - Build index from existing index
 //
@@ -757,3 +758,5 @@ public enum IndexFromIndexError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
+
+#endif

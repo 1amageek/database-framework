@@ -1,3 +1,4 @@
+#if !os(WASI)
 // PlanOperator.swift
 // QueryPlanner - Execution plan operators
 
@@ -737,3 +738,5 @@ public struct InJoinBloomFilter<Element: Hashable>: Sendable {
         }
     }
 }
+
+#endif

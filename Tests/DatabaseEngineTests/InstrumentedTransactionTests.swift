@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // InstrumentedTransactionTests.swift
 // Tests for InstrumentedTransaction and metrics collection
@@ -289,4 +290,6 @@ struct InstrumentedTransactionTests {
         #expect(summary.minDurationMs > 9 && summary.minDurationMs < 11)
     }
 }
+#endif
+
 #endif

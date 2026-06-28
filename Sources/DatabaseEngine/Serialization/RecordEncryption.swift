@@ -1,3 +1,4 @@
+#if !os(WASI)
 // RecordEncryption.swift
 // DatabaseEngine - Record encryption key management
 //
@@ -392,3 +393,5 @@ public enum EncryptionKeyUtils {
 // MARK: - CommonCrypto Import
 
 import CommonCrypto
+
+#endif

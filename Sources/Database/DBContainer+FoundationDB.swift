@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import DatabaseEngine
 import FDBStorage
@@ -33,4 +34,6 @@ extension DBContainer {
         )
     }
 }
+#endif
+
 #endif

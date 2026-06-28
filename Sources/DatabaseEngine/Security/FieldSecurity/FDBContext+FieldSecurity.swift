@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FDBContext+FieldSecurity.swift
 // DatabaseEngine - FDBContext extension for field-level security
 
@@ -261,3 +262,5 @@ extension FDBContext {
         )
     }
 }
+
+#endif

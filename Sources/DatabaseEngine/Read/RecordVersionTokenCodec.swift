@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Core
 import Crypto
 import DatabaseClientProtocol
@@ -71,3 +72,5 @@ private func appendValue(_ value: FieldValue, to data: inout Data) {
         }
     }
 }
+
+#endif

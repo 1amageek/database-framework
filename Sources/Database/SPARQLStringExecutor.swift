@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SPARQLStringExecutor.swift
 // Database - Execute SPARQL query strings against the database
 //
@@ -453,3 +454,5 @@ public enum SPARQLStringError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // QueryRewriter.swift
 // QueryPlanner - Predicate optimization and rewriting
 
@@ -621,3 +622,5 @@ internal struct QueryRewriter<T: Persistable>: Sendable {
         return [predicate]
     }
 }
+
+#endif

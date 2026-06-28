@@ -1,3 +1,4 @@
+#if !os(WASI)
 // QueryBridge.swift
 // DatabaseEngine - Bridge between Query<T> and QueryIR.SelectQuery
 
@@ -58,3 +59,5 @@ extension SortDescriptor {
         )
     }
 }
+
+#endif

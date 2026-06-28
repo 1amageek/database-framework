@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -240,4 +241,6 @@ private struct TestError: Error, CustomStringConvertible {
 
     var description: String { message }
 }
+#endif
+
 #endif

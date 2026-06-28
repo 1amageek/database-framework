@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // AdaptiveThrottlerTests.swift
 // Tests for AdaptiveThrottler
@@ -319,4 +320,6 @@ private enum ThrottlerTestError: Error, CustomStringConvertible {
         }
     }
 }
+#endif
+
 #endif

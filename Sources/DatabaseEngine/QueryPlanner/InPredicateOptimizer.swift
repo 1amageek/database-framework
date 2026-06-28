@@ -1,3 +1,4 @@
+#if !os(WASI)
 // InPredicateOptimizer.swift
 // DatabaseEngine - Optimizer for IN predicates in queries
 //
@@ -402,3 +403,5 @@ extension QueryCondition {
         }
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Core
 
 /// SchemaMigrationPlan - Migration plan protocol
@@ -273,3 +274,5 @@ public enum MigrationPlanError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // AutoConfigurableIndexKind.swift
 // DatabaseEngine - Protocol for index kinds that support automatic configuration
 //
@@ -65,3 +66,5 @@ public protocol AutoConfigurableIndexKind {
         itemLoader: @escaping GenericItemLoader
     ) -> any IndexConfiguration
 }
+
+#endif

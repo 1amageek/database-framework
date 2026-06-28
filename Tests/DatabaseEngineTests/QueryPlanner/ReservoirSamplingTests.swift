@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // ReservoirSamplingTests.swift
 // Tests for Reservoir Sampling with Algorithm L
@@ -309,4 +310,6 @@ struct ReservoirSamplingTests {
         #expect(duration < 5.0, "Sampling took \(duration)s - Algorithm L should be faster")
     }
 }
+#endif
+
 #endif

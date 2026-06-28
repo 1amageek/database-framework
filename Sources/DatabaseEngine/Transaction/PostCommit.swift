@@ -1,3 +1,4 @@
+#if !os(WASI)
 // PostCommit.swift
 // DatabaseEngine - Post-commit callback hooks
 //
@@ -368,3 +369,5 @@ extension PostCommit where Self == ClosurePostCommit {
         }
     }
 }
+
+#endif

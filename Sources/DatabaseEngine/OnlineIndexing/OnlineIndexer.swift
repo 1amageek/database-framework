@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -1016,3 +1017,5 @@ public enum OnlineIndexerError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

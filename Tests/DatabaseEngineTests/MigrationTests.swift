@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -663,4 +664,6 @@ struct MigrationTests {
         }
     }
 }
+#endif
+
 #endif

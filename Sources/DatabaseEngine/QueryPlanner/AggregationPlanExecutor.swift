@@ -1,3 +1,4 @@
+#if !os(WASI)
 // AggregationPlanExecutor.swift
 // QueryPlanner - Aggregation query execution
 
@@ -519,3 +520,5 @@ private struct AggregationAccumulator {
         }
     }
 }
+
+#endif

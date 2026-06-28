@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexMaintenanceService.swift
 // DatabaseEngine - Centralized index maintenance operations
 //
@@ -638,3 +639,5 @@ enum IndexMaintenanceError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

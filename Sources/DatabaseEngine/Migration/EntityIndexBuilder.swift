@@ -1,3 +1,4 @@
+#if !os(WASI)
 // EntityIndexBuilder.swift
 // FDBIndexing - Entity-specific index building support
 //
@@ -490,3 +491,5 @@ extension Persistable where Self: Codable {
         IndexBuilderRegistry.shared.register(Self.self)
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexMaintenanceEfficiencyTests.swift
 // Tests for efficient index maintenance (diff-based update without full scan)
@@ -330,4 +331,6 @@ struct IndexMaintenanceEfficiencyTests {
         }
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FusionBuilder.swift
 // DatabaseEngine - Builder for fusion queries with ResultBuilder support
 
@@ -389,3 +390,5 @@ extension FDBContext {
         return FusionBuilder(stages: stages)
     }
 }
+
+#endif

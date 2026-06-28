@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Core
 
@@ -132,3 +133,5 @@ extension AdminContextProtocol {
         try await rebuildIndex(indexName, progress: nil)
     }
 }
+
+#endif

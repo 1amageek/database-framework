@@ -1,3 +1,4 @@
+#if !os(WASI)
 // StreamingModeSelector.swift
 // DatabaseEngine - Automatic StreamingMode selection for range queries
 //
@@ -179,3 +180,5 @@ public struct StreamingModeConfiguration: Sendable, Equatable {
         )
     }
 }
+
+#endif

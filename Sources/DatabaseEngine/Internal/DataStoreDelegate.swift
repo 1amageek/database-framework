@@ -1,3 +1,4 @@
+#if !os(WASI)
 /// Internal delegate protocol for data store operation callbacks
 ///
 /// This protocol enables separation of metrics collection from core data store logic.
@@ -93,3 +94,5 @@ extension DataStoreDelegate {
     func didExecuteBatch(insertCount: Int, deleteCount: Int, duration: UInt64) {}
     func didFailBatch(error: Error, duration: UInt64) {}
 }
+
+#endif

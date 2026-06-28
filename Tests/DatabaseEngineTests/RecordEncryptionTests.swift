@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // RecordEncryptionTests.swift
 // DatabaseEngine Tests - Record encryption tests
@@ -244,4 +245,6 @@ struct EncryptionKeyUtilsTests {
         #expect(data1 == data2)
     }
 }
+#endif
+
 #endif

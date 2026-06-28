@@ -1,3 +1,4 @@
+#if !os(WASI)
 // MutualOnlineIndexer.swift
 // DatabaseEngine - Build bidirectional indexes using mutual references
 //
@@ -589,3 +590,5 @@ extension MutualOnlineIndexer: CustomStringConvertible {
         "MutualOnlineIndexer(forward: \(forwardIndex.name), reverse: \(reverseIndex.name), itemType: \(itemType))"
     }
 }
+
+#endif

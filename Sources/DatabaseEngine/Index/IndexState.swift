@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexState.swift
 // FDBRuntime - Index lifecycle state management
 //
@@ -97,3 +98,5 @@ public enum IndexState: UInt8, Sendable, CustomStringConvertible {
         }
     }
 }
+
+#endif

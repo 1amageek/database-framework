@@ -1,3 +1,4 @@
+#if !os(WASI)
 /// SchemaRegistry - Persists and loads Schema.Entity in FoundationDB
 ///
 /// Analogous to PostgreSQL's `pg_catalog` system tables.
@@ -221,3 +222,5 @@ public enum SchemaRegistryError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
+
+#endif

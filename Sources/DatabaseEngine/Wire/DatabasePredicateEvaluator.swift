@@ -1,10 +1,10 @@
-import DatabaseKitWasmCore
+import DatabaseWire
 
 /// Evaluates wire query predicates against decoded records.
 public enum DatabasePredicateEvaluator {
     public static func matches(
-        _ record: DatabaseKitWasmRecord,
-        predicate: DatabaseKitWasmPredicate?
+        _ record: DatabaseWireRecord,
+        predicate: DatabaseWirePredicate?
     ) throws(DatabaseRuntimeError) -> Bool {
         guard let predicate else {
             return true
@@ -13,8 +13,8 @@ public enum DatabasePredicateEvaluator {
     }
 
     private static func matches(
-        _ record: DatabaseKitWasmRecord,
-        predicate: DatabaseKitWasmPredicate
+        _ record: DatabaseWireRecord,
+        predicate: DatabaseWirePredicate
     ) throws(DatabaseRuntimeError) -> Bool {
         switch predicate {
         case .comparison(let field, let op, let value):
@@ -43,8 +43,8 @@ public enum DatabasePredicateEvaluator {
 
     private static func fieldValue(
         named name: String,
-        in record: DatabaseKitWasmRecord
-    ) -> DatabaseKitWasmFieldValue? {
+        in record: DatabaseWireRecord
+    ) -> DatabaseWireFieldValue? {
         for field in record.fields where field.name == name {
             return field.value
         }
@@ -52,9 +52,9 @@ public enum DatabasePredicateEvaluator {
     }
 
     private static func compare(
-        _ actual: DatabaseKitWasmFieldValue,
-        op: DatabaseKitWasmComparisonOperator,
-        expected: DatabaseKitWasmFieldValue
+        _ actual: DatabaseWireFieldValue,
+        op: DatabaseWireComparisonOperator,
+        expected: DatabaseWireFieldValue
     ) throws(DatabaseRuntimeError) -> Bool {
         switch op {
         case .equal:
@@ -75,8 +75,8 @@ public enum DatabasePredicateEvaluator {
     }
 
     private static func orderedCompare(
-        _ lhs: DatabaseKitWasmFieldValue,
-        _ rhs: DatabaseKitWasmFieldValue
+        _ lhs: DatabaseWireFieldValue,
+        _ rhs: DatabaseWireFieldValue
     ) throws(DatabaseRuntimeError) -> Int {
         switch (lhs, rhs) {
         case (.bool(let lhs), .bool(let rhs)):
@@ -84,6 +84,9 @@ public enum DatabasePredicateEvaluator {
         case (.int64(let lhs), .int64(let rhs)):
             return compare(lhs, rhs)
         case (.double(let lhs), .double(let rhs)):
+            guard !lhs.isNaN, !rhs.isNaN else {
+                throw DatabaseRuntimeError.unsupportedPredicateComparison
+            }
             if lhs == rhs {
                 return 0
             }
@@ -101,8 +104,8 @@ public enum DatabasePredicateEvaluator {
     }
 
     private static func contains(
-        _ actual: DatabaseKitWasmFieldValue,
-        _ expected: DatabaseKitWasmFieldValue
+        _ actual: DatabaseWireFieldValue,
+        _ expected: DatabaseWireFieldValue
     ) -> Bool {
         switch (actual, expected) {
         case (.string(let actual), .string(let expected)):

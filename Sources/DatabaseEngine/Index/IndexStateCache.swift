@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Synchronization
 
@@ -83,3 +84,5 @@ public final class IndexStateCache: Sendable {
         }
     }
 }
+
+#endif

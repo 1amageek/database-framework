@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // PlanComplexityLimitTests.swift
 // Tests for PlanComplexityLimit and QueryPlannerConfiguration
@@ -272,4 +273,6 @@ struct PlanComplexityLimitTests {
         }
     }
 }
+#endif
+
 #endif

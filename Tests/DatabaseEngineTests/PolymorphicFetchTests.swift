@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -485,4 +486,6 @@ struct PolymorphicFetchTests {
         #expect((survivingReport as? PolymorphicFetchReport)?.pageCount == 9)
     }
 }
+#endif
+
 #endif

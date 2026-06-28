@@ -1,3 +1,4 @@
+#if !os(WASI)
 // MultiTargetOnlineIndexer.swift
 // DatabaseEngine - Build multiple indexes simultaneously with single data scan
 //
@@ -362,3 +363,5 @@ extension MultiTargetOnlineIndexer: CustomStringConvertible {
         return "MultiTargetOnlineIndexer(indexes: [\(indexNames)], itemType: \(itemType))"
     }
 }
+
+#endif

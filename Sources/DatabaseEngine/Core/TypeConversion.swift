@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TypeConversion.swift
 // DatabaseEngine - Unified type conversion utilities
 //
@@ -194,3 +195,5 @@ public struct TypeConversion: Sendable {
         return TupleDecoder.decodeOrNil(element, as: type)
     }
 }
+
+#endif

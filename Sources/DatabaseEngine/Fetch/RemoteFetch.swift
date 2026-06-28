@@ -1,3 +1,4 @@
+#if !os(WASI)
 // RemoteFetch.swift
 // DatabaseEngine - Remote Fetch optimization for record retrieval
 //
@@ -486,3 +487,5 @@ extension Array {
         }
     }
 }
+
+#endif

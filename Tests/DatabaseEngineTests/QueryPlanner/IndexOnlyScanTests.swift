@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexOnlyScanTests.swift
 // Tests for Index-Only Scan (Covering Index) functionality
@@ -729,4 +730,6 @@ final class MockStorageReader: StorageReader, @unchecked Sendable {
         nil
     }
 }
+#endif
+
 #endif

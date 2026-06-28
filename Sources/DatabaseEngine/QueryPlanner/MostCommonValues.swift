@@ -1,3 +1,4 @@
+#if !os(WASI)
 // MostCommonValues.swift
 // QueryPlanner - Most Common Values (MCV) for selectivity estimation
 
@@ -419,3 +420,5 @@ public struct CombinedSelectivityEstimator: Sendable {
         return min(1.0, total)
     }
 }
+
+#endif

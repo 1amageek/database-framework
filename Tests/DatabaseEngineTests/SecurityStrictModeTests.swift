@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // SecurityStrictModeTests.swift
 // Tests for strict mode security behavior
@@ -343,4 +344,6 @@ struct SecurityStrictModeTests {
         }
     }
 }
+#endif
+
 #endif

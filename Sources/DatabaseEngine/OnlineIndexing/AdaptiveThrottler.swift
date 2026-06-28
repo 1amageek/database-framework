@@ -1,3 +1,4 @@
+#if !os(WASI)
 // AdaptiveThrottler.swift
 // DatabaseEngine - Adaptive throttling for index building and batch operations
 //
@@ -501,3 +502,5 @@ extension ThrottleConfiguration.DelaySettings: CustomStringConvertible {
         "DelaySettings(min: \(min), max: \(max), initial: \(initial))"
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexDescriptorTests.swift
 // FDBIndexing Tests - IndexDescriptor tests
@@ -259,4 +260,6 @@ struct IndexDescriptorTests {
         }
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FormatVersion.swift
 // DatabaseEngine - Storage format versioning for backward compatibility
 //
@@ -284,3 +285,5 @@ public enum FormatVersionError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
+
+#endif

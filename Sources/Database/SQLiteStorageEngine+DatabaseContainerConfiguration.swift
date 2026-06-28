@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if SQLITE
 import DatabaseEngine
 import SQLiteStorage
@@ -13,4 +14,6 @@ extension SQLiteStorageEngine.Configuration: DatabaseContainerConfiguration {
         )
     }
 }
+#endif
+
 #endif

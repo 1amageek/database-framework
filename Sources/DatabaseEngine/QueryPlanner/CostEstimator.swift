@@ -1,3 +1,4 @@
+#if !os(WASI)
 // CostEstimator.swift
 // QueryPlanner - Cost estimation for query plans
 
@@ -685,3 +686,5 @@ public struct CostEstimator<T: Persistable> {
         return 0
     }
 }
+
+#endif

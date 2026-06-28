@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Testing
 import Foundation
 import Core
@@ -92,3 +93,5 @@ struct CanonicalReadErrorTests {
         }
     }
 }
+
+#endif

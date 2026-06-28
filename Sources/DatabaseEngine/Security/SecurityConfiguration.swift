@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SecurityConfiguration.swift
 // DatabaseEngine - Security configuration for DBContainer
 
@@ -68,3 +69,5 @@ public struct SecurityConfiguration: Sendable {
         SecurityConfiguration(isEnabled: true, strict: strict, adminRoles: adminRoles)
     }
 }
+
+#endif

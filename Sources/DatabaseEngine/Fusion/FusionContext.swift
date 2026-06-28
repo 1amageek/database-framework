@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FusionContext.swift
 // DatabaseEngine - TaskLocal context for FusionQuery initialization
 
@@ -48,3 +49,5 @@ public enum FusionContext {
         try $current.withValue(context, operation: operation)
     }
 }
+
+#endif

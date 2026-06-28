@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Synchronization
 import Core
@@ -91,3 +92,5 @@ public final class SchemaCatalogCache: Sendable {
         UInt64(Date().timeIntervalSince1970 * 1000)
     }
 }
+
+#endif

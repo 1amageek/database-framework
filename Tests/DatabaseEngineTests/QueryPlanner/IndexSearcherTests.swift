@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexSearcherTests.swift
 // Tests for IndexSearcher implementations
@@ -673,4 +674,6 @@ struct SpatialIndexSearcherTests {
         return result
     }
 }
+#endif
+
 #endif

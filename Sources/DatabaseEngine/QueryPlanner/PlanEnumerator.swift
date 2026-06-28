@@ -1,3 +1,4 @@
+#if !os(WASI)
 // PlanEnumerator.swift
 // QueryPlanner - Plan enumeration and generation
 
@@ -781,3 +782,5 @@ public struct PlanEnumerator<T: Persistable> {
         }
     }
 }
+
+#endif

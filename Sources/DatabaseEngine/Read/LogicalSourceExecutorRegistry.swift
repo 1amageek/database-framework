@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Synchronization
 import QueryIR
@@ -49,3 +50,5 @@ public final class LogicalSourceExecutorRegistry: Sendable {
         state.withLock { $0.sparqlExecutor }
     }
 }
+
+#endif

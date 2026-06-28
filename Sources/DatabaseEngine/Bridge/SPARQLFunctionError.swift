@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SPARQLFunctionError.swift
 // DatabaseEngine - Errors for SPARQL() function execution
 
@@ -56,3 +57,5 @@ public enum SPARQLFunctionError: Error, Sendable, CustomStringConvertible {
         }
     }
 }
+
+#endif

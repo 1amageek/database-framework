@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // GraphFusionTests.swift
 // Tests for GraphIndex Fusion query (Connected)
@@ -775,4 +776,6 @@ struct GraphFusionIndexDiscoveryTests {
         #expect(scalarDescriptor != nil)
     }
 }
+#endif
+
 #endif

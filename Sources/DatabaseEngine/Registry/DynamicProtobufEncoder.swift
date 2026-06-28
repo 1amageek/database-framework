@@ -1,3 +1,4 @@
+#if !os(WASI)
 /// DynamicProtobufEncoder - Encodes [String: Any] to Protobuf wire format using Schema.Entity
 ///
 /// Converts JSON-like dictionary → Protobuf bytes using field name → (fieldNumber, type) mapping.
@@ -189,3 +190,5 @@ public struct DynamicProtobufEncoder: Sendable {
         return result
     }
 }
+
+#endif

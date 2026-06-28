@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // BatchFetcherTests.swift
 // DatabaseEngine Tests - BatchFetcher configuration and result types
@@ -329,4 +330,6 @@ struct BatchFetcherIntegrationTests {
         #expect(result.failed.isEmpty)
     }
 }
+#endif
+
 #endif

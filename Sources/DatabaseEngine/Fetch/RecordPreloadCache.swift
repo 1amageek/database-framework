@@ -1,3 +1,4 @@
+#if !os(WASI)
 // RecordPreloadCache.swift
 // DatabaseEngine - In-memory cache for preloaded records
 //
@@ -700,3 +701,5 @@ public struct CacheWarmer<Item: Persistable>: Sendable {
         return items.count
     }
 }
+
+#endif

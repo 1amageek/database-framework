@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -457,4 +458,6 @@ struct CachePolicyTests {
         #Index(ScalarIndexKind<CachePolicyTestModel>(fields: [\.value]))
     }
 }
+#endif
+
 #endif

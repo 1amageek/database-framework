@@ -1,3 +1,4 @@
+#if !os(WASI)
 // ExecutionPlan.swift
 // DatabaseEngine - Canonical read execution plan.
 //
@@ -276,3 +277,5 @@ private func describeRange(_ range: KeyRangeBound) -> String {
     }
     return "\(range.fieldName) \(parts.joined(separator: " AND "))"
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -47,4 +48,6 @@ struct IndexStateTests {
         }
     }
 }
+#endif
+
 #endif

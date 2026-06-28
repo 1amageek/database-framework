@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -1209,3 +1210,5 @@ public enum FDBRuntimeError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

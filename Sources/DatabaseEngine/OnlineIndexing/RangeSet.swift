@@ -1,3 +1,4 @@
+#if !os(WASI)
 import StorageKit
 
 // MARK: - Byte Array Comparison Helpers
@@ -392,3 +393,5 @@ extension RangeContinuation: CustomStringConvertible {
         return "RangeContinuation[\(beginHex)...\(endHex), \(status)]"
     }
 }
+
+#endif

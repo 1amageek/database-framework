@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Core
 import QueryIR
@@ -84,3 +85,5 @@ extension FDBContext {
         }
     }
 }
+
+#endif

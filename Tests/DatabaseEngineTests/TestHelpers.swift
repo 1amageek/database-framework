@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Foundation
 import StorageKit
@@ -38,4 +39,6 @@ actor FDBTestEnvironment {
         try await FDBTestSetup.shared.withSerializedAccess(operation)
     }
 }
+#endif
+
 #endif

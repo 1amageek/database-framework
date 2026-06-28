@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // CostEstimatorTests.swift
 // Tests for CostEstimator and cost calculations
@@ -211,4 +212,6 @@ struct StatisticsProviderTests {
         #expect(entryCount == 5000)
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -257,4 +258,6 @@ struct ResolveDirectoryTests {
         }
     }
 }
+#endif
+
 #endif

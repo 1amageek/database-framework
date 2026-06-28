@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // TupleEncoderDecoderTests.swift
 // DatabaseEngine Tests - TupleEncoder and TupleDecoder tests
@@ -677,4 +678,6 @@ struct TupleEncoderDecoderRoundTripTests {
         #expect(decoded == original)
     }
 }
+#endif
+
 #endif

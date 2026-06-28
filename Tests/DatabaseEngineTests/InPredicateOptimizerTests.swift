@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // InPredicateOptimizerTests.swift
 // DatabaseEngine Tests - InPredicateOptimizer tests
@@ -282,4 +283,6 @@ struct InPredicateOptimizerStrategyTests {
         }
     }
 }
+#endif
+
 #endif

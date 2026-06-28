@@ -1,3 +1,4 @@
+#if !os(WASI)
 // MurmurHash3.swift
 // DatabaseEngine - MurmurHash3 x64 128-bit implementation
 //
@@ -144,3 +145,5 @@ internal enum MurmurHash3 {
         return h
     }
 }
+
+#endif

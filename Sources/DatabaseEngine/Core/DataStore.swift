@@ -1,3 +1,4 @@
+#if !os(WASI)
 // DataStore.swift
 // FDBRuntime - Protocol for storage backend abstraction
 //
@@ -317,3 +318,5 @@ public protocol DataStoreConfiguration: Sendable {
     /// Schema defining entities and indexes
     var schema: Schema? { get }
 }
+
+#endif

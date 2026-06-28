@@ -1,3 +1,4 @@
+#if !os(WASI)
 // ComparisonBridge.swift
 // DatabaseEngine - Bridge between ComparisonOperator and QueryIR.Expression
 
@@ -59,3 +60,5 @@ extension ComparisonOperator {
         }
     }
 }
+
+#endif

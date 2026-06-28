@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // AggregationExecutionTests.swift
 // Tests for AggregationResult and aggregation execution
@@ -329,4 +330,6 @@ struct AggTestOrder: Persistable {
         return "\(keyPath)"
     }
 }
+#endif
+
 #endif

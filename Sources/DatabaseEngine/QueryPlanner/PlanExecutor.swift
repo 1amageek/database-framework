@@ -1,3 +1,4 @@
+#if !os(WASI)
 // PlanExecutor.swift
 // QueryPlanner - Query plan execution
 
@@ -1323,3 +1324,5 @@ public enum DataStoreError: Error, CustomStringConvertible {
 
 // ExecutionIndexEntry has been unified with IndexEntry (see StorageReader.swift)
 // Use IndexEntry for all index entry operations
+
+#endif

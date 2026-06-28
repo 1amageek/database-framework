@@ -1,3 +1,4 @@
+#if !os(WASI)
 // CommitCheck.swift
 // DatabaseEngine - Pre-commit validation hooks
 //
@@ -351,3 +352,5 @@ public final class CommitCheckRegistry: Sendable {
 // MARK: - Synchronization Import
 
 import Synchronization
+
+#endif

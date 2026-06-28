@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // RelationshipIndexTests.swift
 // DatabaseEngine Tests - @Relationship macro and index tests
@@ -1427,4 +1428,6 @@ struct RelationshipConsistencyTests {
         #expect(relatedCustomer == nil)
     }
 }
+#endif
+
 #endif

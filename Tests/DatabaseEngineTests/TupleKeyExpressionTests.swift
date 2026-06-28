@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Testing
 import Foundation
 import StorageKit
@@ -63,3 +64,5 @@ struct TupleKeyExpressionTests {
         #expect(extracted == compositeID)
     }
 }
+
+#endif

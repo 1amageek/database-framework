@@ -1,3 +1,4 @@
+#if !os(WASI)
 // ContinuationState.swift
 // DatabaseEngine - Internal state management for continuation tokens
 //
@@ -363,3 +364,5 @@ internal struct PlanFingerprint {
         return hasher.finalizeToBytes()
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // QueryPlannerTests.swift
 // Tests for QueryPlanner core functionality
@@ -241,4 +242,6 @@ struct QueryAnalyzerTests {
         #expect(analysis.sortRequirements[1].order == .descending)
     }
 }
+#endif
+
 #endif

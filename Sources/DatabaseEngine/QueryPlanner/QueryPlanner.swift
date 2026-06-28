@@ -1,3 +1,4 @@
+#if !os(WASI)
 // QueryPlanner.swift
 // QueryPlanner - Main entry point for query planning
 
@@ -426,3 +427,5 @@ public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
         return identifiers
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexMaintenanceE2ETests.swift
 // End-to-end tests verifying index maintenance via FDBContext.save()
@@ -517,4 +518,6 @@ struct IndexMaintenanceE2ETests {
         try await cleanup(container: container, paths: [["index_maintenance_e2e_graph_edges"]])
     }
 }
+#endif
+
 #endif

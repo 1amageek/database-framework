@@ -1,3 +1,4 @@
+#if !os(WASI)
 // LiteralBridge.swift
 // DatabaseEngine - Bridge between Core.FieldValue and QueryIR.Literal
 
@@ -71,3 +72,5 @@ extension QueryIR.Literal {
         }
     }
 }
+
+#endif

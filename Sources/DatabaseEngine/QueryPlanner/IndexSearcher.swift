@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexSearcher.swift
 // QueryPlanner - Index search abstraction
 
@@ -1377,3 +1378,5 @@ public enum VectorSearchError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

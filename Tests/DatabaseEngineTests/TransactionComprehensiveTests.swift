@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // TransactionComprehensiveTests.swift
 // Comprehensive tests for Transaction infrastructure
@@ -359,4 +360,6 @@ struct TransactionComprehensiveTests {
         #expect(value == [99])
     }
 }
+#endif
+
 #endif

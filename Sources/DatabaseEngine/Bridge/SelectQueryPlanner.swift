@@ -1,3 +1,4 @@
+#if !os(WASI)
 // SelectQueryPlanner.swift
 // DatabaseEngine - Translate a QueryIR.SelectQuery into a typed Query<T>
 // while tracking which clauses were pushed down so the caller can skip
@@ -262,3 +263,5 @@ enum SelectQueryPlanner {
         return descriptors
     }
 }
+
+#endif

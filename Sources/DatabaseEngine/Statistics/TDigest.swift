@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TDigest.swift
 // DatabaseEngine - t-digest algorithm for streaming quantile estimation
 //
@@ -598,3 +599,5 @@ extension TDigest: CustomDebugStringConvertible {
         """
     }
 }
+
+#endif

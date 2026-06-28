@@ -1,3 +1,4 @@
+#if !os(WASI)
 import StorageKit
 import Core
 
@@ -192,3 +193,5 @@ extension IndexMaintainer {
         return try await computeIndexKeys(for: item, id: id)
     }
 }
+
+#endif

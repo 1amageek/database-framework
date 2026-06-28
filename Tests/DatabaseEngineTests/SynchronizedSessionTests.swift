@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // SynchronizedSessionTests.swift
 // DatabaseEngine Tests - Synchronized session tests
@@ -242,4 +243,6 @@ struct SessionErrorTests {
         #expect(error.description.contains("corrupted data"))
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FieldCondition.swift
 // QueryPlanner - Field condition types
 //
@@ -454,3 +455,5 @@ public enum FieldAccessType: Sendable, Hashable {
     /// Vector similarity
     case vector
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // Database.swift
 // Database - All-in-one import for database operations
 //
@@ -43,3 +44,5 @@
 @_exported import OntologyIndex
 @_exported import QueryIR
 @_exported import QueryAST
+
+#endif

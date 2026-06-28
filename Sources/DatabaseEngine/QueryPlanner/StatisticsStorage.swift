@@ -1,3 +1,4 @@
+#if !os(WASI)
 // StatisticsStorage.swift
 // QueryPlanner - FoundationDB persistence for statistics
 
@@ -833,3 +834,5 @@ public struct SpatialStatisticsData: Codable, Sendable {
         }
     }
 }
+
+#endif

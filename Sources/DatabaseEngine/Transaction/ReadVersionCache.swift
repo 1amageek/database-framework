@@ -1,3 +1,4 @@
+#if !os(WASI)
 // ReadVersionCache.swift
 // DatabaseEngine - Cache for read versions to support CachePolicy
 //
@@ -276,3 +277,5 @@ public final class MetricsCollectingReadVersionCache: Sendable {
         }
     }
 }
+
+#endif

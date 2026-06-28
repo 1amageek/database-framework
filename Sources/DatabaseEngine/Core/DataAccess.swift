@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -555,3 +556,5 @@ public enum DataAccessError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

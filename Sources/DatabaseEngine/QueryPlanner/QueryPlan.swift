@@ -1,3 +1,4 @@
+#if !os(WASI)
 // QueryPlan.swift
 // QueryPlanner - Query execution plan representation
 
@@ -212,3 +213,5 @@ extension PlanOperator: CustomStringConvertible {
         }
     }
 }
+
+#endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -228,4 +229,6 @@ struct StorageInvariantTests {
         #expect(bytes[5] == ItemEnvelope.Flags.inline.rawValue)
     }
 }
+#endif
+
 #endif

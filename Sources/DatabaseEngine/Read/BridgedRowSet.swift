@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Core
 import DatabaseClientProtocol
@@ -72,3 +73,5 @@ public struct BridgedRowSet: Sendable {
 
     public static let empty: BridgedRowSet = BridgedRowSet(rows: [])
 }
+
+#endif

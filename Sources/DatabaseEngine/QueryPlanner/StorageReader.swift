@@ -1,3 +1,4 @@
+#if !os(WASI)
 // StorageReader.swift
 // QueryPlanner - Low-level storage access abstraction
 
@@ -139,3 +140,5 @@ public struct IndexEntry: Sendable {
         self.score = score
     }
 }
+
+#endif

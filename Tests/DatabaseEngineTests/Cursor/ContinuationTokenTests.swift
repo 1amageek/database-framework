@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // ContinuationTokenTests.swift
 // DatabaseEngine Tests - ContinuationToken serialization and deserialization tests
@@ -320,4 +321,6 @@ fileprivate struct CursorTestUser: Persistable {
         return "\(keyPath)"
     }
 }
+#endif
+
 #endif

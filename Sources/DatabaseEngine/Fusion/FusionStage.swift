@@ -1,3 +1,4 @@
+#if !os(WASI)
 // FusionStage.swift
 // DatabaseEngine - Execution stages for fusion queries
 
@@ -134,3 +135,5 @@ public struct FusionQueryBuilder<T: Persistable> {
         component
     }
 }
+
+#endif

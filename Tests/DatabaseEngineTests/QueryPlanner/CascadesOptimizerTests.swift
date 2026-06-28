@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // CascadesOptimizerTests.swift
 // Tests for Cascades Optimizer implementation
@@ -561,4 +562,6 @@ struct CascadesErrorTests {
         #expect(invalid.description.contains("test error"))
     }
 }
+#endif
+
 #endif

@@ -1,3 +1,4 @@
+#if !os(WASI)
 // AggregationExecution.swift
 // DatabaseEngine - Aggregation query execution with precomputed index support
 //
@@ -797,3 +798,5 @@ extension AggregationExecutor {
         )
     }
 }
+
+#endif

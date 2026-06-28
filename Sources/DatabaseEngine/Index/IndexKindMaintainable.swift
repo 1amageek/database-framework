@@ -1,3 +1,4 @@
+#if !os(WASI)
 // IndexKindMaintainable.swift
 // FDBIndexing - Bridges IndexKind (metadata) with IndexMaintainer (runtime)
 //
@@ -91,3 +92,5 @@ public protocol IndexKindMaintainable: IndexKind {
         configurations: [any IndexConfiguration]
     ) throws -> any IndexMaintainer<Item>
 }
+
+#endif

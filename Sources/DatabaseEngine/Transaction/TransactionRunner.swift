@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TransactionRunner.swift
 // DatabaseEngine - Transaction execution with retry logic
 //
@@ -303,3 +304,5 @@ internal struct TransactionRunner: Sendable {
         return cappedDelay + jitter
     }
 }
+
+#endif

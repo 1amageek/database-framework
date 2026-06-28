@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // TransactionInfrastructureTests.swift
 // DatabaseEngine - Tests for transaction infrastructure features
@@ -1171,4 +1172,6 @@ final class TestLogger: LoggerProtocol, Sendable {
         errorMessages.append(message)
     }
 }
+#endif
+
 #endif

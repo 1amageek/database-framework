@@ -1,3 +1,4 @@
+#if !os(WASI)
 // HashBytesConvertible.swift
 // DatabaseEngine - Internal protocol for deterministic hashing
 //
@@ -119,3 +120,5 @@ extension FieldValue: HashBytesConvertible {
         }
     }
 }
+
+#endif

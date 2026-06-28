@@ -1,3 +1,4 @@
+#if !os(WASI)
 // CoveringValueBuilder.swift
 // DatabaseEngine - Shared utility for covering index value construction
 //
@@ -148,3 +149,5 @@ public enum CoveringValueBuilder {
         return properties
     }
 }
+
+#endif

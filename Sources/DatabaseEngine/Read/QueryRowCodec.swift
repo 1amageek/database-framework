@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Core
 import DatabaseClientProtocol
@@ -68,3 +69,5 @@ public enum QueryRowCodec {
         }
     }
 }
+
+#endif

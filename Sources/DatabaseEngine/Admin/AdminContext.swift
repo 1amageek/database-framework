@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Core
 import StorageKit
@@ -596,3 +597,5 @@ extension AdminError: LocalizedError {
         }
     }
 }
+
+#endif

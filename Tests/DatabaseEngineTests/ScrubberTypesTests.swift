@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -334,4 +335,6 @@ struct ScrubberTypesTests {
         #expect(error.description == "Invalid item type: Unknown")
     }
 }
+#endif
+
 #endif

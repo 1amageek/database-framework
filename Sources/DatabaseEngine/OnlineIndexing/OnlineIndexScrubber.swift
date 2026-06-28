@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -647,3 +648,5 @@ extension OnlineIndexScrubber: CustomStringConvertible {
         return "OnlineIndexScrubber(index: \(index.name), itemType: \(itemType), allowRepair: \(configuration.allowRepair))"
     }
 }
+
+#endif

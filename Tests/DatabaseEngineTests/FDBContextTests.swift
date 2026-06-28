@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import TestHeartbeat
@@ -413,4 +414,6 @@ struct FDBContextTests {
         #expect(Set(enumeratedNames) == Set(["User1", "User2"]))
     }
 }
+#endif
+
 #endif

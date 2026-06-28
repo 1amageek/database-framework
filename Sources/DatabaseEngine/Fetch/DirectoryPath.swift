@@ -1,3 +1,4 @@
+#if !os(WASI)
 // DirectoryPath.swift
 // DatabaseEngine - Directory path resolution for dynamic directories
 
@@ -239,3 +240,5 @@ public struct AnyDirectoryPath: @unchecked Sendable {
         try _validate()
     }
 }
+
+#endif

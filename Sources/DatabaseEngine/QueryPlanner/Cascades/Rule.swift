@@ -1,3 +1,4 @@
+#if !os(WASI)
 // Rule.swift
 // Cascades Optimizer - Rule-based transformation and implementation
 //
@@ -903,3 +904,5 @@ public struct ORToUnionRule: TransformationRule {
         return [LogicalOperator.union(inputs: filterGroups, deduplicate: true)]
     }
 }
+
+#endif

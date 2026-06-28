@@ -1,3 +1,4 @@
+#if !os(WASI)
 /// DynamicProtobufDecoder - Decodes Protobuf wire format using Schema.Entity metadata
 ///
 /// Converts raw Protobuf bytes → [String: Any] using field number → (name, type) mapping
@@ -279,3 +280,5 @@ public enum DynamicCodecError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

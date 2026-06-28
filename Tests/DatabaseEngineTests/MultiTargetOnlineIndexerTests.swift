@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // MultiTargetOnlineIndexerTests.swift
 // Tests for MultiTargetOnlineIndexer implementation
@@ -322,4 +323,6 @@ struct MultiTargetEfficiencyTests {
         #expect(transactionCount < totalItems)
     }
 }
+#endif
+
 #endif

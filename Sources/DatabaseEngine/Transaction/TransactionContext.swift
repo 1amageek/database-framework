@@ -1,3 +1,4 @@
+#if !os(WASI)
 // TransactionContext.swift
 // DatabaseEngine - Transactional operations wrapper
 //
@@ -476,3 +477,5 @@ public enum TransactionContextError: Error, CustomStringConvertible {
         }
     }
 }
+
+#endif

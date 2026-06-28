@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Testing
 import Foundation
 import Core
@@ -199,3 +200,5 @@ struct ExecutionPlanTests {
         #expect(range.upper?.value == .int64(100))
     }
 }
+
+#endif

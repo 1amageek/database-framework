@@ -1,3 +1,4 @@
+#if !os(WASI)
 import Foundation
 import Synchronization
 import Core
@@ -89,3 +90,5 @@ public final class ReadExecutorRegistry: Sendable {
         state.withLock { $0.fusionExecutors[strategyIdentifier] }
     }
 }
+
+#endif

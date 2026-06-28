@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // HyperLogLogTests.swift
 // Tests for HyperLogLog++ cardinality estimation
@@ -364,4 +365,6 @@ struct HyperLogLogTests {
         #expect(error < 0.03)
     }
 }
+#endif
+
 #endif

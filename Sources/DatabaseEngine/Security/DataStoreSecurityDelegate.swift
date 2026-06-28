@@ -1,3 +1,4 @@
+#if !os(WASI)
 // DataStoreSecurityDelegate.swift
 // DatabaseEngine - Security delegate protocol for DataStore
 
@@ -343,3 +344,5 @@ public final class DisabledSecurityDelegate: DataStoreSecurityDelegate, Sendable
     public func requireAdmin(operation: String, targetType: String) throws {}
     public func filterByGetAccess<T: Persistable>(_ items: [T]) -> [T] { items }
 }
+
+#endif

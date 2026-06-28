@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // IndexStateBehaviorTests.swift
 // Integration tests for index state behavior during writes and reads
@@ -449,4 +450,6 @@ struct IndexStateBehaviorTests {
         }
     }
 }
+#endif
+
 #endif

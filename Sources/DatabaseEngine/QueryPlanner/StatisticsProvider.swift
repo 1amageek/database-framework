@@ -1,3 +1,4 @@
+#if !os(WASI)
 // StatisticsProvider.swift
 // QueryPlanner - Statistics for cost estimation
 
@@ -1352,3 +1353,5 @@ extension FDBLiveStatisticsProvider {
         return merged
     }
 }
+
+#endif

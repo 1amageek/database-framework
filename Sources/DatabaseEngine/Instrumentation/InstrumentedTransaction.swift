@@ -1,3 +1,4 @@
+#if !os(WASI)
 // InstrumentedTransaction.swift
 // DatabaseEngine - Transaction wrapper with detailed metrics collection
 //
@@ -623,3 +624,5 @@ public struct AggregatedMetricsSummary: Sendable, CustomStringConvertible {
         """
     }
 }
+
+#endif

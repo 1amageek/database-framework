@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 import Testing
 import Foundation
@@ -579,4 +580,6 @@ struct PolymorphicMigrationFDBTests {
         return try await stateManager.state(of: indexName)
     }
 }
+#endif
+
 #endif

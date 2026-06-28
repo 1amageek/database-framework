@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if POSTGRESQL
 import DatabaseEngine
 import PostgreSQLStorage
@@ -13,4 +14,6 @@ extension PostgreSQLStorageEngine.Configuration: DatabaseContainerConfiguration 
         )
     }
 }
+#endif
+
 #endif

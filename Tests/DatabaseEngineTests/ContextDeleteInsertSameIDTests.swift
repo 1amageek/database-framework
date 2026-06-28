@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // ContextDeleteInsertSameIDTests.swift
 // Regression tests for FDBContext `delete(old) + insert(new) + save()` pattern on the same ModelKey.
@@ -356,5 +357,7 @@ struct ContextDeleteInsertSameIDTests {
         return "\(prefix)\(suffix)"
     }
 }
+
+#endif
 
 #endif

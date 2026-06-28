@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // BitmapTests.swift
 // Tests for Bitmap data structure and operations
@@ -427,4 +428,6 @@ struct BitmapCompressionTests {
         #expect(BitmapCompression.wordAligned != BitmapCompression.roaring)
     }
 }
+#endif
+
 #endif

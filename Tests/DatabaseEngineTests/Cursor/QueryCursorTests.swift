@@ -1,3 +1,4 @@
+#if !os(WASI)
 #if FOUNDATION_DB
 // QueryCursorTests.swift
 // DatabaseEngine Tests - QueryCursor integration tests
@@ -336,4 +337,6 @@ struct QueryCursorTests {
         }
     }
 }
+#endif
+
 #endif
