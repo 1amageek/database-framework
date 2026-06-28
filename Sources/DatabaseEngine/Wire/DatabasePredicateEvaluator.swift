@@ -1,11 +1,11 @@
 import DatabaseKitWasmCore
 
-/// Evaluates WASM query predicates against decoded records.
-public enum DatabaseFrameworkWasmPredicateEvaluator {
+/// Evaluates wire query predicates against decoded records.
+public enum DatabasePredicateEvaluator {
     public static func matches(
         _ record: DatabaseKitWasmRecord,
         predicate: DatabaseKitWasmPredicate?
-    ) throws(DatabaseFrameworkWasmError) -> Bool {
+    ) throws(DatabaseRuntimeError) -> Bool {
         guard let predicate else {
             return true
         }
@@ -15,7 +15,7 @@ public enum DatabaseFrameworkWasmPredicateEvaluator {
     private static func matches(
         _ record: DatabaseKitWasmRecord,
         predicate: DatabaseKitWasmPredicate
-    ) throws(DatabaseFrameworkWasmError) -> Bool {
+    ) throws(DatabaseRuntimeError) -> Bool {
         switch predicate {
         case .comparison(let field, let op, let value):
             guard let actual = fieldValue(named: field, in: record) else {
@@ -55,7 +55,7 @@ public enum DatabaseFrameworkWasmPredicateEvaluator {
         _ actual: DatabaseKitWasmFieldValue,
         op: DatabaseKitWasmComparisonOperator,
         expected: DatabaseKitWasmFieldValue
-    ) throws(DatabaseFrameworkWasmError) -> Bool {
+    ) throws(DatabaseRuntimeError) -> Bool {
         switch op {
         case .equal:
             return actual == expected
@@ -77,7 +77,7 @@ public enum DatabaseFrameworkWasmPredicateEvaluator {
     private static func orderedCompare(
         _ lhs: DatabaseKitWasmFieldValue,
         _ rhs: DatabaseKitWasmFieldValue
-    ) throws(DatabaseFrameworkWasmError) -> Int {
+    ) throws(DatabaseRuntimeError) -> Int {
         switch (lhs, rhs) {
         case (.bool(let lhs), .bool(let rhs)):
             return compare(lhs ? 1 : 0, rhs ? 1 : 0)
@@ -96,7 +96,7 @@ public enum DatabaseFrameworkWasmPredicateEvaluator {
         case (.bytes(let lhs), .bytes(let rhs)):
             return lexicographicCompare(lhs, rhs)
         default:
-            throw DatabaseFrameworkWasmError.unsupportedPredicateComparison
+            throw DatabaseRuntimeError.unsupportedPredicateComparison
         }
     }
 

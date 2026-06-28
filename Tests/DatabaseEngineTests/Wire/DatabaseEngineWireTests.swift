@@ -1,19 +1,19 @@
 import Testing
 import Synchronization
 import DatabaseKitWasmCore
-@testable import DatabaseFrameworkWasm
+@testable import DatabaseEngine
 
-@Suite("DatabaseFrameworkWasm Tests")
-struct DatabaseFrameworkWasmTests {
+@Suite("DatabaseEngine Tests")
+struct DatabaseEngineWireTests {
     @Test func handlePutAndGetRoundTripsThroughBinaryEnvelope() throws {
-        let storage = WasmMemoryStorage()
-        let runtime = DatabaseFrameworkWasmRuntime(storage: storage)
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
         let record = article(
             id: "article-1",
             status: "published",
             score: 10,
             title: "Swift on Workers",
-            tags: ["swift", "wasm"]
+            tags: ["swift", "wire"]
         )
 
         let putResponse = try runtime.handle(
@@ -31,8 +31,8 @@ struct DatabaseFrameworkWasmTests {
     }
 
     @Test func queryWithoutPredicateAppliesStorageLimit() throws {
-        let storage = WasmMemoryStorage()
-        let runtime = DatabaseFrameworkWasmRuntime(storage: storage)
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
         try put(
             [
                 article(id: "a", status: "draft", score: 1, title: "A", tags: []),
@@ -53,8 +53,8 @@ struct DatabaseFrameworkWasmTests {
     }
 
     @Test func queryAppliesConjunctionAfterFullScanBeforeLimit() throws {
-        let storage = WasmMemoryStorage()
-        let runtime = DatabaseFrameworkWasmRuntime(storage: storage)
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
         try put(
             [
                 article(id: "a", status: "draft", score: 100, title: "A", tags: []),
@@ -81,8 +81,8 @@ struct DatabaseFrameworkWasmTests {
     }
 
     @Test func querySupportsDisjunctionNegationAndContains() throws {
-        let storage = WasmMemoryStorage()
-        let runtime = DatabaseFrameworkWasmRuntime(storage: storage)
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
         try put(
             [
                 article(id: "a", status: "draft", score: 1, title: "Local Swift", tags: ["swift"]),
@@ -114,8 +114,8 @@ struct DatabaseFrameworkWasmTests {
     }
 
     @Test func malformedRequestReturnsInvalidRequestFailureEnvelope() throws {
-        let storage = WasmMemoryStorage()
-        let runtime = DatabaseFrameworkWasmRuntime(storage: storage)
+        let storage = MemoryStorage()
+        let runtime = DatabaseEngineRuntime(storage: storage)
 
         let responseBytes = try runtime.handle([0x01, 0xFF])
         let response = try DatabaseKitWasmCodec.decodeResponse(responseBytes)
@@ -125,7 +125,7 @@ struct DatabaseFrameworkWasmTests {
 
     private func put(
         _ records: [DatabaseKitWasmRecord],
-        into runtime: DatabaseFrameworkWasmRuntime<WasmMemoryStorage>
+        into runtime: DatabaseEngineRuntime<MemoryStorage>
     ) throws {
         for record in records {
             _ = try runtime.execute(.putRecord(record))
@@ -155,10 +155,10 @@ struct DatabaseFrameworkWasmTests {
     }
 }
 
-private final class WasmMemoryStorage: DatabaseFrameworkWasmStorage {
-    private let rows = Mutex<[DatabaseFrameworkWasmKeyValue]>([])
+private final class MemoryStorage: DatabaseStorage {
+    private let rows = Mutex<[DatabaseKeyValue]>([])
 
-    func read(key: [UInt8]) throws(DatabaseFrameworkWasmError) -> [UInt8]? {
+    func read(key: [UInt8]) throws(DatabaseRuntimeError) -> [UInt8]? {
         rows.withLock { rows in
             for row in rows where row.key == key {
                 return row.value
@@ -172,7 +172,7 @@ private final class WasmMemoryStorage: DatabaseFrameworkWasmStorage {
         end: [UInt8],
         limit: Int,
         reverse: Bool
-    ) throws(DatabaseFrameworkWasmError) -> [DatabaseFrameworkWasmKeyValue] {
+    ) throws(DatabaseRuntimeError) -> [DatabaseKeyValue] {
         rows.withLock { rows in
             var result = rows.filter {
                 compareBytes($0.key, begin) >= 0 && compareBytes($0.key, end) < 0
@@ -188,12 +188,12 @@ private final class WasmMemoryStorage: DatabaseFrameworkWasmStorage {
         }
     }
 
-    func commit(_ writes: [DatabaseFrameworkWasmWriteOperation]) throws(DatabaseFrameworkWasmError) {
+    func commit(_ writes: [DatabaseWriteOperation]) throws(DatabaseRuntimeError) {
         rows.withLock { rows in
             for write in writes {
                 switch write {
                 case .set(let key, let value):
-                    upsert(DatabaseFrameworkWasmKeyValue(key: key, value: value), into: &rows)
+                    upsert(DatabaseKeyValue(key: key, value: value), into: &rows)
                 case .clear(let key):
                     rows.removeAll { $0.key == key }
                 }
@@ -202,8 +202,8 @@ private final class WasmMemoryStorage: DatabaseFrameworkWasmStorage {
     }
 
     private func upsert(
-        _ row: DatabaseFrameworkWasmKeyValue,
-        into rows: inout [DatabaseFrameworkWasmKeyValue]
+        _ row: DatabaseKeyValue,
+        into rows: inout [DatabaseKeyValue]
     ) {
         if let index = rows.firstIndex(where: { $0.key == row.key }) {
             rows[index] = row

@@ -1,5 +1,5 @@
-/// Key-value row used by the WASM framework runtime.
-public struct DatabaseFrameworkWasmKeyValue: Sendable, Hashable {
+/// Key-value row used by the wire runtime.
+public struct DatabaseKeyValue: Sendable, Hashable {
     public let key: [UInt8]
     public let value: [UInt8]
 

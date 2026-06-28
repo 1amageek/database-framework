@@ -1,6 +1,9 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
+let wireRuntimeEnabled = Context.environment["DATABASE_WIRE"] == "1"
+    || Context.environment["DATABASE_FRAMEWORK_WIRE"] == "1"
+
 let package = Package(
     name: "database-framework",
     platforms: [
@@ -10,7 +13,6 @@ let package = Package(
     products: [
         .library(name: "DatabaseEngine", targets: ["DatabaseEngine"]),
         .library(name: "DatabaseRuntime", targets: ["DatabaseRuntime"]),
-        .library(name: "DatabaseFrameworkWasm", targets: ["DatabaseFrameworkWasm"]),
         .library(name: "ScalarIndex", targets: ["ScalarIndex"]),
         .library(name: "VectorIndex", targets: ["VectorIndex"]),
         .library(name: "FullTextIndex", targets: ["FullTextIndex"]),
@@ -61,28 +63,29 @@ let package = Package(
     targets: [
         .target(
             name: "DatabaseEngine",
-            dependencies: [
-                .product(name: "QueryIR", package: "database-kit"),
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "DatabaseClientProtocol", package: "database-kit"),
-                .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(traits: ["FoundationDB"])),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "Metrics", package: "swift-metrics"),
-                .product(name: "Crypto", package: "swift-crypto"),
-                .product(name: "Configuration", package: "swift-configuration"),
-            ],
-            exclude: ["README.md"],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
-            ]
-        ),
-        .target(
-            name: "DatabaseFrameworkWasm",
-            dependencies: [
-                .product(name: "DatabaseKitWasmCore", package: "database-kit"),
-            ]
+            dependencies: wireRuntimeEnabled
+                ? [
+                    .product(name: "DatabaseKitWasmCore", package: "database-kit"),
+                ]
+                : [
+                    .product(name: "QueryIR", package: "database-kit"),
+                    .product(name: "Core", package: "database-kit"),
+                    .product(name: "DatabaseClientProtocol", package: "database-kit"),
+                    .product(name: "StorageKit", package: "storage-kit"),
+                    .product(name: "FDBStorage", package: "storage-kit",
+                             condition: .when(traits: ["FoundationDB"])),
+                    .product(name: "Logging", package: "swift-log"),
+                    .product(name: "Metrics", package: "swift-metrics"),
+                    .product(name: "Crypto", package: "swift-crypto"),
+                    .product(name: "Configuration", package: "swift-configuration"),
+                ],
+            path: wireRuntimeEnabled ? "Sources/DatabaseEngine/Wire" : "Sources/DatabaseEngine",
+            exclude: wireRuntimeEnabled ? [] : ["README.md", "Wire"],
+            swiftSettings: wireRuntimeEnabled
+                ? []
+                : [
+                    .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                ]
         ),
         .target(
             name: "ScalarIndex",
@@ -251,41 +254,48 @@ let package = Package(
         ),
         .target(
             name: "Database",
-            dependencies: [
-                .product(name: "Core", package: "database-kit"),
-                .product(name: "Graph", package: "database-kit"),
-                .product(name: "Relationship", package: "database-kit"),
-                "DatabaseEngine",
-                "DatabaseRuntime",
-                "ScalarIndex",
-                "VectorIndex",
-                "FullTextIndex",
-                "SpatialIndex",
-                "RankIndex",
-                "PermutedIndex",
-                "GraphIndex",
-                "AggregationIndex",
-                "VersionIndex",
-                "BitmapIndex",
-                "LeaderboardIndex",
-                "RelationshipIndex",
-                "OntologyIndex",
-                .product(name: "QueryIR", package: "database-kit"),
-                "QueryAST",
-                .product(name: "StorageKit", package: "storage-kit"),
-                .product(name: "FDBStorage", package: "storage-kit",
-                         condition: .when(traits: ["FoundationDB"])),
-                .product(name: "SQLiteStorage", package: "storage-kit",
-                         condition: .when(traits: ["SQLite"])),
-                .product(name: "PostgreSQLStorage", package: "storage-kit",
-                         condition: .when(traits: ["PostgreSQL"])),
-            ],
-            exclude: ["README.md"],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
-                .define("SQLITE", .when(traits: ["SQLite"])),
-                .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
-            ]
+            dependencies: wireRuntimeEnabled
+                ? [
+                    "DatabaseEngine",
+                ]
+                : [
+                    .product(name: "Core", package: "database-kit"),
+                    .product(name: "Graph", package: "database-kit"),
+                    .product(name: "Relationship", package: "database-kit"),
+                    "DatabaseEngine",
+                    "DatabaseRuntime",
+                    "ScalarIndex",
+                    "VectorIndex",
+                    "FullTextIndex",
+                    "SpatialIndex",
+                    "RankIndex",
+                    "PermutedIndex",
+                    "GraphIndex",
+                    "AggregationIndex",
+                    "VersionIndex",
+                    "BitmapIndex",
+                    "LeaderboardIndex",
+                    "RelationshipIndex",
+                    "OntologyIndex",
+                    .product(name: "QueryIR", package: "database-kit"),
+                    "QueryAST",
+                    .product(name: "StorageKit", package: "storage-kit"),
+                    .product(name: "FDBStorage", package: "storage-kit",
+                             condition: .when(traits: ["FoundationDB"])),
+                    .product(name: "SQLiteStorage", package: "storage-kit",
+                             condition: .when(traits: ["SQLite"])),
+                    .product(name: "PostgreSQLStorage", package: "storage-kit",
+                             condition: .when(traits: ["PostgreSQL"])),
+                ],
+            path: wireRuntimeEnabled ? "Sources/Database/Wire" : "Sources/Database",
+            exclude: wireRuntimeEnabled ? [] : ["README.md", "Wire"],
+            swiftSettings: wireRuntimeEnabled
+                ? []
+                : [
+                    .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                    .define("SQLITE", .when(traits: ["SQLite"])),
+                    .define("POSTGRESQL", .when(traits: ["PostgreSQL"])),
+                ]
         ),
         // BenchmarkFramework - Performance benchmarking infrastructure
         .target(
@@ -370,38 +380,49 @@ let package = Package(
         // Core engine tests
         .testTarget(
             name: "DatabaseEngineTests",
-            dependencies: [
-                "DatabaseEngine",
-                "ScalarIndex",
-                "VectorIndex",
-                "FullTextIndex",
-                "SpatialIndex",
-                "RankIndex",
-                "PermutedIndex",
-                "AggregationIndex",
-                "VersionIndex",
-                "RelationshipIndex",
-                "BitmapIndex",
-                "LeaderboardIndex",
-                "GraphIndex",
-                "TestSupport",
-                .product(name: "Vector", package: "database-kit"),
-                .product(name: "FullText", package: "database-kit"),
-                .product(name: "Geospatial", package: "database-kit"),
-                .product(name: "Rank", package: "database-kit"),
-                .product(name: "Permuted", package: "database-kit"),
-                .product(name: "Graph", package: "database-kit"),
-                .product(name: "Relationship", package: "database-kit"),
-                .product(name: "Logging", package: "swift-log"),
-                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ],
-            swiftSettings: [
-                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
-            ],
-            linkerSettings: [
-                .unsafeFlags(["-L/usr/local/lib"]),
-                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
-            ]
+            dependencies: wireRuntimeEnabled
+                ? [
+                    "DatabaseEngine",
+                    .product(name: "DatabaseKitWasmCore", package: "database-kit"),
+                ]
+                : [
+                    "DatabaseEngine",
+                    "ScalarIndex",
+                    "VectorIndex",
+                    "FullTextIndex",
+                    "SpatialIndex",
+                    "RankIndex",
+                    "PermutedIndex",
+                    "AggregationIndex",
+                    "VersionIndex",
+                    "RelationshipIndex",
+                    "BitmapIndex",
+                    "LeaderboardIndex",
+                    "GraphIndex",
+                    "TestSupport",
+                    .product(name: "Vector", package: "database-kit"),
+                    .product(name: "FullText", package: "database-kit"),
+                    .product(name: "Geospatial", package: "database-kit"),
+                    .product(name: "Rank", package: "database-kit"),
+                    .product(name: "Permuted", package: "database-kit"),
+                    .product(name: "Graph", package: "database-kit"),
+                    .product(name: "Relationship", package: "database-kit"),
+                    .product(name: "Logging", package: "swift-log"),
+                    .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+                ],
+            path: wireRuntimeEnabled ? "Tests/DatabaseEngineTests/Wire" : "Tests/DatabaseEngineTests",
+            exclude: wireRuntimeEnabled ? [] : ["Wire"],
+            swiftSettings: wireRuntimeEnabled
+                ? []
+                : [
+                    .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+                ],
+            linkerSettings: wireRuntimeEnabled
+                ? []
+                : [
+                    .unsafeFlags(["-L/usr/local/lib"]),
+                    .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+                ]
         ),
         .testTarget(
             name: "DatabaseRuntimeTests",
@@ -409,13 +430,6 @@ let package = Package(
                 "DatabaseRuntime",
                 "DatabaseEngine",
                 .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
-            ]
-        ),
-        .testTarget(
-            name: "DatabaseFrameworkWasmTests",
-            dependencies: [
-                "DatabaseFrameworkWasm",
-                .product(name: "DatabaseKitWasmCore", package: "database-kit"),
             ]
         ),
         // ScalarIndex tests

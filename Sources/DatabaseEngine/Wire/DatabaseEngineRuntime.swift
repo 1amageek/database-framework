@@ -1,7 +1,7 @@
 import DatabaseKitWasmCore
 
-/// Executes DatabaseKit WASM requests against an abstract WASM storage boundary.
-public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage>: Sendable {
+/// Executes DatabaseKit wire requests against an abstract wire storage boundary.
+public struct DatabaseEngineRuntime<Storage: DatabaseStorage>: Sendable {
     private let storage: Storage
 
     public init(storage: Storage) {
@@ -17,17 +17,17 @@ public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage
             response = try execute(request)
         } catch let error as DatabaseKitWasmWireError {
             response = .failure(status: .invalidRequest, message: message(for: error))
-        } catch let error as DatabaseFrameworkWasmError {
+        } catch let error as DatabaseRuntimeError {
             response = .failure(status: .executionFailure, message: message(for: error))
         } catch {
-            response = .failure(status: .executionFailure, message: "wasm runtime execution failed")
+            response = .failure(status: .executionFailure, message: "wire runtime execution failed")
         }
         return try DatabaseKitWasmCodec.encode(response: response)
     }
 
     public func execute(
         _ request: DatabaseKitWasmRequest
-    ) throws(DatabaseFrameworkWasmError) -> DatabaseKitWasmResponse {
+    ) throws(DatabaseRuntimeError) -> DatabaseKitWasmResponse {
         switch request {
         case .applySchema(let schema):
             let operation: DatabaseKitWasmKeyValueOperation
@@ -85,7 +85,7 @@ public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage
                 } catch {
                     throw .wire(error)
                 }
-                if try DatabaseFrameworkWasmPredicateEvaluator.matches(
+                if try DatabasePredicateEvaluator.matches(
                     record,
                     predicate: plan.postFilter
                 ) {
@@ -101,18 +101,18 @@ public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage
 
     private func read(
         _ operation: DatabaseKitWasmKeyValueOperation
-    ) throws(DatabaseFrameworkWasmError) -> [UInt8]? {
+    ) throws(DatabaseRuntimeError) -> [UInt8]? {
         switch operation {
         case .get(let key):
             return try storage.read(key: key)
         case .range, .set, .clear:
-            throw DatabaseFrameworkWasmError.unsupportedKeyValueOperation(operation)
+            throw DatabaseRuntimeError.unsupportedKeyValueOperation(operation)
         }
     }
 
     private func scan(
         _ operation: DatabaseKitWasmKeyValueOperation
-    ) throws(DatabaseFrameworkWasmError) -> [DatabaseFrameworkWasmKeyValue] {
+    ) throws(DatabaseRuntimeError) -> [DatabaseKeyValue] {
         switch operation {
         case .range(let begin, let end, let limit, let reverse):
             return try storage.scan(
@@ -122,20 +122,20 @@ public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage
                 reverse: reverse
             )
         case .get, .set, .clear:
-            throw DatabaseFrameworkWasmError.unsupportedKeyValueOperation(operation)
+            throw DatabaseRuntimeError.unsupportedKeyValueOperation(operation)
         }
     }
 
     private func apply(
         _ operation: DatabaseKitWasmKeyValueOperation
-    ) throws(DatabaseFrameworkWasmError) {
+    ) throws(DatabaseRuntimeError) {
         switch operation {
         case .set(let key, let value):
             try storage.commit([.set(key: key, value: value)])
         case .clear(let key):
             try storage.commit([.clear(key: key)])
         case .get, .range:
-            throw DatabaseFrameworkWasmError.unsupportedKeyValueOperation(operation)
+            throw DatabaseRuntimeError.unsupportedKeyValueOperation(operation)
         }
     }
 
@@ -181,7 +181,7 @@ public struct DatabaseFrameworkWasmRuntime<Storage: DatabaseFrameworkWasmStorage
         return Int(value)
     }
 
-    private func message(for error: DatabaseFrameworkWasmError) -> String {
+    private func message(for error: DatabaseRuntimeError) -> String {
         switch error {
         case .wire(let error):
             return message(for: error)
