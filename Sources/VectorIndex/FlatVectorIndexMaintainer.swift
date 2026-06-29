@@ -20,7 +20,7 @@ import Vector
 /// **Index Structure**:
 /// ```
 /// Key: [indexSubspace][primaryKey]
-/// Value: Tuple(Float, Float, ..., Float)  // Vector dimensions
+/// Value: Float32 binary payload, little-endian, row-major
 /// ```
 ///
 /// **Usage**:
@@ -163,21 +163,16 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
         )
 
         for (key, value) in sequence {
-            // Decode primary key - skip corrupt entries
-            guard let primaryKeyTuple = try? subspace.unpack(key) else {
-                continue // Skip corrupt entry
+            let primaryKeyTuple: Tuple
+            do {
+                primaryKeyTuple = try subspace.unpack(key)
+            } catch {
+                throw VectorIndexError.invalidStructure("Invalid Flat vector primary key")
             }
             // Avoid pack/unpack cycle: convert Tuple to array directly
             let primaryKey: [any TupleElement] = (0..<primaryKeyTuple.count).compactMap { primaryKeyTuple[$0] }
 
-            // Decode vector - skip corrupt entries
-            guard let vectorTuple = try? Tuple.unpack(from: value) else {
-                continue // Skip corrupt entry
-            }
-
-            // Convert tuple to vector using VectorConversion
-            let vector = VectorConversion.tupleToVector(vectorTuple)
-            guard vector.count == dimensions else { continue } // Skip invalid vector
+            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
 
             // Calculate distance
             let distance = calculateDistance(queryVector, vector)
@@ -230,9 +225,7 @@ public struct FlatVectorIndexMaintainer<Item: Persistable>: IndexMaintainer {
             )
         }
 
-        // Encode as tuple using VectorConversion
-        let tuple = VectorConversion.vectorToTuple(floatArray)
-        return tuple.pack()
+        return VectorConversion.floatArrayToBytes(floatArray)
     }
 
     /// Calculate distance between two vectors using VectorConversion

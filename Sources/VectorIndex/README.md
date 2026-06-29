@@ -12,16 +12,24 @@ VectorIndex provides K-nearest neighbor (KNN) search for vector embeddings. It s
 
 **Storage Layout (Flat)**:
 ```
-[indexSubspace][primaryKey] = Tuple(Float, Float, ..., Float)
+[indexSubspace][primaryKey] = Float32 binary payload, little-endian
 ```
 
 **Storage Layout (HNSW)**:
 ```
-[indexSubspace]/vectors/[label] = Tuple(Float...)    // Vector storage
-[indexSubspace]/labels/[primaryKey] = UInt64         // PK to label mapping
-[indexSubspace]/pks/[label] = primaryKey             // Label to PK mapping
-[indexSubspace]/graph = Data                         // Serialized HNSW graph
+[indexSubspace]/vectors/[label] = Float32 binary payload, little-endian
+[indexSubspace]/labels/[primaryKey] = Tuple-encoded label
+[indexSubspace]/pks/[label] = Tuple-encoded primary key
+[indexSubspace]/_graphMetadata = Tuple(version, byteCount, chunkSize, chunkCount, revision)
+[indexSubspace]/_graphChunks/[chunk] = SwiftHNSW versioned binary graph snapshot chunk
 ```
+
+HNSW graph snapshots are cached in-process by persisted metadata revision. Write paths
+load from storage and persist a new revision; read paths reuse the cached graph only
+when the transaction observes the same metadata bytes. This prevents stale graph reuse
+after a committed update while avoiding per-query graph deserialization.
+
+See [Vector Binary Storage and HNSW Integration Roadmap](../../Docs/VECTOR_BINARY_STORAGE_AND_HNSW_ROADMAP.md) for the physical storage contract and release milestones.
 
 ## Use Cases
 
@@ -243,7 +251,7 @@ against the model metadata.
 | Feature | Status | Notes |
 |---------|--------|-------|
 | Flat scan (exact) | ✅ Complete | O(n) brute force |
-| HNSW (approximate) | ✅ Complete | Via swift-hnsw library |
+| HNSW API | ✅ Complete | Uses swift-hnsw 1.0 Swift production backend |
 | Cosine distance | ✅ Complete | 1 - cosine_similarity |
 | Euclidean distance | ✅ Complete | L2 distance |
 | Dot product | ✅ Complete | Inner product |
@@ -256,13 +264,15 @@ against the model metadata.
 
 ## Performance Characteristics
 
-| Operation | Flat Scan | HNSW |
-|-----------|-----------|------|
+swift-hnsw 1.0 uses a Swift-only production backend. The C++ hnswlib implementation is kept inside swift-hnsw's reference benchmark package and is not part of database-framework's package graph.
+
+| Operation | Flat Scan | Swift HNSW Backend |
+|-----------|-----------|--------------------|
 | Insert | O(1) | O(log n × m) |
-| Delete | O(1) | O(log n × m) |
-| Search (k=10) | O(n × d) | O(log n × ef × d) |
+| Delete | O(1) | Soft delete in graph |
+| Search (k=10) | O(n × d) | O(log n × ef × d) average |
 | Memory | O(n × d) | O(n × d + n × m) |
-| Recall | 100% | ~95-99% |
+| Recall | 100% | Approximate, tunable by efSearch |
 
 Where:
 - n = number of vectors
@@ -288,7 +298,7 @@ Run with: `swift test --filter VectorIndexPerformanceTests`
 | 10,000 | 384 | ~50ms | ~80ms | 100% |
 | 100,000 | 384 | ~500ms | ~800ms | 100% |
 
-### HNSW (m=16, efConstruction=200)
+### C++ HNSW Backend (m=16, efConstruction=200)
 
 | Vectors | Dimensions | k=10 (ef=50) | k=10 (ef=100) | Recall |
 |---------|------------|--------------|---------------|--------|

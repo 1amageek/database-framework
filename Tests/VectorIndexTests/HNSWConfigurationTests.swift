@@ -1,14 +1,12 @@
-#if FOUNDATION_DB
 // HNSWConfigurationTests.swift
 // Tests for HNSW configuration selection and basic functionality
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
-import FDBStorage
 import Core
 import Vector
-import TestSupport
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -244,14 +242,12 @@ struct VectorIndexConfigurationTests {
 
 // MARK: - HNSW Basic Behavior Tests
 
-@Suite("HNSW Basic Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("HNSW Basic Behavior Tests", .serialized, .heartbeat)
 struct HNSWBasicBehaviorTests {
 
     @Test("HNSW insert stores vector and creates graph entry")
     func testHNSWInsertStoresVector() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
@@ -300,9 +296,7 @@ struct HNSWBasicBehaviorTests {
 
     @Test("HNSW search finds nearest neighbors")
     func testHNSWSearchFindsNearestNeighbors() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
@@ -369,6 +363,194 @@ struct HNSWBasicBehaviorTests {
         }
     }
 
+    @Test("HNSW scanItems builds searchable graph for a batch")
+    func testHNSWScanItemsBuildsSearchableGraph() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "hnsw", "scanItems", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
+
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
+        let index = Index(
+            name: "HNSWTestDocument_embedding",
+            kind: kind,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWTestDocument_embedding",
+            itemTypes: Set(["HNSWTestDocument"])
+        )
+
+        let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
+            index: index,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 16, efConstruction: 200)
+        )
+
+        let docs = [
+            HNSWTestDocument(id: "batch-exact", title: "Exact", embedding: [1.0, 0.0, 0.0, 0.0]),
+            HNSWTestDocument(id: "batch-similar", title: "Similar", embedding: [0.9, 0.1, 0.0, 0.0]),
+            HNSWTestDocument(id: "batch-different", title: "Different", embedding: [0.0, 1.0, 0.0, 0.0])
+        ]
+
+        try await database.withTransaction { transaction in
+            try await maintainer.scanItems(
+                docs.map { (item: $0, id: Tuple($0.id)) },
+                transaction: transaction
+            )
+        }
+
+        let nodeCount = try await database.withTransaction { transaction in
+            try await maintainer.getNodeCount(transaction: transaction)
+        }
+
+        #expect(nodeCount == docs.count)
+
+        let results = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1.0, 0.0, 0.0, 0.0],
+                k: 3,
+                transaction: transaction
+            )
+        }
+
+        let resultIds = results.compactMap { result -> String? in
+            guard let id = result.primaryKey.first as? String else { return nil }
+            return id
+        }
+
+        #expect(resultIds.first == "batch-exact")
+
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("HNSW search cache refreshes after graph update")
+    func testHNSWSearchCacheRefreshesAfterGraphUpdate() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "hnsw", "cacheRefresh", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
+
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
+        let index = Index(
+            name: "HNSWTestDocument_embedding",
+            kind: kind,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWTestDocument_embedding",
+            itemTypes: Set(["HNSWTestDocument"])
+        )
+
+        let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
+            index: index,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 16, efConstruction: 200)
+        )
+
+        let first = HNSWTestDocument(id: "first", title: "First", embedding: [0.0, 1.0, 0.0, 0.0])
+        try await database.withTransaction { transaction in
+            try await maintainer.updateIndex(
+                oldItem: nil as HNSWTestDocument?,
+                newItem: first,
+                transaction: transaction
+            )
+        }
+
+        let initialResults = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1.0, 0.0, 0.0, 0.0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+
+        #expect(initialResults.compactMap { $0.primaryKey.first as? String }.first == "first")
+
+        let second = HNSWTestDocument(id: "second", title: "Second", embedding: [1.0, 0.0, 0.0, 0.0])
+        try await database.withTransaction { transaction in
+            try await maintainer.updateIndex(
+                oldItem: nil as HNSWTestDocument?,
+                newItem: second,
+                transaction: transaction
+            )
+        }
+
+        let refreshedResults = try await database.withTransaction { transaction in
+            try await maintainer.search(
+                queryVector: [1.0, 0.0, 0.0, 0.0],
+                k: 1,
+                transaction: transaction
+            )
+        }
+
+        #expect(refreshedResults.compactMap { $0.primaryKey.first as? String }.first == "second")
+
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
+    @Test("HNSW search throws when persisted graph metadata is corrupt")
+    func testHNSWSearchThrowsWhenPersistedGraphMetadataIsCorrupt() async throws {
+        let database = InMemoryEngine()
+        let testId = UUID().uuidString.prefix(8)
+        let subspace = Subspace(prefix: Tuple("test", "hnsw", "corruptMetadata", String(testId)).pack())
+        let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
+
+        let kind = VectorIndexKind<HNSWTestDocument>(embedding: \.embedding, dimensions: 4, metric: .cosine)
+        let index = Index(
+            name: "HNSWTestDocument_embedding",
+            kind: kind,
+            rootExpression: FieldKeyExpression(fieldName: "embedding"),
+            subspaceKey: "HNSWTestDocument_embedding",
+            itemTypes: Set(["HNSWTestDocument"])
+        )
+
+        let maintainer = HNSWIndexMaintainer<HNSWTestDocument>(
+            index: index,
+            dimensions: kind.dimensions,
+            metric: kind.metric,
+            subspace: indexSubspace,
+            idExpression: FieldKeyExpression(fieldName: "id"),
+            parameters: HNSWParameters(m: 16, efConstruction: 200)
+        )
+
+        let metadataKey = indexSubspace.pack(Tuple("_graphMetadata"))
+        let corruptMetadata = Tuple(
+            Int64(2),
+            Int64(64),
+            Int64(16),
+            Int64(4),
+            Int64(1)
+        ).pack()
+
+        try await database.withTransaction { transaction in
+            transaction.setValue(corruptMetadata, for: metadataKey)
+        }
+
+        await #expect(throws: VectorIndexError.self) {
+            _ = try await database.withTransaction { transaction in
+                try await maintainer.search(
+                    queryVector: [1.0, 0.0, 0.0, 0.0],
+                    k: 1,
+                    transaction: transaction
+                )
+            }
+        }
+
+        try await database.withTransaction { transaction in
+            let (begin, end) = subspace.range()
+            transaction.clearRange(beginKey: begin, endKey: end)
+        }
+    }
+
     @Test("HNSW throws graphTooLarge error when limit exceeded")
     func testHNSWThrowsGraphTooLargeError() async throws {
         // Test that VectorIndexError.graphTooLarge is correctly defined and throwable
@@ -402,18 +584,16 @@ struct HNSWBasicBehaviorTests {
         // Document the FDB transaction limit constraint:
         // - FDB has ~10,000 operations per transaction limit
         // - With serialized graph storage (SwiftHNSW), we can handle larger graphs
-        // - The entire graph is stored as a single serialized blob
+        // - Graph snapshots are chunked to stay within backend value-size limits
         // - Solution: Use OnlineIndexer batch processing for very large datasets
 
         #expect(hnswMaxInlineNodes > 0, "Inline node limit should be positive")
         #expect(hnswMaxInlineNodes <= 50000, "Inline limit should be reasonable for serialized graph storage")
     }
 
-    @Test("HNSW delete marks node as deleted", .disabled("SwiftHNSW serialization may not preserve deletion flags"))
+    @Test("HNSW delete marks node as deleted")
     func testHNSWDeleteMarksNodeAsDeleted() async throws {
-        try await FDBTestSetup.shared.initialize()
-
-        let database = try await FDBTestSetup.shared.makeEngine()
+        let database = InMemoryEngine()
         let testId = UUID().uuidString.prefix(8)
         let subspace = Subspace(prefix: Tuple("test", "hnsw", String(testId)).pack())
         let indexSubspace = subspace.subspace("I").subspace("HNSWTestDocument_embedding")
@@ -492,4 +672,3 @@ struct HNSWBasicBehaviorTests {
         }
     }
 }
-#endif

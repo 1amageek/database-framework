@@ -203,7 +203,7 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
     ///
     /// Index structure (Flat/HNSW shared):
     /// - Key: `[indexSubspace][primaryKey]`
-    /// - Value: `Tuple(Float, Float, ..., Float)`
+    /// - Value: Float32 binary payload, little-endian
     private func executeVectorSearch(
         indexName: String,
         queryVector: [Float],
@@ -273,37 +273,18 @@ public struct Similar<T: Persistable>: FusionQuery, Sendable {
                 continue
             }
 
-            // Decode primary key
-            guard indexSubspace.contains(key),
-                  let keyTuple = try? indexSubspace.unpack(key) else {
-                continue
+            guard indexSubspace.contains(key) else {
+                throw VectorIndexError.invalidStructure("Vector index key is outside the expected subspace")
             }
 
-            // Decode vector
-            guard let vectorTuple = try? Tuple.unpack(from: value) else {
-                continue
+            let keyTuple: Tuple
+            do {
+                keyTuple = try indexSubspace.unpack(key)
+            } catch {
+                throw VectorIndexError.invalidStructure("Invalid vector index primary key")
             }
 
-            var vector: [Float] = []
-            vector.reserveCapacity(dimensions)
-            var isValid = true
-
-            for i in 0..<dimensions {
-                guard i < vectorTuple.count else {
-                    isValid = false
-                    break
-                }
-
-                let element = vectorTuple[i]
-                if let floatValue = TypeConversion.asFloat(element) {
-                    vector.append(floatValue)
-                } else {
-                    isValid = false
-                    break
-                }
-            }
-
-            guard isValid else { continue }
+            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
 
             // Calculate distance
             let distance = computeDistance(queryVector, vector)

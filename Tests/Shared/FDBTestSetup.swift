@@ -41,8 +41,8 @@ public actor FDBTestSetup {
     private static let transactionTimeoutMs = 30_000
     private static let transactionRetryLimit = 20
     private static let transactionMaxRetryDelayMs = 1_000
-    private static let healthCheckAttemptTimeoutMs = 5_000
-    private static let clusterReadyTimeoutMs = 30_000
+    private static let healthCheckAttemptTimeoutMs = 2_000
+    private static let clusterReadyTimeoutMs = 10_000
     private static let clusterReadyPollIntervalNs: UInt64 = 250_000_000
 
     private enum InitState {
@@ -54,6 +54,7 @@ public actor FDBTestSetup {
 
     private var initState: InitState = .uninitialized
     private var didCleanupTestDirectories: Bool = false
+    private var selectedClusterFilePath: String?
 
     /// Queue of waiting test continuations for serialization
     private var waitingTests: [CheckedContinuation<Void, Never>] = []
@@ -63,20 +64,28 @@ public actor FDBTestSetup {
 
     private init() {}
 
-    private func resolvedClusterFilePath() -> String? {
+    private func candidateClusterFilePaths() -> [String?] {
         let fileManager = FileManager.default
         let environment = ProcessInfo.processInfo.environment
 
         if let configuredPath = environment["FDB_CLUSTER_FILE"],
            fileManager.fileExists(atPath: configuredPath) {
-            return configuredPath
+            return [configuredPath]
+        }
+
+        var candidates: [String?] = []
+        func appendCandidate(_ path: String) {
+            guard !candidates.contains(where: { $0 == path }) else {
+                return
+            }
+            candidates.append(path)
         }
 
         var currentURL = URL(fileURLWithPath: fileManager.currentDirectoryPath, isDirectory: true)
         while true {
             let candidate = currentURL.appendingPathComponent(".database/fdb.cluster").path
             if fileManager.fileExists(atPath: candidate) {
-                return candidate
+                appendCandidate(candidate)
             }
 
             let parentURL = currentURL.deletingLastPathComponent()
@@ -90,23 +99,46 @@ public actor FDBTestSetup {
             "/etc/foundationdb/fdb.cluster",
         ]
 
-        return commonClusterFiles.first(where: fileManager.fileExists(atPath:))
+        for path in commonClusterFiles where fileManager.fileExists(atPath: path) {
+            appendCandidate(path)
+        }
+
+        if candidates.isEmpty {
+            candidates.append(nil)
+        }
+        return candidates
     }
 
-    private func openConfiguredDatabase() throws -> any DatabaseProtocol {
-        let database = try FDBClient.openDatabase(clusterFilePath: resolvedClusterFilePath())
+    private func resolvedClusterFilePath() -> String? {
+        if let selectedClusterFilePath {
+            return selectedClusterFilePath
+        }
+        let candidates = candidateClusterFilePaths()
+        guard let first = candidates.first else {
+            return nil
+        }
+        return first
+    }
+
+    private func openConfiguredDatabase(clusterFilePath: String? = nil) throws -> any DatabaseProtocol {
+        let database = try FDBClient.openDatabase(
+            clusterFilePath: clusterFilePath ?? selectedClusterFilePath ?? resolvedClusterFilePath()
+        )
         try database.setOption(to: Self.transactionTimeoutMs, forOption: .transactionTimeout)
         try database.setOption(to: Self.transactionRetryLimit, forOption: .transactionRetryLimit)
         try database.setOption(to: Self.transactionMaxRetryDelayMs, forOption: .transactionMaxRetryDelay)
         return database
     }
 
-    private func createConfiguredEngine(systemPriority: Bool = false) async throws -> FDBStorageEngine {
+    private func createConfiguredEngine(
+        systemPriority: Bool = false,
+        clusterFilePath: String? = nil
+    ) async throws -> FDBStorageEngine {
         if !FDBClient.isInitialized {
             try await FDBClient.initialize()
         }
 
-        let baseDatabase = try openConfiguredDatabase()
+        let baseDatabase = try openConfiguredDatabase(clusterFilePath: clusterFilePath)
         let database: any DatabaseProtocol
         if systemPriority {
             database = FDBSystemPriorityDatabase(wrapping: baseDatabase)
@@ -116,7 +148,10 @@ public actor FDBTestSetup {
         return try await FDBStorageEngine(configuration: .init(database: database))
     }
 
-    private func verifyClusterHealth(using engine: FDBStorageEngine) async throws {
+    private func verifyClusterHealth(
+        using engine: FDBStorageEngine,
+        clusterFilePath: String?
+    ) async throws {
         let deadline = Date().addingTimeInterval(TimeInterval(Self.clusterReadyTimeoutMs) / 1_000)
         var lastError: Error?
 
@@ -141,7 +176,31 @@ public actor FDBTestSetup {
         }
 
         throw FDBTestSetupError.clusterHealthCheckFailed(
-            clusterFile: resolvedClusterFilePath(),
+            clusterFile: clusterFilePath,
+            underlying: lastError ?? CancellationError()
+        )
+    }
+
+    private func createHealthyEngine() async throws -> FDBStorageEngine {
+        let candidates = candidateClusterFilePaths()
+        var lastError: Error?
+
+        for candidate in candidates {
+            do {
+                let engine = try await createConfiguredEngine(
+                    systemPriority: true,
+                    clusterFilePath: candidate
+                )
+                try await verifyClusterHealth(using: engine, clusterFilePath: candidate)
+                selectedClusterFilePath = candidate
+                return engine
+            } catch {
+                lastError = error
+            }
+        }
+
+        throw FDBTestSetupError.clusterHealthCheckFailed(
+            clusterFile: candidates.compactMap { $0 }.last,
             underlying: lastError ?? CancellationError()
         )
     }
@@ -168,8 +227,7 @@ public actor FDBTestSetup {
             initState = .initializing([])
 
             do {
-                let engine = try await createConfiguredEngine(systemPriority: true)
-                try await verifyClusterHealth(using: engine)
+                _ = try await createHealthyEngine()
                 await cleanupTestDirectoriesBestEffort()
                 if case .initializing(let continuations) = initState {
                     initState = .initialized

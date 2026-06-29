@@ -1,14 +1,12 @@
-#if FOUNDATION_DB
 // VectorIndexBehaviorTests.swift
-// Integration tests for VectorIndex (Flat) behavior with FDB
+// Integration tests for VectorIndex (Flat) behavior
 
 import Testing
+import TestHeartbeat
 import Foundation
 import StorageKit
-import FDBStorage
 import Core
 import Vector
-import TestSupport
 @testable import DatabaseEngine
 @testable import VectorIndex
 
@@ -72,14 +70,14 @@ struct TestDocument: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FlatVectorIndexMaintainer<TestDocument>
     let dimensions: Int
 
     init(dimensions: Int = 4, metric: VectorMetric = .cosine, indexName: String = "TestDocument_embedding") async throws {
-        self.database = try await FDBTestSetup.shared.makeEngine()
+        self.database = InMemoryEngine()
         self.dimensions = dimensions
         let testId = UUID().uuidString.prefix(8)
         self.subspace = Subspace(prefix: Tuple("test", "vector", String(testId)).pack())
@@ -135,14 +133,13 @@ private struct TestContext {
 
 // MARK: - Behavior Tests
 
-@Suite("VectorIndex Behavior Tests", .tags(.fdb), .serialized, .heartbeat)
+@Suite("VectorIndex Behavior Tests", .serialized, .heartbeat)
 struct VectorIndexBehaviorTests {
 
     // MARK: - Insert Tests
 
     @Test("Insert stores vector")
     func testInsertStoresVector() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
@@ -163,7 +160,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Insert multiple vectors")
     func testInsertMultipleVectors() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let docs = [
@@ -192,7 +188,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Delete removes vector")
     func testDeleteRemovesVector() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
@@ -228,7 +223,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Update replaces vector")
     func testUpdateReplacesVector() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
@@ -267,7 +261,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Cosine similarity search returns correct order")
     func testCosineSimilaritySearch() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4, metric: .cosine)
 
         // Create vectors at different angles
@@ -313,7 +306,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Euclidean distance search returns correct order")
     func testEuclideanDistanceSearch() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 3, metric: .euclidean)
 
         // Create points at known distances from origin
@@ -359,7 +351,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Top-K returns correct number of results")
     func testTopKReturnsCorrectCount() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         // Insert 10 documents
@@ -392,7 +383,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Dimension mismatch throws error")
     func testDimensionMismatchThrowsError() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let doc = TestDocument(id: "doc1", title: "Test", embedding: [1.0, 0.0, 0.0, 0.0])
@@ -415,7 +405,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Invalid k throws error")
     func testInvalidKThrowsError() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         await #expect(throws: VectorIndexError.self) {
@@ -433,7 +422,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("ScanItem stores vector")
     func testScanItemStoresVector() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let docs = [
@@ -461,7 +449,6 @@ struct VectorIndexBehaviorTests {
 
     @Test("Search on empty index returns empty results")
     func testSearchEmptyIndexReturnsEmpty() async throws {
-        try await FDBTestSetup.shared.initialize()
         let ctx = try await TestContext(dimensions: 4)
 
         let results = try await ctx.search(query: [1.0, 0.0, 0.0, 0.0], k: 10)
@@ -470,4 +457,3 @@ struct VectorIndexBehaviorTests {
         try await ctx.cleanup()
     }
 }
-#endif

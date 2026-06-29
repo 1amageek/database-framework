@@ -19,6 +19,22 @@ import Vector
 /// Beyond this limit, use batch indexing (scanItem) instead.
 public let hnswMaxInlineNodes: Int64 = 10_000
 
+private let hnswGraphSnapshotVersion: Int64 = 2
+private let hnswGraphSnapshotChunkSize = 80 * 1024
+
+private struct HNSWStagedVector: Sendable {
+    let label: UInt64
+    let vector: [Float]
+}
+
+private struct HNSWGraphMetadata: Sendable {
+    let version: Int64
+    let byteCount: Int
+    let chunkSize: Int
+    let chunkCount: Int
+    let revision: Int64
+}
+
 // MARK: - HNSW Parameters
 
 /// HNSW construction parameters
@@ -87,16 +103,17 @@ public struct HNSWSearchParameters: Sendable {
 ///
 /// **Storage Layout**:
 /// ```
-/// [indexSubspace]/vectors/[label] = Tuple(Float, Float, ...)  // Vector storage
+/// [indexSubspace]/vectors/[label] = Float32 binary payload    // Vector storage
 /// [indexSubspace]/labels/[primaryKey] = UInt64                // PK to label mapping
 /// [indexSubspace]/pks/[label] = primaryKey                    // Label to PK mapping
-/// [indexSubspace]/graph = Data                                // Serialized HNSW graph
+/// [indexSubspace]/_graphMetadata = Tuple                      // Chunked graph metadata
+/// [indexSubspace]/_graphChunks/[chunk] = Data                  // Chunked graph snapshot
 /// [indexSubspace]/metadata = JSON                             // Index metadata
 /// ```
 ///
 /// **Usage**:
 /// - For small datasets (<10K vectors): inline indexing via updateIndex()
-/// - For large datasets: batch indexing via OnlineIndexer with scanItem()
+/// - For large datasets: batch indexing via OnlineIndexer with scanItems()
 public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     public let index: Index
     public let subspace: Subspace
@@ -111,7 +128,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let vectorsSubspace: Subspace
     private let labelsSubspace: Subspace
     private let primaryKeysSubspace: Subspace
+    private let graphChunksSubspace: Subspace
     private let graphKey: [UInt8]
+    private let graphMetadataKey: [UInt8]
     private let metadataKey: [UInt8]
     private let nextLabelKey: [UInt8]
 
@@ -134,7 +153,9 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         self.vectorsSubspace = subspace.subspace("v")
         self.labelsSubspace = subspace.subspace("l")
         self.primaryKeysSubspace = subspace.subspace("p")
+        self.graphChunksSubspace = subspace.subspace("_graphChunks")
         self.graphKey = subspace.pack(Tuple("_graph"))
+        self.graphMetadataKey = subspace.pack(Tuple("_graphMetadata"))
         self.metadataKey = subspace.pack(Tuple("_metadata"))
         self.nextLabelKey = subspace.pack(Tuple("_nextLabel"))
     }
@@ -159,7 +180,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             do {
                 let primaryKey = try DataAccess.extractId(from: newItem, using: idExpression)
                 let vector = try extractVector(from: newItem)
-                try await insertVector(primaryKey: primaryKey, vector: vector, item: newItem, transaction: transaction)
+                try await insertVector(primaryKey: primaryKey, vector: vector, transaction: transaction)
             } catch DataAccessError.nilValueCannotBeIndexed {
                 // Sparse index: nil vector is not indexed
             }
@@ -174,10 +195,43 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Sparse index: if vector field is nil, skip indexing
         do {
             let vector = try extractVector(from: item)
-            try await insertVector(primaryKey: id, vector: vector, item: item, transaction: transaction)
+            try await insertVector(primaryKey: id, vector: vector, transaction: transaction)
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil vector is not indexed
         }
+    }
+
+    public func scanItems(
+        _ items: [(item: Item, id: Tuple)],
+        transaction: any Transaction
+    ) async throws {
+        var stagedVectors: [HNSWStagedVector] = []
+        stagedVectors.reserveCapacity(items.count)
+
+        for entry in items {
+            do {
+                let vector = try extractVector(from: entry.item)
+                let stagedVector = try await stageVector(
+                    primaryKey: entry.id,
+                    vector: vector,
+                    transaction: transaction
+                )
+                stagedVectors.append(stagedVector)
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil vector is not indexed
+            }
+        }
+
+        guard !stagedVectors.isEmpty else {
+            return
+        }
+
+        let hnswIndex = try await loadOrCreateIndex(
+            transaction: transaction,
+            additionalCapacity: stagedVectors.count
+        )
+        try add(stagedVectors, to: hnswIndex)
+        try await saveIndex(hnswIndex, transaction: transaction)
     }
 
     /// HNSW cannot compute index keys without a transaction: the persistent key
@@ -219,17 +273,35 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private func insertVector(
         primaryKey: Tuple,
         vector: [Float],
-        item: Item,
         transaction: any Transaction
     ) async throws {
+        let stagedVector = try await stageVector(
+            primaryKey: primaryKey,
+            vector: vector,
+            transaction: transaction
+        )
+
+        // Load existing graph, add vector, and save back.
+        let hnswIndex = try await loadOrCreateIndex(
+            transaction: transaction,
+            additionalCapacity: 1
+        )
+        try add([stagedVector], to: hnswIndex)
+        try await saveIndex(hnswIndex, transaction: transaction)
+    }
+
+    /// Stage vector storage and label mappings inside the current transaction.
+    private func stageVector(
+        primaryKey: Tuple,
+        vector: [Float],
+        transaction: any Transaction
+    ) async throws -> HNSWStagedVector {
         // Get or create label for this primary key
         let label = try await getOrCreateLabel(for: primaryKey, transaction: transaction)
 
         // Store vector data
         let vectorKey = vectorsSubspace.pack(Tuple(Int64(label)))
-        let tupleElements: [any TupleElement] = vector.map { $0 as any TupleElement }
-        let vectorValue = Tuple(tupleElements).pack()
-        transaction.setValue(vectorValue, for: vectorKey)
+        transaction.setValue(VectorConversion.floatArrayToBytes(vector), for: vectorKey)
 
         // Store bidirectional mapping
         let labelKey = labelsSubspace.pack(primaryKey)
@@ -238,12 +310,24 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
         transaction.setValue(primaryKey.pack(), for: pkKey)
 
-        // Load existing graph, add vector, and save back
-        let hnswIndex = try await loadOrCreateIndex(transaction: transaction)
-        try vector.withUnsafeBufferPointer { buffer in
-            try hnswIndex.add(buffer, label: label)
+        return HNSWStagedVector(label: label, vector: vector)
+    }
+
+    /// Add staged vectors to an in-memory HNSW graph.
+    private func add(
+        _ stagedVectors: [HNSWStagedVector],
+        to hnswIndex: HNSWIndexF32
+    ) throws {
+        try ensureCapacity(
+            hnswIndex,
+            additionalCount: stagedVectors.count
+        )
+
+        for stagedVector in stagedVectors {
+            try stagedVector.vector.withUnsafeBufferPointer { buffer in
+                try hnswIndex.add(buffer, label: stagedVector.label)
+            }
         }
-        try await saveIndex(hnswIndex, transaction: transaction)
     }
 
     /// Delete a vector from the index
@@ -300,54 +384,22 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             throw VectorIndexError.invalidArgument("k must be positive")
         }
 
-        // Load HNSW index
-        let hnswIndex = try await loadOrCreateIndex(transaction: transaction)
+        let snapshot = try await loadSearchSnapshot(transaction: transaction)
+        let results = try snapshot.search(
+            queryVector: queryVector,
+            k: k,
+            efSearch: searchParams.ef
+        )
 
-        // Set search ef
-        hnswIndex.setEfSearch(searchParams.ef)
-
-        // Search
-        let results: [SearchResult]
-        do {
-            results = try queryVector.withUnsafeBufferPointer { buffer in
-                try hnswIndex.search(buffer, k: k)
-            }
-        } catch {
-            // Empty index or other error
-            return []
-        }
-
-        // Convert labels to primary keys (parallel lookup for 10-30× speedup)
         var output: [(primaryKey: [any TupleElement], distance: Double)] = []
         output.reserveCapacity(results.count)
 
-        // Parallel PK lookup using TaskGroup
-        try await withThrowingTaskGroup(of: (Int, Tuple?).self) { group in
-            for (index, result) in results.enumerated() {
-                group.addTask {
-                    let pk = try await self.getPrimaryKeyForLabel(label: result.label, transaction: transaction)
-                    return (index, pk)
-                }
+        for result in results {
+            guard let pk = snapshot.primaryKeysByLabel[result.label] else {
+                continue
             }
-
-            // Collect results
-            var pkResults: [(index: Int, pk: Tuple?, distance: Float)] = []
-            pkResults.reserveCapacity(results.count)
-
-            for try await (index, pk) in group {
-                pkResults.append((index: index, pk: pk, distance: results[index].distance))
-            }
-
-            // Sort by original index to preserve distance ordering
-            pkResults.sort { $0.index < $1.index }
-
-            // Build output
-            for item in pkResults {
-                if let pk = item.pk {
-                    let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
-                    output.append((primaryKey: elements, distance: Double(item.distance)))
-                }
-            }
+            let elements: [any TupleElement] = (0..<pk.count).compactMap { pk[$0] }
+            output.append((primaryKey: elements, distance: Double(result.distance)))
         }
 
         return output
@@ -399,23 +451,20 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
             )
         }
 
+        guard k > 0 else {
+            throw VectorIndexError.invalidArgument("k must be positive")
+        }
+
         // Expand ef for filtered search
         let expandedK = k * acornParams.expansionFactor * 2
         let expandedEf = max(expandedK, searchParams.ef) * acornParams.expansionFactor
 
-        // Load HNSW index
-        let hnswIndex = try await loadOrCreateIndex(transaction: transaction)
-        hnswIndex.setEfSearch(expandedEf)
-
-        // Search with expanded k
-        let results: [SearchResult]
-        do {
-            results = try queryVector.withUnsafeBufferPointer { buffer in
-                try hnswIndex.search(buffer, k: expandedK)
-            }
-        } catch {
-            return []
-        }
+        let snapshot = try await loadSearchSnapshot(transaction: transaction)
+        let results = try snapshot.search(
+            queryVector: queryVector,
+            k: expandedK,
+            efSearch: expandedEf
+        )
 
         // Filter results
         var output: [(primaryKey: [any TupleElement], distance: Double)] = []
@@ -428,7 +477,7 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
                 break
             }
 
-            guard let pk = try await getPrimaryKeyForLabel(label: result.label, transaction: transaction) else {
+            guard let pk = snapshot.primaryKeysByLabel[result.label] else {
                 continue
             }
 
@@ -508,44 +557,26 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return nil
     }
 
-    /// Get primary key for a label
-    private func getPrimaryKeyForLabel(
-        label: UInt64,
-        transaction: any Transaction
-    ) async throws -> Tuple? {
-        let pkKey = primaryKeysSubspace.pack(Tuple(Int64(label)))
-        guard let value = try await transaction.getValue(for: pkKey, snapshot: true) else {
-            return nil
-        }
-
-        let elements = try Tuple.unpack(from: value)
-        return Tuple(elements)
-    }
-
     // MARK: - Index Persistence
 
     /// Load or create HNSW index
     private func loadOrCreateIndex(
-        transaction: any Transaction
+        transaction: any Transaction,
+        additionalCapacity: Int = 0
     ) async throws -> HNSWIndexF32 {
         // Try to load existing index
-        if let graphData = try await transaction.getValue(for: graphKey, snapshot: true) {
-            do {
-                let index = try HNSWIndexF32.load(
-                    from: Data(graphData),
-                    dimensions: dimensions,
-                    metric: metric.toHNSWMetric,
-                    maxElements: 0  // Use saved value
-                )
-                return index
-            } catch {
-                // Corrupted graph, create new
-            }
+        if let graphData = try await loadGraphSnapshotData(transaction: transaction) {
+            let index = try loadPersistedIndex(from: graphData)
+            try ensureCapacity(index, additionalCount: additionalCapacity)
+            return index
         }
 
         // Create new index
         // Estimate max elements based on current data or use default
-        let maxElements = try await estimateMaxElements(transaction: transaction)
+        let maxElements = max(
+            try await estimateMaxElements(transaction: transaction),
+            additionalCapacity
+        )
         let index = try HNSWIndexF32(
             dimensions: dimensions,
             maxElements: maxElements,
@@ -555,13 +586,245 @@ public struct HNSWIndexMaintainer<Item: Persistable>: IndexMaintainer {
         return index
     }
 
+    /// Resize the graph before adding a batch when the saved capacity is full.
+    private func ensureCapacity(
+        _ index: HNSWIndexF32,
+        additionalCount: Int
+    ) throws {
+        guard additionalCount > 0 else {
+            return
+        }
+
+        let requiredCapacity = index.count + additionalCount
+        guard requiredCapacity > index.capacity else {
+            return
+        }
+
+        var nextCapacity = max(index.capacity, 1)
+        while nextCapacity < requiredCapacity {
+            nextCapacity *= 2
+        }
+
+        try index.resize(to: nextCapacity)
+    }
+
     /// Save HNSW index to FDB
     private func saveIndex(
         _ index: HNSWIndexF32,
         transaction: any Transaction
     ) async throws {
         let graphData = try index.serialize()
-        transaction.setValue(Array(graphData), for: graphKey)
+        try await saveGraphSnapshot(graphData, transaction: transaction)
+    }
+
+    /// Load a cached search snapshot or construct one from the persisted graph.
+    private func loadSearchSnapshot(transaction: any Transaction) async throws -> HNSWGraphCache.Snapshot {
+        if let metadataBytes = try await transaction.getValue(for: graphMetadataKey, snapshot: true) {
+            let cacheKey = HNSWGraphCache.Key(
+                subspacePrefix: subspace.prefix,
+                dimensions: dimensions,
+                metric: metric.toHNSWMetric.rawValue,
+                metadata: metadataBytes
+            )
+
+            if let cached = HNSWGraphCache.shared.get(cacheKey) {
+                return cached
+            }
+
+            let graphData = try await loadChunkedGraphSnapshot(metadata: metadataBytes, transaction: transaction)
+            let index = try loadPersistedIndex(from: graphData)
+            let primaryKeysByLabel = try await loadPrimaryKeysByLabel(transaction: transaction)
+            let snapshot = HNSWGraphCache.Snapshot(index: index, primaryKeysByLabel: primaryKeysByLabel)
+            HNSWGraphCache.shared.set(
+                snapshot,
+                for: cacheKey,
+                cost: graphData.count + primaryKeysByLabel.count * 64
+            )
+            return snapshot
+        }
+
+        let index = try await loadOrCreateIndex(transaction: transaction)
+        let primaryKeysByLabel = try await loadPrimaryKeysByLabel(transaction: transaction)
+        return HNSWGraphCache.Snapshot(index: index, primaryKeysByLabel: primaryKeysByLabel)
+    }
+
+    /// Decode a persisted graph snapshot and surface corruption as a typed vector-index error.
+    private func loadPersistedIndex(from graphData: Data) throws -> HNSWIndexF32 {
+        do {
+            return try HNSWIndexF32.load(
+                from: graphData,
+                dimensions: dimensions,
+                metric: metric.toHNSWMetric,
+                maxElements: 0
+            )
+        } catch let error as HNSWError {
+            throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot: \(error.localizedDescription)")
+        } catch {
+            throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot: \(error)")
+        }
+    }
+
+    /// Load a graph snapshot from storage without consulting the process cache.
+    private func loadGraphSnapshotData(transaction: any Transaction) async throws -> Data? {
+        if let metadataBytes = try await transaction.getValue(for: graphMetadataKey, snapshot: true) {
+            return try await loadChunkedGraphSnapshot(metadata: metadataBytes, transaction: transaction)
+        }
+
+        guard let legacyGraphData = try await transaction.getValue(for: graphKey, snapshot: true) else {
+            return nil
+        }
+        return Data(legacyGraphData)
+    }
+
+    /// Save a graph snapshot as bounded chunks so backend value-size limits do not corrupt large graphs.
+    private func saveGraphSnapshot(
+        _ graphData: Data,
+        transaction: any Transaction
+    ) async throws {
+        let chunkSize = hnswGraphSnapshotChunkSize
+        let byteCount = graphData.count
+        let chunkCount = byteCount == 0
+            ? 0
+            : (byteCount + chunkSize - 1) / chunkSize
+
+        let range = graphChunksSubspace.range()
+        transaction.clear(key: graphKey)
+        transaction.clearRange(beginKey: range.begin, endKey: range.end)
+
+        for chunkIndex in 0..<chunkCount {
+            let start = chunkIndex * chunkSize
+            let end = min(start + chunkSize, byteCount)
+            let chunkKey = graphChunksSubspace.pack(Tuple(Int64(chunkIndex)))
+            var chunk = [UInt8](repeating: 0, count: end - start)
+            chunk.withUnsafeMutableBytes { buffer in
+                _ = graphData.copyBytes(to: buffer, from: start..<end)
+            }
+            transaction.setValue(chunk, for: chunkKey)
+        }
+
+        let revision = try await nextGraphSnapshotRevision(transaction: transaction)
+        let metadata = Tuple(
+            hnswGraphSnapshotVersion,
+            Int64(byteCount),
+            Int64(chunkSize),
+            Int64(chunkCount),
+            revision
+        )
+        transaction.setValue(metadata.pack(), for: graphMetadataKey)
+    }
+
+    /// Decode chunk metadata and reassemble a graph snapshot.
+    private func loadChunkedGraphSnapshot(
+        metadata: [UInt8],
+        transaction: any Transaction
+    ) async throws -> Data {
+        let decoded = try decodeGraphMetadata(metadata)
+
+        let byteCount = decoded.byteCount
+        let chunkSize = decoded.chunkSize
+        let chunkCount = decoded.chunkCount
+        let expectedChunkCount = byteCount == 0 ? 0 : (byteCount + chunkSize - 1) / chunkSize
+        guard chunkCount == expectedChunkCount else {
+            throw VectorIndexError.invalidStructure("HNSW graph snapshot chunk count does not match byte count")
+        }
+
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(byteCount)
+
+        for chunkIndex in 0..<chunkCount {
+            let chunkKey = graphChunksSubspace.pack(Tuple(Int64(chunkIndex)))
+            guard let chunk = try await transaction.getValue(for: chunkKey, snapshot: true) else {
+                throw VectorIndexError.invalidStructure("Missing HNSW graph snapshot chunk \(chunkIndex)")
+            }
+            guard chunk.count <= chunkSize else {
+                throw VectorIndexError.invalidStructure("HNSW graph snapshot chunk \(chunkIndex) exceeds chunk size")
+            }
+            bytes.append(contentsOf: chunk)
+        }
+
+        guard bytes.count == byteCount else {
+            throw VectorIndexError.invalidStructure("HNSW graph snapshot byte count mismatch")
+        }
+        return Data(bytes)
+    }
+
+    /// Decode persisted graph metadata. Version 1 is accepted for read compatibility.
+    private func decodeGraphMetadata(_ metadata: [UInt8]) throws -> HNSWGraphMetadata {
+        let tuple = try Tuple.unpack(from: metadata)
+        guard tuple.count == 4 || tuple.count == 5,
+              let version = tuple[0] as? Int64,
+              let byteCountValue = tuple[1] as? Int64,
+              let chunkSizeValue = tuple[2] as? Int64,
+              let chunkCountValue = tuple[3] as? Int64
+        else {
+            throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot metadata")
+        }
+
+        guard version == 1 || version == hnswGraphSnapshotVersion else {
+            throw VectorIndexError.invalidStructure("Unsupported HNSW graph snapshot version \(version)")
+        }
+
+        let revisionValue: Int64
+        if tuple.count == 5 {
+            guard let value = tuple[4] as? Int64 else {
+                throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot revision")
+            }
+            revisionValue = value
+        } else {
+            revisionValue = 0
+        }
+
+        guard byteCountValue >= 0,
+              chunkSizeValue > 0,
+              chunkCountValue >= 0,
+              byteCountValue <= Int64(Int.max),
+              chunkSizeValue <= Int64(Int.max),
+              chunkCountValue <= Int64(Int.max)
+        else {
+            throw VectorIndexError.invalidStructure("Invalid HNSW graph snapshot chunk dimensions")
+        }
+
+        return HNSWGraphMetadata(
+            version: version,
+            byteCount: Int(byteCountValue),
+            chunkSize: Int(chunkSizeValue),
+            chunkCount: Int(chunkCountValue),
+            revision: revisionValue
+        )
+    }
+
+    /// Allocate a monotonic graph snapshot revision for cache invalidation.
+    private func nextGraphSnapshotRevision(transaction: any Transaction) async throws -> Int64 {
+        guard let currentMetadata = try await transaction.getValue(for: graphMetadataKey, snapshot: false) else {
+            return 1
+        }
+
+        let current = try decodeGraphMetadata(currentMetadata)
+        return current.revision + 1
+    }
+
+    /// Load label-to-primary-key mappings in one range scan for search result materialization.
+    private func loadPrimaryKeysByLabel(transaction: any Transaction) async throws -> [UInt64: Tuple] {
+        let (begin, end) = primaryKeysSubspace.range()
+        let entries = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            snapshot: true
+        )
+
+        var primaryKeysByLabel: [UInt64: Tuple] = [:]
+        primaryKeysByLabel.reserveCapacity(entries.count)
+
+        for (key, value) in entries {
+            let labelTuple = try primaryKeysSubspace.unpack(key)
+            guard let labelValue = labelTuple[0] as? Int64 else {
+                throw VectorIndexError.invalidStructure("Invalid HNSW primary-key label")
+            }
+            let primaryKey = try Tuple.unpack(from: value)
+            primaryKeysByLabel[UInt64(labelValue)] = Tuple(primaryKey)
+        }
+
+        return primaryKeysByLabel
     }
 
     /// Estimate maximum elements for index sizing

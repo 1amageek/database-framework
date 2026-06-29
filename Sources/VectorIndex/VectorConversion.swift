@@ -110,12 +110,26 @@ public struct VectorConversion: Sendable {
     /// - Parameter floats: Float array
     /// - Returns: Byte array
     public static func floatArrayToBytes(_ floats: [Float]) -> [UInt8] {
-        var bytes: [UInt8] = []
-        bytes.reserveCapacity(floats.count * 4)
-        for f in floats {
-            var value = f.bitPattern.littleEndian
-            withUnsafeBytes(of: &value) { bytes.append(contentsOf: $0) }
+        var bytes = [UInt8](repeating: 0, count: floats.count * MemoryLayout<Float>.stride)
+        guard !floats.isEmpty else {
+            return bytes
         }
+
+#if _endian(little)
+        bytes.withUnsafeMutableBytes { output in
+            floats.withUnsafeBufferPointer { input in
+                output.copyMemory(from: UnsafeRawBufferPointer(input))
+            }
+        }
+#else
+        for index in floats.indices {
+            var value = floats[index].bitPattern.littleEndian
+            withUnsafeBytes(of: &value) { source in
+                let offset = index * MemoryLayout<Float>.stride
+                bytes.replaceSubrange(offset..<(offset + MemoryLayout<Float>.stride), with: source)
+            }
+        }
+#endif
         return bytes
     }
 
@@ -124,15 +138,45 @@ public struct VectorConversion: Sendable {
     /// - Parameter bytes: Byte array
     /// - Returns: Float array
     public static func bytesToFloatArray(_ bytes: [UInt8]) -> [Float] {
-        var floats: [Float] = []
-        floats.reserveCapacity(bytes.count / 4)
-        for i in stride(from: 0, to: bytes.count - 3, by: 4) {
-            let bits = bytes[i..<i+4].withUnsafeBytes {
-                UInt32(littleEndian: $0.load(as: UInt32.self))
-            }
-            floats.append(Float(bitPattern: bits))
+        let count = bytes.count / MemoryLayout<Float>.stride
+        var floats = [Float](repeating: 0, count: count)
+        guard count > 0 else {
+            return floats
         }
+
+#if _endian(little)
+        floats.withUnsafeMutableBytes { output in
+            bytes.withUnsafeBytes { input in
+                let source = UnsafeRawBufferPointer(
+                    start: input.baseAddress,
+                    count: count * MemoryLayout<Float>.stride
+                )
+                output.copyMemory(from: source)
+            }
+        }
+#else
+        for index in 0..<count {
+            let offset = index * MemoryLayout<Float>.stride
+            let bits = UInt32(bytes[offset])
+                | (UInt32(bytes[offset + 1]) << 8)
+                | (UInt32(bytes[offset + 2]) << 16)
+                | (UInt32(bytes[offset + 3]) << 24)
+            floats[index] = Float(bitPattern: bits)
+        }
+#endif
         return floats
+    }
+
+    /// Decode a Float array from a validated little-endian binary payload.
+    ///
+    /// Maintainers should use this method when reading persisted vector payloads.
+    public static func decodeFloatArray(_ bytes: [UInt8], expectedCount: Int) throws -> [Float] {
+        guard bytes.count == expectedCount * 4 else {
+            throw VectorIndexError.invalidStructure(
+                "Vector payload length \(bytes.count) does not match expected dimension \(expectedCount)"
+            )
+        }
+        return bytesToFloatArray(bytes)
     }
 
     /// Convert UInt64 to bytes (little-endian)
@@ -143,9 +187,14 @@ public struct VectorConversion: Sendable {
     /// Convert bytes to UInt64 (little-endian)
     public static func bytesToUInt64(_ bytes: [UInt8]) -> UInt64 {
         guard bytes.count == 8 else { return 0 }
-        return bytes.withUnsafeBytes {
-            UInt64(littleEndian: $0.load(as: UInt64.self))
-        }
+        return UInt64(bytes[0])
+            | (UInt64(bytes[1]) << 8)
+            | (UInt64(bytes[2]) << 16)
+            | (UInt64(bytes[3]) << 24)
+            | (UInt64(bytes[4]) << 32)
+            | (UInt64(bytes[5]) << 40)
+            | (UInt64(bytes[6]) << 48)
+            | (UInt64(bytes[7]) << 56)
     }
 
     /// Convert Int64 to bytes (little-endian)
@@ -156,9 +205,15 @@ public struct VectorConversion: Sendable {
     /// Convert bytes to Int64 (little-endian)
     public static func bytesToInt64(_ bytes: [UInt8]) -> Int64 {
         guard bytes.count >= 8 else { return 0 }
-        return bytes.withUnsafeBytes {
-            Int64(littleEndian: $0.load(as: Int64.self))
-        }
+        let value = UInt64(bytes[0])
+            | (UInt64(bytes[1]) << 8)
+            | (UInt64(bytes[2]) << 16)
+            | (UInt64(bytes[3]) << 24)
+            | (UInt64(bytes[4]) << 32)
+            | (UInt64(bytes[5]) << 40)
+            | (UInt64(bytes[6]) << 48)
+            | (UInt64(bytes[7]) << 56)
+        return Int64(bitPattern: value)
     }
 }
 
@@ -172,21 +227,16 @@ extension VectorConversion {
     public static func cosineDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        var dotProduct = 0.0
-        var norm1Squared = 0.0
-        var norm2Squared = 0.0
-        for index in 0..<v1.count {
-            let lhs = Double(v1[index])
-            let rhs = Double(v2[index])
-            dotProduct += lhs * rhs
-            norm1Squared += lhs * lhs
-            norm2Squared += rhs * rhs
+        let values = v1.withUnsafeBufferPointer { lhs in
+            v2.withUnsafeBufferPointer { rhs in
+                dotAndNorms(lhs, rhs)
+            }
         }
 
-        let norm1 = sqrt(norm1Squared)
-        let norm2 = sqrt(norm2Squared)
+        let norm1 = sqrt(Double(values.lhsNormSquared))
+        let norm2 = sqrt(Double(values.rhsNormSquared))
         guard norm1 > 0 && norm2 > 0 else { return 2.0 }
-        let cosineSimilarity = dotProduct / (norm1 * norm2)
+        let cosineSimilarity = Double(values.dotProduct) / (norm1 * norm2)
         return 1.0 - cosineSimilarity
     }
 
@@ -194,12 +244,12 @@ extension VectorConversion {
     public static func euclideanDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        var sumSquares = 0.0
-        for index in 0..<v1.count {
-            let diff = Double(v1[index]) - Double(v2[index])
-            sumSquares += diff * diff
+        let sumSquares = v1.withUnsafeBufferPointer { lhs in
+            v2.withUnsafeBufferPointer { rhs in
+                squaredDistance(lhs, rhs)
+            }
         }
-        return sqrt(sumSquares)
+        return sqrt(Double(sumSquares))
     }
 
     /// Calculate Euclidean distance squared (faster than sqrt for comparisons)
@@ -208,34 +258,127 @@ extension VectorConversion {
     public static func euclideanDistanceSquared(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        var sum: Double = 0
-        for i in 0..<v1.count {
-            let diff = Double(v1[i]) - Double(v2[i])
-            sum += diff * diff
+        let sum = v1.withUnsafeBufferPointer { lhs in
+            v2.withUnsafeBufferPointer { rhs in
+                squaredDistance(lhs, rhs)
+            }
         }
-        return sum
+        return Double(sum)
     }
 
     /// Calculate Euclidean distance squared (Float version for performance)
     public static func euclideanDistanceSquaredFloat(_ v1: [Float], _ v2: [Float]) -> Float {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        var sum: Float = 0
-        for i in 0..<v1.count {
-            let diff = v1[i] - v2[i]
-            sum += diff * diff
+        return v1.withUnsafeBufferPointer { lhs in
+            v2.withUnsafeBufferPointer { rhs in
+                squaredDistance(lhs, rhs)
+            }
         }
-        return sum
     }
 
     /// Calculate dot product distance (negative dot product for min-heap)
     public static func dotProductDistance(_ v1: [Float], _ v2: [Float]) -> Double {
         precondition(v1.count == v2.count, "Vector dimensions must match")
 
-        var dotProduct = 0.0
-        for index in 0..<v1.count {
-            dotProduct += Double(v1[index]) * Double(v2[index])
+        let dotProduct = v1.withUnsafeBufferPointer { lhs in
+            v2.withUnsafeBufferPointer { rhs in
+                dot(lhs, rhs)
+            }
         }
-        return -dotProduct  // Negate for min-heap (higher similarity = lower distance)
+        return -Double(dotProduct)  // Negate for min-heap (higher similarity = lower distance)
+    }
+
+    @inline(__always)
+    private static func dot(
+        _ lhs: UnsafeBufferPointer<Float>,
+        _ rhs: UnsafeBufferPointer<Float>
+    ) -> Float {
+        var index = 0
+        var accumulator = SIMD8<Float>.zero
+        let simdEnd = lhs.count - (lhs.count % SIMD8<Float>.scalarCount)
+
+        while index < simdEnd {
+            let left = loadSIMD8(lhs, at: index)
+            let right = loadSIMD8(rhs, at: index)
+            accumulator += left * right
+            index += SIMD8<Float>.scalarCount
+        }
+
+        var result = accumulator.sum()
+        while index < lhs.count {
+            result += lhs[index] * rhs[index]
+            index += 1
+        }
+        return result
+    }
+
+    @inline(__always)
+    private static func squaredDistance(
+        _ lhs: UnsafeBufferPointer<Float>,
+        _ rhs: UnsafeBufferPointer<Float>
+    ) -> Float {
+        var index = 0
+        var accumulator = SIMD8<Float>.zero
+        let simdEnd = lhs.count - (lhs.count % SIMD8<Float>.scalarCount)
+
+        while index < simdEnd {
+            let left = loadSIMD8(lhs, at: index)
+            let right = loadSIMD8(rhs, at: index)
+            let diff = left - right
+            accumulator += diff * diff
+            index += SIMD8<Float>.scalarCount
+        }
+
+        var result = accumulator.sum()
+        while index < lhs.count {
+            let diff = lhs[index] - rhs[index]
+            result += diff * diff
+            index += 1
+        }
+        return result
+    }
+
+    @inline(__always)
+    private static func dotAndNorms(
+        _ lhs: UnsafeBufferPointer<Float>,
+        _ rhs: UnsafeBufferPointer<Float>
+    ) -> (dotProduct: Float, lhsNormSquared: Float, rhsNormSquared: Float) {
+        var index = 0
+        var dotAccumulator = SIMD8<Float>.zero
+        var lhsAccumulator = SIMD8<Float>.zero
+        var rhsAccumulator = SIMD8<Float>.zero
+        let simdEnd = lhs.count - (lhs.count % SIMD8<Float>.scalarCount)
+
+        while index < simdEnd {
+            let left = loadSIMD8(lhs, at: index)
+            let right = loadSIMD8(rhs, at: index)
+            dotAccumulator += left * right
+            lhsAccumulator += left * left
+            rhsAccumulator += right * right
+            index += SIMD8<Float>.scalarCount
+        }
+
+        var dotProduct = dotAccumulator.sum()
+        var lhsNormSquared = lhsAccumulator.sum()
+        var rhsNormSquared = rhsAccumulator.sum()
+        while index < lhs.count {
+            let left = lhs[index]
+            let right = rhs[index]
+            dotProduct += left * right
+            lhsNormSquared += left * left
+            rhsNormSquared += right * right
+            index += 1
+        }
+        return (dotProduct, lhsNormSquared, rhsNormSquared)
+    }
+
+    @inline(__always)
+    private static func loadSIMD8(
+        _ pointer: UnsafeBufferPointer<Float>,
+        at index: Int
+    ) -> SIMD8<Float> {
+        UnsafeRawPointer(pointer.baseAddress!.advanced(by: index))
+            .loadUnaligned(as: SIMD8<Float>.self)
     }
 }

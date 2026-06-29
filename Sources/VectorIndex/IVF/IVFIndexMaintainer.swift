@@ -19,9 +19,9 @@ import Vector
 ///
 /// **Storage Layout**:
 /// ```
-/// [subspace]/centroids = Tuple([centroid1], [centroid2], ...)
+/// [subspace]/centroids/[clusterId] = Float32 binary payload, little-endian
 /// [subspace]/metadata = JSON { nlist, dimensions, trained, vectorCount }
-/// [subspace]/lists/[clusterId]/[primaryKey] = Tuple(vector...)
+/// [subspace]/lists/[clusterId]/[primaryKey] = Float32 binary payload, little-endian
 /// [subspace]/assignments/[primaryKey] = Int64(clusterId)
 /// ```
 ///
@@ -237,13 +237,14 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             let sequence = try await transaction.collectRange(from: .firstGreaterOrEqual(begin), to: .firstGreaterOrEqual(end), snapshot: true)
 
             for (key, value) in sequence {
-                // Decode primary key
-                guard let pkTuple = try? listSubspace.unpack(key) else { continue }
+            let pkTuple: Tuple
+            do {
+                pkTuple = try listSubspace.unpack(key)
+            } catch {
+                throw VectorIndexError.invalidStructure("Invalid IVF list primary key")
+            }
 
-                // Decode vector
-                guard let vectorElements = try? Tuple.unpack(from: value) else { continue }
-                let vector = tupleToVector(vectorElements)
-                guard vector.count == dimensions else { continue }
+            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
 
                 // Calculate distance
                 let distance = calculateDistance(queryVector, vector)
@@ -279,9 +280,17 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return // Not in any cluster
         }
 
-        guard let assignmentTuple = try? Tuple.unpack(from: assignmentData),
-              let clusterId = assignmentTuple[0] as? Int64 else {
-            return
+        let assignmentElements: [any TupleElement]
+        do {
+            assignmentElements = try Tuple.unpack(from: assignmentData)
+        } catch {
+            throw VectorIndexError.invalidStructure("Invalid IVF assignment payload")
+        }
+
+        guard let clusterId = assignmentElements.first as? Int64,
+              clusterId >= 0
+        else {
+            throw VectorIndexError.invalidStructure("Invalid IVF assignment cluster id")
         }
 
         // Remove from inverted list
@@ -315,7 +324,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Add to inverted list
         let listSubspace = subspace.subspace(SubspaceKey.lists.rawValue)
         let listKey = listSubspace.subspace(clusterId).pack(id)
-        let vectorValue = vectorToTuple(vector).pack()
+        let vectorValue = VectorConversion.floatArrayToBytes(vector)
         transaction.setValue(vectorValue, for: listKey)
 
         // Store assignment
@@ -352,7 +361,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
         // Store each centroid with its index
         for (i, centroid) in centroids.enumerated() {
             let key = centroidSubspace.pack(Tuple([i]))
-            let value = vectorToTuple(centroid).pack()
+            let value = VectorConversion.floatArrayToBytes(centroid)
             transaction.setValue(value, for: key)
         }
     }
@@ -367,8 +376,7 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         var centroids: [[Float]] = []
         for (_, value) in sequence {
-            guard let elements = try? Tuple.unpack(from: value) else { continue }
-            let vector = tupleToVector(elements)
+            let vector = try VectorConversion.decodeFloatArray(value, expectedCount: dimensions)
             centroids.append(vector)
         }
 
@@ -395,17 +403,11 @@ public struct IVFIndexMaintainer<Item: Persistable>: IndexMaintainer {
             return nil
         }
         let decoder = JSONDecoder()
-        return try? decoder.decode(IVFMetadata.self, from: Data(data))
-    }
-
-    /// Convert vector to tuple using VectorConversion
-    private func vectorToTuple(_ vector: [Float]) -> Tuple {
-        VectorConversion.vectorToTuple(vector)
-    }
-
-    /// Convert tuple elements to vector using VectorConversion
-    private func tupleToVector(_ elements: [any TupleElement]) -> [Float] {
-        VectorConversion.tupleToVector(elements)
+        do {
+            return try decoder.decode(IVFMetadata.self, from: Data(data))
+        } catch {
+            throw VectorIndexError.invalidStructure("Invalid IVF metadata")
+        }
     }
 
     /// Calculate distance between vectors using VectorConversion utilities
