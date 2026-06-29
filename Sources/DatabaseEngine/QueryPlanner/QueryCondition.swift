@@ -1,4 +1,3 @@
-#if !os(WASI)
 // QueryCondition.swift
 // QueryPlanner - Normalized query condition representation
 
@@ -199,5 +198,3 @@ extension QueryCondition: CustomStringConvertible {
         }
     }
 }
-
-#endif

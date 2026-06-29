@@ -92,7 +92,7 @@ struct BitmapTestUser: Persistable {
 // MARK: - Test Context
 
 private struct BitmapTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace

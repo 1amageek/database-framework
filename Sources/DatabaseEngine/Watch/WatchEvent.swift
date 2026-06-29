@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Core
 
@@ -59,5 +58,3 @@ extension WatchError: LocalizedError {
         }
     }
 }
-
-#endif

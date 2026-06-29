@@ -1,4 +1,3 @@
-#if !os(WASI)
 // QueryTypes.swift
 // DatabaseEngine - Common types for queries
 
@@ -209,5 +208,3 @@ public struct AggregateResult<T: Persistable>: Sendable {
         groupKey[name]?.doubleValue
     }
 }
-
-#endif

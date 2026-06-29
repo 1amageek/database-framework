@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SynchronizedSession.swift
 // DatabaseEngine - Synchronized session for coordinating distributed work
 //
@@ -548,5 +547,3 @@ public final class SessionLeaderElection: Sendable {
         }
     }
 }
-
-#endif

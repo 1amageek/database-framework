@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PlanOptimizer.swift
 // QueryPlanner - Plan optimization and selection
 
@@ -407,5 +406,3 @@ public struct SimplifyFilterRule<T: Persistable>: OptimizationRule {
         }
     }
 }
-
-#endif

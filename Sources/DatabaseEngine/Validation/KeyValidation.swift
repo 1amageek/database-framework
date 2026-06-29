@@ -1,4 +1,3 @@
-#if !os(WASI)
 // KeyValidation.swift
 // FDBIndexing - Key and value size validation for FoundationDB limits
 
@@ -77,5 +76,3 @@ public func validatedValue(_ value: Bytes) throws -> Bytes {
     try validateValueSize(value)
     return value
 }
-
-#endif

@@ -1,11 +1,12 @@
-#if !os(WASI)
 // IndexSearcher.swift
 // QueryPlanner - Index search abstraction
 
 import Foundation
 import StorageKit
 import Core
+#if canImport(Accelerate)
 import Accelerate
+#endif
 
 /// Protocol for index-specific search operations
 ///
@@ -894,7 +895,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
 
 // MARK: - Vector Index Searcher
 
-/// Searcher for vector similarity indexes (flat scan with SIMD optimization)
+/// Searcher for vector similarity indexes (flat scan with platform-optimized distance calculation)
 ///
 /// **Index Structure** (Flat):
 /// ```
@@ -903,7 +904,7 @@ public struct FullTextIndexSearcher: IndexSearcher {
 /// ```
 ///
 /// **Optimizations**:
-/// - SIMD distance calculation using Accelerate/vDSP
+/// - Accelerate/vDSP distance calculation when available, scalar fallback otherwise
 /// - Max-heap for top-K maintenance (O(n log k) instead of O(n log n))
 /// - Early termination when sufficient candidates found
 ///
@@ -1029,7 +1030,7 @@ public struct VectorIndexSearcher: IndexSearcher {
         return vector
     }
 
-    /// Calculate distance between two vectors using SIMD (Accelerate framework)
+    /// Calculate distance between two vectors using the best available platform implementation.
     private func calculateDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
         switch metric {
         case .euclidean:
@@ -1041,8 +1042,9 @@ public struct VectorIndexSearcher: IndexSearcher {
         }
     }
 
-    /// SIMD-optimized Euclidean distance using vDSP
+    /// Euclidean distance using vDSP when available.
     private func euclideanDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
+#if canImport(Accelerate)
         let count = vDSP_Length(min(a.count, b.count))
         guard count > 0 else { return 0 }
 
@@ -1055,10 +1057,22 @@ public struct VectorIndexSearcher: IndexSearcher {
         vDSP_svesq(diff, 1, &sumOfSquares, count)
 
         return Double(sqrtf(sumOfSquares))
+#else
+        let count = min(a.count, b.count)
+        guard count > 0 else { return 0 }
+
+        var sumOfSquares: Float = 0
+        for index in 0..<count {
+            let diff = a[index] - b[index]
+            sumOfSquares += diff * diff
+        }
+        return Double(sumOfSquares.squareRoot())
+#endif
     }
 
-    /// SIMD-optimized Cosine distance using vDSP
+    /// Cosine distance using vDSP when available.
     private func cosineDistanceSIMD(_ a: [Float], _ b: [Float]) -> Double {
+#if canImport(Accelerate)
         let count = vDSP_Length(min(a.count, b.count))
         guard count > 0 else { return 1.0 }
 
@@ -1077,10 +1091,33 @@ public struct VectorIndexSearcher: IndexSearcher {
 
         let similarity = dotProd / denom
         return Double(1.0 - similarity)
+#else
+        let count = min(a.count, b.count)
+        guard count > 0 else { return 1.0 }
+
+        var dotProduct: Float = 0
+        var normASquared: Float = 0
+        var normBSquared: Float = 0
+
+        for index in 0..<count {
+            let lhs = a[index]
+            let rhs = b[index]
+            dotProduct += lhs * rhs
+            normASquared += lhs * lhs
+            normBSquared += rhs * rhs
+        }
+
+        let denominator = normASquared.squareRoot() * normBSquared.squareRoot()
+        guard denominator != 0 else { return 1.0 }
+
+        let similarity = dotProduct / denominator
+        return Double(1.0 - similarity)
+#endif
     }
 
-    /// SIMD-optimized dot product using vDSP
+    /// Dot product using vDSP when available.
     private func dotProductSIMD(_ a: [Float], _ b: [Float]) -> Double {
+#if canImport(Accelerate)
         let count = vDSP_Length(min(a.count, b.count))
         guard count > 0 else { return 0 }
 
@@ -1088,6 +1125,16 @@ public struct VectorIndexSearcher: IndexSearcher {
         vDSP_dotpr(a, 1, b, 1, &result, count)
 
         return Double(result)
+#else
+        let count = min(a.count, b.count)
+        guard count > 0 else { return 0 }
+
+        var result: Float = 0
+        for index in 0..<count {
+            result += a[index] * b[index]
+        }
+        return Double(result)
+#endif
     }
 
     /// Entry for max-heap storage
@@ -1378,5 +1425,3 @@ public enum VectorSearchError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

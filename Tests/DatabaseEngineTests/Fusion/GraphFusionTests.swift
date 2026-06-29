@@ -164,7 +164,7 @@ struct GraphTestFollow: Persistable {
 // MARK: - Test Context
 
 private struct GraphTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let itemsSubspace: Subspace

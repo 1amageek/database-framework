@@ -112,7 +112,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         id: Tuple,
         transaction: any Transaction
     ) async throws {
-        guard !isValueNull(in: item) else { return }
+        guard try !isValueNull(in: item) else { return }
 
         let groupingValues = try evaluateGroupingFields(from: item)
         let key = try buildGroupingKey(groupingValues)
@@ -123,7 +123,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
         for item: Item,
         id: Tuple
     ) async throws -> [Bytes] {
-        guard !isValueNull(in: item) else { return [] }
+        guard try !isValueNull(in: item) else { return [] }
 
         let groupingValues = try evaluateGroupingFields(from: item)
         return [try buildGroupingKey(groupingValues)]
@@ -159,7 +159,7 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
 
         let groupingValues = try evaluateGroupingFields(from: item)
         let groupingKey = try buildGroupingKey(groupingValues)
-        let isNull = isValueNull(in: item)
+        let isNull = try isValueNull(in: item)
 
         return NullCheckData(groupingKey: groupingKey, isNull: isNull)
     }
@@ -191,15 +191,12 @@ public struct CountNotNullIndexMaintainer<Item: Persistable>: CountAggregationMa
     ///
     /// - Parameter item: The item to check
     /// - Returns: `true` if value field is null, `false` otherwise
-    private func isValueNull(in item: Item) -> Bool {
+    private func isValueNull(in item: Item) throws -> Bool {
         do {
             _ = try DataAccess.extractField(from: item, keyPath: valueFieldName)
             return false  // Value exists (not null)
         } catch DataAccessError.nilValueCannotBeIndexed {
             return true   // Value is null
-        } catch {
-            // Field not found or other errors - treat as null
-            return true
         }
     }
 }

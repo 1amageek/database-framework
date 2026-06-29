@@ -5,6 +5,71 @@ import Darwin
 import Glibc
 #endif
 
+#if os(WASI)
+/// Manages a local FoundationDB cluster under .database/ directory.
+public enum LocalCluster {
+    public static let directoryName = ".database"
+    public static let defaultPort: UInt16 = 4690
+
+    public static func findClusterFile(from startPath: String) -> String? {
+        nil
+    }
+
+    @discardableResult
+    public static func create(at basePath: String, port: UInt16 = defaultPort) throws -> String {
+        throw CLIError.unsupportedPlatform("Local FoundationDB cluster management is unavailable on WASI")
+    }
+
+    @discardableResult
+    public static func startServer(
+        clusterFile: String,
+        dataDir: String,
+        logDir: String,
+        port: UInt16 = defaultPort
+    ) throws -> Int32 {
+        throw CLIError.unsupportedPlatform("Local FoundationDB server startup is unavailable on WASI")
+    }
+
+    public static func stopServer(at basePath: String) throws {
+        throw CLIError.unsupportedPlatform("Local FoundationDB server shutdown is unavailable on WASI")
+    }
+
+    public static func checkPortAvailable(_ port: UInt16) -> Bool {
+        false
+    }
+
+    public static func isProcessAlive(_ pid: Int32) -> Bool {
+        false
+    }
+
+    public static func readPID(fromDBDir dbDir: String) -> Int32? {
+        nil
+    }
+
+    public static func removePIDFile(fromDBDir dbDir: String) {}
+
+    public static func parsePort(fromClusterFile path: String) -> UInt16? {
+        nil
+    }
+
+    public static func configureDatabase(clusterFile: String) throws {
+        throw CLIError.unsupportedPlatform("FoundationDB CLI configuration is unavailable on WASI")
+    }
+
+    public static func findFDBServer() -> String? {
+        nil
+    }
+
+    public static func findFDBCli() -> String? {
+        nil
+    }
+
+    public static func waitForServer(clusterFile: String, timeoutSeconds: Int = 10) -> Bool {
+        false
+    }
+}
+#else
+
 /// Manages a local FoundationDB cluster under .database/ directory.
 public enum LocalCluster {
 
@@ -174,7 +239,11 @@ public enum LocalCluster {
     /// Removes the PID file if present.
     public static func removePIDFile(fromDBDir dbDir: String) {
         let pidFile = (dbDir as NSString).appendingPathComponent("fdb.pid")
-        try? FileManager.default.removeItem(atPath: pidFile)
+        do {
+            try FileManager.default.removeItem(atPath: pidFile)
+        } catch {
+            return
+        }
     }
 
     // MARK: - Cluster File Parsing
@@ -314,3 +383,4 @@ public enum LocalCluster {
         return nil
     }
 }
+#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Core
 import StorageKit
@@ -59,5 +58,3 @@ public final class WatchManager: Sendable {
         }
     }
 }
-
-#endif

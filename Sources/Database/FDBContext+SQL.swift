@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FDBContext+SQL.swift
 // Database - FDBContext extension for executing SQL strings with SPARQL() function support
 
@@ -88,5 +87,3 @@ public enum SQLExecutionError: Error, Sendable, CustomStringConvertible {
         }
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TransactionContextProtocol.swift
 // DatabaseEngine - Protocol for transactional operations
 
@@ -133,5 +132,3 @@ public extension TransactionContextProtocol {
         try await getMany(type, ids: ids, snapshot: false)
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // IndexFromIndexBuilder.swift
 // DatabaseEngine - Build index from existing index
 //
@@ -280,7 +279,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
-            let batchStart = DispatchTime.now()
+            let batchStart = MonotonicClock.now()
 
             do {
                 // Capture current rangeSet state before transaction
@@ -349,7 +348,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                     rangeSet.markRangeComplete(rangeIndex: bounds.rangeIndex)
                 }
 
-                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
+                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
                 throttler.recordSuccess(itemCount: itemsInBatch, durationNs: batchDuration)
                 batchDurationTimer.recordNanoseconds(Int64(batchDuration))
                 batchesProcessedCounter.increment()
@@ -387,7 +386,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
             let batchSize = throttler.currentBatchSize
-            let batchStart = DispatchTime.now()
+            let batchStart = MonotonicClock.now()
 
             do {
                 // Capture current rangeSet state before transaction
@@ -413,6 +412,9 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         blobsSubspace: self.blobsSubspace
                     )
 
+                    var batchEntries: [(item: Item, id: Tuple)] = []
+                    batchEntries.reserveCapacity(batchSize)
+
                     for (key, _) in sequence {
                         // Extract primary key from source index
                         guard let pk = try self.extractPrimaryKey(from: key, sourceSubspace: sourceSubspace) else {
@@ -430,8 +432,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                         // Deserialize item from ItemEnvelope-unwrapped data
                         let item: Item = try DataAccess.deserialize(itemData)
 
-                        // Build target index entry using maintainer
-                        try await self.targetMaintainer.scanItem(item, id: pk, transaction: transaction)
+                        batchEntries.append((item: item, id: pk))
 
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
@@ -441,6 +442,12 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                             break
                         }
                     }
+
+                    // Build target index entries using the batch hook.
+                    try await self.targetMaintainer.scanItems(
+                        batchEntries,
+                        transaction: transaction
+                    )
 
                     // Save progress atomically with work
                     var updatedRangeSet = currentRangeSet
@@ -474,7 +481,7 @@ public final class IndexFromIndexBuilder<Item: Persistable>: Sendable {
                 // Update metrics outside transaction
                 self.dataFetchesCounter.increment(by: dataFetches)
 
-                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
+                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStart.uptimeNanoseconds
                 throttler.recordSuccess(itemCount: itemsInBatch, durationNs: batchDuration)
                 batchDurationTimer.recordNanoseconds(Int64(batchDuration))
                 batchesProcessedCounter.increment()
@@ -758,5 +765,3 @@ public enum IndexFromIndexError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
-
-#endif

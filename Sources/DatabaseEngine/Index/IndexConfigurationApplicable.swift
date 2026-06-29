@@ -1,4 +1,3 @@
-#if !os(WASI)
 // IndexConfigurationApplicable.swift
 // FDBIndexing - Protocols for applying IndexConfiguration to IndexMaintainer
 //
@@ -118,5 +117,3 @@ extension MultiIndexConfigurationApplicable {
         Configuration.kindIdentifier
     }
 }
-
-#endif

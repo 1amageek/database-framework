@@ -9,6 +9,17 @@ import Core
 import DatabaseEngine
 import StorageKit
 
+public enum TimeWindowLeaderboardIndexError: Error, Sendable, CustomStringConvertible {
+    case corruptedPosition(indexName: String, primaryKey: String)
+
+    public var description: String {
+        switch self {
+        case .corruptedPosition(let indexName, let primaryKey):
+            return "Time-window leaderboard '\(indexName)' has corrupted position metadata for primary key \(primaryKey)"
+        }
+    }
+}
+
 /// Maintainer for TIME_WINDOW_LEADERBOARD indexes with compile-time type safety
 ///
 /// **Type-Safe Design**:
@@ -48,6 +59,12 @@ import StorageKit
 /// Windows are identified by `floor(timestamp / windowDuration)`.
 /// For daily windows, this gives sequential day numbers since epoch.
 public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Comparable & Numeric & Codable & Sendable>: SubspaceIndexMaintainer {
+    private struct PositionRecord {
+        let windowId: Int64
+        let score: Int64
+        let grouping: [any TupleElement]
+    }
+
     // MARK: - Properties
 
     /// Index definition
@@ -131,11 +148,11 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         switch (oldPK, newPK) {
         case (nil, let pk?):
             // Insert
-            if let score = newScore, let item = newItem {
+            if let score = newScore, let grouping = newGroup, let item = newItem {
                 try await insertEntry(
                     pk: pk,
                     score: score,
-                    grouping: newGroup ?? [],
+                    grouping: grouping,
                     windowId: currentWindowId,
                     item: item,
                     transaction: transaction
@@ -153,24 +170,26 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
             if oldPKBytes == newPKBytes {
                 // Same record
-                if let newScore = newScore, let item = newItem {
+                if let newScore = newScore, let newGrouping = newGroup, let item = newItem {
                     try await updateEntry(
                         pk: oldPK,
                         newScore: newScore,
-                        newGrouping: newGroup ?? [],
+                        newGrouping: newGrouping,
                         currentWindowId: currentWindowId,
                         item: item,
                         transaction: transaction
                     )
+                } else {
+                    try await deleteEntry(pk: oldPK, transaction: transaction)
                 }
             } else {
                 // Primary key changed (unusual)
                 try await deleteEntry(pk: oldPK, transaction: transaction)
-                if let score = newScore, let item = newItem {
+                if let score = newScore, let grouping = newGroup, let item = newItem {
                     try await insertEntry(
                         pk: newPK,
                         score: score,
-                        grouping: newGroup ?? [],
+                        grouping: grouping,
                         windowId: currentWindowId,
                         item: item,
                         transaction: transaction
@@ -357,6 +376,43 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         try await ensureWindowMetadata(windowId: windowId, transaction: transaction)
     }
 
+    private func decodePosition(_ bytes: Bytes, pk: Tuple) throws -> PositionRecord {
+        let posElements: [any TupleElement]
+        do {
+            posElements = try Tuple.unpack(from: bytes)
+        } catch {
+            throw corruptedPositionError(pk: pk)
+        }
+
+        guard posElements.count >= 2 else {
+            throw corruptedPositionError(pk: pk)
+        }
+
+        let windowId: Int64
+        let score: Int64
+        do {
+            windowId = try TypeConversion.int64(from: posElements[0])
+            score = try TypeConversion.int64(from: posElements[1])
+        } catch {
+            throw corruptedPositionError(pk: pk)
+        }
+
+        var grouping: [any TupleElement] = []
+        grouping.reserveCapacity(max(0, posElements.count - 2))
+        for index in 2..<posElements.count {
+            grouping.append(posElements[index])
+        }
+
+        return PositionRecord(windowId: windowId, score: score, grouping: grouping)
+    }
+
+    private func corruptedPositionError(pk: Tuple) -> TimeWindowLeaderboardIndexError {
+        TimeWindowLeaderboardIndexError.corruptedPosition(
+            indexName: index.name,
+            primaryKey: Data(pk.pack()).base64EncodedString()
+        )
+    }
+
     /// Delete an entry
     private func deleteEntry(
         pk: Tuple,
@@ -368,24 +424,13 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             return
         }
 
-        let posTuple = try Tuple.unpack(from: posBytes)
-        guard posTuple.count >= 2,
-              let windowId = try? TypeConversion.int64(from: posTuple[0]),
-              let score = try? TypeConversion.int64(from: posTuple[1]) else {
-            return
-        }
-
-        // Extract grouping from position
-        var grouping: [any TupleElement] = []
-        for i in 2..<posTuple.count {
-            grouping.append(posTuple[i])
-        }
+        let position = try decodePosition(posBytes, pk: pk)
 
         // Delete window entry
         let entryKey = try makeWindowEntryKey(
-            windowId: windowId,
-            grouping: grouping,
-            score: score,
+            windowId: position.windowId,
+            grouping: position.grouping,
+            score: position.score,
             pk: pk
         )
         transaction.clear(key: entryKey)
@@ -406,25 +451,14 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         // Get current position
         let posKey = posSubspace.pack(pk)
         if let posBytes = try await transaction.getValue(for: posKey) {
-            let posTuple = try Tuple.unpack(from: posBytes)
-            if posTuple.count >= 2,
-               let oldWindowId = try? TypeConversion.int64(from: posTuple[0]),
-               let oldScore = try? TypeConversion.int64(from: posTuple[1]) {
-                // Extract old grouping
-                var oldGrouping: [any TupleElement] = []
-                for i in 2..<posTuple.count {
-                    oldGrouping.append(posTuple[i])
-                }
-
-                // Delete old entry
-                let oldKey = try makeWindowEntryKey(
-                    windowId: oldWindowId,
-                    grouping: oldGrouping,
-                    score: oldScore,
-                    pk: pk
-                )
-                transaction.clear(key: oldKey)
-            }
+            let position = try decodePosition(posBytes, pk: pk)
+            let oldKey = try makeWindowEntryKey(
+                windowId: position.windowId,
+                grouping: position.grouping,
+                score: position.score,
+                pk: pk
+            )
+            transaction.clear(key: oldKey)
         }
 
         // Insert new entry in current window
@@ -590,11 +624,8 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             return nil
         }
 
-        let posTuple = try Tuple.unpack(from: posBytes)
-        guard posTuple.count >= 2,
-              let recordWindowId = try? TypeConversion.int64(from: posTuple[0]),
-              let score = try? TypeConversion.int64(from: posTuple[1]),
-              recordWindowId == currentWindowId else {
+        let position = try decodePosition(posBytes, pk: pk)
+        guard position.windowId == currentWindowId else {
             return nil
         }
 
@@ -608,7 +639,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
         let targetKey = try makeWindowEntryKey(
             windowId: currentWindowId,
             grouping: grouping ?? [],
-            score: score,
+            score: position.score,
             pk: pk
         )
 
@@ -644,9 +675,10 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
 
         for (key, _) in sequence {
             let keyTuple = try metaSubspace.subspace("start").unpack(key)
-            if let e = keyTuple[0], let wid = try? TypeConversion.int64(from: e) {
-                windowIds.append(wid)
+            guard let element = keyTuple[0] else {
+                throw IndexError.invalidStructure("Invalid leaderboard window metadata key")
             }
+            windowIds.append(try TypeConversion.int64(from: element))
         }
 
         return windowIds.sorted(by: >)  // Newest first
@@ -908,17 +940,14 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable, Score: Com
             return nil
         }
 
-        let posTuple = try Tuple.unpack(from: posBytes)
-        guard posTuple.count >= 2,
-              let recordWindowId = try? TypeConversion.int64(from: posTuple[0]),
-              let targetScore = try? TypeConversion.int64(from: posTuple[1]),
-              recordWindowId == currentWindowId else {
+        let position = try decodePosition(posBytes, pk: pk)
+        guard position.windowId == currentWindowId else {
             return nil
         }
 
         // Count distinct scores higher than target
         return try await countDistinctScoresAbove(
-            score: targetScore,
+            score: position.score,
             windowId: currentWindowId,
             grouping: grouping,
             transaction: transaction

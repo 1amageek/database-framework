@@ -97,6 +97,9 @@ struct QueryOptimizationTests {
         let tableScanCost = QueryCost(startup: 0, total: 10000, rows: 10000, width: 100)
         let indexScanCost = QueryCost(startup: 0, total: 10, rows: 1, width: 100)
 
+        #expect(tableScan.filter != nil)
+        #expect(indexScan.indexName == "idx_email")
+        #expect(indexScan.bounds.lower == [.string("test@example.com")])
         #expect(indexScanCost.total < tableScanCost.total)
 
         // Verify index usage tracking
@@ -134,6 +137,8 @@ struct QueryOptimizationTests {
 
         let indexUsage = IndexUsage(indexName: "idx_name", kind: .scalar, accessPattern: .prefixScan)
 
+        #expect(indexScan.bounds.lower == [.string("John")])
+        #expect(indexScan.bounds.upper == nil)
         #expect(indexUsage.accessPattern == .prefixScan)
     }
 

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // BatchFetcher.swift
 // DatabaseEngine - Optimized batch fetching for records from indexes
 //
@@ -545,5 +544,3 @@ public struct BatchFetchStatistics: Sendable {
         totalDurationSeconds += durationSeconds
     }
 }
-
-#endif

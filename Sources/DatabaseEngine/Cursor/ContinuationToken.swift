@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ContinuationToken.swift
 // DatabaseEngine - Opaque token for resuming paginated queries
 //
@@ -205,5 +204,3 @@ public enum ContinuationError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
-
-#endif

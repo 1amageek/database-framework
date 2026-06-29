@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Core
 
 /// MigrationStage - Migration stage definition
@@ -240,5 +239,3 @@ extension MigrationStage {
         )
     }
 }
-
-#endif

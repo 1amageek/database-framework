@@ -140,6 +140,18 @@ public struct SingleSourceResult<Edge: Persistable>: Sendable {
     }
 }
 
+public enum WeightedShortestPathError: Error, Sendable, CustomStringConvertible {
+    case negativeWeight(source: String, target: String, edgeLabel: String?, weight: Double)
+
+    public var description: String {
+        switch self {
+        case .negativeWeight(let source, let target, let edgeLabel, let weight):
+            let label = edgeLabel ?? "<none>"
+            return "Dijkstra shortest path does not support negative weights: \(source) -> \(target), label=\(label), weight=\(weight)"
+        }
+    }
+}
+
 // MARK: - WeightedShortestPathFinder
 
 /// Dijkstra's algorithm for weighted shortest path
@@ -263,7 +275,7 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
         edgeLoader: @escaping @Sendable (String, String, String?) async throws -> Edge?,
         maxWeight: Double? = nil
     ) async throws -> WeightedPathResult<Edge> {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
 
         // Early termination: source == target
@@ -274,7 +286,7 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 totalWeight: 0,
                 nodesExplored: 1,
                 edgesRelaxed: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -302,6 +314,11 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
             visited.insert(currentNode)
             nodesExplored += 1
 
+            // Check max weight bound before accepting a target path.
+            if currentDist > effectiveMaxWeight {
+                continue
+            }
+
             // Early termination: reached target
             if currentNode == target {
                 let path = reconstructPath(
@@ -316,13 +333,8 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                     totalWeight: currentDist,
                     nodesExplored: nodesExplored,
                     edgesRelaxed: edgesRelaxed,
-                    durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                 )
-            }
-
-            // Check max weight bound
-            if currentDist > effectiveMaxWeight {
-                continue
             }
 
             // Check max nodes limit
@@ -355,13 +367,20 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
 
                 let weight = weightExtractor(edge)
 
-                // Skip negative weights (not supported by Dijkstra)
                 guard weight >= 0 else {
-                    continue
+                    throw WeightedShortestPathError.negativeWeight(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel,
+                        weight: weight
+                    )
                 }
 
                 let newDist = currentDist + weight
                 edgesRelaxed += 1
+                guard newDist <= effectiveMaxWeight else {
+                    continue
+                }
 
                 // Relax edge if shorter path found
                 let oldDist = distances[neighbor.target] ?? .infinity
@@ -380,7 +399,7 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
             totalWeight: .infinity,
             nodesExplored: nodesExplored,
             edgesRelaxed: edgesRelaxed,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 
@@ -400,7 +419,7 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
         edgeLoader: @escaping @Sendable (String, String, String?) async throws -> Edge?,
         maxWeight: Double? = nil
     ) async throws -> SingleSourceResult<Edge> {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let effectiveMaxWeight = maxWeight ?? configuration.maxWeight
 
         // Initialize Dijkstra state
@@ -459,9 +478,19 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
                 }
 
                 let weight = weightExtractor(edge)
-                guard weight >= 0 else { continue }
+                guard weight >= 0 else {
+                    throw WeightedShortestPathError.negativeWeight(
+                        source: neighbor.source,
+                        target: neighbor.target,
+                        edgeLabel: neighbor.edgeLabel,
+                        weight: weight
+                    )
+                }
 
                 let newDist = currentDist + weight
+                guard newDist <= effectiveMaxWeight else {
+                    continue
+                }
 
                 let oldDist = distances[neighbor.target] ?? .infinity
                 if newDist < oldDist {
@@ -478,7 +507,7 @@ public final class WeightedShortestPathFinder<Edge: Persistable>: Sendable {
             parents: parents,
             edgeLabels: edgeLabels,
             nodesExplored: nodesExplored,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 

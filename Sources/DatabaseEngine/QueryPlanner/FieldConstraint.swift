@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FieldConstraint.swift
 // QueryPlanner - Field constraint types for query conditions
 //
@@ -239,5 +238,3 @@ public enum StringPatternType: Sendable {
     /// Regular expression
     case regex
 }
-
-#endif

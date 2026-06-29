@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 
@@ -336,5 +335,3 @@ extension ScrubberSummary: CustomStringConvertible {
         """
     }
 }
-
-#endif

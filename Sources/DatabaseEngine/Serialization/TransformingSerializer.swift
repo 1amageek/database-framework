@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TransformingSerializer.swift
 // DatabaseEngine - Serializer with compression and encryption support
 //
@@ -6,7 +5,9 @@
 // Applies transformations (compression, encryption) to serialized data.
 
 import Foundation
+#if canImport(Compression)
 import Compression
+#endif
 import Crypto
 
 // MARK: - TransformationType
@@ -114,6 +115,7 @@ public enum CompressionAlgorithm: UInt8, Sendable {
     case lzma = 0x02
     case lzfse = 0x03
 
+#if canImport(Compression)
     var algorithm: compression_algorithm {
         switch self {
         case .lz4: return COMPRESSION_LZ4
@@ -122,6 +124,7 @@ public enum CompressionAlgorithm: UInt8, Sendable {
         case .lzfse: return COMPRESSION_LZFSE
         }
     }
+#endif
 }
 
 // MARK: - EncryptionKeyProvider
@@ -432,6 +435,7 @@ public struct TransformingSerializer: Sendable {
 
     /// Compress data using the specified algorithm
     private func compress(_ data: Data, algorithm: CompressionAlgorithm) -> Data? {
+#if canImport(Compression)
         let destinationBufferSize = data.count + 64  // Some overhead for small data
         var destinationBuffer = [UInt8](repeating: 0, count: destinationBufferSize)
 
@@ -449,6 +453,9 @@ public struct TransformingSerializer: Sendable {
 
         guard compressedSize > 0 else { return nil }
         return Data(destinationBuffer[0..<compressedSize])
+#else
+        return nil
+#endif
     }
 
     /// Decompress data using the specified algorithm
@@ -457,6 +464,7 @@ public struct TransformingSerializer: Sendable {
     /// Highly compressible data (e.g., repeated bytes) can have compression
     /// ratios over 100:1, requiring large decompression buffers.
     private func decompress(_ data: Data, algorithm: CompressionAlgorithm) -> Data? {
+#if canImport(Compression)
         // Progressive buffer sizes: 8x, 64x, 256x, 1024x
         // Handles compression ratios from typical (2-10x) to extreme (100x+)
         let multipliers = [8, 64, 256, 1024]
@@ -503,6 +511,9 @@ public struct TransformingSerializer: Sendable {
 
         guard finalSize > 0 else { return nil }
         return Data(finalBuffer[0..<finalSize])
+#else
+        return nil
+#endif
     }
 
     // MARK: - Encryption
@@ -715,5 +726,3 @@ public struct TransformStatistics: Sendable {
         transformedSize < originalSize
     }
 }
-
-#endif

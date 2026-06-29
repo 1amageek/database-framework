@@ -83,7 +83,7 @@ struct IndexedUser: Persistable {
 
 /// Test context for FDB integration tests
 private struct TestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let container: DBContainer
 

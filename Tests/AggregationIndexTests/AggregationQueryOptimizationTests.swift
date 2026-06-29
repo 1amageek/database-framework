@@ -93,7 +93,7 @@ private func makeTestEntity(
 // MARK: - Test Helper
 
 private struct OptTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let testId: String

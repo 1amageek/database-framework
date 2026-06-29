@@ -1,4 +1,3 @@
-#if !os(WASI)
 // Histogram.swift
 // QueryPlanner - Histogram for selectivity estimation
 
@@ -626,5 +625,3 @@ public struct HistogramBuilder: Sendable {
         return buckets
     }
 }
-
-#endif

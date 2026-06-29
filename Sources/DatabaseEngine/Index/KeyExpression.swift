@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 
 /// Protocol for expressions that extract key values from records
@@ -191,5 +190,3 @@ public enum KeyExpressionFactory {
         return ConcatenateKeyExpression(children: expressions)
     }
 }
-
-#endif

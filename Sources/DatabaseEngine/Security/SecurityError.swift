@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SecurityError.swift
 // DatabaseEngine - Security error type
 
@@ -79,5 +78,3 @@ extension SecurityError: LocalizedError {
         reason
     }
 }
-
-#endif

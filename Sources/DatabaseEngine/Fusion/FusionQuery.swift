@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FusionQuery.swift
 // DatabaseEngine - Protocol for fusion-compatible queries
 
@@ -71,5 +70,3 @@ public enum FusionQueryError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

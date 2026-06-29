@@ -1,4 +1,3 @@
-#if !os(WASI)
 // AggregationPlan.swift
 // QueryPlanner - Aggregation query planning
 
@@ -142,5 +141,3 @@ public struct AggregationPlan<T: Persistable>: Sendable {
 
 // Note: AggregationResult is defined in AggregationExecution.swift
 // This file only defines plan-related types
-
-#endif

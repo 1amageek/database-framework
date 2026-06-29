@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Core
 
@@ -952,5 +951,3 @@ public struct QueryExecutor<T: Persistable>: Sendable {
         return try planner.plan(query: query, hints: hints)
     }
 }
-
-#endif

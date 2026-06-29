@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FieldSecurityEvaluator.swift
 // DatabaseEngine - Evaluator for field-level security
 
@@ -417,5 +416,3 @@ public struct FieldSecurityEvaluator {
         }
     }
 }
-
-#endif

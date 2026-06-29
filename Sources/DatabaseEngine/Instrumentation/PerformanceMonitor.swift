@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PerformanceMonitor.swift
 // DatabaseEngine - Performance monitoring and slow query logging
 //
@@ -480,5 +479,3 @@ extension PerformanceMonitor {
         latencySamples.withLock { $0.samples.count }
     }
 }
-
-#endif

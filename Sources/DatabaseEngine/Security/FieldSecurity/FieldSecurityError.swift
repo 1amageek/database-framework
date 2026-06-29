@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FieldSecurityError.swift
 // DatabaseEngine - Field-level security errors
 
@@ -56,5 +55,3 @@ extension FieldSecurityError: LocalizedError {
         }
     }
 }
-
-#endif

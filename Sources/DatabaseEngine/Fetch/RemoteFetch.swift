@@ -1,4 +1,3 @@
-#if !os(WASI)
 // RemoteFetch.swift
 // DatabaseEngine - Remote Fetch optimization for record retrieval
 //
@@ -281,7 +280,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
         primaryKeys: [Tuple],
         transaction: any Transaction
     ) async throws -> RemoteFetchResult<Item> {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         guard !primaryKeys.isEmpty else {
             return RemoteFetchResult(
@@ -311,7 +310,7 @@ public struct RemoteFetcher<Item: Persistable>: Sendable {
             }
         }
 
-        let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
 
         return RemoteFetchResult(
             items: items,
@@ -487,5 +486,3 @@ extension Array {
         }
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SPARQLStringExecutor.swift
 // Database - Execute SPARQL query strings against the database
 //
@@ -314,7 +313,7 @@ public func executeSPARQLString(
     let needsAllResults = hasOrderBy || isDistinct
 
     // Step 1: Pattern evaluation
-    let startTime = DispatchTime.now()
+    let startTime = MonotonicClock.now()
     var (bindings, stats) = try await executor.execute(
         pattern: executionPattern,
         limit: needsAllResults ? nil : selectQuery.limit,
@@ -359,7 +358,7 @@ public func executeSPARQLString(
         }
     }
 
-    let endTime = DispatchTime.now()
+    let endTime = MonotonicClock.now()
     stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
     let resultCount = projected.count
@@ -454,5 +453,3 @@ public enum SPARQLStringError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

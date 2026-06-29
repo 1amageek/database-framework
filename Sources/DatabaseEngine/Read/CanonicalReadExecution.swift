@@ -1,4 +1,3 @@
-#if !os(WASI)
 import DatabaseClientProtocol
 
 /// Resolved execution policy for canonical reads.
@@ -33,5 +32,3 @@ public struct CanonicalReadExecution: Sendable {
         }
     }
 }
-
-#endif

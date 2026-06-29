@@ -1,4 +1,3 @@
-#if !os(WASI)
 // BitmapIndex.swift
 // QueryPlanner - Bitmap index support for low-cardinality columns
 
@@ -534,6 +533,3 @@ public struct BitmapIndexSuggestion: Sendable {
     public let usageCount: Int
     public let reason: String
 }
-
-
-#endif

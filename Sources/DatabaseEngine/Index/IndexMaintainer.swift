@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 import Core
 
@@ -90,6 +89,22 @@ public protocol IndexMaintainer<Item>: Sendable {
         transaction: any Transaction
     ) async throws
 
+    /// Scan and build index entries for a batch of items
+    ///
+    /// This method is called during batch index building (OnlineIndexer).
+    /// The default implementation preserves existing item-by-item behavior.
+    /// Indexes with expensive shared state persistence can override this method
+    /// to load and save that state once per batch.
+    ///
+    /// - Parameters:
+    ///   - items: Items and their unique identifiers
+    ///   - transaction: The transaction to use
+    /// - Throws: Error if index building fails
+    func scanItems(
+        _ items: [(item: Item, id: Tuple)],
+        transaction: any Transaction
+    ) async throws
+
     /// Optional custom build strategy for this index
     ///
     /// Some index types (e.g., HNSW) require specialized bulk build logic that
@@ -165,6 +180,16 @@ public protocol IndexMaintainer<Item>: Sendable {
 // MARK: - Default Implementations
 
 extension IndexMaintainer {
+    /// Default: preserve the existing scanItem-based behavior.
+    public func scanItems(
+        _ items: [(item: Item, id: Tuple)],
+        transaction: any Transaction
+    ) async throws {
+        for entry in items {
+            try await scanItem(entry.item, id: entry.id, transaction: transaction)
+        }
+    }
+
     /// Default: no custom build strategy (use standard scan-based build)
     public var customBuildStrategy: (any IndexBuildStrategy<Item>)? {
         return nil
@@ -193,5 +218,3 @@ extension IndexMaintainer {
         return try await computeIndexKeys(for: item, id: id)
     }
 }
-
-#endif

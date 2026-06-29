@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Core
 import StorageKit
@@ -198,15 +197,14 @@ public final class AdminContext: AdminContextProtocol, Sendable {
     }
 
     public func explainAnalyze<T: Persistable>(_ query: Query<T>) async throws -> QueryExecutionStatsPublic {
-        let startTime = CFAbsoluteTimeGetCurrent()
+        let startTime = MonotonicClock.now()
         let plan = try await explain(query)
 
         // Execute the query to get actual stats
         let store = try await container.store(for: T.self)
         let results = try await store.fetch(query)
 
-        let endTime = CFAbsoluteTimeGetCurrent()
-        let executionTime = endTime - startTime
+        let executionTime = Double(MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds) / 1_000_000_000
 
         // Get current read version
         let readVersion = try await currentReadVersion()
@@ -597,5 +595,3 @@ extension AdminError: LocalizedError {
         }
     }
 }
-
-#endif

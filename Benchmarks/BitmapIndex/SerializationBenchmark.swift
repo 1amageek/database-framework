@@ -42,7 +42,7 @@ struct SerializationBenchmark {
         }
         testBitmaps.append(mixed)
 
-        nonisolated(unsafe) let unsafeBitmaps = testBitmaps
+        let unsafeBitmaps = testBitmaps
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 5,
@@ -120,7 +120,7 @@ struct SerializationBenchmark {
             testData.append(data)
         }
 
-        nonisolated(unsafe) let unsafeData = testData
+        let unsafeData = testData
 
         let runner = BenchmarkRunner(config: .init(
             warmupIterations: 5,

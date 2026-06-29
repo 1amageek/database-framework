@@ -22,6 +22,9 @@ public struct BaselineManager: Sendable {
         pattern: String = "*.json",
         destination: String = "."
     ) async throws {
+#if os(WASI)
+        throw BaselineError.unsupportedPlatform("GitHub release download requires process execution")
+#else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [
@@ -39,6 +42,7 @@ public struct BaselineManager: Sendable {
                 "Failed to download baseline: exit code \(process.terminationStatus)"
             )
         }
+#endif
     }
 
     /// Upload baseline to GitHub Release
@@ -50,6 +54,9 @@ public struct BaselineManager: Sendable {
         tag: String = "baseline",
         clobber: Bool = true
     ) async throws {
+#if os(WASI)
+        throw BaselineError.unsupportedPlatform("GitHub release upload requires process execution")
+#else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
 
@@ -73,6 +80,7 @@ public struct BaselineManager: Sendable {
                 "Failed to upload baseline: exit code \(process.terminationStatus)"
             )
         }
+#endif
     }
 
     /// Create GitHub Release if it doesn't exist
@@ -82,6 +90,9 @@ public struct BaselineManager: Sendable {
         repo: String = "database-framework",
         tag: String = "baseline"
     ) async throws {
+#if os(WASI)
+        throw BaselineError.unsupportedPlatform("GitHub release creation requires process execution")
+#else
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
         process.arguments = [
@@ -100,6 +111,7 @@ public struct BaselineManager: Sendable {
                 "Failed to create release: exit code \(process.terminationStatus)"
             )
         }
+#endif
     }
 }
 
@@ -107,6 +119,7 @@ public enum BaselineError: Error, LocalizedError {
     case downloadFailed(String)
     case uploadFailed(String)
     case releaseCreationFailed(String)
+    case unsupportedPlatform(String)
 
     public var errorDescription: String? {
         switch self {
@@ -116,6 +129,8 @@ public enum BaselineError: Error, LocalizedError {
             return "Baseline upload failed: \(message)"
         case .releaseCreationFailed(let message):
             return "Release creation failed: \(message)"
+        case .unsupportedPlatform(let message):
+            return "Baseline operation is unsupported on this platform: \(message)"
         }
     }
 }

@@ -332,26 +332,16 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             )
         }
 
-        // Fetch items by primary keys (limit already applied during scanning)
+        // Fetch candidates by primary keys. User-facing limits are applied only
+        // after exact coordinate filtering because covering cells are supersets.
         var items = try await queryContext.fetchItems(ids: scanResult.keys, type: T.self)
+        var limitReason = scanResult.limitReason
 
-        // Apply polygon filtering if needed
-        if case .withinPolygon(let points) = constraint.type {
-            items = items.filter { item in
-                guard let location = extractGeoPoint(from: item) else { return false }
-                return isPointInPolygon(point: location, polygon: points)
-            }
-        }
+        items = filterItems(items, matching: constraint)
 
-        // Apply radius filtering for precise results
-        // Note: Covering cells may include points outside the exact radius
-        if case .withinDistance(let center, let radiusMeters) = constraint.type {
-            let centerPoint = GeoPoint(center.latitude, center.longitude)
-            items = items.filter { item in
-                // Items without location are excluded from radius-based queries
-                guard let location = extractGeoPoint(from: item) else { return false }
-                return distanceInMeters(from: centerPoint, to: location) <= radiusMeters
-            }
+        if let fetchLimit, items.count > fetchLimit {
+            items = Array(items.prefix(fetchLimit))
+            limitReason = .maxResultsReached(returned: fetchLimit, limit: fetchLimit)
         }
 
         // Calculate distances if we have a reference point
@@ -377,7 +367,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             resultsWithDistance = items.map { (item: $0, distance: nil) }
         }
 
-        return SpatialQueryResult(items: resultsWithDistance, limitReason: scanResult.limitReason)
+        return SpatialQueryResult(items: resultsWithDistance, limitReason: limitReason)
     }
 
     // MARK: - Spatial Index Reading
@@ -393,47 +383,21 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> SpatialScanResult {
-        // Get covering cells based on constraint type
-        let coveringCells: [UInt64]
-        switch constraint.type {
-        case .withinDistance(let center, let radiusMeters):
-            coveringCells = S2Geometry.getCoveringCells(
-                latitude: center.latitude,
-                longitude: center.longitude,
-                radiusMeters: radiusMeters,
-                level: level
-            )
-        case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
-            coveringCells = S2Geometry.getCoveringCellsForBox(
-                minLat: minLat,
-                minLon: minLon,
-                maxLat: maxLat,
-                maxLon: maxLon,
-                level: level
-            )
-        case .withinPolygon(let points):
-            // Get bounding box of polygon for covering cells
-            let lats = points.map { $0.latitude }
-            let lons = points.map { $0.longitude }
-            coveringCells = S2Geometry.getCoveringCellsForBox(
-                minLat: lats.min() ?? 0,
-                minLon: lons.min() ?? 0,
-                maxLat: lats.max() ?? 0,
-                maxLon: lons.max() ?? 0,
-                level: level
-            )
-        }
+        let plan = try SpatialScanPlanner.plan(
+            for: constraint,
+            encoding: encoding,
+            level: level
+        )
 
-        // Use SpatialCellScanner for efficient, deduplicated scanning with early limit
         let scanner = SpatialCellScanner(
             indexSubspace: indexSubspace,
             encoding: encoding,
             level: level
         )
 
-        let (keys, limitReason) = try await scanner.scanCells(
-            cellIds: coveringCells,
-            limit: fetchLimit,
+        let (keys, limitReason) = try await scanner.scan(
+            plan: plan,
+            limit: SpatialScanBudget.candidateLimit(forFetchLimit: fetchLimit),
             transaction: transaction
         )
 
@@ -477,6 +441,29 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
     private func extractGeoPoint(from item: T) -> GeoPoint? {
         guard let value = item[dynamicMember: fieldName] else { return nil }
         return value as? GeoPoint
+    }
+
+    private func filterItems(_ items: [T], matching constraint: SpatialConstraint) -> [T] {
+        items.filter { item in
+            guard let location = extractGeoPoint(from: item) else {
+                return false
+            }
+
+            switch constraint.type {
+            case .withinDistance(let center, let radiusMeters):
+                let centerPoint = GeoPoint(center.latitude, center.longitude)
+                return distanceInMeters(from: centerPoint, to: location) <= radiusMeters
+
+            case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
+                return location.latitude >= minLat &&
+                    location.latitude <= maxLat &&
+                    location.longitude >= minLon &&
+                    location.longitude <= maxLon
+
+            case .withinPolygon(let points):
+                return isPointInPolygon(point: location, polygon: points)
+            }
+        }
     }
 
     // MARK: - Distance Calculation
@@ -758,11 +745,15 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             iterations += 1
             lastUsedRadiusMeters = currentRadiusMeters
 
-            // Get covering cells for current radius
-            let coveringCells = S2Geometry.getCoveringCells(
-                latitude: center.latitude,
-                longitude: center.longitude,
-                radiusMeters: currentRadiusMeters,
+            let radiusConstraint = SpatialConstraint(
+                type: .withinDistance(
+                    center: (latitude: center.latitude, longitude: center.longitude),
+                    radiusMeters: currentRadiusMeters
+                )
+            )
+            let plan = try SpatialScanPlanner.plan(
+                for: radiusConstraint,
+                encoding: encoding,
                 level: level
             )
 
@@ -773,8 +764,8 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
                     encoding: encoding,
                     level: level
                 )
-                let (keys, scanLimitReason) = try await scanner.scanCells(
-                    cellIds: coveringCells,
+                let (keys, scanLimitReason) = try await scanner.scan(
+                    plan: plan,
                     limit: knnMaxKeysPerIteration,
                     transaction: transaction
                 )
@@ -782,6 +773,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
             }
 
             totalKeysScanned += scanResult.keys.count
+            if limitReason == nil {
+                limitReason = scanResult.limitReason
+            }
 
             // Check total keys budget
             if totalKeysScanned >= knnMaxTotalKeys {

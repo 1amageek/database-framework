@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FDBPersistenceHandler.swift
 // DatabaseEngine - ModelPersistenceHandler implementation using FDBContext
 
@@ -163,5 +162,3 @@ extension FDBContext {
         FDBPersistenceHandler(context: self)
     }
 }
-
-#endif

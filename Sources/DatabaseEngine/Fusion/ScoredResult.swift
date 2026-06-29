@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ScoredResult.swift
 // DatabaseEngine - Fusion query result type
 
@@ -47,5 +46,3 @@ extension ScoredResult: Hashable where T: Hashable {
         hasher.combine(score)
     }
 }
-
-#endif

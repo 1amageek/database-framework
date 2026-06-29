@@ -224,7 +224,7 @@ extension FDBContext {
             }
             projectedVars = Array(allVariables).sorted()
         }
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         let hasOrderBy = !orderBy.isEmpty
         let needsAllResults = hasOrderBy || distinct
@@ -261,7 +261,7 @@ extension FDBContext {
             }
         }
 
-        let endTime = DispatchTime.now()
+        let endTime = MonotonicClock.now()
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count

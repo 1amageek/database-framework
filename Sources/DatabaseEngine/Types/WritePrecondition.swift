@@ -1,4 +1,3 @@
-#if !os(WASI)
 // WritePrecondition.swift
 // DatabaseEngine - Write precondition for explicit operation semantics
 //
@@ -48,5 +47,3 @@ public enum WritePrecondition: Sendable, Equatable {
         }
     }
 }
-
-#endif

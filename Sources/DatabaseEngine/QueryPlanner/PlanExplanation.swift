@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PlanExplanation.swift
 // QueryPlanner - Human-readable plan explanation
 
@@ -279,5 +278,3 @@ extension PlanExplanation {
         return try JSONSerialization.data(withJSONObject: dict, options: [.prettyPrinted])
     }
 }
-
-#endif

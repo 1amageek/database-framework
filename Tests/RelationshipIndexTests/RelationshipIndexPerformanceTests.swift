@@ -76,7 +76,7 @@ private func benchmark<T>(
 struct RelationshipIndexPerformanceTests {
 
     private func setupContainer() async throws -> DBContainer {
-        try await FDBTestEnvironment.shared.ensureInitialized()
+        try await FDBTestSetup.shared.initialize()
         let database = try await FDBTestSetup.shared.makeEngine()
 
         let schema = Schema([PerfCustomer.self, PerfOrder.self], version: Schema.Version(1, 0, 0))

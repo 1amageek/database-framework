@@ -1,4 +1,3 @@
-#if !os(WASI)
 // AdaptiveThrottler.swift
 // DatabaseEngine - Adaptive throttling for index building and batch operations
 //
@@ -428,11 +427,11 @@ public struct ThrottledBatchExecutor<T: Sendable>: Sendable {
 
         for attempt in 0..<(maxRetries + 1) {
             let batchSize = throttler.currentBatchSize
-            let startTime = DispatchTime.now()
+            let startTime = MonotonicClock.now()
 
             do {
                 let (result, itemCount) = try await operation(batchSize)
-                let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                 throttler.recordSuccess(itemCount: itemCount, durationNs: elapsed)
 
                 // Wait before next batch
@@ -502,5 +501,3 @@ extension ThrottleConfiguration.DelaySettings: CustomStringConvertible {
         "DelaySettings(min: \(min), max: \(max), initial: \(initial))"
     }
 }
-
-#endif

@@ -42,16 +42,10 @@ let package = Package(
         .trait(name: "FoundationDB"),
         .trait(name: "SQLite"),
         .trait(name: "PostgreSQL"),
-        .trait(name: "CxxBackend"),
     ],
     dependencies: [
         .package(path: "../database-kit"),
-        .package(
-            path: "../swift-hnsw",
-            traits: [
-                .trait(name: "CxxBackend", condition: .when(traits: ["CxxBackend"])),
-            ]
-        ),
+        .package(path: "../swift-hnsw"),
         .package(
             path: "../storage-kit",
             traits: [
@@ -612,12 +606,36 @@ let package = Package(
                 .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
             ]
         ),
+        // RelationshipIndex tests
+        .testTarget(
+            name: "RelationshipIndexTests",
+            dependencies: [
+                "RelationshipIndex",
+                "DatabaseEngine",
+                "ScalarIndex",
+                "TestSupport",
+                .product(name: "Core", package: "database-kit"),
+                .product(name: "Relationship", package: "database-kit"),
+                .product(name: "StorageKit", package: "storage-kit"),
+                .product(name: "FDBStorage", package: "storage-kit",
+                         condition: .when(traits: ["FoundationDB"])),
+                .product(name: "TestHeartbeat", package: "swift-testing-heartbeat"),
+            ],
+            swiftSettings: [
+                .define("FOUNDATION_DB", .when(traits: ["FoundationDB"])),
+            ],
+            linkerSettings: [
+                .unsafeFlags(["-L/usr/local/lib"]),
+                .unsafeFlags(["-Xlinker", "-rpath", "-Xlinker", "/usr/local/lib"])
+            ]
+        ),
         // DatabaseServer tests
         .testTarget(
             name: "DatabaseServerTests",
             dependencies: [
                 "DatabaseServer",
                 "Database",
+                "VectorIndex",
                 .product(name: "QueryIR", package: "database-kit"),
                 .product(name: "DatabaseClientProtocol", package: "database-kit"),
             ],

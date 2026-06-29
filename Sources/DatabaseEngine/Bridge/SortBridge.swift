@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SortBridge.swift
 // DatabaseEngine - Bridge between SortOrder and QueryIR.SortDirection
 
@@ -31,5 +30,3 @@ extension SortOrder {
         }
     }
 }
-
-#endif

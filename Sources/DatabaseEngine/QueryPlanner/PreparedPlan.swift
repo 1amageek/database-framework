@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PreparedPlan.swift
 // QueryPlanner - Prepared query plans with parameter binding support
 
@@ -499,5 +498,3 @@ public struct PlanValidator<T: Persistable>: Sendable {
         return true
     }
 }
-
-#endif

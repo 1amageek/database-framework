@@ -48,9 +48,9 @@ public struct LatencyMetrics: Codable, Sendable, Hashable {
 
         // Measurement phase
         for _ in 0..<iterations {
-            let start = DispatchTime.now()
+            let start = MonotonicClock.now()
             try await operation()
-            let end = DispatchTime.now()
+            let end = MonotonicClock.now()
 
             let nanos = Double(end.uptimeNanoseconds - start.uptimeNanoseconds)
             let millis = nanos / 1_000_000.0

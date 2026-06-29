@@ -1,4 +1,3 @@
-#if !os(WASI)
 // IndexQueryContext.swift
 // DatabaseEngine - Context for index-based queries
 
@@ -750,5 +749,3 @@ extension FDBContext {
         IndexQueryContext(context: self)
     }
 }
-
-#endif

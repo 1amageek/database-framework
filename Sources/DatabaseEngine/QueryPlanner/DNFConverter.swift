@@ -1,4 +1,3 @@
-#if !os(WASI)
 // DNFConverter.swift
 // QueryPlanner - Disjunctive Normal Form conversion with explosion protection
 
@@ -405,6 +404,3 @@ internal enum DNFConversionError: Error, CustomStringConvertible {
         }
     }
 }
-
-
-#endif

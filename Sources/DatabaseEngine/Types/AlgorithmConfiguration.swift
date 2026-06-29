@@ -1,4 +1,3 @@
-#if !os(WASI)
 // AlgorithmConfiguration.swift
 // FDBIndexing - Runtime algorithm configuration
 //
@@ -150,5 +149,3 @@ public struct IVFParameters: Sendable, Codable, Hashable {
     /// Fast parameters (fewer probes)
     public static let fast = IVFParameters(nlist: 100, nprobe: 5)
 }
-
-#endif

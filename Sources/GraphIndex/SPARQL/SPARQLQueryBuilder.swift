@@ -467,7 +467,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
         let allVariables = graphPattern.variables
         let projection = projectedVariables ?? Array(allVariables).sorted()
 
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         let hasOrderBy = !sortKeys.isEmpty
         let needsAllResults = hasOrderBy || isDistinct
@@ -504,7 +504,7 @@ public struct SPARQLQueryBuilder<T: Persistable>: Sendable {
             }
         }
 
-        let endTime = DispatchTime.now()
+        let endTime = MonotonicClock.now()
         stats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         let resultCount = projected.count

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // AdaptiveOptimizer.swift
 // QueryPlanner - Adaptive query optimization based on runtime feedback
 
@@ -517,5 +516,3 @@ public final class ProgressiveOptimizer<T: Persistable>: @unchecked Sendable {
         case finishing
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TupleDecoder.swift
 // DatabaseEngine - Decode FoundationDB TupleElement to Swift types
 //
@@ -309,5 +308,3 @@ public enum TupleDecodingError: Error, Sendable, CustomStringConvertible {
         }
     }
 }
-
-#endif

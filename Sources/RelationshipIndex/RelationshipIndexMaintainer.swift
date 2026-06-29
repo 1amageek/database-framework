@@ -59,6 +59,11 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     /// Loader for related items (required)
     private let relatedItemLoader: RelatedItemLoader
 
+    /// Stores the exact index keys written for each owner primary key.
+    private var entrySubspace: Subspace {
+        RelationshipIndexEntrySubspace.make(from: subspace)
+    }
+
     // MARK: - Initialization
 
     public init(
@@ -88,21 +93,32 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
         newItem: Item?,
         transaction: any Transaction
     ) async throws {
-        // Remove old index entries
+        // Remove old index entries from the stored write set first. This is the
+        // only reliable source after related records have changed or disappeared.
         if let oldItem = oldItem {
-            let oldKeys = try await buildIndexKeys(for: oldItem, transaction: transaction)
-            for key in oldKeys {
-                transaction.clear(key: key)
+            let oldId = try DataAccess.extractId(from: oldItem, using: idExpression)
+            let removedStoredEntries = try await removeStoredIndexEntries(
+                itemId: oldId,
+                transaction: transaction
+            )
+
+            if !removedStoredEntries {
+                let oldKeys = try await buildIndexKeys(for: oldItem, id: oldId, transaction: transaction)
+                for key in oldKeys {
+                    transaction.clear(key: key)
+                }
             }
         }
 
         // Add new index entries
         if let newItem = newItem {
-            let newKeys = try await buildIndexKeys(for: newItem, transaction: transaction)
+            let newId = try DataAccess.extractId(from: newItem, using: idExpression)
+            let newKeys = try await buildIndexKeys(for: newItem, id: newId, transaction: transaction)
             let value = try CoveringValueBuilder.build(for: newItem, storedFieldNames: index.storedFieldNames)
             for key in newKeys {
                 transaction.setValue(value, for: key)
             }
+            storeIndexEntries(itemId: newId, keys: newKeys, transaction: transaction)
         }
     }
 
@@ -111,11 +127,13 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
         id: Tuple,
         transaction: any Transaction
     ) async throws {
+        _ = try await removeStoredIndexEntries(itemId: id, transaction: transaction)
         let keys = try await buildIndexKeys(for: item, id: id, transaction: transaction)
         let value = try CoveringValueBuilder.build(for: item, storedFieldNames: index.storedFieldNames)
         for key in keys {
             transaction.setValue(value, for: key)
         }
+        storeIndexEntries(itemId: id, keys: keys, transaction: transaction)
     }
 
     public func computeIndexKeys(
@@ -146,6 +164,47 @@ public struct RelationshipIndexMaintainer<Item: Persistable>: IndexMaintainer {
     }
 
     // MARK: - Private Methods
+
+    private func entryListKey(for itemId: Tuple) -> Bytes {
+        entrySubspace.pack(itemId)
+    }
+
+    private func storeIndexEntries(
+        itemId: Tuple,
+        keys: [Bytes],
+        transaction: any Transaction
+    ) {
+        let key = entryListKey(for: itemId)
+        if keys.isEmpty {
+            transaction.clear(key: key)
+            return
+        }
+
+        let elements: [any TupleElement] = keys.map { $0 as any TupleElement }
+        transaction.setValue(Tuple(elements).pack(), for: key)
+    }
+
+    @discardableResult
+    private func removeStoredIndexEntries(
+        itemId: Tuple,
+        transaction: any Transaction
+    ) async throws -> Bool {
+        let key = entryListKey(for: itemId)
+        guard let value = try await transaction.getValue(for: key) else {
+            return false
+        }
+
+        let tuple = try Tuple.unpack(from: value)
+        for index in 0..<tuple.count {
+            guard let indexKey = tuple[index] as? Bytes else {
+                throw RelationshipIndexError.corruptedEntryList(indexName: self.index.name)
+            }
+            transaction.clear(key: indexKey)
+        }
+
+        transaction.clear(key: key)
+        return true
+    }
 
     /// Build index keys for an item
     /// Returns multiple keys for To-Many relationships

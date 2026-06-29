@@ -76,7 +76,7 @@ private struct PerfProduct: Persistable {
 // MARK: - Performance Test Helper
 
 private struct PerfTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let maintainer: BitmapIndexMaintainer<PerfProduct>
     let indexName: String

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // UniquenessViolation.swift
 // DatabaseEngine - Uniqueness violation tracking for indexes
 //
@@ -236,5 +235,3 @@ public enum ViolationResolution: Sendable {
     /// Violation record was not found (may have been resolved already)
     case notFound
 }
-
-#endif

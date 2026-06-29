@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CanonicalReadError.swift
 // DatabaseEngine - Unified error type for the canonical QueryIR read path.
 //
@@ -80,5 +79,3 @@ public enum CanonicalReadError: Error, Sendable {
     /// previous `?? 0` silent default that produced misleading ranking.
     case missingAnnotation(String)
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // StorageEngine+Transaction.swift
 // DatabaseEngine - Convenience extensions for StorageEngine transaction execution
 //
@@ -48,5 +47,3 @@ extension StorageEngine {
         )
     }
 }
-
-#endif

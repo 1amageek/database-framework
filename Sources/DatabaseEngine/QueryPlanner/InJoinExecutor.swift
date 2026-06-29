@@ -1,4 +1,3 @@
-#if !os(WASI)
 // InJoinExecutor.swift
 // DatabaseEngine - Optimized IN-Join execution strategies
 //
@@ -104,5 +103,3 @@ public struct InJoinStrategySelector: Sendable {
         return .fullScan
     }
 }
-
-#endif

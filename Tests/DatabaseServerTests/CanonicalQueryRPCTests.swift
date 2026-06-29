@@ -10,6 +10,7 @@ import QueryIR
 import StorageKit
 import BitmapIndex
 import FullTextIndex
+import VectorIndex
 
 @Persistable
 private struct RPCPerson {
@@ -1695,7 +1696,7 @@ struct CanonicalQueryRPCTests {
         let directory = try await container.resolvePolymorphicDirectory(for: groupIdentifier)
         let indexSubspace = directory.subspace(SubspaceKey.indexes).subspace(indexName)
         let key = indexSubspace.pack(polymorphicID(type: type, id: id))
-        let value = Tuple(vector.map { $0 as any TupleElement }).pack()
+        let value = VectorConversion.floatArrayToBytes(vector)
 
         try await container.engine.withTransaction(configuration: .default) { transaction in
             transaction.setValue(value, for: key)

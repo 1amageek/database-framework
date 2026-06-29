@@ -109,23 +109,25 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         limit: Int? = nil,
         transaction: any Transaction
     ) async throws -> SpatialScanResult {
-        // Get covering cells for the search area
-        let coveringCells = S2Geometry.getCoveringCells(
-            latitude: latitude,
-            longitude: longitude,
-            radiusMeters: radiusMeters,
+        let plan = try SpatialScanPlanner.plan(
+            for: SpatialConstraint(
+                type: .withinDistance(
+                    center: (latitude: latitude, longitude: longitude),
+                    radiusMeters: radiusMeters
+                )
+            ),
+            encoding: encoding,
             level: level
         )
 
-        // Use SpatialCellScanner for efficient scanning
         let scanner = SpatialCellScanner(
             indexSubspace: subspace,
             encoding: encoding,
             level: level
         )
 
-        let (keys, limitReason) = try await scanner.scanCells(
-            cellIds: coveringCells,
+        let (keys, limitReason) = try await scanner.scan(
+            plan: plan,
             limit: limit,
             transaction: transaction
         )
@@ -151,24 +153,27 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
         limit: Int? = nil,
         transaction: any Transaction
     ) async throws -> SpatialScanResult {
-        // Get covering cells for the bounding box
-        let coveringCells = S2Geometry.getCoveringCellsForBox(
-            minLat: minLat,
-            minLon: minLon,
-            maxLat: maxLat,
-            maxLon: maxLon,
+        let plan = try SpatialScanPlanner.plan(
+            for: SpatialConstraint(
+                type: .withinBounds(
+                    minLat: minLat,
+                    minLon: minLon,
+                    maxLat: maxLat,
+                    maxLon: maxLon
+                )
+            ),
+            encoding: encoding,
             level: level
         )
 
-        // Use SpatialCellScanner for efficient scanning
         let scanner = SpatialCellScanner(
             indexSubspace: subspace,
             encoding: encoding,
             level: level
         )
 
-        let (keys, limitReason) = try await scanner.scanCells(
-            cellIds: coveringCells,
+        let (keys, limitReason) = try await scanner.scan(
+            plan: plan,
             limit: limit,
             transaction: transaction
         )
@@ -244,12 +249,12 @@ public struct SpatialIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer
 
         case .morton:
             if coordinates.count == 2 {
-                let x = MortonCode.normalize(coordinates[0], min: -180, max: 180)
-                let y = MortonCode.normalize(coordinates[1], min: -90, max: 90)
+                let x = MortonCode.normalize(coordinates[1], min: -180, max: 180)
+                let y = MortonCode.normalize(coordinates[0], min: -90, max: 90)
                 return MortonCode.encode2D(x: x, y: y, level: level)
             } else if coordinates.count == 3 {
-                let x = MortonCode.normalize(coordinates[0], min: -180, max: 180)
-                let y = MortonCode.normalize(coordinates[1], min: -90, max: 90)
+                let x = MortonCode.normalize(coordinates[1], min: -180, max: 180)
+                let y = MortonCode.normalize(coordinates[0], min: -90, max: 90)
                 let z = MortonCode.normalize(coordinates[2], min: -1000, max: 10000)
                 return MortonCode.encode3D(x: x, y: y, z: z, level: level)
             } else {

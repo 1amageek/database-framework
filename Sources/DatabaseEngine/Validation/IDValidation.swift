@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 import Core
 
@@ -72,5 +71,3 @@ public extension Persistable {
         return try validateID(id, for: Self.persistableType)
     }
 }
-
-#endif

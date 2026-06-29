@@ -147,6 +147,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         let indexName = buildIndexName()
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? FullTextIndexKind<T> else {
+            throw FullTextQueryError.indexNotFound(indexName)
+        }
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -165,6 +169,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
+                kind: kind,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -237,6 +242,10 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         }
 
         let indexName = buildIndexName()
+        guard let indexDescriptor = queryContext.schema.indexDescriptor(named: indexName),
+              let kind = indexDescriptor.kind as? FullTextIndexKind<T> else {
+            throw FullTextQueryError.indexNotFound(indexName)
+        }
 
         // Get index subspace
         let typeSubspace = try await queryContext.indexSubspace(for: T.self)
@@ -254,6 +263,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             return try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
+                kind: kind,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -389,13 +399,14 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
+        kind: FullTextIndexKind<T>,
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
 
-        // Normalize terms
-        let normalizedTerms = terms.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+        let termGroups = normalizeQueryTermGroups(terms, kind: kind)
+        let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         // Get matching document IDs based on match mode
         let matchingIds: [[any TupleElement]]
@@ -407,11 +418,18 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
                 transaction: transaction
             )
         case .any:
-            matchingIds = try await searchTermsOR(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
+            var idToElements: [String: [any TupleElement]] = [:]
+            for group in termGroups {
+                let matches = try await searchTermsAND(
+                    group,
+                    termsSubspace: termsSubspace,
+                    transaction: transaction
+                )
+                for elements in matches {
+                    idToElements[elementsToStableKey(elements)] = elements
+                }
+            }
+            matchingIds = Array(idToElements.values)
         case .phrase:
             // Phrase search is handled by searchPhrase() in execute()/executeWithFacets().
             // This path should not be reached, but fall back to AND as a safety measure.
@@ -513,9 +531,7 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
         for (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? termSubspace.unpack(key) else {
-                continue
-            }
+            let keyTuple = try termSubspace.unpack(key)
             // Avoid pack/unpack cycle: convert Tuple to array directly
             let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(elements)
@@ -528,6 +544,32 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
     private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
         let packed = Tuple(elements).pack()
         return Data(packed).base64EncodedString()
+    }
+
+    private func normalizeQueryTermGroups(
+        _ terms: [String],
+        kind: FullTextIndexKind<T>
+    ) -> [[String]] {
+        let normalizer = FullTextTermNormalizer(
+            tokenizer: kind.tokenizer,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength
+        )
+        return terms.map { term in
+            uniqueTerms(normalizer.normalizedTerms(from: term))
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    private func uniqueTerms(_ terms: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        result.reserveCapacity(terms.count)
+        for term in terms where !seen.contains(term) {
+            seen.insert(term)
+            result.append(term)
+        }
+        return result
     }
 
     /// Execute the full-text search with BM25 scores
@@ -623,15 +665,14 @@ public struct FullTextQueryBuilder<T: Persistable>: Sendable {
             // Create a map of id -> score for efficient lookup
             var idToScore: [String: Double] = [:]
             for result in scoredResults {
-                let key = Data(result.id.pack()).base64EncodedString()
+                let key = FullTextDocumentIDKey.encoded(result.id)
                 idToScore[key] = result.score
             }
 
             // Combine items with scores
             var results: [(item: T, score: Double)] = []
             for item in items {
-                let idTuple = Tuple(item.id as! any TupleElement)
-                let key = Data(idTuple.pack()).base64EncodedString()
+                let key = try FullTextDocumentIDKey.encoded(for: item)
                 if let score = idToScore[key] {
                     results.append((item: item, score: score))
                 }

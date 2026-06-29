@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FieldReader.swift
 // DatabaseEngine - Non-throwing field access utility
 
@@ -86,5 +85,3 @@ public struct FieldReader: Sendable {
         return FieldValue(raw) ?? .null
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -153,7 +152,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     private func fetchAllInternal<T: Persistable>(_ type: T.Type) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             let results: [T] = try await container.engine.withTransaction(configuration: .default) { transaction in
@@ -172,12 +171,12 @@ internal final class FDBDataStore: DataStore, Sendable {
                 return results
             }
 
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
 
             return results
         } catch {
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -846,7 +845,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     ) async throws -> [T] {
         let typeSubspace = itemSubspace.subspace(T.persistableType)
         let (begin, end) = typeSubspace.range()
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             let storage = ItemStorage(
@@ -861,12 +860,12 @@ internal final class FDBDataStore: DataStore, Sendable {
                 results.append(model)
             }
 
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFetch(itemType: T.persistableType, count: results.count, duration: duration)
 
             return results
         } catch {
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFailFetch(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -1375,7 +1374,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func save<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             try await container.engine.withTransaction(configuration: .default) { transaction in
@@ -1384,14 +1383,14 @@ internal final class FDBDataStore: DataStore, Sendable {
                 }
             }
 
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didSave(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Saved \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFailSave(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -1441,7 +1440,7 @@ internal final class FDBDataStore: DataStore, Sendable {
     func delete<T: Persistable>(_ models: [T]) async throws {
         guard !models.isEmpty else { return }
 
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             try await container.engine.withTransaction(configuration: .default) { transaction in
@@ -1450,14 +1449,14 @@ internal final class FDBDataStore: DataStore, Sendable {
                 }
             }
 
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didDelete(itemType: T.persistableType, count: models.count, duration: duration)
 
             logger.trace("Deleted \(models.count) models", metadata: [
                 "type": "\(T.persistableType)"
             ])
         } catch {
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFailDelete(itemType: T.persistableType, error: error, duration: duration)
             throw error
         }
@@ -1518,7 +1517,7 @@ internal final class FDBDataStore: DataStore, Sendable {
         inserts: [any Persistable],
         deletes: [any Persistable]
     ) async throws {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             if let fastPath = try await executeBatchFastPathIfEligible(
@@ -1536,7 +1535,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 }
             }
 
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didExecuteBatch(insertCount: inserts.count, deleteCount: deletes.count, duration: duration)
 
             logger.trace("Executed batch", metadata: [
@@ -1544,7 +1543,7 @@ internal final class FDBDataStore: DataStore, Sendable {
                 "deletes": "\(deletes.count)"
             ])
         } catch {
-            let duration = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             metricsDelegate.didFailBatch(error: error, duration: duration)
             throw error
         }
@@ -2121,5 +2120,3 @@ public enum FDBIndexError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CachePolicy.swift
 // DatabaseEngine - Cache policy for read operations
 
@@ -59,5 +58,3 @@ extension CachePolicy: CustomStringConvertible {
         }
     }
 }
-
-#endif

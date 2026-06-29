@@ -72,7 +72,7 @@ struct BM25TestArticle: Persistable {
 // MARK: - Test Helper
 
 private struct BM25TestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<BM25TestArticle>

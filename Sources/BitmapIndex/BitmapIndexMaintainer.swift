@@ -50,6 +50,13 @@ import StorageKit
 /// Key: [I]/User_bitmap_status/["pks"]/["user-abc"] = 0
 /// ```
 public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer {
+    internal enum ValueTransition: Equatable {
+        case unchanged
+        case add
+        case remove
+        case replace
+    }
+
     // MARK: - Properties
 
     /// Index definition
@@ -77,6 +84,21 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
         self.index = index
         self.subspace = subspace
         self.idExpression = idExpression
+    }
+
+    internal static func valueTransition(oldValueKey: Bytes?, newValueKey: Bytes?) -> ValueTransition {
+        switch (oldValueKey, newValueKey) {
+        case (nil, nil):
+            return .unchanged
+        case (nil, _?):
+            return .add
+        case (_?, nil):
+            return .remove
+        case (let old?, let new?) where old == new:
+            return .unchanged
+        case (_?, _?):
+            return .replace
+        }
     }
 
     // MARK: - IndexMaintainer
@@ -141,18 +163,29 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
             let newPKBytes = try packPrimaryKey(newPK)
 
             if oldPKBytes == newPKBytes {
-                // Same record, check if value changed
-                if let oldVals = oldValue, let newVals = newValue {
-                    let oldKey = try makeFieldValueKey(oldVals)
-                    let newKey = try makeFieldValueKey(newVals)
+                let oldValueKey = try optionalFieldValueKey(oldValue)
+                let newValueKey = try optionalFieldValueKey(newValue)
 
-                    if oldKey != newKey {
-                        // Value changed - update bitmap
-                        if let seqId = try await getSequentialId(for: oldPK, transaction: transaction) {
-                            try await removeFromBitmap(fieldValues: oldVals, sequentialId: seqId, transaction: transaction)
-                            try await addToBitmap(fieldValues: newVals, sequentialId: seqId, transaction: transaction)
-                        }
+                switch Self.valueTransition(oldValueKey: oldValueKey, newValueKey: newValueKey) {
+                case .unchanged:
+                    break
+
+                case .add:
+                    guard let newValue else { break }
+                    let seqId = try await getOrCreateSequentialId(for: oldPK, transaction: transaction)
+                    try await addToBitmap(fieldValues: newValue, sequentialId: seqId, transaction: transaction)
+
+                case .remove:
+                    guard let oldValue else { break }
+                    if let seqId = try await getSequentialId(for: oldPK, transaction: transaction) {
+                        try await removeFromBitmap(fieldValues: oldValue, sequentialId: seqId, transaction: transaction)
                     }
+
+                case .replace:
+                    guard let oldValue, let newValue else { break }
+                    let seqId = try await getOrCreateSequentialId(for: oldPK, transaction: transaction)
+                    try await removeFromBitmap(fieldValues: oldValue, sequentialId: seqId, transaction: transaction)
+                    try await addToBitmap(fieldValues: newValue, sequentialId: seqId, transaction: transaction)
                 }
             } else {
                 // Primary key changed (unusual)
@@ -215,6 +248,13 @@ public struct BitmapIndexMaintainer<Item: Persistable>: SubspaceIndexMaintainer 
     }
 
     // MARK: - Private Helpers
+
+    private func optionalFieldValueKey(_ values: [any TupleElement]?) throws -> Bytes? {
+        guard let values else {
+            return nil
+        }
+        return try makeFieldValueKey(values)
+    }
 
     /// Get or create a sequential ID for a primary key
     private func getOrCreateSequentialId(

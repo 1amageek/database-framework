@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -38,7 +37,7 @@ import Metrics
 ///
 /// 1. **Standard Build** (default):
 ///    - Scans items in batches
-///    - Calls `indexMaintainer.scanItem()` for each item
+///    - Calls `indexMaintainer.scanItems()` once per batch
 ///    - Tracks progress with RangeSet
 ///    - Resumes from last batch on interruption
 ///
@@ -252,7 +251,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
     /// 2. Loop until all ranges processed:
     ///    a. Get next batch range
     ///    b. Scan items in range
-    ///    c. Call indexMaintainer.scanItem() for each item
+    ///    c. Call indexMaintainer.scanItems() for each batch
     ///    d. Mark range as completed
     ///    e. Save progress
     ///    f. Throttle if configured
@@ -276,7 +275,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = DispatchTime.now()
+            let batchStartTime = MonotonicClock.now()
 
             do {
                 // Capture current rangeSet state before transaction
@@ -302,6 +301,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         limit: self.batchSize
                     )
 
+                    var batchEntries: [(item: Item, id: Tuple)] = []
+                    batchEntries.reserveCapacity(self.batchSize)
+
                     for try await (key, data) in scanSequence {
                         // Deserialize item from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
@@ -309,16 +311,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                         // Extract id
                         let id = try itemTypeSubspace.unpack(key)
 
-                        // Call IndexMaintainer to build index entry
-                        try await self.indexMaintainer.scanItem(
-                            item,
-                            id: id,
-                            transaction: transaction
-                        )
+                        batchEntries.append((item: item, id: id))
 
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
                     }
+
+                    // Call IndexMaintainer once per batch. Maintainers that do
+                    // not override scanItems preserve scanItem behavior.
+                    try await self.indexMaintainer.scanItems(
+                        batchEntries,
+                        transaction: transaction
+                    )
 
                     // Save progress atomically with work
                     // Create updated rangeSet copy inside transaction for saving
@@ -353,7 +357,7 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
+                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
                 batchDurationTimer.recordNanoseconds(Int64(batchDuration))
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch)
@@ -667,6 +671,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     limit: self.batchSize
                 )
 
+                var batchEntries: [(item: Item, id: Tuple)] = []
+                batchEntries.reserveCapacity(self.batchSize)
+
                 for try await (key, data) in scanSequence {
                     // Deserialize item from decompressed data
                     let item: Item = try DataAccess.deserialize(data)
@@ -674,16 +681,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     // Extract id
                     let id = try itemTypeSubspace.unpack(key)
 
-                    // Call IndexMaintainer to build index entry
-                    try await self.indexMaintainer.scanItem(
-                        item,
-                        id: id,
-                        transaction: transaction
-                    )
+                    batchEntries.append((item: item, id: id))
 
                     processedKey = Array(key)
                     count += 1
                 }
+
+                // Call IndexMaintainer once per batch. Maintainers that do
+                // not override scanItems preserve scanItem behavior.
+                try await self.indexMaintainer.scanItems(
+                    batchEntries,
+                    transaction: transaction
+                )
 
                 // Update progress atomically with the batch
                 if let processedKey = processedKey {
@@ -763,6 +772,9 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     limit: self.batchSize
                 )
 
+                var batchEntries: [(item: Item, id: Tuple)] = []
+                batchEntries.reserveCapacity(self.batchSize)
+
                 for try await (key, data) in scanSequence {
                     // Deserialize item from decompressed data
                     let item: Item = try DataAccess.deserialize(data)
@@ -770,16 +782,18 @@ public final class OnlineIndexer<Item: Persistable>: Sendable {
                     // Extract id
                     let id = try itemTypeSubspace.unpack(key)
 
-                    // Call IndexMaintainer to build index entry
-                    try await self.indexMaintainer.scanItem(
-                        item,
-                        id: id,
-                        transaction: transaction
-                    )
+                    batchEntries.append((item: item, id: id))
 
                     processedKey = Array(key)
                     count += 1
                 }
+
+                // Call IndexMaintainer once per batch. Maintainers that do
+                // not override scanItems preserve scanItem behavior.
+                try await self.indexMaintainer.scanItems(
+                    batchEntries,
+                    transaction: transaction
+                )
 
                 return (count, processedKey)
             }
@@ -1017,5 +1031,3 @@ public enum OnlineIndexerError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

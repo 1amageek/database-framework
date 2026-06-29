@@ -72,7 +72,7 @@ struct BenchmarkArticle: Persistable {
 // MARK: - Test Helper
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: FullTextIndexMaintainer<BenchmarkArticle>

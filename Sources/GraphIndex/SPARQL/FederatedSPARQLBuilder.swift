@@ -255,7 +255,7 @@ public struct FederatedSPARQLBuilder: Sendable {
             queryContext: queryContext
         )
 
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let projectedVars = resolveProjection()
 
         if sources.isEmpty {
@@ -403,7 +403,7 @@ public struct FederatedSPARQLBuilder: Sendable {
         bindings: [VariableBinding],
         stats: ExecutionStatistics,
         projectedVars: [String],
-        startTime: DispatchTime
+        startTime: MonotonicTimestamp
     ) -> SPARQLResult {
         var ordered = bindings
 
@@ -444,7 +444,7 @@ public struct FederatedSPARQLBuilder: Sendable {
         )
     }
 
-    private func elapsed(since start: DispatchTime) -> UInt64 {
-        DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+    private func elapsed(since start: MonotonicTimestamp) -> UInt64 {
+        MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
     }
 }

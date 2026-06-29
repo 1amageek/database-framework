@@ -1,4 +1,3 @@
-#if !os(WASI)
 // IndexAnnotatable.swift
 // FDBIndexing - Abstract index metadata protocol
 //
@@ -57,5 +56,3 @@ public protocol IndexAnnotatable {
     /// **Note**: This is declarative metadata only, no execution logic.
     static var indexDescriptors: [IndexDescriptor] { get }
 }
-
-#endif

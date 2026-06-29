@@ -91,9 +91,11 @@ public final class SpatialCellScanner: Sendable {
             let cellSubspace = indexSubspace.subspace(cellTuple)
             let (begin, end) = cellSubspace.range()
 
+            let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
             let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
+                limit: readLimit,
                 snapshot: true
             )
 
@@ -120,6 +122,91 @@ public final class SpatialCellScanner: Sendable {
 
                 results.append(keyTuple)
             }
+
+            if limit != nil && limitReason == nil && sequence.count >= readLimit {
+                limitReason = .maxResultsReached(returned: results.count, limit: effectiveLimit)
+                break cellLoop
+            }
+        }
+
+        return (results, limitReason)
+    }
+
+    internal func scan(
+        plan: SpatialScanPlan,
+        limit: Int?,
+        transaction: any Transaction
+    ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
+        switch plan {
+        case .cells(let cellIds):
+            return try await scanCells(cellIds: cellIds, limit: limit, transaction: transaction)
+        case .codeRange(let minCode, let maxCode):
+            return try await scanCodeRange(
+                minCode: minCode,
+                maxCode: maxCode,
+                limit: limit,
+                transaction: transaction
+            )
+        }
+    }
+
+    internal func scanCodeRange(
+        minCode: UInt64,
+        maxCode: UInt64,
+        limit: Int?,
+        transaction: any Transaction
+    ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
+        var results: [Tuple] = []
+        var seenIds: Set<Data> = []
+        var limitReason: LimitReason? = nil
+
+        let effectiveLimit = limit ?? Int.max
+        let rangeStart = indexSubspace.pack(Tuple(minCode))
+        let maxKey = indexSubspace.pack(Tuple(maxCode))
+        let rangeEnd: Bytes
+        do {
+            rangeEnd = try strinc(maxKey)
+        } catch {
+            rangeEnd = maxKey + [0xFF]
+        }
+
+        let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(rangeStart),
+            to: .firstGreaterOrEqual(rangeEnd),
+            limit: readLimit,
+            snapshot: true
+        )
+
+        for (key, _) in sequence {
+            guard indexSubspace.contains(key) else { break }
+
+            let keyTuple = try indexSubspace.unpack(key)
+            guard keyTuple.count >= 2 else {
+                continue
+            }
+
+            var idElements: [any TupleElement] = []
+            for index in 1..<keyTuple.count {
+                if let element = keyTuple[index] {
+                    idElements.append(element)
+                }
+            }
+            let idTuple = Tuple(idElements)
+            let idData = Data(idTuple.pack())
+            guard !seenIds.contains(idData) else { continue }
+            seenIds.insert(idData)
+
+            if results.count >= effectiveLimit {
+                limitReason = .maxResultsReached(returned: effectiveLimit, limit: effectiveLimit)
+                break
+            }
+
+            results.append(idTuple)
+        }
+
+        if limit != nil && limitReason == nil && sequence.count >= readLimit {
+            limitReason = .maxResultsReached(returned: results.count, limit: effectiveLimit)
         }
 
         return (results, limitReason)
@@ -157,9 +244,11 @@ public final class SpatialCellScanner: Sendable {
             let cellSubspace = indexSubspace.subspace(cellTuple)
             let (begin, end) = cellSubspace.range()
 
+            let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
             let sequence = try await transaction.collectRange(
                 from: .firstGreaterOrEqual(begin),
                 to: .firstGreaterOrEqual(end),
+                limit: readLimit,
                 snapshot: true
             )
 
@@ -185,6 +274,11 @@ public final class SpatialCellScanner: Sendable {
 
                 // Distance will be calculated after item fetch
                 results.append((key: keyTuple, distance: 0))
+            }
+
+            if limit != nil && limitReason == nil && sequence.count >= readLimit {
+                limitReason = .maxResultsReached(returned: results.count, limit: effectiveLimit)
+                break cellLoop
             }
         }
 

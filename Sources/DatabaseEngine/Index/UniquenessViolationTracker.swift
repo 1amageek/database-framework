@@ -1,4 +1,3 @@
-#if !os(WASI)
 // UniquenessViolationTracker.swift
 // DatabaseEngine - Tracks and manages uniqueness violations
 //
@@ -566,5 +565,3 @@ extension UniquenessViolationTracker {
         )
     }
 }
-
-#endif

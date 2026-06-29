@@ -1,4 +1,3 @@
-#if !os(WASI)
 // LimitReason.swift
 // DatabaseEngine - Limit reason enumeration for incomplete results
 //
@@ -85,5 +84,3 @@ extension LimitReason: CustomStringConvertible {
         }
     }
 }
-
-#endif

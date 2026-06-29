@@ -1,4 +1,3 @@
-#if !os(WASI)
 // StoreTimer.swift
 // DatabaseEngine - Detailed instrumentation for database operations
 //
@@ -309,9 +308,9 @@ public final class StoreTimer: Sendable {
     ///   - operation: The operation to execute
     /// - Returns: The result of the operation
     public func time<T>(_ event: StoreTimerEvent, _ operation: () throws -> T) rethrows -> T {
-        let start = DispatchTime.now()
+        let start = MonotonicClock.now()
         defer {
-            let duration = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
             record(event, duration: duration)
         }
         return try operation()
@@ -324,9 +323,9 @@ public final class StoreTimer: Sendable {
     ///   - operation: The async operation to execute
     /// - Returns: The result of the operation
     public func time<T>(_ event: StoreTimerEvent, _ operation: () async throws -> T) async rethrows -> T {
-        let start = DispatchTime.now()
+        let start = MonotonicClock.now()
         defer {
-            let duration = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+            let duration = MonotonicClock.now().uptimeNanoseconds - start.uptimeNanoseconds
             record(event, duration: duration)
         }
         return try await operation()
@@ -481,5 +480,3 @@ public struct StoreTimerSnapshot: Sendable {
         return result
     }
 }
-
-#endif

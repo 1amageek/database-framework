@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TransactionConfiguration.swift
 // DatabaseEngine - Configurable transaction settings
 //
@@ -504,5 +503,3 @@ extension TransactionConfiguration.Tracing: CustomStringConvertible {
         return "Tracing(\(parts.joined(separator: ", ")))"
     }
 }
-
-#endif

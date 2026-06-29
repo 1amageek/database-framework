@@ -193,7 +193,7 @@ public final class TopologicalSorter<Edge: Persistable>: Sendable {
 
     /// Internal: Compute topological order and return adjacency list for reuse
     private func sortWithGraph(edgeLabel: String?) async throws -> (TopologicalSortResult, [String: [String]]) {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes and compute in-degrees
         let (nodes, inDegree, adjacency) = try await buildGraph(edgeLabel: edgeLabel)
@@ -204,7 +204,7 @@ public final class TopologicalSorter<Edge: Persistable>: Sendable {
                 hasCycle: false,
                 cyclicNodes: [],
                 totalNodes: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: true,
                 limitReason: nil
             ), adjacency)
@@ -282,7 +282,7 @@ public final class TopologicalSorter<Edge: Persistable>: Sendable {
             hasCycle: hasCycle,
             cyclicNodes: cyclicNodes,
             totalNodes: nodes.count,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: isComplete,
             limitReason: limitReason
         ), adjacency)

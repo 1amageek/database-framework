@@ -1,4 +1,3 @@
-#if !os(WASI)
 // IndexSkipScan.swift
 // QueryPlanner - Index skip scan optimization
 
@@ -360,6 +359,3 @@ public struct SkipScanCostEstimator {
         )
     }
 }
-
-
-#endif

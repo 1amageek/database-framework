@@ -106,6 +106,84 @@ public final class CountingIndexMaintainer<Item: Persistable>: IndexMaintainer, 
     }
 }
 
+// MARK: - BatchTrackingIndexMaintainer
+
+/// Index maintainer that verifies OnlineIndexer dispatches work through scanItems.
+public final class BatchTrackingIndexMaintainer<Item: Persistable>: IndexMaintainer, Sendable {
+    private struct State: Sendable {
+        var batchSizes: [Int] = []
+        var scanItemCallCount: Int = 0
+        var processedIds: Set<String> = []
+    }
+
+    private let state: Mutex<State>
+    private let indexSubspace: Subspace
+    private let indexName: String
+
+    public init(indexSubspace: Subspace, indexName: String) {
+        self.state = Mutex(State())
+        self.indexSubspace = indexSubspace
+        self.indexName = indexName
+    }
+
+    public func updateIndex(
+        oldItem: Item?,
+        newItem: Item?,
+        transaction: any Transaction
+    ) async throws {
+        // Not used in online indexer tests
+    }
+
+    public func scanItem(
+        _ item: Item,
+        id: Tuple,
+        transaction: any Transaction
+    ) async throws {
+        state.withLock { state in
+            state.scanItemCallCount += 1
+        }
+        try await writeIndexEntry(id: id, transaction: transaction)
+    }
+
+    public func scanItems(
+        _ items: [(item: Item, id: Tuple)],
+        transaction: any Transaction
+    ) async throws {
+        state.withLock { state in
+            state.batchSizes.append(items.count)
+        }
+
+        for entry in items {
+            try await writeIndexEntry(id: entry.id, transaction: transaction)
+        }
+    }
+
+    public func getBatchSizes() -> [Int] {
+        state.withLock { $0.batchSizes }
+    }
+
+    public func getScanItemCallCount() -> Int {
+        state.withLock { $0.scanItemCallCount }
+    }
+
+    public func getUniqueProcessedCount() -> Int {
+        state.withLock { $0.processedIds.count }
+    }
+
+    private func writeIndexEntry(
+        id: Tuple,
+        transaction: any Transaction
+    ) async throws {
+        let idString = Data(id.pack()).base64EncodedString()
+        state.withLock { state in
+            _ = state.processedIds.insert(idString)
+        }
+
+        let indexKey = indexSubspace.subspace(indexName).pack(id)
+        transaction.setValue([0x01], for: indexKey)
+    }
+}
+
 // MARK: - LargeTestDataGenerator
 
 /// Generates large datasets for testing transaction limits

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // StatisticsManager.swift
 // QueryPlanner - Unified statistics management
 
@@ -624,5 +623,3 @@ extension StatisticsManager {
         public let staleTypes: [String]
     }
 }
-
-#endif

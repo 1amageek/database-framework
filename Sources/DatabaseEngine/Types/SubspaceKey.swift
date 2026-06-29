@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SubspaceKey.swift
 // DatabaseEngine - Centralized subspace key definitions
 //
@@ -55,5 +54,3 @@ public enum SubspaceKey {
     /// Layout: `[subspace]/B/[Tuple([itemKeyBytes])]/[chunkIndex]`
     public static let blobs = "B"
 }
-
-#endif

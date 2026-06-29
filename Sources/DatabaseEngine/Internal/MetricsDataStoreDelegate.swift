@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Metrics
 
@@ -225,5 +224,3 @@ final class MetricsDataStoreDelegate: DataStoreDelegate, Sendable {
         return String(sanitized.prefix(50))
     }
 }
-
-#endif

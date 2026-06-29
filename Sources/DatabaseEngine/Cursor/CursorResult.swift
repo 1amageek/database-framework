@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CursorResult.swift
 // DatabaseEngine - Result container for cursor iteration
 //
@@ -202,5 +201,3 @@ public struct CursorResultPage<T: Persistable>: Sendable {
         self.totalItemsFetched = totalItemsFetched
     }
 }
-
-#endif

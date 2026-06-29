@@ -384,6 +384,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             return try await searchFullText(
                 terms: terms,
                 matchMode: matchMode,
+                kind: kind,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -495,6 +496,7 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
             return try await searchFullText(
                 terms: terms,
                 matchMode: matchMode,
+                kind: kind,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -568,11 +570,13 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
     private func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
+        kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>,
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> [Tuple] {
         let termsSubspace = indexSubspace.subspace("terms")
-        let normalizedTerms = terms.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+        let termGroups = normalizeQueryTermGroups(terms, kind: kind)
+        let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         let matchingIDs: [[any TupleElement]]
         switch matchMode {
@@ -583,11 +587,18 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
                 transaction: transaction
             )
         case .any:
-            matchingIDs = try await searchTermsOR(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
+            var idToElements: [String: [any TupleElement]] = [:]
+            for group in termGroups {
+                let matches = try await searchTermsAND(
+                    group,
+                    termsSubspace: termsSubspace,
+                    transaction: transaction
+                )
+                for elements in matches {
+                    idToElements[stableKey(Tuple(elements))] = elements
+                }
+            }
+            matchingIDs = Array(idToElements.values)
         case .phrase:
             matchingIDs = try await searchTermsAND(
                 normalizedTerms,
@@ -597,6 +608,32 @@ private struct PolymorphicFullTextReadExecutor: PolymorphicIndexReadExecutor {
         }
 
         return matchingIDs.map(Tuple.init)
+    }
+
+    private func normalizeQueryTermGroups(
+        _ terms: [String],
+        kind: FullTextIndexKind<PolymorphicFullTextPlaceholder>
+    ) -> [[String]] {
+        let normalizer = FullTextTermNormalizer(
+            tokenizer: kind.tokenizer,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength
+        )
+        return terms.map { term in
+            uniqueTerms(normalizer.normalizedTerms(from: term))
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    private func uniqueTerms(_ terms: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        result.reserveCapacity(terms.count)
+        for term in terms where !seen.contains(term) {
+            seen.insert(term)
+            result.append(term)
+        }
+        return result
     }
 
     private func searchTermsAND(

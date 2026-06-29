@@ -224,10 +224,11 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
         var facets: [(value: String, count: Int64)] = []
 
         for (key, value) in sequence {
-            guard let keyTuple = try? fieldSubspace.unpack(key),
-                  let facetValue = keyTuple[0] as? String else {
-                continue
-            }
+            let facetValue = try FullTextStorageDecoder.facetValue(
+                from: key,
+                in: fieldSubspace,
+                field: field
+            )
 
             let count = ByteConversion.bytesToInt64(value)
             if count > 0 {  // Only include non-zero counts
@@ -247,18 +248,10 @@ public struct FacetMaintainer<Item: Persistable>: Sendable {
         transaction: any Transaction
     ) async throws -> [String] {
         let docFacetKey = docFacetsSubspace.subspace(field).pack(docId)
-        guard let value = try await transaction.getValue(for: docFacetKey, snapshot: true),
-              let valuesTuple = try? Tuple.unpack(from: value) else {
+        guard let value = try await transaction.getValue(for: docFacetKey, snapshot: true) else {
             return []
         }
-
-        var values: [String] = []
-        for i in 0..<valuesTuple.count {
-            if let v = valuesTuple[i] as? String {
-                values.append(v)
-            }
-        }
-        return values
+        return try FullTextStorageDecoder.documentFacetValues(from: value, field: field)
     }
 
     /// Extract field values from an item

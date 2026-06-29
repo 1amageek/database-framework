@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CascadesBridge.swift
 // DatabaseEngine - Bridge between Cascades optimizer types and QueryIR
 
@@ -182,5 +181,3 @@ extension SortKeyExpr {
         )
     }
 }
-
-#endif

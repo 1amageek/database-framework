@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TransactionRunner.swift
 // DatabaseEngine - Transaction execution with retry logic
 //
@@ -141,9 +140,9 @@ internal struct TransactionRunner: Sendable {
                 }
 
                 // 5. Commit (throws on failure)
-                let commitStart = DispatchTime.now().uptimeNanoseconds
+                let commitStart = MonotonicClock.now().uptimeNanoseconds
                 try await newTransaction.commit()
-                let commitNanos = DispatchTime.now().uptimeNanoseconds - commitStart
+                let commitNanos = MonotonicClock.now().uptimeNanoseconds - commitStart
 
                 // 6. Update cache after successful commit
                 await updateCacheAfterCommit(
@@ -304,5 +303,3 @@ internal struct TransactionRunner: Sendable {
         return cappedDelay + jitter
     }
 }
-
-#endif

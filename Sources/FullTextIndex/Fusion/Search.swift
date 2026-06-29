@@ -179,6 +179,13 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 kind: "fulltext"
             )
         }
+        guard let kind = descriptor.kind as? FullTextIndexKind<T> else {
+            throw FusionQueryError.indexNotFound(
+                type: T.persistableType,
+                field: fieldName,
+                kind: "fulltext"
+            )
+        }
 
         let indexName = descriptor.name
 
@@ -191,6 +198,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
             try await self.searchFullText(
                 terms: self.searchTerms,
                 matchMode: self.matchMode,
+                kind: kind,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -236,6 +244,7 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func searchFullText(
         terms: [String],
         matchMode: TextMatchMode,
+        kind: FullTextIndexKind<T>,
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> [(id: Tuple, score: Double)] {
@@ -244,8 +253,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         let statsSubspace = indexSubspace.subspace("stats")
         let dfSubspace = indexSubspace.subspace("df")
 
-        // Normalize terms (simple lowercase for now)
-        let normalizedTerms = terms.map { $0.lowercased().trimmingCharacters(in: .whitespaces) }
+        let termGroups = normalizeQueryTermGroups(terms, kind: kind)
+        let normalizedTerms = uniqueTerms(termGroups.flatMap { $0 })
 
         // Get matching document IDs based on match mode
         let matchingIds: [[any TupleElement]]
@@ -257,11 +266,18 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 transaction: transaction
             )
         case .any:
-            matchingIds = try await searchTermsOR(
-                normalizedTerms,
-                termsSubspace: termsSubspace,
-                transaction: transaction
-            )
+            var idToElements: [String: [any TupleElement]] = [:]
+            for group in termGroups {
+                let matches = try await searchTermsAND(
+                    group,
+                    termsSubspace: termsSubspace,
+                    transaction: transaction
+                )
+                for elements in matches {
+                    idToElements[elementsToStableKey(elements)] = elements
+                }
+            }
+            matchingIds = Array(idToElements.values)
         case .phrase:
             // Position-verified phrase search via FullTextIndexMaintainer.searchPhrase()
             matchingIds = try await searchPhraseIds(
@@ -313,12 +329,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
                 let termSubspace = termsSubspace.subspace(term)
                 let termKey = termSubspace.pack(docId)
                 if let value = try await transaction.getValue(for: termKey, snapshot: true) {
-                    // Try to decode as positions first, then as tf
-                    if let tfTuple = try? Tuple.unpack(from: value) {
-                        termFrequencies[term] = tfTuple.count > 0 ? Int(tfTuple.count) : 1
-                    } else {
-                        termFrequencies[term] = 1
-                    }
+                    let tfTuple = try Tuple.unpack(from: value)
+                    termFrequencies[term] = tfTuple.count > 0 ? Int(tfTuple.count) : 1
                 }
             }
 
@@ -427,10 +439,8 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
         for (key, _) in sequence {
             guard termSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? termSubspace.unpack(key),
-                  let elements = try? Tuple.unpack(from: keyTuple.pack()) else {
-                continue
-            }
+            let keyTuple = try termSubspace.unpack(key)
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
             results.append(elements)
         }
 
@@ -575,6 +585,32 @@ public struct Search<T: Persistable>: FusionQuery, Sendable {
     private func elementsToStableKey(_ elements: [any TupleElement]) -> String {
         let packed = Tuple(elements).pack()
         return Data(packed).base64EncodedString()
+    }
+
+    private func normalizeQueryTermGroups(
+        _ terms: [String],
+        kind: FullTextIndexKind<T>
+    ) -> [[String]] {
+        let normalizer = FullTextTermNormalizer(
+            tokenizer: kind.tokenizer,
+            ngramSize: kind.ngramSize,
+            minTermLength: kind.minTermLength
+        )
+        return terms.map { term in
+            uniqueTerms(normalizer.normalizedTerms(from: term))
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    private func uniqueTerms(_ terms: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        result.reserveCapacity(terms.count)
+        for term in terms where !seen.contains(term) {
+            seen.insert(term)
+            result.append(term)
+        }
+        return result
     }
 
     private func bytesToInt64(_ bytes: [UInt8]) -> Int64 {

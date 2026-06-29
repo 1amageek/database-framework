@@ -128,7 +128,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: CommunityResult with node assignments
     public func detect(edgeLabel: String? = nil) async throws -> CommunityResult {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes
         let nodes = try await collectAllNodes(edgeLabel: edgeLabel)
@@ -137,7 +137,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             return CommunityResult(
                 assignments: [:],
                 iterations: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -218,7 +218,7 @@ public final class CommunityDetector<Edge: Persistable>: Sendable {
             assignments: labels,
             communities: communities,
             iterations: iteration,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             modularity: modularity
         )
     }

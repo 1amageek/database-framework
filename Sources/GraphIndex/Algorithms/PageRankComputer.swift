@@ -87,7 +87,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: PageRankResult with scores for all nodes
     public func compute(edgeLabel: String? = nil) async throws -> PageRankResult {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes and their out-degrees
         let (nodes, outDegrees) = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
@@ -97,7 +97,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
                 scores: [:],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -167,7 +167,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 
@@ -184,7 +184,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
         from startNode: String,
         edgeLabel: String? = nil
     ) async throws -> PageRankResult {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Step 1: Collect all nodes and their out-degrees
         let (nodes, outDegrees) = try await collectNodesAndDegrees(edgeLabel: edgeLabel)
@@ -194,7 +194,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
                 scores: [startNode: 1.0],
                 iterations: 0,
                 convergenceDelta: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -266,7 +266,7 @@ public final class PageRankComputer<Edge: Persistable>: Sendable {
             scores: scores,
             iterations: iteration,
             convergenceDelta: delta,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 

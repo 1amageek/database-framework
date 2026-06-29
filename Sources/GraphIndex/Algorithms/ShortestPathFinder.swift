@@ -113,7 +113,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         maxDepth: Int? = nil,
         bidirectional: Bool? = nil
     ) async throws -> ShortestPathResult<Edge> {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
         let useBidirectional = bidirectional ?? configuration.bidirectional
 
@@ -124,7 +124,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                 path: path,
                 distance: 0,
                 nodesExplored: 1,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -164,7 +164,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         edgeLabel: String? = nil,
         maxDepth: Int? = nil
     ) async throws -> AllShortestPathsResult<Edge> {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let effectiveMaxDepth = maxDepth ?? configuration.maxDepth
 
         // Early termination: source == target
@@ -174,7 +174,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                 paths: [path],
                 distance: 0,
                 nodesExplored: 1,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -221,7 +221,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         target: String,
         edgeLabel: String?,
         maxDepth: Int,
-        startTime: DispatchTime
+        startTime: MonotonicTimestamp
     ) async throws -> ShortestPathResult<Edge> {
         var state = SearchState()
         state.visited.insert(source)
@@ -264,7 +264,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                                 path: path,
                                 distance: Double(path.length),
                                 nodesExplored: state.nodesExplored,
-                                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                             )
                         }
 
@@ -275,7 +275,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                     if state.nodesExplored >= configuration.maxNodesExplored {
                         return .notFound(
                             nodesExplored: state.nodesExplored,
-                            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                         )
                     }
                 }
@@ -287,7 +287,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         // No path found
         return .notFound(
             nodesExplored: state.nodesExplored,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 
@@ -300,7 +300,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         target: String,
         edgeLabel: String?,
         maxDepth: Int,
-        startTime: DispatchTime
+        startTime: MonotonicTimestamp
     ) async throws -> ShortestPathResult<Edge> {
         // Forward search state
         var forwardVisited: Set<String> = [source]
@@ -360,7 +360,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                                     path: path,
                                     distance: Double(path.length),
                                     nodesExplored: nodesExplored,
-                                    durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                                 )
                             }
 
@@ -370,7 +370,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                         if nodesExplored >= configuration.maxNodesExplored {
                             return .notFound(
                                 nodesExplored: nodesExplored,
-                                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                             )
                         }
                     }
@@ -415,7 +415,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                                     path: path,
                                     distance: Double(path.length),
                                     nodesExplored: nodesExplored,
-                                    durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                    durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                                 )
                             }
 
@@ -425,7 +425,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                         if nodesExplored >= configuration.maxNodesExplored {
                             return .notFound(
                                 nodesExplored: nodesExplored,
-                                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
                             )
                         }
                     }
@@ -437,7 +437,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
 
         return .notFound(
             nodesExplored: nodesExplored,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 
@@ -447,7 +447,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
         target: String,
         edgeLabel: String?,
         maxDepth: Int,
-        startTime: DispatchTime
+        startTime: MonotonicTimestamp
     ) async throws -> AllShortestPathsResult<Edge> {
         // Track all parents for each node (not just one)
         var visited: Set<String> = [source]
@@ -513,7 +513,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
                 paths: [],
                 distance: nil,
                 nodesExplored: nodesExplored,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
             )
         }
 
@@ -527,7 +527,7 @@ public final class ShortestPathFinder<Edge: Persistable>: Sendable {
             paths: paths,
             distance: paths.first.map { Double($0.length) },
             nodesExplored: nodesExplored,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
         )
     }
 

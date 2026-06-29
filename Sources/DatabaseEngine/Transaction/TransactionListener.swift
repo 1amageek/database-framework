@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TransactionListener.swift
 // DatabaseEngine - Transaction lifecycle event listener
 //
@@ -457,5 +456,3 @@ public final class TransactionLifecycleTracker: Sendable {
         Date().timeIntervalSince(startTime)
     }
 }
-
-#endif

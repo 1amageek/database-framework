@@ -258,10 +258,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
             }
 
             guard var digest = TDigest.decode(from: Data(value)) else {
-                // Log warning and skip corrupted entry (consistent with batch operation behavior)
-                // Note: For single queries, we throw corruptedData error.
-                // For batch operations, we skip to allow partial results.
-                continue
+                throw PercentileIndexError.corruptedData
             }
 
             let percentileValues = digest.quantiles(percentiles)
@@ -289,8 +286,11 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
         let groupingValues = allValues.count > 1 ? Array(allValues.dropLast()) : []
 
         // Extract numeric value
-        guard let numericValue = try? TypeConversion.double(from: valueElement) else {
-            return  // Skip if value is not numeric
+        let numericValue: Double
+        do {
+            numericValue = try TypeConversion.double(from: valueElement)
+        } catch {
+            throw PercentileIndexError.invalidNumericValue(fieldName: index.name)
         }
 
         let key = try buildGroupingKey(groupingValues)
@@ -301,7 +301,7 @@ public struct PercentileIndexMaintainer<Item: Persistable>: SubspaceIndexMaintai
             if let decoded = TDigest.decode(from: Data(existingData)) {
                 digest = decoded
             } else {
-                digest = TDigest(compression: compression)
+                throw PercentileIndexError.corruptedData
             }
         } else {
             digest = TDigest(compression: compression)

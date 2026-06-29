@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 #if FOUNDATION_DB
@@ -113,5 +112,3 @@ extension DBConfiguration: CustomDebugStringConvertible {
         return "DBConfiguration(name: \(nameDesc), backend: \(backendDesc), indexConfigs: \(indexConfigCount))"
     }
 }
-
-#endif

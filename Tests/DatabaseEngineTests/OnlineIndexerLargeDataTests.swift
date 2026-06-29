@@ -26,7 +26,7 @@ struct OnlineIndexerLargeDataTests {
     // MARK: - Test Context
 
     struct TestContext: Sendable {
-        nonisolated(unsafe) let database: any StorageEngine
+        let database: any StorageEngine
         let container: DBContainer
         let testSubspace: Subspace
         let itemSubspace: Subspace

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ModelDiffBuilder.swift
 // DatabaseEngine - Advanced model diff builder
 //
@@ -333,5 +332,3 @@ extension Optional: OptionalProtocol {
         }
     }
 }
-
-#endif

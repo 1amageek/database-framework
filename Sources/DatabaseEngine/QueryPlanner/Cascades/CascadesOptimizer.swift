@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CascadesOptimizer.swift
 // Cascades Optimizer - Main optimization driver
 //
@@ -472,5 +471,3 @@ public struct OptimizerStatistics: Sendable {
     public let transformationRuleCount: Int
     public let implementationRuleCount: Int
 }
-
-#endif

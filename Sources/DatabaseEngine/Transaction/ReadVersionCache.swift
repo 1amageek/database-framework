@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ReadVersionCache.swift
 // DatabaseEngine - Cache for read versions to support CachePolicy
 //
@@ -7,7 +6,6 @@
 
 import Foundation
 import Synchronization
-import Dispatch
 
 // MARK: - ReadVersionCache
 
@@ -19,7 +17,7 @@ import Dispatch
 ///
 /// **Thread Safety**: Uses `Mutex` for thread-safe access.
 ///
-/// **Monotonic Time**: Uses `DispatchTime.now().uptimeNanoseconds` for
+/// **Monotonic Time**: Uses `ContinuousClock` for
 /// monotonic timestamps that don't jump during clock adjustments.
 ///
 /// **Reference**: FDB Record Layer caches `lastSeenVersion` and
@@ -45,8 +43,8 @@ public final class ReadVersionCache: Sendable {
         /// The FDB read version
         let version: Int64
 
-        /// Monotonic timestamp when this version was observed (nanoseconds)
-        let timestamp: UInt64
+        /// Monotonic timestamp when this version was observed.
+        let timestamp: ContinuousClock.Instant
     }
 
     // MARK: - Properties
@@ -71,7 +69,7 @@ public final class ReadVersionCache: Sendable {
     ///
     /// - Parameter version: The committed version from the transaction
     public func updateFromCommit(version: Int64) {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = ContinuousClock().now
         cache.withLock { $0 = CachedVersion(version: version, timestamp: now) }
     }
 
@@ -85,7 +83,7 @@ public final class ReadVersionCache: Sendable {
     ///
     /// - Parameter version: The read version from the transaction
     public func updateFromRead(version: Int64) {
-        let now = DispatchTime.now().uptimeNanoseconds
+        let now = ContinuousClock().now
         cache.withLock { cached in
             // Only update if newer (or no cached value)
             if cached == nil || version > cached!.version {
@@ -124,9 +122,8 @@ public final class ReadVersionCache: Sendable {
             return cache.withLock { cached in
                 guard let cached = cached else { return nil }
 
-                let now = DispatchTime.now().uptimeNanoseconds
-                let ageNanos = now - cached.timestamp
-                let ageSeconds = Double(ageNanos) / 1_000_000_000
+                let now = ContinuousClock().now
+                let ageSeconds = Self.elapsedSeconds(from: cached.timestamp, to: now)
 
                 guard ageSeconds < seconds else { return nil }
 
@@ -142,9 +139,8 @@ public final class ReadVersionCache: Sendable {
         cache.withLock { cached in
             guard let cached = cached else { return nil }
 
-            let now = DispatchTime.now().uptimeNanoseconds
-            let ageNanos = now - cached.timestamp
-            let ageMillis = Int64(ageNanos / 1_000_000)
+            let now = ContinuousClock().now
+            let ageMillis = Self.elapsedMilliseconds(from: cached.timestamp, to: now)
 
             return (cached.version, ageMillis)
         }
@@ -168,6 +164,24 @@ public final class ReadVersionCache: Sendable {
     /// - Recovery from errors
     public func clear() {
         cache.withLock { $0 = nil }
+    }
+
+    private static func elapsedSeconds(
+        from start: ContinuousClock.Instant,
+        to end: ContinuousClock.Instant
+    ) -> Double {
+        let components = start.duration(to: end).components
+        return Double(components.seconds) + Double(components.attoseconds) / 1_000_000_000_000_000_000
+    }
+
+    private static func elapsedMilliseconds(
+        from start: ContinuousClock.Instant,
+        to end: ContinuousClock.Instant
+    ) -> Int64 {
+        let components = start.duration(to: end).components
+        let secondsMillis = components.seconds * 1_000
+        let attosecondsMillis = components.attoseconds / 1_000_000_000_000_000
+        return secondsMillis + attosecondsMillis
     }
 }
 
@@ -277,5 +291,3 @@ public final class MetricsCollectingReadVersionCache: Sendable {
         }
     }
 }
-
-#endif

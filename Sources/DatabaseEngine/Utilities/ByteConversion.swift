@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ByteConversion.swift
 // DatabaseEngine - Byte conversion utilities for FDB atomic operations
 //
@@ -99,5 +98,3 @@ public enum ByteConversion {
         }
     }
 }
-
-#endif

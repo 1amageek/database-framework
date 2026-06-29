@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import QueryIR
 import StorageKit
@@ -105,5 +104,3 @@ enum CanonicalTupleElementCodecError: Error, Sendable {
     case unsupportedType(String)
     case invalidValue
 }
-
-#endif

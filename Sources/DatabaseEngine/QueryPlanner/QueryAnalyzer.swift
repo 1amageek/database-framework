@@ -1,4 +1,3 @@
-#if !os(WASI)
 // QueryAnalyzer.swift
 // QueryPlanner - Query analysis for planning
 
@@ -370,5 +369,3 @@ public enum QueryPattern: Sendable, Hashable {
         }
     }
 }
-
-#endif

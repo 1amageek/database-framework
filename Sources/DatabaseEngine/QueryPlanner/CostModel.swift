@@ -1,4 +1,3 @@
-#if !os(WASI)
 // CostModel.swift
 // QueryPlanner - Cost model configuration
 
@@ -201,5 +200,3 @@ extension CostModel: CustomStringConvertible {
         """
     }
 }
-
-#endif

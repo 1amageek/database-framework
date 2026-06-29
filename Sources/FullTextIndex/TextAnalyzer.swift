@@ -297,6 +297,7 @@ public struct StandardTokenizer: Tokenizer {
     public init() {}
 
     public func tokenize(_ text: String) -> [AnalyzedToken] {
+#if canImport(Darwin)
         var tokens: [AnalyzedToken] = []
         var position = 0
 
@@ -317,7 +318,47 @@ public struct StandardTokenizer: Tokenizer {
         }
 
         return tokens
+#else
+        var tokens: [AnalyzedToken] = []
+        var position = 0
+        var currentIndex = text.startIndex
+
+        while currentIndex < text.endIndex {
+            while currentIndex < text.endIndex && !isTokenCharacter(text[currentIndex]) {
+                currentIndex = text.index(after: currentIndex)
+            }
+
+            guard currentIndex < text.endIndex else {
+                break
+            }
+
+            let tokenStart = currentIndex
+            while currentIndex < text.endIndex && isTokenCharacter(text[currentIndex]) {
+                currentIndex = text.index(after: currentIndex)
+            }
+
+            let tokenText = String(text[tokenStart..<currentIndex])
+            let startOffset = text.distance(from: text.startIndex, to: tokenStart)
+            let endOffset = text.distance(from: text.startIndex, to: currentIndex)
+
+            tokens.append(AnalyzedToken(
+                text: tokenText,
+                position: position,
+                startOffset: startOffset,
+                endOffset: endOffset
+            ))
+            position += 1
+        }
+
+        return tokens
+#endif
     }
+
+#if !canImport(Darwin)
+    private func isTokenCharacter(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { CharacterSet.alphanumerics.contains($0) }
+    }
+#endif
 }
 
 /// N-gram tokenizer - generates character n-grams

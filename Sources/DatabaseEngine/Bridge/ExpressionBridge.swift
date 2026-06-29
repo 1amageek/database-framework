@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ExpressionBridge.swift
 // DatabaseEngine - Bridge between Predicate<T> and QueryIR.Expression
 
@@ -328,5 +327,3 @@ extension QueryIR.Expression {
         return SplitAndResult(pushed: pushed, residual: residual)
     }
 }
-
-#endif

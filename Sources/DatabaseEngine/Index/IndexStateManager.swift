@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 import Logging
 
@@ -417,5 +416,3 @@ public enum IndexStateError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

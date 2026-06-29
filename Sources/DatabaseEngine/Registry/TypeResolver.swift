@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TypeResolver.swift
 // DatabaseEngine - Type resolution from Schema
 
@@ -53,5 +52,3 @@ public struct TypeResolver: Sendable {
         throw SPARQLFunctionError.graphIndexNotFound(entity.name)
     }
 }
-
-#endif

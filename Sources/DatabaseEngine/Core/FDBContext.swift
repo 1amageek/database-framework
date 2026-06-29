@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 import Core
@@ -2302,5 +2301,3 @@ extension FDBContext {
         }
     }
 }
-
-#endif

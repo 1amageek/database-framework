@@ -91,7 +91,7 @@ struct TestQuad: Persistable {
 // MARK: - Test Helper
 
 private struct QuadTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: GraphIndexMaintainer<TestQuad>

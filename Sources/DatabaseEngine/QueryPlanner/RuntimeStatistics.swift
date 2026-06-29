@@ -1,4 +1,3 @@
-#if !os(WASI)
 // RuntimeStatistics.swift
 // QueryPlanner - Runtime statistics feedback for adaptive optimization
 
@@ -487,5 +486,3 @@ public struct DriftReport: Sendable {
     public let driftedFields: [String]
     public let recommendation: String?
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // SPARQLFunctionRewriter.swift
 // Database - Rewrite SelectQuery by executing SPARQL() functions
 
@@ -441,5 +440,3 @@ extension Optional {
         }
     }
 }
-
-#endif

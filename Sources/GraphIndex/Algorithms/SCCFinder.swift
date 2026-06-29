@@ -155,7 +155,7 @@ public final class SCCFinder: Sendable {
     /// - Parameter edgeLabel: Optional edge label filter
     /// - Returns: SCC result with all components
     public func findSCCs(edgeLabel: String? = nil) async throws -> SCCResult {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Collect all nodes first
         let allNodes = try await collectAllNodes(edgeLabel: edgeLabel)
@@ -163,7 +163,7 @@ public final class SCCFinder: Sendable {
         // Run Tarjan's algorithm
         let result = try await runTarjan(nodes: allNodes, edgeLabel: edgeLabel)
 
-        let endTime = DispatchTime.now()
+        let endTime = MonotonicClock.now()
         let durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 
         return SCCResult(

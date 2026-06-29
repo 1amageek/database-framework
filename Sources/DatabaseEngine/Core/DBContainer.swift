@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import StorageKit
 #if FOUNDATION_DB
@@ -960,5 +959,3 @@ extension DBContainer {
         AdminContext(container: self)
     }
 }
-
-#endif

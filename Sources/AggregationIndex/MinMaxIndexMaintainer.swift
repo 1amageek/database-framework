@@ -102,13 +102,25 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
 
         // 2. Layer 2: Update aggregates for affected groups
         var affectedGroups: [[any TupleElement]] = []
-        if let oldGrouping = try? extractGrouping(from: oldItem) {
-            affectedGroups.append(oldGrouping)
+        if let oldItem {
+            do {
+                if let oldGrouping = try extractGrouping(from: oldItem) {
+                    affectedGroups.append(oldGrouping)
+                }
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value was not indexed
+            }
         }
-        if let newGrouping = try? extractGrouping(from: newItem) {
-            // Only add if different from old grouping
-            if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
-                affectedGroups.append(newGrouping)
+        if let newItem {
+            do {
+                if let newGrouping = try extractGrouping(from: newItem) {
+                    // Only add if different from old grouping
+                    if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
+                        affectedGroups.append(newGrouping)
+                    }
+                }
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value is not indexed
             }
         }
 
@@ -133,12 +145,11 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             transaction.setValue(value, for: indexKey)
 
             // Layer 2: Update aggregate for this group
-            if let groupingValues = try? extractGrouping(from: item) {
-                try await updateAggregateForGroup(
-                    groupingValues: groupingValues,
-                    transaction: transaction
-                )
-            }
+            let groupingValues = try extractGrouping(from: item) ?? []
+            try await updateAggregateForGroup(
+                groupingValues: groupingValues,
+                transaction: transaction
+            )
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil value is not indexed
         }
@@ -264,7 +275,7 @@ public struct MinIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         guard let item = item else { return nil }
         let allValues = try evaluateIndexFields(from: item)
         // Last field is the value, everything before is grouping
-        guard allValues.count >= 2 else { return nil }
+        guard !allValues.isEmpty else { return nil }
         return Array(allValues.dropLast())
     }
 
@@ -402,13 +413,25 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
 
         // 2. Layer 2: Update aggregates for affected groups
         var affectedGroups: [[any TupleElement]] = []
-        if let oldGrouping = try? extractGrouping(from: oldItem) {
-            affectedGroups.append(oldGrouping)
+        if let oldItem {
+            do {
+                if let oldGrouping = try extractGrouping(from: oldItem) {
+                    affectedGroups.append(oldGrouping)
+                }
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value was not indexed
+            }
         }
-        if let newGrouping = try? extractGrouping(from: newItem) {
-            // Only add if different from old grouping
-            if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
-                affectedGroups.append(newGrouping)
+        if let newItem {
+            do {
+                if let newGrouping = try extractGrouping(from: newItem) {
+                    // Only add if different from old grouping
+                    if affectedGroups.isEmpty || !areGroupingsEqual(affectedGroups[0], newGrouping) {
+                        affectedGroups.append(newGrouping)
+                    }
+                }
+            } catch DataAccessError.nilValueCannotBeIndexed {
+                // Sparse index: nil value is not indexed
             }
         }
 
@@ -433,12 +456,11 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
             transaction.setValue(value, for: indexKey)
 
             // Layer 2: Update aggregate for this group
-            if let groupingValues = try? extractGrouping(from: item) {
-                try await updateAggregateForGroup(
-                    groupingValues: groupingValues,
-                    transaction: transaction
-                )
-            }
+            let groupingValues = try extractGrouping(from: item) ?? []
+            try await updateAggregateForGroup(
+                groupingValues: groupingValues,
+                transaction: transaction
+            )
         } catch DataAccessError.nilValueCannotBeIndexed {
             // Sparse index: nil value is not indexed
         }
@@ -564,7 +586,7 @@ public struct MaxIndexMaintainer<Item: Persistable, Value: Comparable & Codable 
         guard let item = item else { return nil }
         let allValues = try evaluateIndexFields(from: item)
         // Last field is the value, everything before is grouping
-        guard allValues.count >= 2 else { return nil }
+        guard !allValues.isEmpty else { return nil }
         return Array(allValues.dropLast())
     }
 

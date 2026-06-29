@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 import Core
 import Synchronization
@@ -274,5 +273,3 @@ public enum IndexManagerError: Error, CustomStringConvertible {
         }
     }
 }
-
-#endif

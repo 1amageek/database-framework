@@ -224,7 +224,7 @@ public struct SpatialKNNSearch<T: Persistable>: Sendable {
 
         for item in items {
             if let location = extractGeoPoint(from: item) {
-                let pkTuple = Tuple([item.id as! any TupleElement])
+                let pkTuple = try SpatialPrimaryKey.tuple(for: item)
                 points.append(PointInfo(primaryKey: pkTuple, location: location))
             }
         }

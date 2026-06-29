@@ -1,4 +1,3 @@
-#if !os(WASI)
 // DeterministicHash.swift
 // DatabaseEngine - Deterministic hashing utilities
 //
@@ -76,5 +75,3 @@ internal struct DeterministicHasher: Sendable {
         return withUnsafeBytes(of: hash.littleEndian) { Array($0) }
     }
 }
-
-#endif

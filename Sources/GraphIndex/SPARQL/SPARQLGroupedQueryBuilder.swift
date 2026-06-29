@@ -325,7 +325,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             storedFieldNames: indexDescriptor.storedFieldNames
         )
 
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         // Step 1: Pattern evaluation + GROUP BY + HAVING
         var (bindings, stats) = try await executor.executeGrouped(
@@ -362,7 +362,7 @@ public struct SPARQLGroupedQueryBuilder<T: Persistable>: Sendable {
             projected = Array(projected.prefix(limit))
         }
 
-        let endTime = DispatchTime.now()
+        let endTime = MonotonicClock.now()
         var finalStats = stats
         finalStats.durationNs = endTime.uptimeNanoseconds - startTime.uptimeNanoseconds
 

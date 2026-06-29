@@ -1,4 +1,3 @@
-#if !os(WASI)
 // InstrumentedTransaction.swift
 // DatabaseEngine - Transaction wrapper with detailed metrics collection
 //
@@ -172,9 +171,9 @@ public final class InstrumentedTransaction: @unchecked Sendable {
 
     /// Get a value and record metrics
     public func getValue(for key: Bytes, snapshot: Bool = false) async throws -> Bytes? {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let result = try await transaction.getValue(for: key, snapshot: snapshot)
-        let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
 
         state.withLock { state in
             state.readCount += 1
@@ -279,11 +278,11 @@ public final class InstrumentedTransaction: @unchecked Sendable {
 
     /// Commit the transaction and finalize metrics
     public func commit() async throws {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
 
         do {
             try await transaction.commit()
-            let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+            let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
 
             // Finalize metrics on successful commit
             let pending = pendingWrites.withLock { $0 }
@@ -351,9 +350,9 @@ public final class InstrumentedTransaction: @unchecked Sendable {
 
     /// Get read version and record timing
     public func getReadVersion() async throws -> Int64 {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let version = try await transaction.getReadVersion()
-        let elapsed = DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds
+        let elapsed = MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds
 
         state.withLock { state in
             state.getReadVersionNanos = elapsed
@@ -624,5 +623,3 @@ public struct AggregatedMetricsSummary: Sendable, CustomStringConvertible {
         """
     }
 }
-
-#endif

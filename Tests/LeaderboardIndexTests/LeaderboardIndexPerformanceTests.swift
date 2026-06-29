@@ -76,7 +76,7 @@ private struct PerfGameScore: Persistable {
 // MARK: - Performance Test Helper
 
 private struct PerfTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let maintainer: TimeWindowLeaderboardIndexMaintainer<PerfGameScore, Int64>
     let indexName: String

@@ -76,7 +76,7 @@ struct TestGameScore: Persistable {
 // MARK: - Test Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: TimeWindowLeaderboardIndexMaintainer<TestGameScore, Int64>

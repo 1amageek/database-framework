@@ -1,4 +1,3 @@
-#if !os(WASI)
 // RecordEncryption.swift
 // DatabaseEngine - Record encryption key management
 //
@@ -329,28 +328,12 @@ public enum EncryptionKeyUtils {
         salt: Data,
         iterations: Int = 100_000
     ) -> SymmetricKey {
-        let passwordData = Data(password.utf8)
-
-        // Use SHA256-based key derivation
-        var derivedKey = Data(count: 32)
-        _ = derivedKey.withUnsafeMutableBytes { derivedPtr in
-            passwordData.withUnsafeBytes { passwordPtr in
-                salt.withUnsafeBytes { saltPtr in
-                    CCKeyDerivationPBKDF(
-                        CCPBKDFAlgorithm(kCCPBKDF2),
-                        passwordPtr.baseAddress?.assumingMemoryBound(to: Int8.self),
-                        passwordData.count,
-                        saltPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                        salt.count,
-                        CCPseudoRandomAlgorithm(kCCPRFHmacAlgSHA256),
-                        UInt32(iterations),
-                        derivedPtr.baseAddress?.assumingMemoryBound(to: UInt8.self),
-                        32
-                    )
-                }
-            }
-        }
-
+        let derivedKey = pbkdf2SHA256(
+            password: Data(password.utf8),
+            salt: salt,
+            iterations: max(1, iterations),
+            outputByteCount: 32
+        )
         return SymmetricKey(data: derivedKey)
     }
 
@@ -359,11 +342,17 @@ public enum EncryptionKeyUtils {
     /// - Parameter size: Salt size in bytes (default: 32)
     /// - Returns: Random salt data
     public static func generateSalt(size: Int = 32) -> Data {
-        var salt = Data(count: size)
-        salt.withUnsafeMutableBytes { bytes in
-            _ = SecRandomCopyBytes(kSecRandomDefault, size, bytes.baseAddress!)
+        guard size > 0 else {
+            return Data()
         }
-        return salt
+
+        var generator = SystemRandomNumberGenerator()
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(size)
+        for _ in 0..<size {
+            bytes.append(UInt8.random(in: UInt8.min...UInt8.max, using: &generator))
+        }
+        return Data(bytes)
     }
 
     /// Export a key to base64 for storage
@@ -388,10 +377,41 @@ public enum EncryptionKeyUtils {
         }
         return SymmetricKey(data: data)
     }
+
+    private static func pbkdf2SHA256(
+        password: Data,
+        salt: Data,
+        iterations: Int,
+        outputByteCount: Int
+    ) -> Data {
+        let key = SymmetricKey(data: password)
+        let hmacLength = SHA256.Digest.byteCount
+        let blockCount = (outputByteCount + hmacLength - 1) / hmacLength
+        var derivedBytes: [UInt8] = []
+        derivedBytes.reserveCapacity(blockCount * hmacLength)
+
+        for blockIndex in 1...blockCount {
+            var blockSalt = [UInt8](salt)
+            blockSalt.append(UInt8((blockIndex >> 24) & 0xff))
+            blockSalt.append(UInt8((blockIndex >> 16) & 0xff))
+            blockSalt.append(UInt8((blockIndex >> 8) & 0xff))
+            blockSalt.append(UInt8(blockIndex & 0xff))
+
+            var u = Array(HMAC<SHA256>.authenticationCode(for: Data(blockSalt), using: key))
+            var block = u
+
+            if iterations > 1 {
+                for _ in 1..<iterations {
+                    u = Array(HMAC<SHA256>.authenticationCode(for: Data(u), using: key))
+                    for index in block.indices {
+                        block[index] ^= u[index]
+                    }
+                }
+            }
+
+            derivedBytes.append(contentsOf: block)
+        }
+
+        return Data(derivedBytes.prefix(outputByteCount))
+    }
 }
-
-// MARK: - CommonCrypto Import
-
-import CommonCrypto
-
-#endif

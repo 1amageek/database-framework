@@ -111,7 +111,7 @@ private func benchmark<T>(
 // MARK: - Test Context Helper
 
 private struct TestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: VersionIndexMaintainer<PerfTestDocument>

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // Expression.swift
 // Cascades Optimizer - Logical and Physical Expression representations
 //
@@ -364,5 +363,3 @@ extension PhysicalOperator {
         }
     }
 }
-
-#endif

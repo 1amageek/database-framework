@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ItemStorage.swift
 // DatabaseEngine - Unified item storage abstraction
 //
@@ -509,5 +508,3 @@ public enum ItemStorageError: Error, CustomStringConvertible, Sendable {
         }
     }
 }
-
-#endif

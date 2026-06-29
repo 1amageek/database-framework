@@ -139,10 +139,12 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         for (key, value) in sequence {
             guard prefixSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? prefixSubspace.unpack(key),
-                  let term = keyTuple[0] as? String else {
-                continue
-            }
+            let term = try FullTextStorageDecoder.autocompleteSuggestionTerm(
+                from: key,
+                in: prefixSubspace,
+                field: field,
+                prefix: normalizedPrefix
+            )
 
             let score = ByteConversion.bytesToInt64(value)
             if score > 0 {
@@ -179,10 +181,11 @@ public struct AutocompleteMaintainer<Item: Persistable>: Sendable {
         for (key, value) in sequence {
             guard fieldSubspace.contains(key) else { break }
 
-            guard let keyTuple = try? fieldSubspace.unpack(key),
-                  let term = keyTuple[0] as? String else {
-                continue
-            }
+            let term = try FullTextStorageDecoder.autocompleteTerm(
+                from: key,
+                in: fieldSubspace,
+                field: field
+            )
 
             let score = ByteConversion.bytesToInt64(value)
             if score > 0 {

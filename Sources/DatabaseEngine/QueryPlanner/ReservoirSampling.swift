@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ReservoirSampling.swift
 // QueryPlanner - Efficient sampling for histogram construction
 
@@ -395,5 +394,3 @@ extension ReservoirSampling where T: BinaryFloatingPoint {
         return (mean, stdDev, minVal, maxVal)
     }
 }
-
-#endif

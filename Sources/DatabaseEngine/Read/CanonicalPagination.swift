@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Foundation
 import Core
 import QueryIR
@@ -381,5 +380,3 @@ public enum CanonicalQueryPagination {
         }
     }
 }
-
-#endif

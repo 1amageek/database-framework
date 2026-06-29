@@ -93,7 +93,7 @@ struct TestStore: Persistable {
 // MARK: - Test Helper
 
 private struct AdvancedTestContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: SpatialIndexMaintainer<TestStore>

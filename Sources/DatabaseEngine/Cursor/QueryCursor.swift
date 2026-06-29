@@ -1,4 +1,3 @@
-#if !os(WASI)
 // QueryCursor.swift
 // DatabaseEngine - Cursor for paginated query execution
 //
@@ -418,5 +417,3 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
         return try await cursor.next()
     }
 }
-
-#endif

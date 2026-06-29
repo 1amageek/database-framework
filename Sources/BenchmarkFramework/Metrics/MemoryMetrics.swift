@@ -1,5 +1,8 @@
 import Foundation
 import Synchronization
+#if canImport(Darwin)
+import Darwin
+#endif
 
 public struct MemoryMetrics: Codable, Sendable, Hashable {
     public let peakMB: Double
@@ -27,7 +30,13 @@ public struct MemoryMetrics: Codable, Sendable, Hashable {
                 let bytes = getCurrentMemoryUsage()
                 let mb = Double(bytes) / (1024.0 * 1024.0)
                 samples.withLock { $0.append(mb) }
-                try? await Task.sleep(nanoseconds: UInt64(sampleInterval * 1_000_000_000))
+                do {
+                    try await Task.sleep(nanoseconds: UInt64(sampleInterval * 1_000_000_000))
+                } catch is CancellationError {
+                    break
+                } catch {
+                    break
+                }
             }
         }
 
@@ -47,6 +56,7 @@ public struct MemoryMetrics: Codable, Sendable, Hashable {
 
     /// Get current memory usage in bytes
     private static func getCurrentMemoryUsage() -> UInt64 {
+#if canImport(Darwin)
         var info = mach_task_basic_info()
         var count = mach_msg_type_number_t(MemoryLayout<mach_task_basic_info>.size) / 4
 
@@ -63,6 +73,9 @@ public struct MemoryMetrics: Codable, Sendable, Hashable {
 
         guard result == KERN_SUCCESS else { return 0 }
         return info.resident_size
+#else
+        return 0
+#endif
     }
 
     /// Calculate improvement percentage (positive = less memory)

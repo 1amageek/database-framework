@@ -25,6 +25,9 @@ public enum RelationshipIndexError: Error, CustomStringConvertible {
     /// Transaction is required for computing index keys (RelationshipIndex requires DB access)
     case transactionRequired(indexName: String)
 
+    /// Stored write-set metadata is not decodable
+    case corruptedEntryList(indexName: String)
+
     public var description: String {
         switch self {
         case .configurationNotFound(let indexName, let modelType):
@@ -39,6 +42,8 @@ public enum RelationshipIndexError: Error, CustomStringConvertible {
             return "Field '\(fieldName)' on '\(relatedType)' (type: \(actualType)) cannot be converted to TupleElement"
         case .transactionRequired(let indexName):
             return "RelationshipIndex '\(indexName)' requires transaction access to compute index keys. Use computeIndexKeys(for:id:transaction:) instead."
+        case .corruptedEntryList(let indexName):
+            return "RelationshipIndex '\(indexName)' has corrupted stored entry metadata"
         }
     }
 }

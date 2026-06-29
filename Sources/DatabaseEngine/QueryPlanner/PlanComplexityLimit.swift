@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PlanComplexityLimit.swift
 // DatabaseEngine - Query plan complexity limiting and configuration
 //
@@ -654,5 +653,3 @@ extension CascadesError {
         .invalidExpression("Rule application count (\(count)) exceeds limit (\(limit))")
     }
 }
-
-#endif

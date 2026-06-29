@@ -1,4 +1,3 @@
-#if !os(WASI)
 // PlanOperator.swift
 // QueryPlanner - Execution plan operators
 
@@ -730,7 +729,7 @@ public struct InJoinBloomFilter<Element: Hashable>: Sendable {
         let h1 = UInt64(bitPattern: Int64(value.hashValue))
         var hasher = Hasher()
         hasher.combine(value)
-        hasher.combine(0x9E3779B9)
+        hasher.combine(UInt64(0x9E3779B9))
         let h2 = UInt64(bitPattern: Int64(hasher.finalize()))
 
         return (0..<hashCount).map { i in
@@ -738,5 +737,3 @@ public struct InJoinBloomFilter<Element: Hashable>: Sendable {
         }
     }
 }
-
-#endif

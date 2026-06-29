@@ -1,4 +1,3 @@
-#if !os(WASI)
 // MutualOnlineIndexer.swift
 // DatabaseEngine - Build bidirectional indexes using mutual references
 //
@@ -246,7 +245,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = DispatchTime.now()
+            let batchStartTime = MonotonicClock.now()
 
             do {
                 // Capture current rangeSet state before transaction
@@ -271,29 +270,30 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                         limit: self.batchSize
                     )
 
+                    var batchEntries: [(item: Item, id: Tuple)] = []
+                    batchEntries.reserveCapacity(self.batchSize)
+
                     for try await (key, data) in scanSequence {
                         // Deserialize item from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
                         let id = try itemTypeSubspace.unpack(key)
 
-                        // Build forward index entry
-                        try await self.forwardMaintainer.scanItem(
-                            item,
-                            id: id,
-                            transaction: transaction
-                        )
-
-                        // Build reverse index entry
-                        try await self.reverseMaintainer.scanItem(
-                            item,
-                            id: id,
-                            transaction: transaction
-                        )
+                        batchEntries.append((item: item, id: id))
 
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
                         pairsInBatch += 1
                     }
+
+                    // Build both directions through the batch hook.
+                    try await self.forwardMaintainer.scanItems(
+                        batchEntries,
+                        transaction: transaction
+                    )
+                    try await self.reverseMaintainer.scanItems(
+                        batchEntries,
+                        transaction: transaction
+                    )
 
                     // Save progress atomically with work
                     var updatedRangeSet = currentRangeSet
@@ -325,7 +325,7 @@ public final class MutualOnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
+                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
                 batchDurationTimer.recordNanoseconds(Int64(batchDuration))
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch * 2)  // Both directions
@@ -590,5 +590,3 @@ extension MutualOnlineIndexer: CustomStringConvertible {
         "MutualOnlineIndexer(forward: \(forwardIndex.name), reverse: \(reverseIndex.name), itemType: \(itemType))"
     }
 }
-
-#endif

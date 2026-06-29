@@ -72,6 +72,14 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
     private let statsNKey: [UInt8]
     private let statsTotalLengthKey: [UInt8]
 
+    private var termNormalizer: FullTextTermNormalizer {
+        FullTextTermNormalizer(
+            tokenizer: tokenizer,
+            ngramSize: ngramSize,
+            minTermLength: minTermLength
+        )
+    }
+
     public init(
         index: Index,
         tokenizer: TokenizationStrategy,
@@ -296,33 +304,8 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ term: String,
         transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
-        // Apply same normalization and truncation as during indexing
-        // to ensure search terms match stored terms
-        let normalizedTerm = truncateTerm(normalizeToken(term))
-        let termSubspace = termsSubspace.subspace(normalizedTerm)
-        let (begin, end) = termSubspace.range()
-
-        var results: [[any TupleElement]] = []
-
-        let sequence = try await transaction.collectRange(
-            from: .firstGreaterOrEqual(begin),
-            to: .firstGreaterOrEqual(end),
-            snapshot: true
-        )
-
-        for (key, _) in sequence {
-            guard termSubspace.contains(key) else { break }
-
-            // Skip corrupt entries
-            guard let keyTuple = try? termSubspace.unpack(key) else {
-                continue
-            }
-            // Avoid pack/unpack cycle: convert Tuple to array directly
-            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
-            results.append(elements)
-        }
-
-        return results
+        let normalizedTerms = normalizeQueryTerms([term])
+        return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
     }
 
     /// Search for documents containing all terms (AND query)
@@ -339,13 +322,22 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ terms: [String],
         transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
+        let normalizedTerms = normalizeQueryTerms(terms)
+        return try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
+    }
+
+    /// Search for already-normalized terms using AND semantics.
+    private func searchNormalizedTermsAND(
+        _ terms: [String],
+        transaction: any Transaction
+    ) async throws -> [[any TupleElement]] {
         guard !terms.isEmpty else { return [] }
 
         var intersection: Set<String>? = nil
         var idToElements: [String: [any TupleElement]] = [:]
 
         for term in terms {
-            let results = try await searchTerm(term, transaction: transaction)
+            let results = try await searchNormalizedTerm(term, transaction: transaction)
             var currentSet: Set<String> = []
 
             for elements in results {
@@ -388,12 +380,13 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         _ terms: [String],
         transaction: any Transaction
     ) async throws -> [[any TupleElement]] {
-        guard !terms.isEmpty else { return [] }
+        let termGroups = normalizeQueryTermGroups(terms)
+        guard !termGroups.isEmpty else { return [] }
 
         var idToElements: [String: [any TupleElement]] = [:]
 
-        for term in terms {
-            let results = try await searchTerm(term, transaction: transaction)
+        for normalizedTerms in termGroups {
+            let results = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
 
             for elements in results {
                 // Use Tuple.pack() + Base64 for stable, type-safe key generation
@@ -429,7 +422,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let terms = phraseTokens.map { truncateTerm($0.term) }
 
         // First find documents containing all terms
-        let candidateDocs = try await searchTermsAND(terms, transaction: transaction)
+        let candidateDocs = try await searchNormalizedTermsAND(terms, transaction: transaction)
 
         var results: [[any TupleElement]] = []
 
@@ -512,16 +505,58 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Tokenize text into terms with positions
     private func tokenize(_ text: String) -> [(term: String, position: Int)] {
-        switch tokenizer {
-        case .simple:
-            return simpleTokenize(text)
-        case .stem:
-            return stemTokenize(text)
-        case .ngram:
-            return ngramTokenize(text)
-        case .keyword:
-            return keywordTokenize(text)
+        termNormalizer.tokenize(text)
+    }
+
+    /// Search for an exact already-normalized term.
+    private func searchNormalizedTerm(
+        _ term: String,
+        transaction: any Transaction
+    ) async throws -> [[any TupleElement]] {
+        let termSubspace = termsSubspace.subspace(term)
+        let (begin, end) = termSubspace.range()
+
+        var results: [[any TupleElement]] = []
+
+        let sequence = try await transaction.collectRange(
+            from: .firstGreaterOrEqual(begin),
+            to: .firstGreaterOrEqual(end),
+            snapshot: true
+        )
+
+        for (key, _) in sequence {
+            guard termSubspace.contains(key) else { break }
+
+            let keyTuple = try termSubspace.unpack(key)
+            let elements: [any TupleElement] = (0..<keyTuple.count).compactMap { keyTuple[$0] }
+            results.append(elements)
         }
+
+        return results
+    }
+
+    private func normalizeQueryTerms(_ terms: [String]) -> [String] {
+        uniqueTerms(termGroups: normalizeQueryTermGroups(terms).flatMap { $0 })
+    }
+
+    private func normalizeQueryTermGroups(_ terms: [String]) -> [[String]] {
+        terms.map { term in
+            uniqueTerms(termGroups: termNormalizer.normalizedTerms(from: term))
+        }
+        .filter { !$0.isEmpty }
+    }
+
+    private func uniqueTerms(termGroups terms: [String]) -> [String] {
+        var seen: Set<String> = []
+        var result: [String] = []
+        result.reserveCapacity(terms.count)
+
+        for term in terms where !seen.contains(term) {
+            seen.insert(term)
+            result.append(term)
+        }
+
+        return result
     }
 
     /// Simple whitespace and punctuation tokenization
@@ -637,19 +672,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
     /// Truncate term to fit within key size limits
     private func truncateTerm(_ term: String) -> String {
-        let data = Data(term.utf8)
-        if data.count <= fullTextMaxTermBytes {
-            return term
-        }
-        // Truncate to max bytes, ensuring valid UTF-8
-        var truncatedData = data.prefix(fullTextMaxTermBytes)
-        while !truncatedData.isEmpty {
-            if let str = String(data: truncatedData, encoding: .utf8) {
-                return str
-            }
-            truncatedData = truncatedData.dropLast()
-        }
-        return ""
+        termNormalizer.truncateTerm(term)
     }
 
     /// Build and validate term key
@@ -790,9 +813,7 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
 
         // Normalize search terms using the same tokenization pipeline as indexing
         // This ensures stemming, n-gram, or other transformations are applied consistently
-        let normalizedTerms: [String] = terms.flatMap { term in
-            tokenize(term).map { truncateTerm($0.term) }
-        }
+        let normalizedTerms = normalizeQueryTerms(terms)
 
         // Get document frequencies for all terms (already normalized, use internal helper)
         var documentFrequencies: [String: Int64] = [:]
@@ -804,9 +825,17 @@ public struct FullTextIndexMaintainer<Item: Persistable>: IndexMaintainer {
         let matchingDocs: [[any TupleElement]]
         switch matchMode {
         case .all:
-            matchingDocs = try await searchTermsAND(terms, transaction: transaction)
+            matchingDocs = try await searchNormalizedTermsAND(normalizedTerms, transaction: transaction)
         case .any:
-            matchingDocs = try await searchTermsOR(terms, transaction: transaction)
+            let groups = normalizeQueryTermGroups(terms)
+            var idToElements: [String: [any TupleElement]] = [:]
+            for group in groups {
+                let matches = try await searchNormalizedTermsAND(group, transaction: transaction)
+                for elements in matches {
+                    idToElements[elementsToStableKey(elements)] = elements
+                }
+            }
+            matchingDocs = Array(idToElements.values)
         case .phrase:
             matchingDocs = try await searchPhrase(terms.joined(separator: " "), transaction: transaction)
         }

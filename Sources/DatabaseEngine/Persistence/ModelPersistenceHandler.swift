@@ -1,4 +1,3 @@
-#if !os(WASI)
 // ModelPersistenceHandler.swift
 // DatabaseEngine - Protocol for model persistence operations within transactions
 
@@ -61,5 +60,3 @@ public protocol ModelPersistenceHandler: Sendable {
         transaction: any Transaction
     ) async throws -> (any Persistable)?
 }
-
-#endif

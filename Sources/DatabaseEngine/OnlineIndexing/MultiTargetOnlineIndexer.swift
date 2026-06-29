@@ -1,4 +1,3 @@
-#if !os(WASI)
 // MultiTargetOnlineIndexer.swift
 // DatabaseEngine - Build multiple indexes simultaneously with single data scan
 //
@@ -215,7 +214,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
 
         // Process batches - each batch in a separate transaction
         while let bounds = rangeSet.nextBatchBounds() {
-            let batchStartTime = DispatchTime.now()
+            let batchStartTime = MonotonicClock.now()
 
             do {
                 // Capture current rangeSet state before transaction
@@ -239,22 +238,27 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                         limit: self.batchSize
                     )
 
+                    var batchEntries: [(item: Item, id: Tuple)] = []
+                    batchEntries.reserveCapacity(self.batchSize)
+
                     for try await (key, data) in scanSequence {
                         // Deserialize item once from decompressed data
                         let item: Item = try DataAccess.deserialize(data)
                         let id = try itemTypeSubspace.unpack(key)
 
-                        // Call all maintainers for this item
-                        for target in self.targets {
-                            try await target.maintainer.scanItem(
-                                item,
-                                id: id,
-                                transaction: transaction
-                            )
-                        }
+                        batchEntries.append((item: item, id: id))
 
                         lastProcessedKey = Array(key)
                         itemsInBatch += 1
+                    }
+
+                    // Call all maintainers once per batch. Maintainers that do
+                    // not override scanItems preserve scanItem behavior.
+                    for target in self.targets {
+                        try await target.maintainer.scanItems(
+                            batchEntries,
+                            transaction: transaction
+                        )
                     }
 
                     // Save progress atomically with work
@@ -288,7 +292,7 @@ public final class MultiTargetOnlineIndexer<Item: Persistable>: Sendable {
                 }
 
                 // Record metrics
-                let batchDuration = DispatchTime.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
+                let batchDuration = MonotonicClock.now().uptimeNanoseconds - batchStartTime.uptimeNanoseconds
                 batchDurationTimer.recordNanoseconds(Int64(batchDuration))
                 batchesProcessedCounter.increment()
                 itemsIndexedCounter.increment(by: itemsInBatch * targets.count)
@@ -363,5 +367,3 @@ extension MultiTargetOnlineIndexer: CustomStringConvertible {
         return "MultiTargetOnlineIndexer(indexes: [\(indexNames)], itemType: \(itemType))"
     }
 }
-
-#endif

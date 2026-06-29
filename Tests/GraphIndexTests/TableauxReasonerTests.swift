@@ -917,7 +917,7 @@ struct TableauxReasonerClassifyTests {
         ontology.axioms.append(.equivalentClasses([.named("ex:Human"), .named("ex:Person")]))
 
         let reasoner = TableauxReasoner(ontology: ontology)
-        var hierarchy = reasoner.classify()
+        let hierarchy = reasoner.classify()
 
         #expect(hierarchy.equivalentClasses(of: "ex:Human").contains("ex:Person"))
     }

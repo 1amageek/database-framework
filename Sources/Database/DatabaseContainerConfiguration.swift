@@ -1,4 +1,3 @@
-#if !os(WASI)
 import Core
 import DatabaseEngine
 
@@ -54,5 +53,3 @@ extension DBContainer {
         )
     }
 }
-
-#endif

@@ -1,4 +1,3 @@
-#if !os(WASI)
 // TrigramSimilarity.swift
 // DatabaseEngine - Trigram-based text similarity computation
 //
@@ -52,5 +51,3 @@ public enum TrigramSimilarity {
         return result
     }
 }
-
-#endif

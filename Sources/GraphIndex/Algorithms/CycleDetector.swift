@@ -303,7 +303,7 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
         edgeLabel: String? = nil,
         maxCycles: Int? = nil
     ) async throws -> CycleInfo {
-        let startTime = DispatchTime.now()
+        let startTime = MonotonicClock.now()
         let effectiveMaxCycles = maxCycles ?? configuration.maxCycles
 
         // Collect all nodes in the graph
@@ -315,7 +315,7 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
                 cycles: [],
                 backEdges: [],
                 nodesExplored: 0,
-                durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+                durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
                 isComplete: true,
                 limitReason: nil
             )
@@ -421,7 +421,7 @@ public final class CycleDetector<Edge: Persistable>: Sendable {
             cycles: cycles,
             backEdges: backEdges,
             nodesExplored: nodesExplored,
-            durationNs: DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
+            durationNs: MonotonicClock.now().uptimeNanoseconds - startTime.uptimeNanoseconds,
             isComplete: isComplete,
             limitReason: limitReason
         )

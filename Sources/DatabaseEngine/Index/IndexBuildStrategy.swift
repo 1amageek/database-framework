@@ -1,4 +1,3 @@
-#if !os(WASI)
 import StorageKit
 import Core
 
@@ -75,5 +74,3 @@ public protocol IndexBuildStrategy<Item>: Sendable {
         index: Index
     ) async throws
 }
-
-#endif

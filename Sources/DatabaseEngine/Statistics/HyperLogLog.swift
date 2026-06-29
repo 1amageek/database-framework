@@ -1,4 +1,3 @@
-#if !os(WASI)
 // HyperLogLog.swift
 // Statistics - HyperLogLog++ probabilistic cardinality estimation
 
@@ -387,5 +386,3 @@ extension HyperLogLog {
         try container.encode(Data(registers), forKey: .registers)
     }
 }
-
-#endif

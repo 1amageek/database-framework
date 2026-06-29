@@ -1,4 +1,3 @@
-#if !os(WASI)
 // FieldValue+TupleElement.swift
 // Extension to bridge Core.FieldValue with FoundationDB TupleElement
 
@@ -93,5 +92,3 @@ extension FieldValue {
         }
     }
 }
-
-#endif

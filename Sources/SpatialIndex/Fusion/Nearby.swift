@@ -171,12 +171,15 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             )
         }
 
-        // Get index level from kind
+        // Get index configuration from kind
         let level: Int
+        let encoding: SpatialEncoding
         if let kind = descriptor.kind as? SpatialIndexKind<T> {
             level = kind.level
+            encoding = kind.encoding
         } else {
             level = 15 // Default S2 level
+            encoding = .s2
         }
 
         let indexName = descriptor.name
@@ -190,6 +193,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
             try await self.searchSpatial(
                 constraint: constraint,
                 level: level,
+                encoding: encoding,
                 indexSubspace: indexSubspace,
                 transaction: transaction
             )
@@ -197,6 +201,7 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
 
         // Fetch items by primary keys
         var items = try await queryContext.fetchItems(ids: primaryKeys, type: T.self)
+        items = items.filter { matches($0, constraint: constraint) }
 
         // Filter to candidates if provided
         if let candidateIds = candidates {
@@ -239,67 +244,63 @@ public struct Nearby<T: Persistable>: FusionQuery, Sendable {
     private func searchSpatial(
         constraint: SpatialConstraint,
         level: Int,
+        encoding: SpatialEncoding,
         indexSubspace: Subspace,
         transaction: any Transaction
     ) async throws -> [Tuple] {
-        // Get covering cells based on constraint type
-        let coveringCells: [UInt64]
+        let plan = try SpatialScanPlanner.plan(for: constraint, encoding: encoding, level: level)
+        let scanner = SpatialCellScanner(indexSubspace: indexSubspace, encoding: encoding, level: level)
+        let (keys, _) = try await scanner.scan(plan: plan, limit: nil, transaction: transaction)
+        return keys
+    }
+
+    private func matches(_ item: T, constraint: SpatialConstraint) -> Bool {
+        guard let location = item[dynamicMember: fieldName] as? GeoPoint else {
+            return false
+        }
+
         switch constraint.type {
         case .withinDistance(let center, let radiusMeters):
-            coveringCells = S2Geometry.getCoveringCells(
-                latitude: center.latitude,
-                longitude: center.longitude,
-                radiusMeters: radiusMeters,
-                level: level
-            )
+            let centerPoint = GeoPoint(center.latitude, center.longitude)
+            return centerPoint.distance(to: location) * 1000.0 <= radiusMeters
+
         case .withinBounds(let minLat, let minLon, let maxLat, let maxLon):
-            coveringCells = S2Geometry.getCoveringCellsForBox(
-                minLat: minLat,
-                minLon: minLon,
-                maxLat: maxLat,
-                maxLon: maxLon,
-                level: level
-            )
+            return location.latitude >= minLat &&
+                location.latitude <= maxLat &&
+                location.longitude >= minLon &&
+                location.longitude <= maxLon
+
         case .withinPolygon(let points):
-            // Get bounding box of polygon for covering cells
-            let lats = points.map { $0.latitude }
-            let lons = points.map { $0.longitude }
-            coveringCells = S2Geometry.getCoveringCellsForBox(
-                minLat: lats.min() ?? 0,
-                minLon: lons.min() ?? 0,
-                maxLat: lats.max() ?? 0,
-                maxLon: lons.max() ?? 0,
-                level: level
-            )
+            return isPointInPolygon(point: location, polygon: points)
+        }
+    }
+
+    private func isPointInPolygon(
+        point: GeoPoint,
+        polygon: [(latitude: Double, longitude: Double)]
+    ) -> Bool {
+        guard polygon.count >= 3 else {
+            return false
         }
 
-        var results: [Tuple] = []
-        var seenIds: Set<Data> = []
+        var inside = false
+        var previous = polygon.count - 1
 
-        for cellId in coveringCells {
-            let cellTuple = Tuple(cellId)
-            let cellSubspace = indexSubspace.subspace(cellTuple)
-            let (begin, end) = cellSubspace.range()
+        for index in 0..<polygon.count {
+            let currentPoint = polygon[index]
+            let previousPoint = polygon[previous]
 
-            let sequence = try await transaction.collectRange(
-                from: .firstGreaterOrEqual(begin),
-                to: .firstGreaterOrEqual(end),
-                snapshot: true
-            )
-
-            for (key, _) in sequence {
-                guard cellSubspace.contains(key) else { break }
-
-                let keyTuple = try cellSubspace.unpack(key)
-
-                // Deduplicate using packed bytes (same item may appear in multiple cells)
-                let idData = Data(keyTuple.pack())
-                guard !seenIds.contains(idData) else { continue }
-                seenIds.insert(idData)
-                results.append(keyTuple)
+            if ((currentPoint.latitude > point.latitude) != (previousPoint.latitude > point.latitude)) &&
+                (point.longitude < (previousPoint.longitude - currentPoint.longitude) *
+                    (point.latitude - currentPoint.latitude) /
+                    (previousPoint.latitude - currentPoint.latitude) +
+                    currentPoint.longitude) {
+                inside.toggle()
             }
+
+            previous = index
         }
 
-        return results
+        return inside
     }
 }

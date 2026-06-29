@@ -1,4 +1,3 @@
-#if !os(WASI)
 // DatabaseConfiguration.swift
 // DatabaseEngine - Global configuration for database operations
 //
@@ -140,5 +139,3 @@ extension DatabaseConfiguration: CustomStringConvertible {
         return "DatabaseConfiguration(\(parts.joined(separator: ", ")))"
     }
 }
-
-#endif

@@ -15,7 +15,7 @@ import TestSupport
 // MARK: - Benchmark Context
 
 private struct BenchmarkContext {
-    nonisolated(unsafe) let database: any StorageEngine
+    let database: any StorageEngine
     let subspace: Subspace
     let indexSubspace: Subspace
     let maintainer: RankIndexMaintainer<BenchmarkPlayer, Int64>

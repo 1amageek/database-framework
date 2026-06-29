@@ -1,4 +1,3 @@
-#if !os(WASI)
 // Memo.swift
 // Cascades Optimizer - Memoization structure for query optimization
 //
@@ -400,5 +399,3 @@ extension Memo: CustomStringConvertible {
         return result
     }
 }
-
-#endif
