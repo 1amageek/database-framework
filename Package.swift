@@ -44,10 +44,11 @@ let package = Package(
         .trait(name: "PostgreSQL"),
     ],
     dependencies: [
-        .package(path: "../database-kit"),
-        .package(path: "../swift-hnsw"),
+        .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0629.0"),
+        .package(url: "https://github.com/1amageek/swift-hnsw.git", from: "1.0.0"),
         .package(
-            path: "../storage-kit",
+            url: "https://github.com/1amageek/storage-kit.git",
+            from: "26.0629.0",
             traits: [
                 .trait(name: "FoundationDB", condition: .when(traits: ["FoundationDB"])),
                 .trait(name: "SQLite", condition: .when(traits: ["SQLite"])),

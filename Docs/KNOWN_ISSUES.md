@@ -145,7 +145,7 @@ public func withTransaction<R: Sendable>(
     _ body: @Sendable @escaping (any TransactionProtocol) async throws -> R
 ) async throws -> R {
     // 毎回新しいトランザクションを開始
-    return try await context.container.database.withTransaction(body)
+    return try await context.container.engine.withTransaction(body)
 }
 ```
 
@@ -168,7 +168,7 @@ public func withTransaction<R: Sendable>(
 ```swift
 // FusionBuilder.swift (修正後)
 public func execute() async throws -> [ScoredResult<T>] {
-    return try await queryContext.context.container.database.withTransaction { transaction in
+    return try await queryContext.context.container.engine.withTransaction { transaction in
         // トランザクションをステージに渡す
         let transactionContext = queryContext.withTransaction(transaction)
 

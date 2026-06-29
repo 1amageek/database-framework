@@ -151,7 +151,7 @@ struct KnowledgeTriple {
 
 ```swift
 let traverser = GraphTraverser<Follow>(
-    database: container.database,
+    database: container.engine,
     subspace: indexSubspace
 )
 

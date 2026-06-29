@@ -1,6 +1,6 @@
 # DatabaseEngine
 
-Core engine for FoundationDB-backed persistence with transactional guarantees.
+Core engine for StorageKit-backed persistence with transactional guarantees.
 
 ## Overview
 
@@ -13,19 +13,22 @@ DatabaseEngine provides the foundation for all database operations, including:
 
 ## Core Components
 
-### FDBContainer
+### DBContainer
 
 Application-level resource manager. Does NOT create transactions.
 
 ```swift
 // Initialize container
-let container = try FDBContainer(for: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 
 // Get a new context (for user operations)
 let context = container.newContext()
 
-// Access database directly (for system operations)
-let database = container.database
+// Access the storage engine directly for system operations
+let engine = container.engine
 ```
 
 ### FDBContext

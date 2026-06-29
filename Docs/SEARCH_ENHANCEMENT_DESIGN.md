@@ -82,9 +82,10 @@ let results = try await context.findSimilar(Product.self)
 **Note**: ACORN filtering requires HNSW index. Configure with `VectorIndexConfiguration`:
 
 ```swift
-let container = try FDBContainer(
+let container = try await DBContainer(
     for: schema,
-    configuration: FDBConfiguration(
+    configuration: DBConfiguration(
+        backend: .fdb(),
         indexConfigurations: [
             VectorIndexConfiguration<Product>(
                 keyPath: \.embedding,

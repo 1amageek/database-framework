@@ -51,7 +51,8 @@ flowchart LR
 | V3 HNSW Snapshot Segmentation | Split large graph snapshots into storage-safe chunks. | Backend value-size limits are handled without changing user API. | Done |
 | V4 HNSW Read Cache | Avoid per-query graph deserialization while preserving committed-update visibility. | Graph cache is keyed by metadata revision; write paths load fresh and readers refresh on metadata change. | Done |
 | V5 Dependent Package Validation | Verify database-client and Cloudflare package paths do not assume tuple vector payloads. | Build and smoke tests pass across related packages. | Done |
-| V6 Release Gate | Run complete vector tests and benchmark SwiftHNSW integration. | Tests, WASM build, and benchmark report are attached to the release decision. | Pending |
+| V6 Integration Release Gate | Run complete vector tests and dependent package builds. | Vector tests and dependent package builds pass with binary vector payloads. | Done |
+| V7 Performance Snapshot Refresh | Refresh published VectorIndex benchmark numbers. | A current benchmark report is committed before updating public latency/throughput claims. | Open |
 
 ## Validation Log
 
@@ -67,6 +68,9 @@ flowchart LR
 | 2026-06-29 | `swift test --filter VectorIndexTests` with Swift 6.4 and local FoundationDB | Passed: 65 tests / 11 suites |
 | 2026-06-29 | `database-client`: `swift build +6.3.1` | Passed |
 | 2026-06-29 | `database-framework-cloudflare`: `swift build +6.3.1` | Passed |
+| 2026-06-29 | `swift build --build-tests` with Swift 6.4 | Passed with no compiler warnings |
+| 2026-06-29 | `swift build --build-tests --traits SQLite` with Swift 6.4 | Passed with no compiler warnings |
+| 2026-06-29 | `swift test --traits SQLite` with Swift 6.4 | Passed |
 
 ## Design Rules
 

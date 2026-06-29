@@ -140,10 +140,13 @@ let repl = DatabaseREPL(database: database, entities: entities)
 try await repl.run()
 ```
 
-#### Embedded Mode (with FDBContainer)
+#### Embedded Mode (with DBContainer)
 
 ```swift
-let container = try await FDBContainer(for: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 let repl = try await DatabaseREPL(container: container)
 try await repl.run()
 ```
@@ -509,7 +512,7 @@ Statistics: 2 patterns, 2 scans, 3.45ms
 
 ### Version History
 
-**Note**: Available only in embedded mode (with `FDBContainer`)
+**Note**: Available only in embedded mode (with `DBContainer`)
 
 #### `history <TypeName> <id> [--limit N]`
 Show version history
@@ -518,7 +521,7 @@ Show version history
 database> history User user-001 --limit 5
 (Not available in standalone mode)
 Version history queries require compiled @Persistable types.
-Use embedded mode with FDBContainer for version history.
+Use embedded mode with DBContainer for version history.
 ```
 
 ### Destructive Operations
@@ -744,7 +747,7 @@ The `insert` and `update` commands write directly to the data store but do NOT u
 
 ### Operation Modes
 
-| Mode | Schema.Entity | FDBContainer | Version History | Index Updates |
+| Mode | Schema.Entity | DBContainer | Version History | Index Updates |
 |------|---------------|--------------|-----------------|---------------|
 | Standalone | ✅ | ❌ | ❌ | ❌ |
 | Embedded | ✅ | ✅ | ✅ | ❌ |

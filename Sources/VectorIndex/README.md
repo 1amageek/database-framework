@@ -157,13 +157,17 @@ let similar = try await context.findSimilar(Image.self)
 **Configuration via IndexConfiguration**:
 ```swift
 // At container initialization
-let container = try await FDBContainer(
+let vectorConfig = VectorIndexConfiguration<Product>(
+    keyPath: \.embedding,
+    hnsw: .default
+)
+
+let container = try await DBContainer(
     for: schema,
-    indexConfigurations: [
-        "Product_vector_embedding": [
-            HNSWConfiguration(m: 16, efConstruction: 200, efSearch: 50)
-        ]
-    ]
+    configuration: DBConfiguration(
+        backend: .fdb(),
+        indexConfigurations: [vectorConfig]
+    )
 )
 ```
 
@@ -298,7 +302,9 @@ Run with: `swift test --filter VectorIndexPerformanceTests`
 | 10,000 | 384 | ~50ms | ~80ms | 100% |
 | 100,000 | 384 | ~500ms | ~800ms | 100% |
 
-### C++ HNSW Backend (m=16, efConstruction=200)
+### SwiftHNSW Production Backend
+
+The production path uses the Swift backend from `swift-hnsw`. The C++ hnswlib backend is retained only in swift-hnsw's separate reference benchmark package and is not compiled by database-framework.
 
 | Vectors | Dimensions | k=10 (ef=50) | k=10 (ef=100) | Recall |
 |---------|------------|--------------|---------------|--------|
@@ -306,7 +312,7 @@ Run with: `swift test --filter VectorIndexPerformanceTests`
 | 100,000 | 384 | ~5ms | ~10ms | ~95% |
 | 1,000,000 | 384 | ~10ms | ~20ms | ~95% |
 
-*Benchmarks run on M1 Mac with local FoundationDB cluster.*
+*Historical benchmark shape. Refresh these numbers with the current SwiftHNSW benchmark before using them for a release decision.*
 
 ## References
 

@@ -1721,7 +1721,7 @@ extension FDBContext {
 /// ```swift
 /// // アプリケーション起動時に一度だけ初期化
 /// let reasoner = try await OWLReasoner(
-///     database: container.database,
+///     database: container.engine,
 ///     ontology: ontology,
 ///     subspace: ontologySubspace
 /// )
@@ -1733,8 +1733,8 @@ extension FDBContext {
 ///
 /// **コンテナ統合パターン**:
 /// ```swift
-/// // FDBContainer に推論エンジンを登録
-/// extension FDBContainer {
+/// // DBContainer に推論エンジンを登録
+/// extension DBContainer {
 ///     public func registerReasoner(
 ///         _ reasoner: OWLReasoner,
 ///         for ontologyIRI: String
@@ -1777,7 +1777,7 @@ ontology.axioms = [
 
 // 2. 推論エンジンを初期化
 let reasoner = try await OWLReasoner(
-    database: container.database,
+    database: container.engine,
     ontology: ontology,
     subspace: graphSubspace
 )
@@ -2091,7 +2091,10 @@ public struct OntologyContextAPI: Sendable {
 ```swift
 // 1. Schema にオントロジーは含めない
 let schema = Schema([Employee.self, Department.self, RDFTriple.self])
-let container = try await FDBContainer(for: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 
 // 2. オントロジーは context.ontology API で独立管理
 let context = container.newContext()
@@ -2128,7 +2131,7 @@ OntologyStore は内部でコンポーネント（class, property, axiom, hierar
 - [x] Schema.ontology プロパティを削除
 - [x] SchemaResponse.ontology を削除
 - [x] OWLOntology.asSchemaOntology() / init(schemaOntology:) を削除
-- [x] FDBContainer+Ontology.swift を削除
+- [x] DBContainer+Ontology.swift を削除
 - [x] OntologyStore で /_ontology/ 配下に独立永続化
 - [x] OntologyContextAPI (FDBContext+Ontology) で CRUD API を提供
 - [x] SchemaRegistry からオントロジー永続化コードを削除

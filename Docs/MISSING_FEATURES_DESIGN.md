@@ -78,7 +78,7 @@ Where typeId is a stable numeric identifier for each member type.
 
 ```swift
 public final class FDBUnionContext<U: UnionStore>: Sendable {
-    private let container: FDBContainer
+    private let container: DBContainer
     private let typeRegistry: TypeRegistry
 
     /// Insert a model of any union member type

@@ -5,7 +5,7 @@ FoundationDB の対話型 CLI。`@Persistable` 型のコンパイルなしで、
 ## Prerequisites
 
 - FoundationDB must be running locally
-- Schema.Entity must be written to FDB (via `FDBContainer(for: schema)` or `database schema apply`)
+- Schema.Entity must be written to storage (via `DBContainer(for:configuration:)` or `database schema apply`)
 
 ## Setup
 
@@ -168,8 +168,11 @@ Graph および History コマンドはコンパイル済み `@Persistable` 型�
 import DatabaseCLICore
 import DatabaseEngine
 
-// FDBContainer から初期化（カタログを自動読み込み）
-let container = try await FDBContainer(for: schema)
+// DBContainer から初期化（カタログを自動読み込み）
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 let repl = try await DatabaseREPL(container: container)
 try await repl.run()
 ```

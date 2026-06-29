@@ -1,12 +1,12 @@
 # database-framework
 
-Server-side database engine built on FoundationDB, implementing index maintenance for [database-kit](https://github.com/1amageek/database-kit) models.
+StorageKit-backed server execution layer for [database-kit](https://github.com/1amageek/database-kit) models. FoundationDB is the default distributed backend, and SQLite/PostgreSQL can be selected with SwiftPM traits.
 
 ## Overview
 
 database-framework is the **server execution layer** that provides:
 
-- **FDBContainer / FDBContext**: Change-tracking data access with ACID transactions
+- **DBContainer / FDBContext**: Change-tracking data access with ACID transactions
 - **12 index maintainers**: Scalar, Vector, FullText, Spatial, Graph, Aggregation, and more
 - **Schema Registry**: pg_catalog-style metadata persistence
 - **Migration System**: Online index building and schema evolution
@@ -22,9 +22,9 @@ database-framework is the **server execution layer** that provides:
            ▼                               ▼
 ┌─────────────────────┐       ┌─────────────────────────┐
 │  database-framework │       │    database-client       │
-│  FDBContainer       │◄─────│    DatabaseContext        │
+│  DBContainer        │◄─────│    DatabaseContext        │
 │  Index Maintainers  │  WS  │    KeyPath queries       │
-│  FoundationDB       │       │    iOS / macOS           │
+│  StorageKit Engine  │       │    iOS / macOS           │
 └─────────────────────┘       └─────────────────────────┘
 ```
 
@@ -32,9 +32,12 @@ database-framework is the **server execution layer** that provides:
 
 ### Prerequisites
 
-- **FoundationDB 7.3+** installed and running
 - **Swift 6.2+**
-- **macOS 15+** or Linux
+- **macOS 26+**, **iOS 26+**, or Linux
+- One StorageKit backend:
+  - FoundationDB 7.3+ for the default `FoundationDB` trait
+  - SQLite with `--traits SQLite`
+  - PostgreSQL with `--traits PostgreSQL`
 
 ```bash
 # macOS
@@ -65,7 +68,7 @@ exit
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0411.1")
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0629.0")
 ]
 ```
 
@@ -87,7 +90,10 @@ struct User {
 
 // 2. Create container
 let schema = Schema([User.self])
-let container = try await FDBContainer(for: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 
 // 3. Insert data
 let context = container.newContext()
@@ -107,7 +113,7 @@ let users = try await context.fetch(User.self)
 
 | Module | Description |
 |--------|-------------|
-| `DatabaseEngine` | FDBContainer, FDBContext, IndexMaintainer protocol, Schema Registry |
+| `DatabaseEngine` | DBContainer, FDBContext, IndexMaintainer protocol, Schema Registry |
 | `Database` | All-in-one re-export of all index modules |
 | `QueryAST` | SQL/SPARQL parser, AST builder, serializer |
 | `DatabaseServer` | WebSocket server for database-client connections |
@@ -136,23 +142,23 @@ let users = try await context.fetch(User.self)
 
 | Component | Role | Transactions |
 |-----------|------|-------------|
-| `FDBContainer` | Resource manager (DB connection, Schema, Directory) | Does NOT create |
+| `DBContainer` | Resource manager (StorageEngine, Schema, Directory) | Does NOT create |
 | `FDBContext` | User-facing API, change tracking, batch operations | Creates |
 | `FDBDataStore` | Low-level operations within transactions | Receives |
 
 ### Lifecycle Management
 
 ```
-FDBContainer (owns FDBDatabase)
-  └── newContext() → FDBContext (references container, does NOT own database)
+DBContainer (owns StorageEngine)
+  └── newContext() → FDBContext (references container, does NOT own engine)
 
-Startup:  FDBClient.initialize() → FDBContainer.init → container.newContext()
-Teardown: context = nil → container = nil → FDBClient.shutdown() [optional]
+Startup:  create StorageEngine/configuration → DBContainer.init → container.newContext()
+Teardown: context = nil → container = nil → backend-specific shutdown if required
 ```
 
 | Component | Owns Database? | Cleanup |
 |-----------|---------------|---------|
-| `FDBContainer` | Yes (strong ref) | ARC — releases database on dealloc |
+| `DBContainer` | Yes (strong ref) | ARC — releases engine on dealloc |
 | `FDBContext` | No (references container) | ARC — discards pending changes |
 
 **Process exit**: Safe without explicit cleanup. OS reclaims all resources.
@@ -166,13 +172,12 @@ context = nil
 // 2. Release container (triggers fdb_database_destroy via ARC)
 container = nil
 
-// 3. Stop network (optional — OS handles this at process exit)
-FDBClient.shutdown()
+// 3. Run backend-specific shutdown only when the backend requires it.
 ```
 
 **Server pattern**: One container per process, one context per request.
 **CLI pattern**: One container, one context, `Foundation.exit(0)` is safe.
-**Test pattern**: One container per suite, `FDBClient.shutdown()` in teardown.
+**Test pattern**: One container per suite, with backend-specific teardown handled by the test harness.
 
 ### Change Tracking
 
@@ -198,7 +203,7 @@ public struct ScalarIndexKind: IndexKind {
     public static let identifier = "scalar"
 }
 
-// database-framework: FDB-dependent implementation
+// database-framework: StorageKit-backed implementation
 extension ScalarIndexKind: IndexKindMaintainable {
     public func makeIndexMaintainer<Item: Persistable>(...) -> any IndexMaintainer<Item> {
         return ScalarIndexMaintainer(...)
@@ -219,11 +224,12 @@ extension Post: SecurityPolicy {
 }
 
 // Encryption at rest (AES-256-GCM)
-let config = TransformConfiguration(
-    encryptionEnabled: true,
-    keyProvider: RotatingKeyProvider(...)
+let configuration = DBConfiguration(backend: .fdb())
+let container = try await DBContainer(
+    for: schema,
+    configuration: configuration,
+    security: .enabled(adminRoles: ["admin"])
 )
-let container = try FDBContainer(for: schema, transformConfiguration: config)
 ```
 
 ### Hybrid SQL/SPARQL
@@ -306,7 +312,10 @@ struct RDFTriple {
 
 // 4. Create container
 let schema = Schema([Employee.self, Department.self, WorksFor.self, RDFTriple.self])
-let container = try await FDBContainer(for: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 
 // 5. Load ontology independently via OntologyStore
 let ontology = OWLOntology(iri: "http://example.org/onto") {
@@ -354,15 +363,17 @@ let docs = try await context.fetchPolymorphic(Article.self)
 ## Build and Test
 
 ```bash
-swift build                                    # Debug build
-swift build -c release                         # Release build
-swift test                                     # All tests (requires FoundationDB)
-swift test --filter DatabaseEngineTests        # Engine tests only
+swift build                                      # Default FoundationDB build
+swift build -c release                           # Release build
+swift build --traits SQLite                      # SQLite backend build
+swift build --traits PostgreSQL                  # PostgreSQL backend build
+swift test --traits SQLite                       # Backend-independent test pass
+swift test --filter DatabaseEngineTests          # Engine tests with the default backend
 ```
 
 ## Benchmarks
 
-Performance benchmarks live in the `PerformanceBenchmarks` test target and require a healthy FoundationDB cluster.
+Performance benchmarks live in the `PerformanceBenchmarks` test target. FoundationDB benchmarks require a healthy FoundationDB cluster; SQLite/PostgreSQL runs should use the matching trait and backend setup.
 
 ```bash
 swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
@@ -400,10 +411,11 @@ Detailed benchmark reports:
 
 | Platform | Support |
 |----------|---------|
-| macOS | 15.0+ |
+| macOS | 26.0+ |
+| iOS | 26.0+ |
 | Linux | Swift 6.2+ |
 
-> iOS/watchOS/tvOS/visionOS are not supported (requires FoundationDB).
+FoundationDB-specific code is compiled only for the `FoundationDB` trait. SQLite/PostgreSQL traits avoid `libfdb_c` and are suitable for local validation without a FoundationDB service.
 
 ## Related Packages
 

@@ -44,7 +44,7 @@ Protocol ベースの宣言的アクセス制御システム。
 │  │  }                                                          │ │
 │  │                                                             │ │
 │  │  ┌───────────────────────────────────────────────────────┐ │ │
-│  │  │ FDBContainer (Resource Manager)                        │ │ │
+│  │  │ DBContainer (Resource Manager)                        │ │ │
 │  │  │  - securityDelegate: DataStoreSecurityDelegate?        │ │ │
 │  │  │  - schema, database                                    │ │ │
 │  │  └───────────────────────────────────────────────────────┘ │ │
@@ -87,7 +87,7 @@ Protocol ベースの宣言的アクセス制御システム。
 
 | コンポーネント | 責務 |
 |--------------|------|
-| `FDBContainer` | リソース管理（securityDelegate 保持） |
+| `DBContainer` | リソース管理（securityDelegate 保持） |
 | `FDBContext` | ユーザー向け API（セキュリティ評価なし） |
 | `FDBDataStore` | データ操作 + セキュリティ評価の呼び出し |
 | `DataStoreSecurityDelegate` | セキュリティ評価（SecurityPolicy に委譲） |

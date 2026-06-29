@@ -176,16 +176,16 @@ public class RecordMetaData {
 |--------------|------|
 | FormatVersion | ✅ 実装済み |
 | FormatVersionManager | ✅ 実装済み |
-| FDBContainer統合 | ❌ 未実装 |
+| DBContainer統合 | ❌ 未実装 |
 | MetaDataEvolutionValidator | ❌ 未実装 |
 
 ### 不足機能
 
-#### 3.1 FDBContainer フォーマットバージョン統合 🔴 高優先度
+#### 3.1 DBContainer フォーマットバージョン統合 🔴 高優先度
 
 ```swift
 // 提案: ストアオープン時のバージョンチェック
-extension FDBContainer {
+extension DBContainer {
     public func open<T: Persistable>(
         for type: T.Type,
         allowUpgrade: Bool = true
@@ -614,7 +614,7 @@ let results = try await context.fetch(User.self)
 | 機能 | 工数見積 |
 |------|---------|
 | 統一エラーコードシステム | 3-4日 |
-| FDBContainer フォーマットバージョン統合 | 2日 |
+| DBContainer フォーマットバージョン統合 | 2日 |
 | RetryableError プロトコル | 1日 |
 
 ### 🟡 中優先度（運用品質向上）

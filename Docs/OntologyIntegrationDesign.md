@@ -97,7 +97,10 @@ let schema = Schema(
     ontology: ontology
 )
 
-let container = FDBContainer(database: database, schema: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 ```
 
 Schema が Ontology を保持し、フレームワークが自動的に OntologyStore へロードする。開発者による手動ロードは不要。

@@ -9,12 +9,12 @@ fdb-swift-bindings が提供する全機能を database-framework で活用す�
 | 機能 | 用途 | 統合箇所 |
 |------|------|---------|
 | `TransactionConfiguration` | 優先度・タイムアウト制御 | 全コンポーネント |
-| `ReadVersionCache` + `setReadVersion` | GRV キャッシュ | FDBContainer |
-| `getCommittedVersion` | キャッシュ更新 | FDBContainer |
+| `ReadVersionCache` + `setReadVersion` | GRV キャッシュ | DBContainer |
+| `getCommittedVersion` | キャッシュ更新 | DBContainer |
 | `StreamingMode` | 範囲クエリ最適化 | IndexSearcher |
 | `getRangeSplitPoints` | 並列スキャン | OnlineIndexer |
 | `getEstimatedRangeSizeBytes` | 統計・サイズ推定 | StatisticsProvider |
-| `getApproximateSize` | トランザクション監視 | FDBContainer |
+| `getApproximateSize` | トランザクション監視 | DBContainer |
 
 ---
 
@@ -48,10 +48,10 @@ extension DatabaseProtocol {
 
 ## 2. ReadVersionCache 統合
 
-### 2.1 FDBContainer への統合
+### 2.1 DBContainer への統合
 
 ```swift
-public final class FDBContainer {
+public final class DBContainer {
     /// Read version cache for GRV optimization
     private let readVersionCache = ReadVersionCache()
 
@@ -223,7 +223,7 @@ func saveWithAutoSplit<T: Persistable>(items: [T]) async throws {
 ### 5.2 警告ログ
 
 ```swift
-extension FDBContainer {
+extension DBContainer {
     func withTransaction<T>(...) async throws -> T {
         // ... 実行後 ...
 
@@ -267,7 +267,7 @@ func estimateTableSize<T: Persistable>(for type: T.Type) async throws -> TableSi
 
 | ファイル | 変更内容 |
 |---------|---------|
-| `FDBContainer.swift` | ReadVersionCache 統合、サイズ監視 |
+| `DBContainer.swift` | ReadVersionCache 統合、サイズ監視 |
 | `DatabaseProtocol` (fdb-swift-bindings) | `withTransaction(configuration:)` 追加 |
 | `IndexSearcher.swift` | StreamingMode 自動選択 |
 | `OnlineIndexer.swift` | 並列スキャン実装 |

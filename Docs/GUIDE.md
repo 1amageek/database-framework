@@ -22,13 +22,13 @@
 
 ### 1.1 What is database-framework?
 
-database-framework is a database framework for Swift built on top of FoundationDB. It provides type-safe data modeling, 13 index types, transaction management, and query optimization.
+database-framework is a StorageKit-backed database framework for Swift. It provides type-safe data modeling, index maintenance, transaction management, and query optimization. FoundationDB is the default distributed backend; SQLite and PostgreSQL are selected with SwiftPM traits.
 
 ### 1.2 Requirements
 
-- Swift 5.9+
-- macOS 14+ / Linux
-- FoundationDB 7.1+
+- Swift 6.2+
+- macOS 26+ / iOS 26+ / Linux
+- One StorageKit backend: FoundationDB, SQLite, or PostgreSQL
 
 ### 1.3 Installation
 
@@ -36,8 +36,8 @@ database-framework is a database framework for Swift built on top of FoundationD
 
 ```swift
 dependencies: [
-    .package(url: "https://github.com/1amageek/database-kit.git", branch: "main"),
-    .package(url: "https://github.com/1amageek/database-framework.git", branch: "main"),
+    .package(url: "https://github.com/1amageek/database-kit.git", from: "26.0629.0"),
+    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0629.0"),
 ]
 
 targets: [
@@ -71,7 +71,10 @@ struct User {
 
 // 2. Create Container
 let schema = Schema([User.self])
-let container = try FDBContainer(database: database, schema: schema)
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
+)
 
 // 3. Data Operations
 let context = container.newContext()
@@ -97,8 +100,8 @@ let users = try await context.fetch(User.self)
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
-│ FDBContainer (Resource Management)                              │
-│   - database: DatabaseProtocol                                  │
+│ DBContainer (Resource Management)                              │
+│   - engine: StorageEngine                                       │
 │   - schema: Schema                                              │
 │   - securityDelegate: DataStoreSecurityDelegate?                │
 └─────────────────────────────────────────────────────────────────┘
@@ -120,31 +123,24 @@ let users = try await context.fetch(User.self)
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### 2.2 FDBContainer
+### 2.2 DBContainer
 
 The entry point for your application that manages resources.
 
 ```swift
 // Basic initialization
 let schema = Schema([User.self, Order.self])
-let container = try FDBContainer(
-    database: database,
-    schema: schema
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb())
 )
 
 // Initialization with configuration
-let config = FDBConfiguration(
-    url: URL(fileURLWithPath: "/etc/foundationdb/fdb.cluster"),
-    indexConfigurations: [
-        VectorIndexConfiguration(
-            indexName: "User_embedding",
-            parameters: HNSWParameters(m: 16, efConstruction: 200)
-        )
-    ]
+let config = DBConfiguration(
+    backend: .fdb()
 )
-let container = try FDBContainer(
-    database: database,
-    schema: schema,
+let container = try await DBContainer(
+    for: schema,
     configuration: config
 )
 ```
@@ -621,11 +617,12 @@ struct Article {
 **Runtime configuration** (HNSW parameter tuning):
 
 ```swift
-let config = FDBConfiguration(
+let config = DBConfiguration(
+    backend: .fdb(),
     indexConfigurations: [
-        VectorIndexConfiguration(
-            indexName: "Article_embedding",
-            parameters: HNSWParameters(
+        VectorIndexConfiguration<Article>(
+            keyPath: \.embedding,
+            hnsw: VectorHNSWParameters(
                 m: 16,              // Number of connections
                 efConstruction: 200, // Search width during construction
                 efSearch: 100       // Search width during search
@@ -1364,7 +1361,7 @@ context.insert(user)
 try await context.save()  // Commits in single transaction
 
 // Explicit transaction
-try await container.database.withTransaction { transaction in
+try await container.engine.withTransaction { transaction in
     let txContext = TransactionContext(transaction: transaction, container: container)
     try await txContext.set(user)
     try await txContext.set(order)
@@ -1384,7 +1381,7 @@ let config = TransactionConfiguration(
     readPriority: .normal    // Read priority
 )
 
-try await container.database.withTransaction(configuration: config) { tx in
+try await container.engine.withTransaction(configuration: config) { tx in
     // ...
 }
 ```
@@ -1615,7 +1612,7 @@ enum AppMigrationPlan: SchemaMigrationPlan {
 
 ```swift
 // Create container with migration plan
-let container = try FDBContainer(
+let container = try await DBContainer(
     for: AppSchemaV3.self,
     migrationPlan: AppMigrationPlan.self,
     configuration: config
@@ -1893,16 +1890,15 @@ let serializer = TransformingSerializer(
 ### 12.1 SecurityConfiguration
 
 ```swift
-let securityConfig = SecurityConfiguration(
-    enableAccessControl: true,
-    defaultPolicy: .deny,  // Deny by default
-    auditLog: true
+let security = SecurityConfiguration.enabled(
+    strict: true,
+    adminRoles: ["admin"]
 )
 
-let container = try FDBContainer(
-    database: database,
-    schema: schema,
-    securityConfiguration: securityConfig
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb()),
+    security: security
 )
 ```
 
@@ -1947,11 +1943,12 @@ class MySecurityDelegate: DataStoreSecurityDelegate {
     }
 }
 
-// Apply
-let container = try FDBContainer(
-    database: database,
-    schema: schema,
-    securityDelegate: MySecurityDelegate()
+// The built-in DBContainer path installs DefaultSecurityDelegate from
+// SecurityConfiguration and reads the current request auth from AuthContextKey.
+let container = try await DBContainer(
+    for: schema,
+    configuration: DBConfiguration(backend: .fdb()),
+    security: .enabled()
 )
 ```
 
@@ -2000,7 +1997,7 @@ print("Total read bytes: \(stats.totalReadBytes)")
 ```swift
 let metrics = TransactionMetrics()
 
-try await database.withTransaction { transaction in
+try await container.engine.withTransaction { transaction in
     let instrumented = InstrumentedTransaction(
         underlying: transaction,
         metrics: metrics
@@ -2048,7 +2045,7 @@ let config = TransactionConfiguration(
     )
 )
 
-try await database.withTransaction(configuration: config) { tx in
+try await container.engine.withTransaction(configuration: config) { tx in
     // Logs include transactionID
 }
 ```
@@ -2061,7 +2058,7 @@ try await database.withTransaction(configuration: config) { tx in
 
 | Type | Category | Description |
 |------|----------|-------------|
-| `FDBContainer` | Core | Resource management |
+| `DBContainer` | Core | Resource management |
 | `FDBContext` | Core | CRUD operations |
 | `Schema` | Core | Schema definition |
 | `TransactionConfiguration` | Transaction | Configuration |

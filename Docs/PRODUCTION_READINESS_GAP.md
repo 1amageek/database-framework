@@ -171,7 +171,7 @@ registry.add { event in
 - **Priority**: 🟢 Low
 - **Effort**: 1 day
 
-**Description**: Automatic metrics aggregation at FDBContainer level.
+**Description**: Automatic metrics aggregation at DBContainer level.
 
 ---
 
@@ -258,11 +258,11 @@ Multiple error types scattered across modules:
 | FormatVersion | `Migration/FormatVersion.swift` | ✅ Complete |
 | FormatVersionManager | `Migration/FormatVersion.swift` | ✅ Complete |
 | FormatVersionError | `Migration/FormatVersion.swift` | ✅ Complete |
-| FDBContainer Integration | - | ❌ **Not Implemented** |
+| DBContainer Integration | - | ❌ **Not Implemented** |
 
 ### Missing Features
 
-#### 5.1 FDBContainer Format Version Integration
+#### 5.1 DBContainer Format Version Integration
 
 - [ ] **Status**: Not Implemented
 - **Priority**: 🔴 **Critical**
@@ -305,7 +305,7 @@ Multiple error types scattered across modules:
 
 | Task | Status | PR |
 |------|--------|-----|
-| FDBContainer integration | ⬜ Not Started | - |
+| DBContainer integration | ⬜ Not Started | - |
 | Feature flags | ⬜ Not Started | - |
 | Tests | ⬜ Not Started | - |
 

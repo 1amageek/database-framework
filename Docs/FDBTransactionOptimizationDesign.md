@@ -128,7 +128,7 @@ extension TransactionProtocol {
 }
 ```
 
-### FDBContainer.withTransaction
+### DBContainer.withTransaction
 
 設定付きトランザクション実行:
 
@@ -247,4 +247,4 @@ func parallelScan(subspace: Subspace) async throws -> [Record] {
 - `fdb-swift-bindings/Sources/FoundationDB/FoundationdDB.swift` - プロトコル定義
 - `database-framework/Sources/DatabaseEngine/Transaction/TransactionPriority.swift` - 設定型と apply()
 - `database-framework/Sources/DatabaseEngine/Transaction/ReadVersionCache.swift` - GRV キャッシュ
-- `database-framework/Sources/DatabaseEngine/FDBContainer.swift` - トランザクション実行
+- `database-framework/Sources/DatabaseEngine/DBContainer.swift` - トランザクション実行

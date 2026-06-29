@@ -183,7 +183,7 @@ let directoryLayer = DirectoryLayer(database: database)
 let dirSubspace = try await directoryLayer.createOrOpen(path: path, type: layer)
 ```
 
-**Status**: ✅ Actually USED via FDBContainer.resolveDirectory()
+**Status**: ✅ Actually USED via DBContainer.resolveDirectory()
 
 ### 1.9 Network and Database Options
 

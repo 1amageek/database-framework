@@ -3220,7 +3220,7 @@ public struct QuantizerRetrainer {
 
     /// Execute retraining with zero-downtime
     public func retrain(
-        container: FDBContainer,
+        container: DBContainer,
         indexName: String,
         sampleSize: Int
     ) async throws {
