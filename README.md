@@ -1,428 +1,528 @@
 # database-framework
 
-StorageKit-backed server execution layer for [database-kit](https://github.com/1amageek/database-kit) models. FoundationDB is the default distributed backend, and SQLite/PostgreSQL can be selected with SwiftPM traits.
+A backend-neutral Swift execution layer for models defined with
+[database-kit](https://github.com/1amageek/database-kit).
 
-## Overview
+database-framework owns schema registration, transactions, query planning,
+persistence, migrations, and index maintenance. Storage is supplied through
+the backend-neutral protocols in
+[storage-kit](https://github.com/1amageek/storage-kit).
 
-database-framework is the **server execution layer** that provides:
-
-- **DBContainer / FDBContext**: Change-tracking data access with ACID transactions
-- **12 index maintainers**: Scalar, Vector, FullText, Spatial, Graph, Aggregation, and more
-- **Schema Registry**: pg_catalog-style metadata persistence
-- **Migration System**: Online index building and schema evolution
-- **DatabaseServer**: WebSocket server for [database-client](https://github.com/1amageek/database-client) connections
-- **DatabaseCLI**: Interactive REPL for data inspection
-
-```
-┌──────────────────────────────────────────────────────────┐
-│                      database-kit                        │
-│  @Persistable models, IndexKind protocols, QueryIR       │
-└──────────┬───────────────────────────────┬───────────────┘
-           │                               │
-           ▼                               ▼
-┌─────────────────────┐       ┌─────────────────────────┐
-│  database-framework │       │    database-client       │
-│  DBContainer        │◄─────│    DatabaseContext        │
-│  Index Maintainers  │  WS  │    KeyPath queries       │
-│  StorageKit Engine  │       │    iOS / macOS           │
-└─────────────────────┘       └─────────────────────────┘
-```
-
-## Installation
-
-### Prerequisites
-
-- **Swift 6.2+**
-- **macOS 26+**, **iOS 26+**, or Linux
-- One StorageKit backend:
-  - FoundationDB 7.3+ for the default `FoundationDB` trait
-  - SQLite with `--traits SQLite`
-  - PostgreSQL with `--traits PostgreSQL`
-
-```bash
-# macOS
-brew install foundationdb
-brew services start foundationdb
-```
-
-### Stable FoundationDB Test Environment
-
-For repeatable local tests, use the isolated test cluster wrapper instead of the shared system FoundationDB service:
-
-```bash
-# Start an isolated single-process FoundationDB cluster, run tests, then stop it.
-scripts/fdb-test-env run --clean -- perl -e 'alarm shift; exec @ARGV' 240 swift test --filter FDBContextTests
-```
-
-The wrapper writes its own cluster file under `.fdb-test/`, configures a fresh `single memory` database, exports `FDB_CLUSTER_FILE` to the test command, and tears the process down after the command exits.
-
-For several commands against the same isolated cluster, enter a shell owned by the wrapper. The cluster is stopped when the shell exits:
-
-```bash
-scripts/fdb-test-env shell --clean
-perl -e 'alarm shift; exec @ARGV' 240 swift test --filter FDBContextTests
-exit
-```
-
-### Swift Package Manager
-
-```swift
-dependencies: [
-    .package(url: "https://github.com/1amageek/database-framework.git", from: "26.0629.0")
-]
-```
-
-## Quick Start
-
-```swift
-import Database
-import Core
-
-// 1. Define models (from database-kit)
-@Persistable
-struct User {
-    #Directory<User>("app", "users")
-    #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
-
-    var email: String
-    var name: String
-}
-
-// 2. Create container
-let schema = Schema([User.self])
-let container = try await DBContainer(
-    for: schema,
-    configuration: DBConfiguration(backend: .fdb())
-)
-
-// 3. Insert data
-let context = container.newContext()
-context.insert(User(email: "alice@example.com", name: "Alice"))
-context.insert(User(email: "bob@example.com", name: "Bob"))
-try await context.save()
-
-// 4. Query
-let users = try await context.fetch(User.self)
-    .where(\.name == "Alice")
-    .execute()
-```
-
-## Modules
-
-### Core
-
-| Module | Description |
-|--------|-------------|
-| `DatabaseEngine` | DBContainer, FDBContext, IndexMaintainer protocol, Schema Registry |
-| `Database` | All-in-one re-export of all index modules |
-| `QueryAST` | SQL/SPARQL parser, AST builder, serializer |
-| `DatabaseServer` | WebSocket server for database-client connections |
-| `DatabaseCLICore` | Interactive REPL library for data inspection |
-
-### Index Maintainers
-
-| Module | IndexKind | Features |
-|--------|-----------|----------|
-| `ScalarIndex` | `ScalarIndexKind` | Range queries, sorting, unique constraints |
-| `VectorIndex` | `VectorIndexKind` | HNSW and flat similarity search |
-| `FullTextIndex` | `FullTextIndexKind` | Tokenization, inverted index |
-| `SpatialIndex` | `SpatialIndexKind` | S2 / Geohash / Morton encoding |
-| `RankIndex` | `RankIndexKind` | Skip-list based rankings |
-| `GraphIndex` | `GraphIndexKind` | Graph traversal, SPARQL, OWL DL reasoning |
-| `AggregationIndex` | `Count/Sum/Min/Max/AverageIndexKind` | Atomic aggregations |
-| `VersionIndex` | `VersionIndexKind` | FDB versionstamp history |
-| `BitmapIndex` | `BitmapIndexKind` | Roaring bitmap for categorical data |
-| `LeaderboardIndex` | `TimeWindowLeaderboardIndexKind` | Time-windowed leaderboards |
-| `PermutedIndex` | `PermutedIndexKind` | Alternative field orderings |
-| `RelationshipIndex` | `RelationshipIndexKind` | Cross-type relationship queries |
+FoundationDB is the default SwiftPM trait for compatibility with the original
+deployment path. It is one backend choice, not a requirement of the framework.
+The same execution layer can run with FoundationDB, SQLite, PostgreSQL, an
+in-memory engine, or another StorageEngine implementation.
 
 ## Architecture
 
-### Container / Context Pattern
+The package separates application behavior from storage deployment:
 
-| Component | Role | Transactions |
-|-----------|------|-------------|
-| `DBContainer` | Resource manager (StorageEngine, Schema, Directory) | Does NOT create |
-| `FDBContext` | User-facing API, change tracking, batch operations | Creates |
-| `FDBDataStore` | Low-level operations within transactions | Receives |
+    database-kit
+      Models, schema metadata, IndexKind, QueryIR, DatabaseWire
+            |
+            v
+    database-framework
+      DBContainer, Context, query planner, migrations, index maintainers
+            |
+            v
+    storage-kit
+      StorageEngine, Transaction, Tuple, Subspace, DirectoryService
+            |
+            +----------------+------------------+------------------+
+            v                v                  v                  v
+      FoundationDB       SQLite             PostgreSQL          Custom
+      distributed       local/embedded     server/Cloud SQL    InMemory/remote
 
-### Lifecycle Management
+Application model, query, and index declarations stay the same when the
+backend changes. Backend selection happens through a SwiftPM trait and a
+storage configuration at initialization.
 
-```
-DBContainer (owns StorageEngine)
-  └── newContext() → FDBContext (references container, does NOT own engine)
+### Responsibilities
 
-Startup:  create StorageEngine/configuration → DBContainer.init → container.newContext()
-Teardown: context = nil → container = nil → backend-specific shutdown if required
-```
+- DBContainer owns the schema, storage engine, directory resolution, and
+  index lifecycle.
+- FDBContext is the user-facing change-tracking context and transaction entry
+  point. The name is historical: it is used with every StorageEngine, not only
+  FoundationDB.
+- DatabaseEngine provides backend-neutral persistence, transaction
+  coordination, query planning, migrations, security, and schema catalog logic.
+- Index modules maintain and query Scalar, Vector, FullText, Spatial, Graph,
+  Aggregation, Rank, Bitmap, Version, Leaderboard, Permuted, Relationship,
+  and Ontology indexes.
+- StorageKit defines the storage contract and supplies concrete backend
+  engines. Only this layer knows backend-specific transaction APIs.
 
-| Component | Owns Database? | Cleanup |
-|-----------|---------------|---------|
-| `DBContainer` | Yes (strong ref) | ARC — releases engine on dealloc |
-| `FDBContext` | No (references container) | ARC — discards pending changes |
+## Backend Selection
 
-**Process exit**: Safe without explicit cleanup. OS reclaims all resources.
+| Backend | Trait | Typical deployment | Storage engine | FoundationDB required |
+|---|---|---|---|---:|
+| FoundationDB | default / FoundationDB | distributed server database | FDBStorageEngine | Yes |
+| SQLite | SQLite | local, embedded, tests, single-instance services | SQLiteStorageEngine | No |
+| PostgreSQL | PostgreSQL | server, Cloud SQL, Vapor on Cloud Run | PostgreSQLStorageEngine | No |
+| Custom | application-defined | in-memory, proxy, or another storage system | any StorageEngine | No |
 
-**Explicit shutdown** (servers, tests):
+The common execution path is:
 
-```swift
-// 1. Release contexts (discard pending changes)
-context = nil
+    Schema + DBConfiguration
+                |
+                v
+           DBContainer
+                |
+                v
+            FDBContext
+                |
+                v
+      StorageEngine.withTransaction
 
-// 2. Release container (triggers fdb_database_destroy via ARC)
-container = nil
+The framework does not silently assume FoundationDB when a custom engine is
+provided. Backend-specific operations are implemented by StorageKit. When a
+backend cannot provide an operation, it must expose an explicit error or a
+documented semantic mapping.
 
-// 3. Run backend-specific shutdown only when the backend requires it.
-```
+## Installation
 
-**Server pattern**: One container per process, one context per request.
-**CLI pattern**: One container, one context, `Foundation.exit(0)` is safe.
-**Test pattern**: One container per suite, with backend-specific teardown handled by the test harness.
+### Requirements
 
-### Change Tracking
+- Swift 6.2 or later
+- macOS 26 or later, iOS 26 or later, or a supported Linux Swift toolchain
+- One StorageKit backend selected for the target
 
-```swift
-let context = container.newContext()
+    dependencies: [
+        .package(
+            url: "https://github.com/1amageek/database-framework.git",
+            from: "26.0629.0"
+        )
+    ]
 
-// Stage changes
-context.insert(user1)
-context.insert(user2)
-context.delete(user3)
+The all-in-one Database product re-exports the model, storage, execution, and
+index modules selected by the active traits. Individual products such as
+DatabaseEngine and VectorIndex are available when smaller dependency graphs
+are preferred.
 
-// Commit all in one ACID transaction
-try await context.save()
-```
+## Quick Start
 
-### Protocol Bridge
+The model and application code are backend-neutral:
 
-database-kit defines **what** to index. database-framework defines **how** to maintain it.
+    import Database
 
-```swift
-// database-kit: metadata only
-public struct ScalarIndexKind: IndexKind {
-    public static let identifier = "scalar"
-}
+    @Persistable
+    struct User {
+        #Directory<User>("app", "users")
+        #Index(ScalarIndexKind<User>(fields: [\.email]), unique: true)
 
-// database-framework: StorageKit-backed implementation
-extension ScalarIndexKind: IndexKindMaintainable {
-    public func makeIndexMaintainer<Item: Persistable>(...) -> any IndexMaintainer<Item> {
-        return ScalarIndexMaintainer(...)
+        var email: String
+        var name: String
     }
-}
-```
 
-## Features
+    let schema = Schema([User.self])
 
-### Security
+    // Supply a backend-specific configuration here.
+    let container = try await DBContainer(
+        for: schema,
+        configuration: DBConfiguration(backend: .custom(engine))
+    )
 
-```swift
-// Declarative access control
-extension Post: SecurityPolicy {
-    static func allowGet(resource: Post, auth: (any AuthContext)?) -> Bool {
-        resource.isPublic || resource.authorID == auth?.userID
+    let context = container.newContext()
+    context.insert(User(email: "alice@example.com", name: "Alice"))
+    try await context.save()
+
+    let users = try await context.fetch(User.self)
+        .where(\.name == "Alice")
+        .execute()
+
+The engine in the example is intentionally abstract. Choose one of the
+backend initializers below for the target you are building.
+
+## Backend Examples
+
+### FoundationDB
+
+FoundationDB is the default trait. It provides distributed transactions,
+native versionstamps, and the dynamic FoundationDB DirectoryLayer.
+
+    swift build
+    swift test
+
+    import Database
+
+    let container = try await DBContainer(for: schema)
+
+The explicit form is useful when supplying FoundationDB configuration:
+
+    let configuration = DBConfiguration(backend: .fdb())
+    let container = try await DBContainer(
+        for: schema,
+        configuration: configuration
+    )
+
+For local testing, the repository includes an isolated cluster wrapper:
+
+    scripts/fdb-test-env run --clean -- \
+      perl -e 'alarm shift; exec @ARGV' 240 \
+      swift test --filter FDBContextTests
+
+### SQLite
+
+SQLite is the local and embedded backend. It does not load libfdb_c and does
+not require a FoundationDB process.
+
+    swift build --traits SQLite
+    swift test --traits SQLite
+
+    import Database
+    import SQLiteStorage
+
+    let container = try await DBContainer(
+        for: schema,
+        configuration: SQLiteStorageEngine.Configuration.file(
+            "/path/to/application.sqlite"
+        )
+    )
+
+For tests and disposable processes:
+
+    let container = try await DBContainer(
+        for: schema,
+        configuration: SQLiteStorageEngine.Configuration.inMemory
+    )
+
+### PostgreSQL and Cloud SQL
+
+PostgreSQL is the server-side backend. The default isolation level is
+SERIALIZABLE so transaction behavior is aligned with the framework's strong
+consistency model. It can connect over TCP, a Unix domain socket, or the
+Cloud SQL socket mounted into Cloud Run.
+
+    swift build --traits PostgreSQL
+    swift test --traits PostgreSQL
+
+    import Database
+    import PostgreSQLStorage
+
+    let postgres = PostgreSQLConfiguration(
+        host: "127.0.0.1",
+        port: 5432,
+        username: "app",
+        password: password,
+        database: "app",
+        schemaManagement: .createIfNeeded
+    )
+
+    let container = try await DBContainer(
+        for: schema,
+        configuration: postgres
+    )
+
+Cloud Run with Cloud SQL uses the same DBContainer API; only the storage
+configuration changes:
+
+    let postgres = PostgreSQLConfiguration(
+        cloudSQLInstanceConnectionName: "PROJECT:REGION:INSTANCE",
+        username: username,
+        password: password,
+        database: databaseName,
+        schemaManagement: .assumeExists
+    )
+
+    let container = try await DBContainer(
+        for: schema,
+        configuration: postgres
+    )
+
+Use assumeExists when the Cloud SQL role is restricted to DML and the KV table
+is provisioned separately. See
+[Docs/CLOUD_RUN_VAPOR_POSTGRESQL.md](Docs/CLOUD_RUN_VAPOR_POSTGRESQL.md) for
+the Cloud Run and Vapor deployment shape.
+
+### Custom and In-Memory Engines
+
+DatabaseEngine accepts any StorageEngine. This is the extension point for
+tests, local tools, storage proxies, and future backends.
+
+    import Database
+    import StorageKit
+
+    let engine = InMemoryEngine()
+    let container = try await DBContainer(
+        for: schema,
+        configuration: DBConfiguration(backend: .custom(engine))
+    )
+
+The same injection path is used for a custom remote or host-provided engine:
+
+    let configuration = DBConfiguration(
+        name: "application-storage",
+        backend: .custom(customEngine),
+        indexConfigurations: [vectorConfiguration]
+    )
+    let container = try await DBContainer(
+        for: schema,
+        configuration: configuration
+    )
+
+## Transaction and Context Model
+
+DBContainer is a resource manager. It does not create application
+transactions. A context owns unit-of-work state and uses the selected engine
+for transactions.
+
+    DBContainer
+      owns: Schema, StorageEngine, directory and index state
+           |
+           +--> newContext()
+                    |
+                    v
+                FDBContext
+                  owns: pending changes, read-version/cache state,
+                        transaction orchestration
+
+    let context = container.newContext()
+
+    context.insert(user)
+    context.insert(order)
+    context.delete(previousUser)
+
+    // All staged mutations are committed as one transaction.
+    try await context.save()
+
+For direct transactional work:
+
+    try await context.withTransaction { transaction in
+        let value = try await transaction.getValue(for: key)
+        transaction.setValue(updatedValue, for: key)
+        _ = value
     }
-}
 
-// Encryption at rest (AES-256-GCM)
-let configuration = DBConfiguration(backend: .fdb())
-let container = try await DBContainer(
-    for: schema,
-    configuration: configuration,
-    security: .enabled(adminRoles: ["admin"])
-)
-```
+Transactions, range scans, key selectors, tuple encoding, and directory
+resolution are expressed through StorageKit. The selected backend controls
+connection management and physical implementation.
 
-### Hybrid SQL/SPARQL
+## Indexes
 
-```swift
-let sql = """
-SELECT * FROM User
-WHERE id IN (SPARQL(Connection, 'SELECT ?from WHERE { ?from "follows" "bob" }'))
-  AND age > 18
-"""
-let users = try await context.executeSQL(sql, as: User.self)
-```
+Index declarations are part of the model schema. Index maintainers use the
+same StorageKit contracts regardless of the selected backend.
 
-### Migration
+| Module | Index | Typical capability |
+|---|---|---|
+| ScalarIndex | scalar / composite | equality, ranges, sorting, uniqueness |
+| VectorIndex | HNSW / flat | similarity search and binary vector payloads |
+| FullTextIndex | inverted text | token search and ranking |
+| SpatialIndex | S2 / Geohash / Morton | geospatial queries |
+| RankIndex | skip list | ordered rankings and top-K |
+| GraphIndex | graph / SPARQL | traversal, graph patterns, OWL reasoning |
+| AggregationIndex | count / sum / min / max / average | incremental aggregation |
+| VersionIndex | temporal versions | history and version-aware reads |
+| BitmapIndex | compressed bitmaps | categorical membership |
+| LeaderboardIndex | time-windowed ranking | rolling leaderboards |
+| PermutedIndex | alternate field order | query-specific key layouts |
+| RelationshipIndex | cross-type references | relationship queries |
 
-```swift
-let migration = Migration(
-    fromVersion: Schema.Version(1, 0, 0),
-    toVersion: Schema.Version(2, 0, 0),
-    description: "Add email index"
-) { ctx in
-    try await ctx.addIndex(emailIndexDescriptor)
-}
-```
+Index declarations remain independent of backend choice:
 
-### Ontology Integration
+    @Persistable
+    struct Document {
+        #Directory<Document>("app", "documents")
+        #Index(VectorIndexKind<Document>(embedding: \.embedding, dimensions: 1536))
 
-Link Persistable types to OWL ontology classes with `@OWLClass` and `@OWLDataProperty` / `@OWLObjectProperty` macros (defined in [database-kit](https://github.com/1amageek/database-kit) Graph module). `@Persistable` handles pure persistence; `@OWLClass` handles OWL class mapping independently.
+        var title: String
+        var embedding: [Float]
+    }
 
-```swift
-import Database
-import Core
-import Graph
+Backend capability differences are handled at the storage boundary. FoundationDB
+provides a native distributed DirectoryLayer and versionstamp operations, while
+SQLite and PostgreSQL use their own directory and transaction implementations.
+An operation that cannot be represented by a backend must fail explicitly; the
+framework does not silently downgrade transactional behavior.
 
-// 1. Define ontology-aware types
-@Persistable
-@OWLClass("http://example.org/onto#Employee")
-struct Employee {
-    #Directory<Employee>("app", "employees")
+## Migrations and Schema
 
-    @OWLDataProperty("http://example.org/onto#name")
-    var name: String
+DBContainer registers the schema catalog and initializes declared indexes.
+Versioned schemas can provide a migration plan:
 
-    @OWLDataProperty("http://example.org/onto#worksFor", to: \Department.id)
-    var departmentID: String?
-}
+    let migration = Migration(
+        fromVersion: Schema.Version(1, 0, 0),
+        toVersion: Schema.Version(2, 0, 0),
+        description: "Add email index"
+    ) { context in
+        try await context.addIndex(emailIndexDescriptor)
+    }
 
-@Persistable
-@OWLClass("http://example.org/onto#Department")
-struct Department {
-    #Directory<Department>("app", "departments")
-    var name: String
-}
+Migration execution uses the same StorageEngine selected for the container.
+Backend-specific provisioning remains outside application migration code when
+the backend requires administrative setup, such as a DML-only Cloud SQL role.
 
-// 2. Define object property (edge type) with @OWLObjectProperty
-@Persistable
-@OWLObjectProperty("http://example.org/onto#worksFor", from: "employeeID", to: "departmentID")
-struct WorksFor {
-    #Directory<WorksFor>("app", "assignments")
-    var employeeID: String = ""
-    var departmentID: String = ""
+## Optional Features
 
-    @OWLDataProperty("http://example.org/onto#since")
-    var startDate: Date = Date()
-}
+### Graph and Ontology
 
-// 3. Define RDF triple store
-@Persistable
-struct RDFTriple {
-    #Directory<RDFTriple>("app", "knowledge")
-    var subject: String = ""
-    var predicate: String = ""
-    var object: String = ""
+GraphIndex supports graph traversal, SPARQL-oriented queries, and OWL
+integration. Persistable handles storage; OWLClass, OWLDataProperty, and
+OWLObjectProperty add ontology metadata.
 
-    #Index(GraphIndexKind<RDFTriple>(
-        from: \.subject, edge: \.predicate, to: \.object,
-        strategy: .hexastore
-    ))
-}
+See [Sources/GraphIndex/README.md](Sources/GraphIndex/README.md) for graph
+query and reasoning APIs.
 
-// 4. Create container
-let schema = Schema([Employee.self, Department.self, WorksFor.self, RDFTriple.self])
-let container = try await DBContainer(
-    for: schema,
-    configuration: DBConfiguration(backend: .fdb())
-)
+### Database Server
 
-// 5. Load ontology independently via OntologyStore
-let ontology = OWLOntology(iri: "http://example.org/onto") {
-    Class("ex:Employee", subClassOf: "ex:Person")
-    Class("ex:Department")
-    ObjectProperty("ex:worksFor", domain: "ex:Employee", range: "ex:Department")
-}
+DatabaseServer exposes a DBContainer to
+[database-client](https://github.com/1amageek/database-client) through the
+DatabaseWire protocol. The server layer is separate from the storage engine;
+it can host a container backed by any engine supported by the target.
 
-let context = container.newContext()
-try await context.ontology.load(ontology)
-```
+### Cloudflare Durable Objects
 
-**What happens automatically**:
-- `@OWLClass` generates `OWLClassEntity` conformance with `ontologyClassIRI`
-- `@OWLClass` scans `@OWLDataProperty` annotations to build `ontologyPropertyDescriptors`
-- `@OWLObjectProperty` generates `OWLObjectPropertyEntity` conformance with `objectPropertyIRI`, `fromFieldName`, `toFieldName`, and auto-generates a `GraphIndexKind` for the edge type
-- `@OWLDataProperty(to:)` generates a reverse index on `departmentID` for efficient lookups
-- `context.ontology.load()` persists the ontology to `/_ontology/` via OntologyStore
-- GraphIndex uses the ontology for OWL 2 RL materialization on triple writes
+Cloudflare Durable Object SQLite is a deployment adapter, not a FoundationDB
+mode hidden inside this repository. It is maintained in the separate
+[database-framework-cloudflare](https://github.com/1amageek/database-framework-cloudflare)
+package. That package connects the DatabaseWire boundary to Durable Object
+SQLite and provides the Worker/WASM host integration.
 
-See [GraphIndex README](Sources/GraphIndex/README.md) for SPARQL, OWL reasoning, and graph algorithms.
+    Swift application
+          |
+          v
+    database-framework APIs
+          |
+          v
+    database-framework-cloudflare adapter
+          |
+          v
+    Durable Object SQLite
 
-### Polymorphable
+swift-web itself does not need to depend on the adapter. An application built
+with swift-web adds the Cloudflare package only when it selects that storage
+deployment.
 
-```swift
-@Polymorphable
-protocol Document: Polymorphable {
-    var id: String { get }
-    var title: String { get }
-}
+The web host and the database adapter are separate composition points:
 
-// Query all conforming types from a shared directory
-let docs = try await context.fetchPolymorphic(Article.self)
-```
+    swift-web application
+          |
+          +--> swift-web-vapor       -> Vapor 5 / Cloud Run host
+          |
+          +--> swift-web-cloudflare  -> Workers / Durable Object actor host
+          |
+          +--> database-framework-cloudflare
+                    -> DatabaseWire / Durable Object SQLite
+
+`swift-web-cloudflare` hosts SwiftWeb actors and is not a replacement for
+`database-framework-cloudflare`. The former owns web actor execution; the
+latter owns database access through Durable Object SQLite. An application may
+use either one independently or compose both.
 
 ## Data Layout
 
-```
-[directory]/R/[type]/[id]              → Protobuf-encoded item
-[directory]/I/[indexName]/[values]/[id] → Index entry
-[directory]/state/[indexName]           → Index state (readable/writeOnly/disabled)
-/_catalog/[typeName]                    → JSON-encoded TypeCatalog
-```
+The logical layout is expressed through Subspace and DirectoryService, then
+mapped by the backend:
+
+    [directory]/R/[type]/[id]               -> encoded item envelope
+    [directory]/I/[indexName]/[values]/[id] -> index entry
+    [directory]/state/[indexName]           -> index state
+    [_catalog]/[typeName]                   -> schema catalog
+
+The key-value contract is shared. Physical storage differs by backend: FDB uses
+keyspace prefixes and its DirectoryLayer, while SQL backends store the same
+logical key/value model in their own tables and indexes.
+
+## Modules
+
+| Product | Role |
+|---|---|
+| Database | all-in-one facade and selected backend re-exports |
+| DatabaseEngine | container, context, persistence, planning, migrations |
+| DatabaseRuntime | runtime assembly for index maintainers |
+| ScalarIndex, VectorIndex, FullTextIndex, ... | individual index modules |
+| QueryAST | SQL/SPARQL parsing and serialization |
+| DatabaseServer | DatabaseWire/WebSocket server endpoint |
+| DatabaseCLICore | embeddable inspection and administration library |
+
+Import Database for the standard application path, or import individual
+products when compile time and dependency size matter.
 
 ## Build and Test
 
-```bash
-swift build                                      # Default FoundationDB build
-swift build -c release                           # Release build
-swift build --traits SQLite                      # SQLite backend build
-swift build --traits PostgreSQL                  # PostgreSQL backend build
-swift test --traits SQLite                       # Backend-independent test pass
-swift test --filter DatabaseEngineTests          # Engine tests with the default backend
-```
+    # FoundationDB trait (default)
+    swift build
+    swift test
 
-## Benchmarks
+    # SQLite: no FoundationDB process required
+    swift build --traits SQLite
+    swift test --traits SQLite
 
-Performance benchmarks live in the `PerformanceBenchmarks` test target. FoundationDB benchmarks require a healthy FoundationDB cluster; SQLite/PostgreSQL runs should use the matching trait and backend setup.
+    # PostgreSQL: requires a reachable PostgreSQL instance
+    swift build --traits PostgreSQL
+    swift test --traits PostgreSQL
 
-```bash
-swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
-swift test --filter 'PerformanceBenchmarks.FDBFrameworkCRUDBenchmarkTests'
-swift test --filter 'PerformanceBenchmarks.IndexedQueryAndWriteBenchmarkTests'
-swift test --filter 'PerformanceBenchmarks.MinMaxBatchBenchmark'
-swift test --filter 'PerformanceBenchmarks.RangeTreeBenchmark'
-swift test --filter 'PerformanceBenchmarks.SerializationBenchmark'
-```
+    # Release build for the selected traits
+    swift build -c release
 
-The `DatabaseEngine` benchmarks use `.serialized` suites, `FDBTestSetup.shared.withSerializedAccess`, unique benchmark IDs, and explicit directory cleanup so each run stays isolated and does not deadlock on shared FoundationDB state.
+Test targets are split by backend. FoundationDB tests require a running
+cluster, SQLite tests use isolated in-memory or file databases, and PostgreSQL
+tests use the configured PostgreSQL test environment. This allows the
+backend-neutral engine and index behavior to be validated without installing
+FoundationDB.
 
-### Latest Snapshot (2026-04-11)
+## Performance
 
-**Environment**: macOS 26.3, Apple M4 Max, local Docker FoundationDB cluster
+Performance benchmarks are in the PerformanceBenchmarks test target. Results
+depend on the selected backend and must not be compared across backends as if
+they were the same deployment.
 
-| Module | Scenario | Result |
-|--------|----------|--------|
-| `ScalarIndex` | Fetch all users (300 records) | p95 `3.60ms`, `293 ops/s` |
-| `ScalarIndex` | Scan scalability (200 records) | p95 `6.45ms`, `184 ops/s` |
-| `AggregationIndex` | MIN/MAX grouped query | p95 `2.64ms`, `377 ops/s` |
-| `AggregationIndex` | Combined MIN+MAX vs separate queries | p95 `2.33ms`, throughput `+29.05%` |
-| `RankIndex` | Top-100 from 1,000 players | p95 `10.61ms`, `97 ops/s` |
-| `RankIndex` | Top-K scaling | p95 stayed near `10.72-11.02ms` |
-| `BitmapIndex` | JSON serialization | p95 `0.07ms`, `14,910 ops/s` |
-| `BitmapIndex` | JSON round-trip (10,000 values) | p95 `1148.92ms` |
+    swift test --filter 'PerformanceBenchmarks.CoveringIndexBenchmark'
+    swift test --filter 'PerformanceBenchmarks.IndexedQueryAndWriteBenchmarkTests'
+    swift test --filter 'PerformanceBenchmarks.SerializationBenchmark'
 
-Detailed benchmark reports:
-- `ScalarIndex`: `Sources/ScalarIndex/README.md`
-- `AggregationIndex`: `Sources/AggregationIndex/README.md`
-- `RankIndex`: `Sources/RankIndex/README.md`
-- `BitmapIndex`: `Sources/BitmapIndex/README.md`
+The latest checked-in snapshot is documented in the individual index READMEs.
+FoundationDB benchmark numbers describe a local Docker cluster and are not a
+claim about SQLite, PostgreSQL, Cloud SQL, or Durable Object latency.
 
-## Platform Support
+## Platform and Runtime Notes
 
-| Platform | Support |
-|----------|---------|
-| macOS | 26.0+ |
-| iOS | 26.0+ |
-| Linux | Swift 6.2+ |
+| Runtime | Status |
+|---|---|
+| macOS | supported by the package manifest |
+| iOS | supported by the package manifest |
+| Linux | supported where selected dependencies are available |
+| Cloudflare Workers / WASM | use database-framework-cloudflare adapter |
 
-FoundationDB-specific code is compiled only for the `FoundationDB` trait. SQLite/PostgreSQL traits avoid `libfdb_c` and are suitable for local validation without a FoundationDB service.
+FoundationDB-specific modules and imports are conditionally compiled only for
+the FoundationDB trait. SQLite and PostgreSQL builds do not link libfdb_c. The
+core engine depends on StorageKit protocols and does not embed a FoundationDB
+client into every backend build.
 
-## Related Packages
+## Ecosystem Repositories
 
-| Package | Role | Platform |
-|---------|------|----------|
-| **[database-kit](https://github.com/1amageek/database-kit)** | Model definitions, IndexKind protocols, QueryIR | iOS, macOS, Linux |
-| **[database-client](https://github.com/1amageek/database-client)** | Client SDK with KeyPath queries and WebSocket transport | iOS, macOS |
+The repositories below are related but do not all have the same dependency
+direction. The database core stays independent from web hosts and UI tools.
+
+### Core Database Packages
+
+| Repository | Role | Relationship |
+|---|---|---|
+| [database-kit](https://github.com/1amageek/database-kit) | Models, schema metadata, IndexKind, QueryIR, and DatabaseWire | Direct dependency |
+| [storage-kit](https://github.com/1amageek/storage-kit) | StorageEngine, Transaction, Tuple, directory abstraction, and backend engines | Direct dependency |
+| [swift-hnsw](https://github.com/1amageek/swift-hnsw) | Swift HNSW graph index used by VectorIndex | Direct dependency |
+| [database-client](https://github.com/1amageek/database-client) | Native client SDK, typed queries, and transport layer | Client of the server layer |
+
+### Deployment And Web Integration
+
+| Repository | Role | Relationship |
+|---|---|---|
+| [database-framework-cloudflare](https://github.com/1amageek/database-framework-cloudflare) | DatabaseWire, Swift WASM runtime, Worker host, routing, and Durable Object SQLite adapter | Database deployment adapter |
+| [swift-web](https://github.com/1amageek/swift-web) | Host-neutral Swift server/browser runtime with HTML rendering and WASM client islands | Independent application framework |
+| [swift-web-vapor](https://github.com/1amageek/swift-web-vapor) | Optional Vapor 5 host adapter for swift-web | Web host adapter |
+| [swift-web-cloudflare](https://github.com/1amageek/swift-web-cloudflare) | SwiftWeb actor hosting on Workers and Durable Objects | Web host adapter |
+| [swift-web-cloud-run](https://github.com/1amageek/swift-web-cloud-run) | Cloud Run project templates for swift-web | Deployment templates |
+
+`swift-web` does not depend on `database-framework`. A service built with
+swift-web can add `database-framework`, `database-framework-cloudflare`, or
+another backend integration according to its deployment. This preserves the
+boundary between the web framework and database implementation.
+
+### Tools And Validation
+
+| Repository | Role |
+|---|---|
+| [database-studio](https://github.com/1amageek/database-studio) | Native macOS data browser and graph visualizer for database-framework |
+| [database-framework-benchmark](https://github.com/1amageek/database-framework-benchmark) | PostgreSQL benchmark and framework-overhead comparison |
 
 ## License
 
