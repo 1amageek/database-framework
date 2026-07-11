@@ -231,7 +231,7 @@ configuration changes:
 
 Use assumeExists when the Cloud SQL role is restricted to DML and the KV table
 is provisioned separately. See
-[Docs/CLOUD_RUN_VAPOR_POSTGRESQL.md](Docs/CLOUD_RUN_VAPOR_POSTGRESQL.md) for
+[docs/deployment/cloud-run-vapor-postgresql.md](docs/deployment/cloud-run-vapor-postgresql.md) for
 the Cloud Run and Vapor deployment shape.
 
 ### Custom and In-Memory Engines

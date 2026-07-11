@@ -1,192 +1,41 @@
 # Changelog
 
-All notable changes to database-framework will be documented in this file.
+Release versions use CalVer in the form YY.MMDD.patch. Detailed historical
+implementation notes are kept in Git history rather than in the public
+documentation tree.
 
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
-
-## [0.3.0] - 2026-02-06
-
-### Changed
-
-#### Schema.Entity Codable化 (Breaking)
-- **TypeCatalog 廃止**: `Schema.Entity` が Codable なスキーマメタデータ型に統合
-  - SwiftData の `Schema` / `Schema.Entity` 設計に準拠
-  - `persistableType` は Optional（wire デコード時は nil）
-  - CodingKeys でランタイム専用フィールドを除外
-- **FDB キープレフィックス変更**: `/_catalog/` → `/_schema/`
-  - 既存データは `schema apply` で再登録が必要
-- **JSON フォーマット変更**: `{"typeName": ...}` → `{"name": ...}`
-
-#### CLI 改善
-- `database init` / `database status` コマンド追加
-- ローカルクラスターの自動検出（`.database/fdb.cluster`）
-
----
-
-## [0.2.0] - 2026-02-05
+## 26.0629.0 - 2026-06-29
 
 ### Added
 
-#### IndexDescriptor Enhancement
-- **fieldNames cache**: Pre-computed field names at construction time
-  - Eliminates repeated KeyPath → field name resolution
-  - Used by QueryPlanner and IndexMaintainer for efficient field matching
+- StorageKit-backed FoundationDB, SQLite, and PostgreSQL trait paths.
+- DatabaseWire runtime support for client and host adapters.
+- Backend-neutral dynamic directory and partition binding APIs.
+- Binary vector payload storage for Flat and HNSW paths.
+- HNSW graph snapshot chunking and revision-aware read caching.
+- Cloud SQL PostgreSQL configuration and readiness integration through
+  StorageKit.
 
 ### Changed
 
-#### API Changes (Breaking)
-- **IndexDescriptor.init**: Now requires `Root: Persistable` constraint
-  - Enforces type-safe KeyPath-based initialization
-  - Prevents use of internal string-based APIs
-- **Removed**: `IndexDescriptor.init(anyKeyPaths:)` initializer
-  - Internal API removed to enforce KeyPath usage
-  - Use `keyPaths:` parameter with typed KeyPaths instead
+- Index maintainers use StorageKit contracts instead of direct backend APIs.
+- FDB-specific imports are conditionally compiled by the FoundationDB trait.
+- VectorIndex production search uses the Swift HNSW backend from swift-hnsw.
+- The Database facade re-exports the backend selected by SwiftPM traits.
 
-#### Performance Improvements
-- **Phase 2 Optimizations**:
-  - Parallel FDB reads via TaskGroup
-  - FieldMap caching in Schema.Entity
-  - Zero-copy Skip List operations
-  - Varint encoding optimization
+### Verification
 
-#### Test Infrastructure
-- **FDBTestSetup.shared.withSerializedAccess**: Global test serialization
-  - Fixes flaky tests caused by parallel execution race conditions
-  - Applied to: ResolveDirectoryTests, GraphQueryBuilderTests, AdminContextTests, UniquenessEnforcementTests
+- FoundationDB build and test paths validated with the local cluster harness.
+- SQLite build and integration tests validated without libfdb_c.
+- PostgreSQL build path validated; integration tests require a configured
+  PostgreSQL instance.
+- Dependent database-client and database-framework-cloudflare build paths
+  validated for the binary vector storage contract.
 
-### Benchmark Results
+## Historical Releases
 
-| Component | Metric | Improvement |
-|-----------|--------|-------------|
-| TopKHeap | Latency (p95) | +31.8% |
-| TopKHeap | Throughput | +19.5% |
-| Multiple Aggregations | Throughput | +25.9% |
-| JSON Serialization | Latency (p95) | +6.2% |
-| Batch Fetch | Latency (p95) | +4.3% |
+Earlier 0.x releases used SemVer and focused on the initial FoundationDB
+execution path, schema catalog, index maintainers, query parsing, migrations,
+and the DatabaseCLI. Those release notes remain available in Git history.
 
----
-
-## [0.1.0] - 2026-02-03
-
-### Added
-
-#### Core Engine
-- **FDBContainer**: Application resource manager (database connection, schema, directory resolution)
-- **FDBContext**: Transaction manager with change tracking and batch operations
-- **FDBDataStore**: Low-level data operations within transactions
-- **IndexMaintenanceService**: Centralized index maintenance with uniqueness checking
-- **SchemaRegistry**: PostgreSQL pg_catalog equivalent for schema metadata persistence
-- **Schema.Entity**: Codable schema metadata (fields, indexes, directory structure)
-- **DynamicProtobufDecoder/Encoder**: Runtime codec for Schema.Entity-based data access
-
-#### Index Types (13 modules)
-- **ScalarIndex**: Single/composite field indexing with uniqueness constraints
-- **VectorIndex**: High-dimensional vector similarity search (HNSW, Flat)
-- **FullTextIndex**: Text search with tokenization and BM25 ranking
-- **SpatialIndex**: Geographic queries (R-tree, geohash)
-- **RankIndex**: Leaderboard and ranking queries
-- **PermutedIndex**: Multi-field permutation indexing
-- **GraphIndex**: RDF triple store with SPARQL support
-- **AggregationIndex**: Pre-computed aggregates (COUNT, SUM, MIN, MAX)
-- **VersionIndex**: Temporal versioning with point-in-time queries
-- **BitmapIndex**: Low-cardinality categorical queries
-- **LeaderboardIndex**: Real-time ranking with score updates
-- **RelationshipIndex**: One-to-many/many-to-many relationship queries
-
-#### Query Engine
-- **QueryAST**: Abstract Syntax Tree for SQL and SPARQL
-  - SQLParser: ISO SQL query parsing
-  - SPARQLParser: W3C SPARQL 1.1 query parsing
-  - SQL/PGQ support: Graph pattern matching (ISO/IEC 9075-16:2023)
-  - Query builder: Programmatic query construction
-  - SQL injection prevention: Identifier and string escaping
-- **QueryIR**: Intermediate representation for query optimization
-- **Query Planner**: Cost-based optimization
-  - DNF conversion (Disjunctive Normal Form)
-  - Predicate pushdown
-  - Index selection
-  - Join optimization
-- **SPARQL() SQL Function**: Hybrid SQL/SPARQL queries
-  - Execute SPARQL subqueries within SQL `IN` predicates
-  - Single-variable projection for scalar results
-  - Explicit variable selection for multi-variable SPARQL results
-  - Transaction-shared execution (consistent snapshot)
-  - Type-safe error handling (SPARQLFunctionError)
-  - Support for multiple SPARQL() calls in single query
-  - Pre-execution rewrite at FDBContext level
-
-#### DatabaseCLI
-- **DatabaseREPL**: Interactive database shell (PostgreSQL psql equivalent)
-- **Schema Commands**: `schema list`, `schema show <Type>`
-- **Data Commands**: `insert`, `get`, `update`, `delete`
-- **Query Commands**: `find` with filter/sort/limit
-- **Graph Commands**: `graph`, `sparql`
-- **Partition Support**: `--partition` for multi-tenant types
-- **Destructive Commands**: `clear` with safety gates
-- **Raw FDB Access**: `raw get/set/delete/range`
-- **LocalCluster**: Local FoundationDB cluster management
-
-#### Infrastructure
-- **ItemEnvelope**: Magic-number-based data format (prevents raw reads)
-- **TransactionRunner**: Automatic retry with exponential backoff
-- **ReadVersionCache**: Optimistic concurrency control
-- **DirectoryLayer**: Hierarchical namespace management
-- **FieldReader**: Zero-copy field access with dynamic member lookup
-- **TypeConversion**: Unified type conversion utilities
-- **TupleEncoder/Decoder**: FDB Tuple Layer integration
-
-#### Value Access Architecture (3-layer)
-- **Layer 1**: Zero-copy evaluation (KeyPath-based, no existential overhead)
-- **Layer 2**: FieldReader fallback (type-erased after DNF conversion)
-- **Layer 3**: DataAccess (storage layer with error propagation)
-
-#### Migration System
-- **Schema Versioning**: Major/minor/patch version tracking
-- **OnlineIndexer**: Non-blocking index rebuilds
-- **AdminContext**: Schema migration utilities
-
-### Technical Highlights
-
-#### Protocol-Driven Extensibility
-- `IndexKind` protocol (database-kit): Defines WHAT to index
-- `IndexMaintainer` protocol (database-framework): Defines HOW to maintain
-- `IndexKindMaintainable` bridge: Connects metadata to runtime
-
-#### Two-Package Architecture
-- **database-kit**: Platform-independent model definitions (iOS-compatible)
-- **database-framework**: FoundationDB-dependent execution (server-only)
-- Shared `@Persistable` types across client and server
-
-#### Concurrency Model
-- `final class + Mutex<T>` pattern (high-throughput)
-- No actor isolation (avoid serialization bottlenecks)
-- `nonisolated(unsafe)` for DatabaseProtocol
-
-### Standards Compliance
-- ISO/IEC 9075:2023 (SQL)
-- ISO/IEC 9075-16:2023 (SQL/PGQ - Property Graph Queries)
-- W3C SPARQL 1.1 Query Language
-- W3C RDF 1.1 (Named Graphs)
-- IEEE 754 (Double encoding with FDB Tuple Layer)
-
-### Requirements
-- Swift 6.2+
-- macOS 15+
-- FoundationDB 7.3+
-- fdb-swift-bindings (feature/directory-layer branch)
-- database-kit (main branch)
-
-### Known Limitations
-- CLI writes do NOT update indexes (debug/development only)
-- WatchManager is stub implementation (requires fdb-swift-bindings extension)
-- Index rebuild uses simplified implementation (use OnlineIndexer for production)
-
-### References
-- [database-kit](https://github.com/1amageek/database-kit) - Model definitions and index types
-- [fdb-swift-bindings](https://github.com/1amageek/fdb-swift-bindings) - FoundationDB Swift bindings
-- [swift-hnsw](https://github.com/1amageek/swift-hnsw) - HNSW vector index
-
-[0.3.0]: https://github.com/1amageek/database-framework/releases/tag/v0.3.0
-[0.2.0]: https://github.com/1amageek/database-framework/releases/tag/v0.2.0
-[0.1.0]: https://github.com/1amageek/database-framework/releases/tag/v0.1.0
+[26.0629.0]: https://github.com/1amageek/database-framework/releases/tag/26.0629.0

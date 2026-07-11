@@ -29,7 +29,7 @@ load from storage and persist a new revision; read paths reuse the cached graph 
 when the transaction observes the same metadata bytes. This prevents stale graph reuse
 after a committed update while avoiding per-query graph deserialization.
 
-See [Vector Binary Storage and HNSW Integration Roadmap](../../Docs/VECTOR_BINARY_STORAGE_AND_HNSW_ROADMAP.md) for the physical storage contract and release milestones.
+See [Vector Storage and HNSW](../../docs/storage/vector-storage-and-hnsw.md) for the physical storage contract and validation status.
 
 ## Use Cases
 

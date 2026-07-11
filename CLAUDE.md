@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Vision
 
-**database-framework** is a **protocol-extensible, customizable index database** designed for the AI era, built on FoundationDB's transactional guarantees.
+**database-framework** is a **protocol-extensible, customizable index database** designed for the AI era, built on StorageKit transaction contracts. FoundationDB is the default distributed backend; SQLite, PostgreSQL, and custom engines are supported through the same execution layer.
 
 ### Design Philosophy
 
@@ -21,7 +21,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 1. **Protocol-Driven**: New index types can be added without modifying core code
 2. **Composable**: Combine Vector + Graph + FullText in unified queries (Fusion API)
-3. **Transactional**: All operations backed by FoundationDB's ACID guarantees
+3. **Transactional**: Operations use the selected StorageEngine's transaction guarantees, with FoundationDB providing the default distributed path
 4. **AI-Native**: First-class support for embeddings, knowledge graphs, and RAG patterns
 
 ## Traits and Conditional Compilation
@@ -40,7 +40,7 @@ database-framework              →  storage-kit
 | Trait | Facade Module | Storage Backend | Use Case |
 |-------|---------------|-----------------|----------|
 | `FoundationDB` (default) | `Database` | FDBStorage | Server-side distributed database |
-| `SQLite` | `FDBite` | SQLiteStorage | On-device (iOS/macOS) |
+| `SQLite` | `Database` | SQLiteStorage | On-device and embedded |
 | `PostgreSQL` | (none) | PostgreSQLStorage | Server-side RDBMS |
 
 ### Build and Test Commands
@@ -58,7 +58,7 @@ swift build --traits PostgreSQL
 # Run all tests (requires local FoundationDB running)
 swift test
 
-# Run FDBite tests only (no libfdb_c required)
+# Run SQLite tests only (no libfdb_c required)
 swift test --traits SQLite --filter FDBiteTests
 
 # Run PostgreSQL tests only
@@ -100,9 +100,7 @@ swift build -c release
 ### Architecture: Backend-Agnostic Index Layer
 
 ```
-Database (FDB facade)     FDBite (SQLite facade)
-    ↓                         ↓
-    └─────────┬───────────────┘
+Database (selected backend facade)
               ↓
     DatabaseEngine + Index Modules  ← StorageKit only (backend-agnostic)
               ↓
@@ -160,7 +158,7 @@ This is the **server-side execution layer** backed by pluggable storage engines 
 ### Two-Package Design
 
 ```
-database-kit (client-safe)          database-framework (server-only)
+database-kit (client-safe)          database-framework (execution layer)
 ├── Core/                           ├── DatabaseEngine/
 │   ├── Persistable (protocol)      │   ├── DBContainer
 │   ├── IndexKind (protocol)        │   ├── FDBContext
@@ -194,7 +192,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
                             DatabaseEngine
                                    ↓
                     ┌──────────────┼──────────────┐
-                Core (database-kit)          FoundationDB (fdb-swift-bindings)
+                Core (database-kit)          StorageKit backends
 ```
 
 ### Full Module Inventory
@@ -213,7 +211,7 @@ Scalar  Vector  FullText Spatial Rank   Permuted Graph  Aggregation Version Quer
 | **Vector / FullText / Spatial / Rank / Permuted** | 各1 | IndexKind 定義のみ |
 | **DatabaseKit** | 1 | re-export ファサード |
 
-#### database-framework（378 ファイル — サーバー専用・FoundationDB 依存）
+#### database-framework（StorageKitを介したバックエンド非依存の実行層）
 
 | モジュール | ファイル数 | 責務 |
 |-----------|----------|------|

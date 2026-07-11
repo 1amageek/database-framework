@@ -1,4 +1,4 @@
-# Vector Binary Storage and HNSW Integration Roadmap
+# Vector Storage And HNSW
 
 ## Goal
 
@@ -21,8 +21,8 @@ flowchart LR
 | Debug / print | `[Float]` after explicit decode | Raw bytes only when inspecting storage directly |
 | Flat index | `[Float]` query/result semantics | `Float32` little-endian payload by primary key |
 | HNSW index | `[Float]` query/result semantics | Label mappings plus SwiftHNSW graph snapshot and binary vector payloads |
-| IVF index | `[Float]` query/result semantics | Binary centroids and binary inverted-list vectors |
-| PQ index | `[Float]` query/result semantics | Binary training vectors, binary codebooks, byte codes |
+| IVF index | Reserved for a future implementation | No production maintainer currently provided |
+| PQ index | Reserved for a future implementation | No production maintainer currently provided |
 
 ## Current Physical Layout
 
@@ -34,6 +34,12 @@ flowchart LR
 | HNSW primary keys | `[indexSubspace]/pks/[label]` | Tuple-encoded primary key |
 | HNSW graph metadata | `[indexSubspace]/_graphMetadata` | Tuple(version, byteCount, chunkSize, chunkCount, revision) |
 | HNSW graph chunks | `[indexSubspace]/_graphChunks/[chunk]` | SwiftHNSW versioned binary graph snapshot chunk |
+
+The following layouts are reserved for future IVF and PQ implementations. They
+are not currently written by database-framework:
+
+| Algorithm | Keys | Values |
+| --- | --- | --- |
 | IVF centroids | `[subspace]/centroids/[clusterId]` | Float32 little-endian vector payload |
 | IVF lists | `[subspace]/lists/[clusterId]/[primaryKey]` | Float32 little-endian vector payload |
 | IVF assignments | `[subspace]/assignments/[primaryKey]` | Tuple-encoded cluster id |
@@ -41,12 +47,12 @@ flowchart LR
 | PQ codes | `[subspace]/codes/[primaryKey]` | Byte codes |
 | PQ vectors | `[subspace]/vectors/[primaryKey]` | Float32 little-endian vector payload |
 
-## Milestones
+## Implementation History
 
 | Milestone | Scope | Exit Criteria | Status |
 | --- | --- | --- | --- |
 | V0 Audit | Identify tuple-based vector payloads in VectorIndex. | Flat, HNSW, IVF, PQ, and Fusion direct reads are reviewed. | Done |
-| V1 Binary Payloads | Store algorithm vector payloads as Float32 little-endian bytes. | Flat, HNSW vectors, IVF lists/centroids, PQ vectors/codebooks use binary payloads. | Done |
+| V1 Binary Payloads | Store production vector payloads as Float32 little-endian bytes. | Flat and HNSW vectors use binary payloads; future algorithms have reserved layouts. | Done |
 | V2 Strict Decode | Reject malformed payload lengths instead of silently skipping bytes. | Maintainer read paths use `decodeFloatArray(_:expectedCount:)`. | Done |
 | V3 HNSW Snapshot Segmentation | Split large graph snapshots into storage-safe chunks. | Backend value-size limits are handled without changing user API. | Done |
 | V4 HNSW Read Cache | Avoid per-query graph deserialization while preserving committed-update visibility. | Graph cache is keyed by metadata revision; write paths load fresh and readers refresh on metadata change. | Done |
