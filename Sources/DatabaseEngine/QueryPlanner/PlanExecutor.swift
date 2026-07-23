@@ -38,7 +38,7 @@ extension PlanExecutionError: CustomStringConvertible {
 /// **Architecture**:
 /// - Record access via `QueryExecutionContext.scanRecords/fetchItem`
 /// - Index access via `IndexSearcher` + `context.storageReader`
-public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
+public final class PlanExecutor<T: Persistable & Codable>: Sendable {
 
     private let context: FDBContext
     private let executionContext: any QueryExecutionContext
@@ -1126,42 +1126,6 @@ public final class PlanExecutor<T: Persistable & Codable>: @unchecked Sendable {
     }
 }
 
-// MARK: - DataStore Extensions for Query Planning
-
-// MARK: - Index Scan Range
-
-/// Represents a range for index scanning with inclusive/exclusive bounds
-public struct IndexScanRange: @unchecked Sendable {
-    /// Start key values (type-erased, expected to be Sendable in practice)
-    public let start: [Any]
-
-    /// Whether the start bound is inclusive (>=) or exclusive (>)
-    public let startInclusive: Bool
-
-    /// End key values (type-erased, expected to be Sendable in practice)
-    public let end: [Any]
-
-    /// Whether the end bound is inclusive (<=) or exclusive (<)
-    public let endInclusive: Bool
-
-    public init(
-        start: [Any] = [],
-        startInclusive: Bool = true,
-        end: [Any] = [],
-        endInclusive: Bool = true
-    ) {
-        self.start = start
-        self.startInclusive = startInclusive
-        self.end = end
-        self.endInclusive = endInclusive
-    }
-
-    /// Create an unbounded range (full scan)
-    public static var unbounded: IndexScanRange {
-        IndexScanRange()
-    }
-}
-
 // MARK: - Query Execution Context Protocol
 
 /// Protocol for query execution context
@@ -1198,18 +1162,6 @@ public protocol QueryExecutionContext: Sendable {
 
     /// Low-level storage reader for IndexSearcher implementations
     var storageReader: StorageReader { get }
-}
-
-/// Errors for DataStore operations
-public enum DataStoreError: Error, CustomStringConvertible {
-    case notImplemented(String)
-
-    public var description: String {
-        switch self {
-        case .notImplemented(let method):
-            return "DataStore method not implemented: \(method)"
-        }
-    }
 }
 
 // ExecutionIndexEntry has been unified with IndexEntry (see StorageReader.swift)

@@ -9,7 +9,7 @@ import Foundation
 import Core
 
 /// Represents an executable query plan
-public struct QueryPlan<T: Persistable>: @unchecked Sendable {
+public struct QueryPlan<T: Persistable>: Sendable {
     /// Unique identifier for this plan
     public let id: UUID
 

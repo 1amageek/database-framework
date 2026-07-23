@@ -423,7 +423,10 @@ struct FieldComparisonEvaluateTests {
 
     @Test("Fast path: String.contains evaluates correctly")
     func fastPathStringContains() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.name).contains("lic")
+        let predicate = Predicate<ValueAccessRecord>.contains(
+            "lic",
+            in: \.name
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: alice) == true)
             #expect(cmp.evaluate(on: bob) == false)
@@ -434,7 +437,10 @@ struct FieldComparisonEvaluateTests {
 
     @Test("Fast path: String.hasPrefix evaluates correctly")
     func fastPathStringHasPrefix() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.name).hasPrefix("Bo")
+        let predicate = Predicate<ValueAccessRecord>.hasPrefix(
+            "Bo",
+            in: \.name
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: alice) == false)
             #expect(cmp.evaluate(on: bob) == true)
@@ -445,7 +451,10 @@ struct FieldComparisonEvaluateTests {
 
     @Test("Fast path: String.hasSuffix evaluates correctly")
     func fastPathStringHasSuffix() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.name).hasSuffix("ce")
+        let predicate = Predicate<ValueAccessRecord>.hasSuffix(
+            "ce",
+            in: \.name
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: alice) == true)
             #expect(cmp.evaluate(on: bob) == false)
@@ -456,7 +465,10 @@ struct FieldComparisonEvaluateTests {
 
     @Test("Fast path: IN evaluates correctly")
     func fastPathIn() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.age).in([25, 35, 45])
+        let predicate = Predicate<ValueAccessRecord>.matchesAny(
+            of: [25, 35, 45],
+            at: \.age
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: alice) == false)
             #expect(cmp.evaluate(on: bob) == true)
@@ -678,7 +690,10 @@ struct FieldComparisonEvaluateTests {
         }
 
         // contains
-        let fastC: Predicate<ValueAccessRecord> = (\ValueAccessRecord.name).contains("es")
+        let fastC = Predicate<ValueAccessRecord>.contains(
+            "es",
+            in: \.name
+        )
         let fallbackC = FieldComparison<ValueAccessRecord>(
             fieldName: "name", op: .contains, value: .string("es")
         )
@@ -830,7 +845,7 @@ struct SortDescriptorFallbackTests {
     }
 }
 
-// MARK: - Optional String Extension Tests
+// MARK: - Optional String Predicate Factory Tests
 
 @Suite("Optional String Predicate Tests", .heartbeat)
 struct OptionalStringPredicateTests {
@@ -840,7 +855,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String contains: non-nil matches")
     func optionalContainsNonNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).contains("premium")
+        let predicate = Predicate<ValueAccessRecord>.contains(
+            "premium",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: withTag) == true)
         } else {
@@ -850,7 +868,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String contains: nil returns false")
     func optionalContainsNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).contains("premium")
+        let predicate = Predicate<ValueAccessRecord>.contains(
+            "premium",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: noTag) == false)
         } else {
@@ -860,7 +881,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String hasPrefix: non-nil matches")
     func optionalHasPrefixNonNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).hasPrefix("prem")
+        let predicate = Predicate<ValueAccessRecord>.hasPrefix(
+            "prem",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: withTag) == true)
         } else {
@@ -870,7 +894,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String hasPrefix: nil returns false")
     func optionalHasPrefixNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).hasPrefix("prem")
+        let predicate = Predicate<ValueAccessRecord>.hasPrefix(
+            "prem",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: noTag) == false)
         } else {
@@ -880,7 +907,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String hasSuffix: non-nil matches")
     func optionalHasSuffixNonNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).hasSuffix("user")
+        let predicate = Predicate<ValueAccessRecord>.hasSuffix(
+            "user",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: withTag) == true)
         } else {
@@ -890,7 +920,10 @@ struct OptionalStringPredicateTests {
 
     @Test("Optional String hasSuffix: nil returns false")
     func optionalHasSuffixNil() {
-        let predicate: Predicate<ValueAccessRecord> = (\ValueAccessRecord.tag).hasSuffix("user")
+        let predicate = Predicate<ValueAccessRecord>.hasSuffix(
+            "user",
+            in: \.tag
+        )
         if case .comparison(let cmp) = predicate {
             #expect(cmp.evaluate(on: noTag) == false)
         } else {

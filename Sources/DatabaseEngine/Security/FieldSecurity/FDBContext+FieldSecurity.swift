@@ -92,14 +92,19 @@ public struct SecureQueryExecutor<T: Persistable>: Sendable {
     }
 
     /// Add sorting (ascending)
-    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>) -> Self {
+    public func orderBy<V: Comparable & Sendable>(
+        _ keyPath: KeyPath<T, V> & Sendable
+    ) -> Self {
         var copy = self
         copy.queryExecutor = queryExecutor.orderBy(keyPath)
         return copy
     }
 
     /// Add sorting with direction
-    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>, _ order: SortOrder) -> Self {
+    public func orderBy<V: Comparable & Sendable>(
+        _ keyPath: KeyPath<T, V> & Sendable,
+        _ order: SortOrder
+    ) -> Self {
         var copy = self
         copy.queryExecutor = queryExecutor.orderBy(keyPath, order)
         return copy
@@ -121,7 +126,7 @@ public struct SecureQueryExecutor<T: Persistable>: Sendable {
 
     /// Bind a partition field value for dynamic directory resolution
     public func partition<V: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<T, V>,
+        _ keyPath: KeyPath<T, V> & Sendable,
         equals value: V
     ) -> Self {
         var copy = self

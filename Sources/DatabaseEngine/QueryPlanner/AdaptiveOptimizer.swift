@@ -31,7 +31,7 @@ import Synchronization
 ///  Monitor  Detect  Replan
 ///  Metrics  Drift   Query
 /// ```
-public final class AdaptiveOptimizer<T: Persistable>: @unchecked Sendable {
+public final class AdaptiveOptimizer<T: Persistable>: Sendable {
 
     /// Internal state
     private struct State: Sendable {
@@ -318,7 +318,7 @@ public struct AdaptiveConfiguration: Sendable {
 // MARK: - Adaptive Plan
 
 /// A query plan with adaptive optimization support
-public struct AdaptivePlan<T: Persistable>: @unchecked Sendable {
+public struct AdaptivePlan<T: Persistable>: Sendable {
     /// Unique identifier
     public let id: UUID
 
@@ -405,7 +405,7 @@ public struct ReplanTrigger: Sendable {
 }
 
 /// Result of adaptation check
-public struct AdaptationResult<T: Persistable>: @unchecked Sendable {
+public struct AdaptationResult<T: Persistable>: Sendable {
     public let action: AdaptationAction
     public let plan: AdaptivePlan<T>
 }
@@ -467,7 +467,7 @@ public struct AdaptationReport: Sendable {
 ///
 /// Monitors execution progress and can switch plans mid-execution
 /// if better options become available.
-public final class ProgressiveOptimizer<T: Persistable>: @unchecked Sendable {
+public final class ProgressiveOptimizer<T: Persistable>: Sendable {
 
     private struct State: Sendable {
         var currentPhase: ExecutionPhase = .initial

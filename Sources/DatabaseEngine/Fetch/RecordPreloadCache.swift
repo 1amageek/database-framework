@@ -143,7 +143,7 @@ public final class RecordPreloadCache<Item: Persistable>: Sendable {
 
     /// Node for doubly linked list used in LRU/FIFO tracking
     /// Reference: Standard LRU cache implementation pattern
-    private final class LRUNode: @unchecked Sendable {
+    private final class LRUNode {
         let key: String
         var prev: LRUNode?
         var next: LRUNode?
@@ -155,7 +155,7 @@ public final class RecordPreloadCache<Item: Persistable>: Sendable {
 
     // MARK: - State
 
-    private struct State: @unchecked Sendable {
+    private struct State {
         var entries: [String: CacheEntry] = [:]
 
         // LRU doubly-linked list for O(1) access order management

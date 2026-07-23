@@ -11,7 +11,7 @@ import DatabaseMath
 import StorageKit
 
 /// Operators that make up a query plan
-public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
+public indirect enum PlanOperator<T: Persistable>: Sendable {
 
     // === Scan Operators ===
 
@@ -76,7 +76,7 @@ public indirect enum PlanOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Table Scan Operator
 
 /// Table scan operator - reads all records
-public struct TableScanOperator<T: Persistable>: @unchecked Sendable {
+public struct TableScanOperator<T: Persistable>: Sendable {
     /// Estimated row count
     public let estimatedRows: Int
 
@@ -92,7 +92,7 @@ public struct TableScanOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Index Scan Operator
 
 /// Index scan operator - reads a range of index entries
-public struct IndexScanOperator<T: Persistable>: @unchecked Sendable {
+public struct IndexScanOperator<T: Persistable>: Sendable {
     /// The index to scan
     public let index: IndexDescriptor
 
@@ -143,7 +143,7 @@ public struct IndexScanBounds: Sendable {
     }
 
     /// A single bound component
-    public struct BoundComponent: @unchecked Sendable {
+    public struct BoundComponent: Sendable {
         public let value: (any TupleElement)?
         public let inclusive: Bool
 
@@ -165,7 +165,7 @@ public struct IndexScanBounds: Sendable {
 // MARK: - Index Seek Operator
 
 /// Index seek operator - point lookups in index
-public struct IndexSeekOperator<T: Persistable>: @unchecked Sendable {
+public struct IndexSeekOperator<T: Persistable>: Sendable {
     /// The index to seek in
     public let index: IndexDescriptor
 
@@ -196,7 +196,7 @@ public struct IndexSeekOperator<T: Persistable>: @unchecked Sendable {
 ///
 /// Deduplication uses `Persistable.ID` (which is `Hashable`) to identify
 /// duplicate records across children.
-public struct UnionOperator<T: Persistable>: @unchecked Sendable {
+public struct UnionOperator<T: Persistable>: Sendable {
     /// Child plans to union
     public let children: [PlanOperator<T>]
 
@@ -213,7 +213,7 @@ public struct UnionOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Intersection Operator
 
 /// Intersection operator (AND with multiple indexes)
-public struct IntersectionOperator<T: Persistable>: @unchecked Sendable {
+public struct IntersectionOperator<T: Persistable>: Sendable {
     /// Child plans to intersect
     public let children: [PlanOperator<T>]
 
@@ -225,7 +225,7 @@ public struct IntersectionOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Filter Operator
 
 /// Filter operator - applies predicate to input
-public struct FilterOperator<T: Persistable>: @unchecked Sendable {
+public struct FilterOperator<T: Persistable>: Sendable {
     /// Input operator
     public let input: PlanOperator<T>
 
@@ -245,7 +245,7 @@ public struct FilterOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Sort Operator
 
 /// Sort operator - sorts input by descriptors
-public struct SortOperator<T: Persistable>: @unchecked Sendable {
+public struct SortOperator<T: Persistable>: Sendable {
     /// Input operator
     public let input: PlanOperator<T>
 
@@ -269,7 +269,7 @@ public struct SortOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Limit Operator
 
 /// Limit operator - limits and offsets results
-public struct LimitOperator<T: Persistable>: @unchecked Sendable {
+public struct LimitOperator<T: Persistable>: Sendable {
     /// Input operator
     public let input: PlanOperator<T>
 
@@ -289,7 +289,7 @@ public struct LimitOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Project Operator
 
 /// Project operator - selects specific fields
-public struct ProjectOperator<T: Persistable>: @unchecked Sendable {
+public struct ProjectOperator<T: Persistable>: Sendable {
     /// Input operator
     public let input: PlanOperator<T>
 
@@ -305,7 +305,7 @@ public struct ProjectOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Full Text Scan Operator
 
 /// Full-text search scan operator
-public struct FullTextScanOperator<T: Persistable>: @unchecked Sendable {
+public struct FullTextScanOperator<T: Persistable>: Sendable {
     /// The full-text index to use
     public let index: IndexDescriptor
 
@@ -334,7 +334,7 @@ public struct FullTextScanOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Vector Search Operator
 
 /// Vector similarity search operator
-public struct VectorSearchOperator<T: Persistable>: @unchecked Sendable {
+public struct VectorSearchOperator<T: Persistable>: Sendable {
     /// The vector index to use
     public let index: IndexDescriptor
 
@@ -368,7 +368,7 @@ public struct VectorSearchOperator<T: Persistable>: @unchecked Sendable {
 // MARK: - Spatial Scan Operator
 
 /// Spatial region scan operator
-public struct SpatialScanOperator<T: Persistable>: @unchecked Sendable {
+public struct SpatialScanOperator<T: Persistable>: Sendable {
     /// The spatial index to use
     public let index: IndexDescriptor
 

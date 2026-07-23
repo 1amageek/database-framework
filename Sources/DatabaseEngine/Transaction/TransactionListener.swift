@@ -141,7 +141,7 @@ public struct TransactionEventHandler: TransactionListener {
 /// Logging transaction listener
 ///
 /// Logs transaction events using Swift's Logger.
-public final class LoggingTransactionListener: TransactionListener, @unchecked Sendable {
+public final class LoggingTransactionListener: TransactionListener {
     private let logger: any LoggerProtocol
     private let logLevel: LogLevel
 

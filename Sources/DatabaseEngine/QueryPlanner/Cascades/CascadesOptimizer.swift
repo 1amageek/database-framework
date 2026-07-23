@@ -41,7 +41,7 @@ import Core
 /// // Optimize a logical expression
 /// let physicalPlan = try optimizer.optimize(logicalPlan)
 /// ```
-public final class CascadesOptimizer: @unchecked Sendable {
+public final class CascadesOptimizer {
     // MARK: - Properties
 
     /// The memo structure

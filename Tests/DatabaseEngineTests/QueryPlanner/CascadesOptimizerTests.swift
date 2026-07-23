@@ -129,6 +129,51 @@ struct MemoTests {
 
         #expect(memo.expressionCount == 3)
     }
+
+    @Test("Concurrent memo mutations retain unique groups and one shared expression")
+    func concurrentMutationsRetainCanonicalState() async {
+        let memo = Memo()
+        let groupIDs = await withTaskGroup(
+            of: GroupID.self,
+            returning: [GroupID].self
+        ) { group in
+            for _ in 0..<256 {
+                group.addTask {
+                    memo.createGroup()
+                }
+            }
+
+            var values: [GroupID] = []
+            values.reserveCapacity(256)
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        let expressionGroupIDs = await withTaskGroup(
+            of: GroupID.self,
+            returning: [GroupID].self
+        ) { group in
+            for _ in 0..<64 {
+                group.addTask {
+                    memo.addLogicalExpression(.scan(typeName: "User"))
+                }
+            }
+
+            var values: [GroupID] = []
+            values.reserveCapacity(64)
+            for await value in group {
+                values.append(value)
+            }
+            return values
+        }
+
+        #expect(Set(groupIDs).count == 256)
+        #expect(Set(expressionGroupIDs).count == 1)
+        #expect(memo.groupCount == 257)
+        #expect(memo.description.contains("257 groups"))
+    }
 }
 
 // MARK: - Expression Tests

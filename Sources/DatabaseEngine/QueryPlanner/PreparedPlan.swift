@@ -20,7 +20,7 @@ import Synchronization
 /// Reuse is allowed only when predicates, literal values, sorting, limit, and
 /// offset are identical. Parameterized queries belong to QueryIR and are not
 /// represented by the native `Query<T>` API.
-public struct PreparedPlan<T: Persistable>: @unchecked Sendable {
+public struct PreparedPlan<T: Persistable>: Sendable {
     /// Unique identifier
     public let id: UUID
 
@@ -153,14 +153,14 @@ public struct QueryFingerprintBuilder<T: Persistable> {
 public final class PlanCache: Sendable {
 
     /// Cache entry with metadata
-    private struct CacheEntry<T: Persistable>: @unchecked Sendable {
+    private struct CacheEntry<T: Persistable>: Sendable {
         let plan: PreparedPlan<T>
         let lastAccessTime: Date
         let accessCount: Int
     }
 
     /// Internal state protected by Mutex
-    private struct State: @unchecked Sendable {
+    private struct State: Sendable {
         var entries: [QueryFingerprint: any Sendable] = [:]
         var accessOrder: [QueryFingerprint] = []
         var hitCount: Int = 0

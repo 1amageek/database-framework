@@ -143,65 +143,60 @@ public struct LogicalProperties: Sendable, Equatable {
 ///
 /// **Thread Safety**:
 /// Uses Mutex for thread-safe access in concurrent scenarios.
-public final class Memo: @unchecked Sendable {
-    /// All groups in the memo
-    private var groups: [GroupID: Group]
+public final class Memo: Sendable {
+    private struct State: Sendable {
+        var groups: [GroupID: Group] = [:]
+        var expressionIndex: [Int: GroupID] = [:]
+        var nextGroupID = 0
+        var rootGroupID: GroupID?
+    }
 
-    /// Expression hash index for duplicate detection
-    private var expressionIndex: [Int: GroupID]
-
-    /// Next group ID
-    private var nextGroupId: Int
-
-    /// Lock for thread safety
-    private let lock: Mutex<Void>
+    private let state: Mutex<State>
 
     /// Root group (the final result)
-    public private(set) var rootGroupId: GroupID?
+    public var rootGroupId: GroupID? {
+        state.withLock { $0.rootGroupID }
+    }
 
     // MARK: - Initialization
 
     public init() {
-        self.groups = [:]
-        self.expressionIndex = [:]
-        self.nextGroupId = 0
-        self.lock = Mutex(())
-        self.rootGroupId = nil
+        self.state = Mutex(State())
     }
 
     // MARK: - Group Management
 
     /// Create a new group
     public func createGroup() -> GroupID {
-        lock.withLock { _ in
-            let id = GroupID(nextGroupId)
-            nextGroupId += 1
-            groups[id] = Group(id: id)
+        state.withLock { state in
+            let id = GroupID(state.nextGroupID)
+            state.nextGroupID += 1
+            state.groups[id] = Group(id: id)
             return id
         }
     }
 
     /// Get a group by ID
     public func getGroup(_ id: GroupID) -> Group? {
-        lock.withLock { _ in
-            groups[id]
+        state.withLock { state in
+            state.groups[id]
         }
     }
 
     /// Update a group
     public func updateGroup(_ id: GroupID, _ update: (inout Group) -> Void) {
-        lock.withLock { _ in
-            if var group = groups[id] {
+        state.withLock { state in
+            if var group = state.groups[id] {
                 update(&group)
-                groups[id] = group
+                state.groups[id] = group
             }
         }
     }
 
     /// Set the root group
     public func setRootGroup(_ id: GroupID) {
-        lock.withLock { _ in
-            rootGroupId = id
+        state.withLock { state in
+            state.rootGroupID = id
         }
     }
 
@@ -215,24 +210,24 @@ public final class Memo: @unchecked Sendable {
     /// - Parameter op: The logical operator
     /// - Returns: The group ID containing the expression
     public func addLogicalExpression(_ op: LogicalOperator) -> GroupID {
-        lock.withLock { _ in
+        state.withLock { state in
             // Check for duplicate
             let hash = hashOperator(.logical(op))
-            if let existingGroup = expressionIndex[hash] {
+            if let existingGroup = state.expressionIndex[hash] {
                 return existingGroup
             }
 
             // Create new group
-            let groupId = GroupID(nextGroupId)
-            nextGroupId += 1
+            let groupId = GroupID(state.nextGroupID)
+            state.nextGroupID += 1
 
             var group = Group(id: groupId)
             let exprId = ExpressionID(groupID: groupId, index: 0)
             let expr = MemoExpression(id: exprId, op: .logical(op))
             group.logicalExpressions.append(expr)
 
-            groups[groupId] = group
-            expressionIndex[hash] = groupId
+            state.groups[groupId] = group
+            state.expressionIndex[hash] = groupId
 
             return groupId
         }
@@ -248,8 +243,8 @@ public final class Memo: @unchecked Sendable {
     /// - Returns: The expression ID
     @discardableResult
     public func addLogicalExpressionToGroup(_ op: LogicalOperator, groupId: GroupID) -> ExpressionID? {
-        lock.withLock { _ in
-            guard var group = groups[groupId] else { return nil }
+        state.withLock { state in
+            guard var group = state.groups[groupId] else { return nil }
 
             // Check if expression already exists in group
             let newOp = MemoOperator.logical(op)
@@ -262,11 +257,11 @@ public final class Memo: @unchecked Sendable {
             let exprId = ExpressionID(groupID: groupId, index: group.logicalExpressions.count)
             let expr = MemoExpression(id: exprId, op: newOp)
             group.logicalExpressions.append(expr)
-            groups[groupId] = group
+            state.groups[groupId] = group
 
             // Update hash index
             let hash = hashOperator(newOp)
-            expressionIndex[hash] = groupId
+            state.expressionIndex[hash] = groupId
 
             return exprId
         }
@@ -285,15 +280,15 @@ public final class Memo: @unchecked Sendable {
         groupId: GroupID,
         cost: Double
     ) -> ExpressionID? {
-        lock.withLock { _ in
-            guard var group = groups[groupId] else { return nil }
+        state.withLock { state in
+            guard var group = state.groups[groupId] else { return nil }
 
             let exprId = ExpressionID(groupID: groupId, index: group.physicalExpressions.count)
             var expr = MemoExpression(id: exprId, op: .physical(op))
             expr.cost = cost
 
             group.physicalExpressions.append(expr)
-            groups[groupId] = group
+            state.groups[groupId] = group
 
             return exprId
         }
@@ -301,48 +296,48 @@ public final class Memo: @unchecked Sendable {
 
     /// Record the best expression for a group/property combination
     public func recordWinner(groupId: GroupID, properties: PropertySet, expressionId: ExpressionID) {
-        lock.withLock { _ in
-            guard var group = groups[groupId] else { return }
+        state.withLock { state in
+            guard var group = state.groups[groupId] else { return }
             group.bestExpressions[properties] = expressionId
-            groups[groupId] = group
+            state.groups[groupId] = group
         }
     }
 
     /// Get the best expression for a group/property combination
     public func getWinner(groupId: GroupID, properties: PropertySet) -> ExpressionID? {
-        lock.withLock { _ in
-            groups[groupId]?.bestExpressions[properties]
+        state.withLock { state in
+            state.groups[groupId]?.bestExpressions[properties]
         }
     }
 
     /// Get all logical expressions in a group
     public func getLogicalExpressions(_ groupId: GroupID) -> [MemoExpression] {
-        lock.withLock { _ in
-            groups[groupId]?.logicalExpressions ?? []
+        state.withLock { state in
+            state.groups[groupId]?.logicalExpressions ?? []
         }
     }
 
     /// Get all physical expressions in a group
     public func getPhysicalExpressions(_ groupId: GroupID) -> [MemoExpression] {
-        lock.withLock { _ in
-            groups[groupId]?.physicalExpressions ?? []
+        state.withLock { state in
+            state.groups[groupId]?.physicalExpressions ?? []
         }
     }
 
     /// Mark a group as explored
     public func markExplored(_ groupId: GroupID) {
-        lock.withLock { _ in
-            if var group = groups[groupId] {
+        state.withLock { state in
+            if var group = state.groups[groupId] {
                 group.explored = true
-                groups[groupId] = group
+                state.groups[groupId] = group
             }
         }
     }
 
     /// Check if a group has been explored
     public func isExplored(_ groupId: GroupID) -> Bool {
-        lock.withLock { _ in
-            groups[groupId]?.explored ?? false
+        state.withLock { state in
+            state.groups[groupId]?.explored ?? false
         }
     }
 
@@ -350,15 +345,15 @@ public final class Memo: @unchecked Sendable {
 
     /// Get total number of groups
     public var groupCount: Int {
-        lock.withLock { _ in
-            groups.count
+        state.withLock { state in
+            state.groups.count
         }
     }
 
     /// Get total number of expressions
     public var expressionCount: Int {
-        lock.withLock { _ in
-            groups.values.reduce(0) { sum, group in
+        state.withLock { state in
+            state.groups.values.reduce(0) { sum, group in
                 sum + group.logicalExpressions.count + group.physicalExpressions.count
             }
         }
@@ -387,19 +382,25 @@ public final class Memo: @unchecked Sendable {
 
 extension Memo: CustomStringConvertible {
     public var description: String {
-        var result = "Memo (\(groupCount) groups, \(expressionCount) expressions)\n"
+        state.withLock { state in
+            let expressionCount = state.groups.values.reduce(0) { sum, group in
+                sum + group.logicalExpressions.count
+                    + group.physicalExpressions.count
+            }
+            var result = "Memo (\(state.groups.count) groups, \(expressionCount) expressions)\n"
 
-        for groupId in groups.keys.sorted(by: { $0.id < $1.id }) {
-            guard let group = groups[groupId] else { continue }
-            result += "  \(groupId):\n"
-            for expr in group.logicalExpressions {
-                result += "    L: \(expr.op)\n"
+            for groupID in state.groups.keys.sorted(by: { $0.id < $1.id }) {
+                guard let group = state.groups[groupID] else { continue }
+                result += "  \(groupID):\n"
+                for expression in group.logicalExpressions {
+                    result += "    L: \(expression.op)\n"
+                }
+                for expression in group.physicalExpressions {
+                    result += "    P: \(expression.op) [cost=\(expression.cost ?? -1)]\n"
+                }
             }
-            for expr in group.physicalExpressions {
-                result += "    P: \(expr.op) [cost=\(expr.cost ?? -1)]\n"
-            }
+
+            return result
         }
-
-        return result
     }
 }

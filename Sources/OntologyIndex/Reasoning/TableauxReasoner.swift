@@ -48,7 +48,7 @@ import Graph
 ///     subClass: .named("ex:Employee")
 /// )
 /// ```
-public final class TableauxReasoner: @unchecked Sendable {
+public final class TableauxReasoner: Sendable {
 
     // MARK: - Types
 
@@ -178,7 +178,7 @@ public final class TableauxReasoner: @unchecked Sendable {
     ///
     /// - Note: This array is only populated when `configuration.checkRegularity` is true.
     ///   When regularity checking is disabled, this will always be empty.
-    public private(set) var regularityViolations: [OWLDLRegularityChecker.Violation] = []
+    public let regularityViolations: [OWLDLRegularityChecker.Violation]
 
     /// Whether the ontology passes OWL DL regularity check
     ///
@@ -219,6 +219,8 @@ public final class TableauxReasoner: @unchecked Sendable {
         if configuration.checkRegularity {
             var checker = OWLDLRegularityChecker()
             self.regularityViolations = checker.check(ontology)
+        } else {
+            self.regularityViolations = []
         }
     }
 

@@ -334,7 +334,9 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
     }
 
     /// Add sort order (ascending)
-    public func orderBy<V: Comparable & Sendable>(_ keyPath: KeyPath<T, V>) -> CursorQueryBuilder<T> {
+    public func orderBy<V: Comparable & Sendable>(
+        _ keyPath: KeyPath<T, V> & Sendable
+    ) -> CursorQueryBuilder<T> {
         var copy = self
         copy.query = query.orderBy(keyPath)
         return copy
@@ -342,7 +344,7 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
 
     /// Add sort order with direction
     public func orderBy<V: Comparable & Sendable>(
-        _ keyPath: KeyPath<T, V>,
+        _ keyPath: KeyPath<T, V> & Sendable,
         _ order: SortOrder
     ) -> CursorQueryBuilder<T> {
         var copy = self
@@ -378,7 +380,7 @@ public struct CursorQueryBuilder<T: Persistable & Codable>: Sendable {
     ///   - value: The value for directory resolution
     /// - Returns: A new CursorQueryBuilder with the partition binding added
     public func partition<V: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<T, V>,
+        _ keyPath: KeyPath<T, V> & Sendable,
         equals value: V
     ) -> CursorQueryBuilder<T> {
         var copy = self

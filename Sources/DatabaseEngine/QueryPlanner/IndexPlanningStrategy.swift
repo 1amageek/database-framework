@@ -41,7 +41,7 @@ public protocol IndexPlanningStrategy: Sendable {
 // MARK: - Index Match Result
 
 /// Result of matching conditions to an index
-public struct IndexMatchResult<T: Persistable>: @unchecked Sendable {
+public struct IndexMatchResult<T: Persistable>: Sendable {
     /// Conditions that can be fully satisfied by the index
     public let satisfiedConditions: [any FieldConditionProtocol<T>]
 

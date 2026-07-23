@@ -27,7 +27,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func orderBy<Value: Comparable & Sendable>(
-        _ keyPath: KeyPath<Model, Value>
+        _ keyPath: KeyPath<Model, Value> & Sendable
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self
         copy.query = query.orderBy(keyPath)
@@ -35,7 +35,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func orderBy<Value: Comparable & Sendable>(
-        _ keyPath: KeyPath<Model, Value>,
+        _ keyPath: KeyPath<Model, Value> & Sendable,
         _ order: DatabaseEngine.SortOrder
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self
@@ -64,7 +64,7 @@ public struct RelationshipQueryExecutor<Model: Persistable>: Sendable {
     }
 
     public func partition<Value: Sendable & Equatable & FieldValueConvertible>(
-        _ keyPath: KeyPath<Model, Value>,
+        _ keyPath: KeyPath<Model, Value> & Sendable,
         equals value: Value
     ) -> RelationshipQueryExecutor<Model> {
         var copy = self

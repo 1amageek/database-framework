@@ -84,7 +84,7 @@ public enum BitmapCompression: Sendable, Hashable {
 // MARK: - Bitmap Data Structure
 
 /// A compressed bitmap for efficient set operations
-public struct Bitmap: @unchecked Sendable {
+public struct Bitmap: Sendable {
 
     /// Storage for bitmap data (compressed)
     private var storage: [UInt64]
@@ -209,7 +209,7 @@ public struct Bitmap: @unchecked Sendable {
 // MARK: - Bitmap Index Structure
 
 /// A bitmap index for a single column
-public struct BitmapIndexData: @unchecked Sendable {
+public struct BitmapIndexData: Sendable {
     /// Index name
     public let indexName: String
 
@@ -287,7 +287,7 @@ public struct BitmapIndexData: @unchecked Sendable {
 // MARK: - Bitmap Scan Operator
 
 /// Operator for bitmap index scan
-public struct BitmapScanOperator<T: Persistable>: @unchecked Sendable {
+public struct BitmapScanOperator<T: Persistable>: Sendable {
     /// The bitmap index to use
     public let indexName: String
 
@@ -314,7 +314,7 @@ public struct BitmapScanOperator<T: Persistable>: @unchecked Sendable {
 }
 
 /// Bitmap operations
-public enum BitmapOperation: @unchecked Sendable {
+public enum BitmapOperation: Sendable {
     case equals(value: any TupleElement)
     case notEquals(value: any TupleElement)
     case `in`(values: [any TupleElement])
@@ -324,7 +324,7 @@ public enum BitmapOperation: @unchecked Sendable {
 // MARK: - Bitmap Combine Operator
 
 /// Combines multiple bitmap scans
-public struct BitmapCombineOperator<T: Persistable>: @unchecked Sendable {
+public struct BitmapCombineOperator<T: Persistable>: Sendable {
     /// Child bitmap scans
     public let children: [BitmapScanOperator<T>]
 

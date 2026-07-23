@@ -107,7 +107,7 @@ struct TableauxChoicePoint: Sendable {
 // MARK: - Completion Graph Node
 
 /// A node in the completion graph
-final class CompletionNode: @unchecked Sendable {
+final class CompletionNode {
     let id: NodeID
     var concepts: Set<OWLClassExpression> = []
     var outgoingEdges: [String: Set<NodeID>] = [:]  // role -> targets
@@ -196,7 +196,7 @@ public enum MergeResult: Sendable {
 ///
 /// Implements trail-based backtracking for efficient state management.
 /// Reference: Horrocks & Sattler (2007), Section 4
-public final class CompletionGraph: @unchecked Sendable {
+public final class CompletionGraph {
 
     // MARK: - Properties
 

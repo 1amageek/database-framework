@@ -223,7 +223,7 @@ public struct QueryAnalyzer<T: Persistable> {
 // MARK: - Query Analysis Result
 
 /// Result of query analysis
-public struct QueryAnalysis<T: Persistable>: @unchecked Sendable {
+public struct QueryAnalysis<T: Persistable>: Sendable {
     /// Original combined predicate
     public let originalPredicate: Predicate<T>?
 

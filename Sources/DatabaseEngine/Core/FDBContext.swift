@@ -500,7 +500,7 @@ public final class FDBContext: Sendable {
     /// ```
     public func deleteAll<T: Persistable, V: Sendable & Equatable & FieldValueConvertible>(
         _ type: T.Type,
-        partition keyPath: KeyPath<T, V>,
+        partition keyPath: KeyPath<T, V> & Sendable,
         equals value: V
     ) async throws {
         let models = try await fetch(Query<T>().partition(keyPath, equals: value))

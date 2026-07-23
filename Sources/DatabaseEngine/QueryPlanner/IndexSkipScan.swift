@@ -251,7 +251,7 @@ public struct SkipScanAnalysis: Sendable {
 // MARK: - Skip Scan Operator
 
 /// Operator for skip scan execution
-public struct SkipScanOperator<T: Persistable>: @unchecked Sendable {
+public struct SkipScanOperator<T: Persistable>: Sendable {
     /// The index to use
     public let index: IndexDescriptor
 
@@ -297,7 +297,7 @@ public struct SkipScanOperator<T: Persistable>: @unchecked Sendable {
 //
 // ```swift
 // // Try skip scan plans for composite indexes
-// for index in indexes where index.keyPaths.count >= 2 {
+// for index in indexes where index.fieldNames.count >= 2 {
 //     let analyzer = IndexSkipScanAnalyzer<T>(statistics: statistics, costModel: costModel)
 //     let result = analyzer.analyze(index: index, conditions: analysis.fieldConditions, analysis: analysis)
 //     if result.isApplicable && result.isBeneficial {

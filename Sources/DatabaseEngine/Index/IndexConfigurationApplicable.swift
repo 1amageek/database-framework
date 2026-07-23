@@ -1,5 +1,5 @@
 // IndexConfigurationApplicable.swift
-// FDBIndexing - Protocols for applying IndexConfiguration to IndexMaintainer
+// DatabaseEngine - Protocols for applying IndexConfiguration to IndexMaintainer
 //
 // These protocols apply IndexConfiguration values to concrete maintainers while
 // preserving static type checking.
@@ -13,11 +13,11 @@ import Core
 ///
 /// **Design Flow**:
 /// ```
-/// IndexConfiguration (FDBModel)
+/// IndexConfiguration (Core)
 ///       ↓
-/// IndexConfigurationApplicable (FDBIndexing)
+/// IndexConfigurationApplicable (DatabaseEngine)
 ///       ↓
-/// HNSWIndexMaintainer (upper layer: fdb-indexes)
+/// HNSWIndexMaintainer (specialized index module)
 /// ```
 ///
 /// **Usage Example**:

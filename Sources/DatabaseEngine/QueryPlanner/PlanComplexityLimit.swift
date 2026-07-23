@@ -534,7 +534,7 @@ public struct PlanComplexityExceededError: Error, CustomStringConvertible, Senda
 /// Tracks resource usage during query planning
 ///
 /// Used to enforce limits on plan enumeration and rule applications.
-public final class PlanningStateTracker: @unchecked Sendable {
+public final class PlanningStateTracker {
     private var planEnumerations: Int = 0
     private var ruleApplications: Int = 0
     private let startTime: Date

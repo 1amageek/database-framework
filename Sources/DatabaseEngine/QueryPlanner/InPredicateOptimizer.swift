@@ -348,7 +348,7 @@ public struct InPredicate<T: Persistable>: Sendable {
 // MARK: - InPlanOperator
 
 /// Plan operators for IN optimization
-public enum InPlanOperator<T: Persistable>: @unchecked Sendable {
+public enum InPlanOperator<T: Persistable>: Sendable {
     /// Union of index scans
     case indexUnion(
         fieldPath: String,

@@ -9,7 +9,7 @@ import Foundation
 import Core
 
 /// Main query planner that coordinates analysis, planning, and optimization
-public final class QueryPlanner<T: Persistable>: @unchecked Sendable {
+public final class QueryPlanner<T: Persistable>: Sendable {
 
     /// Available indexes for the type
     private let availableIndexes: [IndexDescriptor]

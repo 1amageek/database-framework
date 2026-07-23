@@ -40,7 +40,7 @@ public struct Bitmap<T: Persistable>: FusionQuery, Sendable {
     private let fieldName: String
     private var predicate: BitmapPredicate
 
-    private enum BitmapPredicate: @unchecked Sendable {
+    private enum BitmapPredicate: Sendable {
         case equals(any Sendable & Hashable)
         case `in`([any Sendable & Hashable])
     }
