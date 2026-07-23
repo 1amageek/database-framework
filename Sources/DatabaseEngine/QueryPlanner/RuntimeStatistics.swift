@@ -142,11 +142,12 @@ public final class RuntimeStatisticsTracker: Sendable {
 
         // Update table statistics
         for (typeName, typeStats) in aggregated {
-            // Update row count estimates based on actual observations
             if let avgRowCount = typeStats.averageActualRows {
-                // Note: CollectedStatisticsProvider needs a generic method, so we skip this for now
-                // provider.updateTableStats(rowCount: Int(avgRowCount), sampleSize: typeStats.sampleCount)
-                _ = (typeName, avgRowCount)
+                provider.updateTableStats(
+                    typeName: typeName,
+                    rowCount: Int(avgRowCount.rounded()),
+                    sampleSize: typeStats.sampleCount
+                )
             }
         }
 

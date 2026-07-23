@@ -414,8 +414,8 @@ public struct SPARQLQueryOptimizer: Sendable {
             return patterns[0]
         }
 
-        // Use greedy algorithm for now
-        // TODO: Implement DP-based optimization for small pattern counts
+        // Greedy selection keeps planning work bounded for arbitrary graph
+        // pattern counts while preferring connected, low-cardinality joins.
         var remaining = patterns
         var result = remaining.removeFirst()
         var boundVars = extractPatternVariables(result)

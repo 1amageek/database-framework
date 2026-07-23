@@ -152,10 +152,10 @@ public protocol LiveStatisticsProvider: StatisticsProvider {
 
 /// Statistics provider that derives estimates from configured heuristic ratios.
 ///
-/// **⚠️ PLACEHOLDER IMPLEMENTATION**
-///
-/// This provider uses simple heuristics and should be replaced with
-/// `CollectedStatisticsProvider` in production for accurate cost estimation.
+/// This provider is a deterministic cold-start policy for planning before
+/// collected statistics are available. Applications that retain runtime
+/// statistics should use `CollectedStatisticsProvider`, which delegates only
+/// missing observations to this policy.
 ///
 /// **Limitations**:
 /// - Returns same row count for all types
@@ -444,9 +444,19 @@ public final class CollectedStatisticsProvider: StatisticsProvider, Sendable {
         rowCount: Int,
         sampleSize: Int
     ) {
-        let typeName = String(describing: type)
-        let stats = TableStatistics(rowCount: rowCount, sampleSize: sampleSize)
+        updateTableStats(
+            typeName: String(describing: type),
+            rowCount: rowCount,
+            sampleSize: sampleSize
+        )
+    }
 
+    func updateTableStats(
+        typeName: String,
+        rowCount: Int,
+        sampleSize: Int
+    ) {
+        let stats = TableStatistics(rowCount: rowCount, sampleSize: sampleSize)
         state.withLock { $0.tableStatistics[typeName] = stats }
     }
 

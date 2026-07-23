@@ -187,7 +187,6 @@ struct FilterAnalyzer: Sendable {
         _ left: FilterExpression?,
         _ right: FilterExpression?
     ) -> FilterExpression? {
-        // TODO: Implement in Phase 2
         switch (left, right) {
         case (nil, nil):
             return nil

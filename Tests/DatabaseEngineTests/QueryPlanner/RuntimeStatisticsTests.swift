@@ -344,6 +344,25 @@ struct CollectedStatisticsProviderTests {
         #expect(provider.estimatedRowCount(for: QueryPlannerUser.self) == 10000)
     }
 
+    @Test("Tracker feeds observed row counts back into table statistics")
+    func testTrackerFeedsBackObservedRowCounts() async throws {
+        let provider = CollectedStatisticsProvider()
+        let tracker = RuntimeStatisticsTracker(
+            statisticsProvider: provider,
+            autoUpdateStatistics: false
+        )
+        let planner = QueryPlanner<QueryPlannerUser>(
+            indexes: QueryPlannerUser.indexDescriptors
+        )
+        let plan = try planner.plan(query: Query<QueryPlannerUser>())
+
+        tracker.record(plan: plan, actualRowCount: 10, executionTime: 0.01)
+        tracker.record(plan: plan, actualRowCount: 21, executionTime: 0.01)
+        await tracker.updateStatisticsFromHistory()
+
+        #expect(provider.estimatedRowCount(for: QueryPlannerUser.self) == 16)
+    }
+
     @Test("Provider stores and retrieves index statistics")
     func testProviderIndexStatistics() {
         let provider = CollectedStatisticsProvider()
