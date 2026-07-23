@@ -314,6 +314,68 @@ struct DatabaseContextFoundationDBTests {
         #expect(count == 3)
     }
 
+    @Test("Fetch and count share validated result-window semantics")
+    func fetchAndCountShareResultWindowSemantics() async throws {
+        let container = try await setupContainer()
+        try await cleanup(container: container)
+
+        let context = container.newContext()
+        for index in 1...5 {
+            try context.insert(
+                ContextUser(
+                    name: "WindowUser\(index)",
+                    email: "window\(index)@example.com",
+                    age: 20 + index
+                )
+            )
+        }
+        try await context.save()
+
+        let emptyResult = try await context.fetch(ContextUser.self)
+            .limit(0)
+            .execute()
+        #expect(emptyResult.isEmpty)
+
+        let windowedResult = try await context.fetch(ContextUser.self)
+            .offset(2)
+            .limit(2)
+            .execute()
+        #expect(windowedResult.count == 2)
+
+        let windowedCount = try await context.fetch(ContextUser.self)
+            .offset(2)
+            .limit(2)
+            .count()
+        #expect(windowedCount == 2)
+
+        let exhaustedCount = try await context.fetch(ContextUser.self)
+            .offset(10)
+            .count()
+        #expect(exhaustedCount == 0)
+
+        do {
+            _ = try await context.fetch(ContextUser.self)
+                .limit(-1)
+                .execute()
+            Issue.record("A negative fetch limit must fail")
+        } catch let error as DatabaseQueryError {
+            #expect(error == .invalidLimit(-1))
+        } catch {
+            Issue.record("Unexpected negative-limit error: \(error)")
+        }
+
+        do {
+            _ = try await context.fetch(ContextUser.self)
+                .offset(-1)
+                .count()
+            Issue.record("A negative count offset must fail")
+        } catch let error as DatabaseQueryError {
+            #expect(error == .invalidOffset(-1))
+        } catch {
+            Issue.record("Unexpected negative-offset error: \(error)")
+        }
+    }
+
     // MARK: - Perform and Save Tests
 
     @Test("performAndSave auto-saves")

@@ -639,20 +639,40 @@ package final class DatabaseDataStore: DataStore, Sendable {
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
+        try QueryResultWindow.validate(
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
+        if query.fetchLimit == 0 {
+            return 0
+        }
         // Combine predicates into single predicate for evaluation
         let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
             (query.predicates.count == 1 ? query.predicates[0] : .and(query.predicates))
 
         // For count, we can optimize by not deserializing if no predicate
         if combinedPredicate == nil {
-            return try await countAll(T.self)
+            let totalCount = try await countAll(T.self)
+            return QueryResultWindow.resultCount(
+                totalCount: totalCount,
+                limit: query.fetchLimit,
+                offset: query.fetchOffset
+            )
         }
 
         // Try to use index for counting
         if let predicate = combinedPredicate,
            let condition = try extractIndexableCondition(from: predicate),
            let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
-            return try await countUsingIndex(condition: condition, index: matchingIndex)
+            let totalCount = try await countUsingIndex(
+                condition: condition,
+                index: matchingIndex
+            )
+            return QueryResultWindow.resultCount(
+                totalCount: totalCount,
+                limit: query.fetchLimit,
+                offset: query.fetchOffset
+            )
         }
 
         // Otherwise, fetch and count (security already evaluated above)
@@ -662,6 +682,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
     /// Internal fetch without security evaluation (for internal use after security is already evaluated)
     private func fetchInternal<T: Persistable>(_ query: Query<T>) async throws -> [T] {
+        try QueryResultWindow.validate(
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
+        if query.fetchLimit == 0 {
+            return []
+        }
+
         var results: [T]
 
         // Combine predicates into single predicate for evaluation
@@ -704,15 +732,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
         }
 
-        // Apply offset
-        if let offset = query.fetchOffset, offset > 0 {
-            results = Array(results.dropFirst(offset))
-        }
-
-        // Apply limit
-        if let limit = query.fetchLimit {
-            results = Array(results.prefix(limit))
-        }
+        QueryResultWindow.apply(
+            to: &results,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
 
         return results
     }
@@ -754,6 +778,14 @@ package final class DatabaseDataStore: DataStore, Sendable {
         _ query: Query<T>,
         transaction: any TransactionAccess
     ) async throws -> [T] {
+        try QueryResultWindow.validate(
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
+        if query.fetchLimit == 0 {
+            return []
+        }
+
         var results: [T]
 
         // Combine predicates into single predicate for evaluation
@@ -765,7 +797,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
            let indexResult = try await fetchUsingIndexWithTransaction(
                predicate,
                type: T.self,
-               limit: query.fetchLimit,
+               requestedLimit: query.fetchLimit,
+               offset: query.fetchOffset,
+               hasSort: !query.sortDescriptors.isEmpty,
                forcedIndexName: query.forcedIndex?.indexName,
                transaction: transaction,
                workMeter: query.executionWorkMeter
@@ -828,15 +862,11 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
         }
 
-        // Apply offset
-        if let offset = query.fetchOffset, offset > 0 {
-            results = Array(results.dropFirst(offset))
-        }
-
-        // Apply limit
-        if let limit = query.fetchLimit {
-            results = Array(results.prefix(limit))
-        }
+        QueryResultWindow.apply(
+            to: &results,
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
 
         try query.executionWorkMeter?.consume(
             UInt64(results.count),
@@ -892,7 +922,9 @@ package final class DatabaseDataStore: DataStore, Sendable {
     private func fetchUsingIndexWithTransaction<T: Persistable>(
         _ predicate: Predicate<T>,
         type: T.Type,
-        limit: Int?,
+        requestedLimit: Int?,
+        offset: Int?,
+        hasSort: Bool,
         forcedIndexName: String? = nil,
         transaction: any TransactionAccess,
         workMeter: DatabaseWorkMeter?
@@ -920,6 +952,17 @@ package final class DatabaseDataStore: DataStore, Sendable {
             }
             return nil
         }
+        let needsPostFiltering = !isSimpleFieldPredicate(
+            predicate,
+            fieldName: condition.fieldName
+        )
+        let indexReadLimit = QueryResultWindow.indexReadLimit(
+            requestedLimit: requestedLimit,
+            offset: offset,
+            hasSort: hasSort,
+            requiresPostFilter: needsPostFiltering,
+            hasSecurityFilter: securityDelegate != nil
+        )
 
         // Check index state - only use readable indexes for queries
         // Use transaction-aware overload to avoid nested transaction deadlock
@@ -975,7 +1018,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Execute scan with provided transaction
         let storageLimit = try boundedStorageLimit(
-            requested: limit,
+            requested: indexReadLimit,
             workMeter: workMeter
         )
         let streamingMode: StreamingMode = StreamingMode.forQuery(
@@ -1048,9 +1091,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
             models = delegate.filterByGetAccess(models)
         }
 
-        // Determine if post-filtering is needed
-        let needsPostFiltering = !isSimpleFieldPredicate(predicate, fieldName: condition.fieldName)
-
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
 
@@ -1120,6 +1160,13 @@ package final class DatabaseDataStore: DataStore, Sendable {
             offset: query.fetchOffset,
             orderBy: orderByFields.isEmpty ? nil : orderByFields
         )
+        try QueryResultWindow.validate(
+            limit: query.fetchLimit,
+            offset: query.fetchOffset
+        )
+        if query.fetchLimit == 0 {
+            return 0
+        }
 
         // Combine predicates into single predicate for evaluation
         let combinedPredicate: Predicate<T>? = query.predicates.isEmpty ? nil :
@@ -1127,14 +1174,31 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // For count, we can optimize by not deserializing if no predicate
         if combinedPredicate == nil {
-            return try await countAllWithTransaction(T.self, transaction: transaction)
+            let totalCount = try await countAllWithTransaction(
+                T.self,
+                transaction: transaction
+            )
+            return QueryResultWindow.resultCount(
+                totalCount: totalCount,
+                limit: query.fetchLimit,
+                offset: query.fetchOffset
+            )
         }
 
         // Try to use index for counting
         if let predicate = combinedPredicate,
            let condition = try extractIndexableCondition(from: predicate),
            let matchingIndex = findMatchingIndex(for: condition, in: T.indexDescriptors, type: T.self) {
-            return try await countUsingIndexWithTransaction(condition: condition, index: matchingIndex, transaction: transaction)
+            let totalCount = try await countUsingIndexWithTransaction(
+                condition: condition,
+                index: matchingIndex,
+                transaction: transaction
+            )
+            return QueryResultWindow.resultCount(
+                totalCount: totalCount,
+                limit: query.fetchLimit,
+                offset: query.fetchOffset
+            )
         }
 
         // Otherwise, fetch and count
