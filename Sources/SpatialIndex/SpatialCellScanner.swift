@@ -13,8 +13,6 @@ import DatabaseEngine
 import StorageKit
 import Geospatial
 
-// MARK: - SpatialCellScanner
-
 /// Unified spatial cell scanner for S2 and Morton encodings
 ///
 /// **Design**: Follows GraphEdgeScanner pattern
@@ -85,7 +83,7 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
-        var seenIds: Set<Data> = []
+        var seenIds: Set<Bytes> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max
@@ -108,12 +106,15 @@ public final class SpatialCellScanner: Sendable {
 
                 // Efficient Tuple extraction: single unpack, no redundant pack/unpack
                 let keyTuple = try cellSubspace.unpack(key)
+                guard !keyTuple.isEmpty else {
+                    throw SpatialCellScannerError.missingPrimaryKey
+                }
 
                 // Deduplicate using packed bytes as stable key
                 // (same item may appear in multiple covering cells)
-                let idData = Data(keyTuple.pack())
-                guard !seenIds.contains(idData) else { continue }
-                seenIds.insert(idData)
+                let identifier = keyTuple.pack()
+                guard !seenIds.contains(identifier) else { continue }
+                seenIds.insert(identifier)
 
                 // Early limit check - stop scanning when limit reached
                 if results.count >= effectiveLimit {
@@ -161,18 +162,13 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [Tuple], limitReason: LimitReason?) {
         var results: [Tuple] = []
-        var seenIds: Set<Data> = []
+        var seenIds: Set<Bytes> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max
         let rangeStart = indexSubspace.pack(Tuple(minCode))
         let maxKey = indexSubspace.pack(Tuple(maxCode))
-        let rangeEnd: Bytes
-        do {
-            rangeEnd = try strinc(maxKey)
-        } catch {
-            rangeEnd = maxKey + [0xFF]
-        }
+        let rangeEnd = try strinc(maxKey)
 
         let readLimit = SpatialScanBudget.rangeReadLimit(totalLimit: limit, emittedCount: results.count)
         let sequence = try await transaction.collectRange(
@@ -187,7 +183,7 @@ public final class SpatialCellScanner: Sendable {
 
             let keyTuple = try indexSubspace.unpack(key)
             guard keyTuple.count >= 2 else {
-                continue
+                throw SpatialCellScannerError.missingPrimaryKey
             }
 
             var idElements: [any TupleElement] = []
@@ -197,9 +193,9 @@ public final class SpatialCellScanner: Sendable {
                 }
             }
             let idTuple = Tuple(idElements)
-            let idData = Data(idTuple.pack())
-            guard !seenIds.contains(idData) else { continue }
-            seenIds.insert(idData)
+            let identifier = idTuple.pack()
+            guard !seenIds.contains(identifier) else { continue }
+            seenIds.insert(identifier)
 
             if results.count >= effectiveLimit {
                 limitReason = .maxResultsReached(returned: effectiveLimit, limit: effectiveLimit)
@@ -238,7 +234,7 @@ public final class SpatialCellScanner: Sendable {
         transaction: any TransactionAccess
     ) async throws -> (keys: [(key: Tuple, distance: Double)], limitReason: LimitReason?) {
         var results: [(key: Tuple, distance: Double)] = []
-        var seenIds: Set<Data> = []
+        var seenIds: Set<Bytes> = []
         var limitReason: LimitReason? = nil
 
         let effectiveLimit = limit ?? Int.max
@@ -260,10 +256,13 @@ public final class SpatialCellScanner: Sendable {
                 guard cellSubspace.contains(key) else { break }
 
                 let keyTuple = try cellSubspace.unpack(key)
+                guard !keyTuple.isEmpty else {
+                    throw SpatialCellScannerError.missingPrimaryKey
+                }
 
-                let idData = Data(keyTuple.pack())
-                guard !seenIds.contains(idData) else { continue }
-                seenIds.insert(idData)
+                let identifier = keyTuple.pack()
+                guard !seenIds.contains(identifier) else { continue }
+                seenIds.insert(identifier)
 
                 // Distance filtering is deferred to after item fetch
                 // because we need the actual coordinates from the item

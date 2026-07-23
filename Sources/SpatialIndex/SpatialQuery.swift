@@ -305,7 +305,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw SpatialQueryError.indexNotFound(buildIndexName())
+            throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
         let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
@@ -420,15 +420,9 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
         }
     }
 
-    /// Build the index name based on type and field
-    ///
-    /// Uses IndexDescriptor lookup for reliable index name resolution.
-    private func buildIndexName() -> String {
-        if let descriptor = findIndexDescriptor() {
-            return descriptor.name
-        }
-        // Fallback to conventional format
-        return "\(T.persistableType)_spatial_\(fieldName)"
+    /// Identity used to diagnose a missing index declaration.
+    private var requestedIndexIdentity: String {
+        "\(T.persistableType).\(fieldName)"
     }
 
     /// Extract GeoPoint from item using Persistable dynamicMember subscript
@@ -707,7 +701,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw SpatialQueryError.indexNotFound(buildIndexName())
+            throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
         let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)
@@ -892,7 +886,7 @@ public struct SpatialQueryBuilder<T: Persistable>: Sendable {
 
         // Find index descriptor
         guard let descriptor = findIndexDescriptor() else {
-            throw SpatialQueryError.indexNotFound(buildIndexName())
+            throw SpatialQueryError.indexNotFound(requestedIndexIdentity)
         }
 
         let kind = try SpatialIndexKind<T>(canonical: descriptor.kind)

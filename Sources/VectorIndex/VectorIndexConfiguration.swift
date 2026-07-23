@@ -258,11 +258,9 @@ public struct VectorAutoParameters: Sendable, Codable, Hashable {
 
     /// Select the appropriate algorithm based on vector count
     ///
-    /// - Parameters:
-    ///   - vectorCount: Current number of vectors in the index
-    ///   - dimensions: Vector dimensions (unused, kept for API compatibility)
+    /// - Parameter vectorCount: Current number of vectors in the index
     /// - Returns: The selected algorithm
-    public func selectAlgorithm(vectorCount: Int, dimensions: Int) -> VectorAlgorithm {
+    public func selectAlgorithm(vectorCount: Int) -> VectorAlgorithm {
         if vectorCount < flatThreshold {
             return .flat
         } else {

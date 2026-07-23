@@ -199,7 +199,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             throw VectorQueryError.dimensionMismatch(expected: dimensions, actual: vector.count)
         }
 
-        let indexName = buildIndexName()
+        let indexName = try buildIndexName()
 
         // If filter is set, use ACORN filtered search
         if let predicate = filterPredicate {
@@ -275,8 +275,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
                         transaction: transaction
                     )
                     resolvedAlgorithm = autoParams.selectAlgorithm(
-                        vectorCount: vectorCount,
-                        dimensions: self.dimensions
+                        vectorCount: vectorCount
                     )
                 case .flat, .hnsw, .ivf, .pq:
                     resolvedAlgorithm = vectorConfig.algorithm
@@ -288,19 +287,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             // Execute search with resolved algorithm
             switch resolvedAlgorithm {
             case .auto:
-                // Should not happen after resolution, fall back to flat
-                let maintainer = FlatVectorIndexMaintainer<T>(
-                    index: index,
-                    dimensions: self.dimensions,
-                    metric: kind.metric,
-                    subspace: indexSubspace,
-                    idExpression: FieldKeyExpression(fieldName: "id")
-                )
-                return try await maintainer.search(
-                    queryVector: queryVector,
-                    k: k,
-                    transaction: transaction
-                )
+                throw VectorQueryError.unresolvedAlgorithm
 
             case .hnsw(let hnswParams):
                 // Use HNSW search
@@ -391,17 +378,17 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         // Fetch items by primary keys
         let items = try await queryContext.fetchItems(ids: tuples, type: T.self, cachePolicy: cachePolicy)
 
-        // Match items with distances
-        var results: [(item: T, distance: Double)] = []
+        var itemByIdentifier: [Bytes: T] = [:]
+        itemByIdentifier.reserveCapacity(items.count)
         for item in items {
-            for result in primaryKeysWithDistances {
-                if let pkId = result.primaryKey.first as? String, "\(item.id)" == pkId {
-                    results.append((item: item, distance: result.distance))
-                    break
-                } else if let pkId = result.primaryKey.first as? Int64, "\(item.id)" == "\(pkId)" {
-                    results.append((item: item, distance: result.distance))
-                    break
-                }
+            itemByIdentifier[try item.persistableIdentifierTuple().pack()] = item
+        }
+
+        var results: [(item: T, distance: Double)] = []
+        results.reserveCapacity(primaryKeysWithDistances.count)
+        for result in primaryKeysWithDistances {
+            if let item = itemByIdentifier[Tuple(result.primaryKey).pack()] {
+                results.append((item: item, distance: result.distance))
             }
         }
 
@@ -430,7 +417,7 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             source: .table(TableRef(table: T.persistableType)),
             accessPath: .index(
                 IndexScanSource(
-                    indexName: buildIndexName(),
+                    indexName: try buildIndexName(),
                     kindIdentifier: VectorIndexKind<T>.identifier,
                     parameters: parameters
                 )
@@ -559,19 +546,17 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
             let ids = results.map { Tuple($0.primaryKey) }
             let items = try await self.queryContext.fetchItems(ids: ids, type: T.self, cachePolicy: cachePolicy)
 
-            // Create ID to item map for efficient lookup
-            var idToItem: [String: T] = [:]
+            var itemByIdentifier: [Bytes: T] = [:]
+            itemByIdentifier.reserveCapacity(items.count)
             for item in items {
                 let identifier = try item.persistableIdentifierTuple()
-                let key = Data(identifier.pack()).base64EncodedString()
-                idToItem[key] = item
+                itemByIdentifier[identifier.pack()] = item
             }
 
-            // Combine with distances
             var finalResults: [(item: T, distance: Double)] = []
+            finalResults.reserveCapacity(results.count)
             for result in results {
-                let key = Data(Tuple(result.primaryKey).pack()).base64EncodedString()
-                if let item = idToItem[key] {
+                if let item = itemByIdentifier[Tuple(result.primaryKey).pack()] {
                     finalResults.append((item: item, distance: result.distance))
                 }
             }
@@ -621,16 +606,12 @@ public struct VectorQueryBuilder<T: Persistable>: Sendable {
         return (descriptor, kind)
     }
 
-    /// Build the index name based on type and field
-    ///
-    /// Uses IndexDescriptor lookup for reliable index name resolution.
-    /// Falls back to conventional name format if descriptor not found.
-    private func buildIndexName() -> String {
-        if let descriptor = findIndexDescriptor() {
-            return descriptor.name
+    /// Resolve the declared vector index for the selected field.
+    private func buildIndexName() throws -> String {
+        guard let descriptor = findIndexDescriptor() else {
+            throw VectorQueryError.indexNotFound("\(T.persistableType).\(fieldName)")
         }
-        // Fallback to conventional format
-        return "\(T.persistableType)_vector_\(fieldName)"
+        return descriptor.name
     }
 }
 
@@ -880,6 +861,9 @@ public enum VectorQueryError: Error, CustomStringConvertible {
     /// Closure-based filters cannot be lowered into QueryIR.
     case closureFilterUnsupported
 
+    /// Automatic algorithm selection must be resolved before execution.
+    case unresolvedAlgorithm
+
     public var description: String {
         switch self {
         case .noQueryVector:
@@ -896,6 +880,8 @@ public enum VectorQueryError: Error, CustomStringConvertible {
             return "Filter not supported: \(reason)"
         case .closureFilterUnsupported:
             return "Closure-based vector filters are not supported on the canonical read path"
+        case .unresolvedAlgorithm:
+            return "Automatic vector algorithm selection was not resolved before execution"
         }
     }
 }

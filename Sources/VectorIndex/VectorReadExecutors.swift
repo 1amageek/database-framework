@@ -24,6 +24,7 @@ private enum VectorReadError: Error, Sendable {
     case missingParameter(String)
     case invalidParameter(String)
     case indexNotFound(String)
+    case unresolvedAlgorithm
 }
 
 private struct VectorReadExecutor: IndexReadExecutor {
@@ -274,8 +275,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
                     transaction: transaction
                 )
                 resolvedAlgorithm = autoParams.selectAlgorithm(
-                    vectorCount: vectorCount,
-                    dimensions: dimensions
+                    vectorCount: vectorCount
                 )
             case .flat, .hnsw, .ivf, .pq:
                 resolvedAlgorithm = vectorConfig.algorithm
@@ -286,18 +286,7 @@ private struct PolymorphicVectorReadExecutor: PolymorphicIndexReadExecutor {
 
         switch resolvedAlgorithm {
         case .auto:
-            let maintainer = FlatVectorIndexMaintainer<PolymorphicVectorPlaceholder>(
-                index: index,
-                dimensions: dimensions,
-                metric: kind.metric,
-                subspace: indexSubspace,
-                idExpression: FieldKeyExpression(fieldName: "id")
-            )
-            return try await maintainer.search(
-                queryVector: queryVector,
-                k: k,
-                transaction: transaction
-            )
+            throw VectorReadError.unresolvedAlgorithm
 
         case .flat:
             let maintainer = FlatVectorIndexMaintainer<PolymorphicVectorPlaceholder>(

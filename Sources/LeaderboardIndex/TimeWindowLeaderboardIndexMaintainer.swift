@@ -556,13 +556,7 @@ public struct TimeWindowLeaderboardIndexMaintainer<Item: Persistable>: SubspaceI
         // Use strinc on prefix bytes to get exclusive upper bound
         // This includes ALL scores (including 0, which has invertedScore=Int64.max)
         let rangeStart = windowSubspace.pack(Tuple(prefixElements))
-        let rangeEnd: Bytes
-        do {
-            rangeEnd = try strinc(rangeStart)
-        } catch {
-            // Fallback: append 0xFF (should never happen in practice)
-            rangeEnd = rangeStart + [0xFF]
-        }
+        let rangeEnd = try strinc(rangeStart)
 
         let sequence = try await transaction.collectRange(
             from: .firstGreaterOrEqual(rangeStart),

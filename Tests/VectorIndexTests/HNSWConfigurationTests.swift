@@ -201,6 +201,21 @@ struct VectorIndexConfigurationSelectionTests {
 @Suite("VectorIndexConfiguration Tests", .heartbeat)
 struct VectorIndexConfigurationTests {
 
+    @Test("Automatic selection switches at the configured vector count")
+    func automaticSelectionUsesVectorCount() {
+        let parameters = VectorAutoParameters(flatThreshold: 100)
+
+        guard case .flat = parameters.selectAlgorithm(vectorCount: 99) else {
+            Issue.record("Expected an exact search below the threshold")
+            return
+        }
+        guard case .hnsw(let selected) = parameters.selectAlgorithm(vectorCount: 100) else {
+            Issue.record("Expected an HNSW search at the threshold")
+            return
+        }
+        #expect(selected == .default)
+    }
+
     @Test("VectorIndexConfiguration has correct kindIdentifier")
     func testKindIdentifier() {
         #expect(VectorIndexConfiguration<HNSWDocument>.kindIdentifier == "vector")
