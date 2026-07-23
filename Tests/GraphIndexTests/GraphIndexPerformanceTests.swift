@@ -69,10 +69,9 @@ private struct BenchmarkContext {
 
 // MARK: - Benchmark Model
 
-private struct BenchmarkEdge: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct BenchmarkEdge {
+    var id: String = UUID().uuidString
     var source: String
     var target: String
     var label: String
@@ -82,50 +81,6 @@ private struct BenchmarkEdge: Persistable {
         self.source = source
         self.target = target
         self.label = label
-    }
-
-    static var persistableType: String { "BenchmarkEdge" }
-    static var allFields: [String] { ["id", "source", "target", "label"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "source": return source
-        case "target": return target
-        case "label": return label
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<BenchmarkEdge, Value>) -> String {
-        switch keyPath {
-        case \BenchmarkEdge.id: return "id"
-        case \BenchmarkEdge.source: return "source"
-        case \BenchmarkEdge.target: return "target"
-        case \BenchmarkEdge.label: return "label"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<BenchmarkEdge>) -> String {
-        switch keyPath {
-        case \BenchmarkEdge.id: return "id"
-        case \BenchmarkEdge.source: return "source"
-        case \BenchmarkEdge.target: return "target"
-        case \BenchmarkEdge.label: return "label"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<BenchmarkEdge> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
     }
 }
 

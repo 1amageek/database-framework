@@ -15,10 +15,9 @@ import TestSupport
 
 // MARK: - Test Model
 
-struct GraphIndexEdge: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct GraphIndexEdge {
+    var id: String = UUID().uuidString
     var source: String
     var target: String
     var label: String
@@ -30,53 +29,6 @@ struct GraphIndexEdge: Persistable {
         self.target = target
         self.label = label
         self.weight = weight
-    }
-
-    static var persistableType: String { "GraphIndexEdge" }
-    static var allFields: [String] { ["id", "source", "target", "label", "weight"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "source": return source
-        case "target": return target
-        case "label": return label
-        case "weight": return weight
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<GraphIndexEdge, Value>) -> String {
-        switch keyPath {
-        case \GraphIndexEdge.id: return "id"
-        case \GraphIndexEdge.source: return "source"
-        case \GraphIndexEdge.target: return "target"
-        case \GraphIndexEdge.label: return "label"
-        case \GraphIndexEdge.weight: return "weight"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<GraphIndexEdge>) -> String {
-        switch keyPath {
-        case \GraphIndexEdge.id: return "id"
-        case \GraphIndexEdge.source: return "source"
-        case \GraphIndexEdge.target: return "target"
-        case \GraphIndexEdge.label: return "label"
-        case \GraphIndexEdge.weight: return "weight"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<GraphIndexEdge> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
     }
 }
 

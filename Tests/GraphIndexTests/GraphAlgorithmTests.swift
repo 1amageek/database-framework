@@ -13,10 +13,9 @@ import Graph
 
 // MARK: - Test Model
 
-private struct Edge: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable(type: "GraphAlgoEdge")
+private struct Edge {
+    var id: String = UUID().uuidString
     var source: String
     var target: String
     var label: String
@@ -28,53 +27,6 @@ private struct Edge: Persistable {
         self.target = target
         self.label = label
         self.weight = weight
-    }
-
-    static var persistableType: String { "GraphAlgoEdge" }
-    static var allFields: [String] { ["id", "source", "target", "label", "weight"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "source": return source
-        case "target": return target
-        case "label": return label
-        case "weight": return weight
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<Edge, Value>) -> String {
-        switch keyPath {
-        case \Edge.id: return "id"
-        case \Edge.source: return "source"
-        case \Edge.target: return "target"
-        case \Edge.label: return "label"
-        case \Edge.weight: return "weight"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<Edge>) -> String {
-        switch keyPath {
-        case \Edge.id: return "id"
-        case \Edge.source: return "source"
-        case \Edge.target: return "target"
-        case \Edge.label: return "label"
-        case \Edge.weight: return "weight"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<Edge> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
     }
 }
 

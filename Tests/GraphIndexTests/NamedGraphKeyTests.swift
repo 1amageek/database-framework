@@ -18,10 +18,9 @@ import TestSupport
 
 // MARK: - Test Model (Quad)
 
-struct NamedGraphQuad: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+struct NamedGraphQuad {
+    var id: String = UUID().uuidString
     var subject: String
     var predicate: String
     var object: String
@@ -39,53 +38,6 @@ struct NamedGraphQuad: Persistable {
         self.predicate = predicate
         self.object = object
         self.graph = graph
-    }
-
-    static var persistableType: String { "NamedGraphQuad" }
-    static var allFields: [String] { ["id", "subject", "predicate", "object", "graph"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "subject": return subject
-        case "predicate": return predicate
-        case "object": return object
-        case "graph": return graph
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<NamedGraphQuad, Value>) -> String {
-        switch keyPath {
-        case \NamedGraphQuad.id: return "id"
-        case \NamedGraphQuad.subject: return "subject"
-        case \NamedGraphQuad.predicate: return "predicate"
-        case \NamedGraphQuad.object: return "object"
-        case \NamedGraphQuad.graph: return "graph"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<NamedGraphQuad>) -> String {
-        switch keyPath {
-        case \NamedGraphQuad.id: return "id"
-        case \NamedGraphQuad.subject: return "subject"
-        case \NamedGraphQuad.predicate: return "predicate"
-        case \NamedGraphQuad.object: return "object"
-        case \NamedGraphQuad.graph: return "graph"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        if let partial = keyPath as? PartialKeyPath<NamedGraphQuad> {
-            return fieldName(for: partial)
-        }
-        return "\(keyPath)"
     }
 }
 

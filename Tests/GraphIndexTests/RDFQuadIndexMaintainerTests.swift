@@ -6,50 +6,26 @@ import Testing
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-private struct RDFQuadIndexRecord: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct RDFQuadIndexRecord {
+    var id: String = ""
     var subject: DatabaseRDFTerm
     var predicate: DatabaseRDFTerm
     var object: DatabaseRDFTerm
     var graph: DatabaseRDFTerm?
 
-    static var persistableType: String { "RDFQuadIndexRecord" }
-    static var allFields: [String] { ["id", "subject", "predicate", "object", "graph"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "subject": return subject
-        case "predicate": return predicate
-        case "object": return object
-        case "graph": return graph
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<Self, Value>) -> String {
-        fieldName(for: keyPath as AnyKeyPath)
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<Self>) -> String {
-        fieldName(for: keyPath as AnyKeyPath)
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        switch keyPath {
-        case \Self.id: return "id"
-        case \Self.subject: return "subject"
-        case \Self.predicate: return "predicate"
-        case \Self.object: return "object"
-        case \Self.graph: return "graph"
-        default: return String(describing: keyPath)
-        }
+    init(
+        id: String,
+        subject: DatabaseRDFTerm,
+        predicate: DatabaseRDFTerm,
+        object: DatabaseRDFTerm,
+        graph: DatabaseRDFTerm?
+    ) {
+        self.id = id
+        self.subject = subject
+        self.predicate = predicate
+        self.object = object
+        self.graph = graph
     }
 }
 

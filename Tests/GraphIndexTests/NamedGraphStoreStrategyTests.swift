@@ -7,60 +7,26 @@ import StorageKit
 @testable import DatabaseEngine
 @testable import GraphIndex
 
-private struct NamedGraphStoreQuad: Persistable {
-    typealias ID = String
-
-    var id: String
+@Persistable
+private struct NamedGraphStoreQuad {
+    var id: String = UUID().uuidString
     var subject: String
     var predicate: String
     var object: String
     var graph: String?
 
-    static var persistableType: String { "NamedGraphStoreQuad" }
-    static var allFields: [String] { ["id", "subject", "predicate", "object", "graph"] }
-    static var indexDescriptors: [IndexDescriptor] { [] }
-
-    static func fieldNumber(for fieldName: String) -> Int? { nil }
-    static func enumMetadata(for fieldName: String) -> EnumMetadata? { nil }
-
-    subscript(dynamicMember member: String) -> (any Sendable)? {
-        switch member {
-        case "id": return id
-        case "subject": return subject
-        case "predicate": return predicate
-        case "object": return object
-        case "graph": return graph
-        default: return nil
-        }
-    }
-
-    static func fieldName<Value>(for keyPath: KeyPath<NamedGraphStoreQuad, Value>) -> String {
-        switch keyPath {
-        case \NamedGraphStoreQuad.id: return "id"
-        case \NamedGraphStoreQuad.subject: return "subject"
-        case \NamedGraphStoreQuad.predicate: return "predicate"
-        case \NamedGraphStoreQuad.object: return "object"
-        case \NamedGraphStoreQuad.graph: return "graph"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: PartialKeyPath<NamedGraphStoreQuad>) -> String {
-        switch keyPath {
-        case \NamedGraphStoreQuad.id: return "id"
-        case \NamedGraphStoreQuad.subject: return "subject"
-        case \NamedGraphStoreQuad.predicate: return "predicate"
-        case \NamedGraphStoreQuad.object: return "object"
-        case \NamedGraphStoreQuad.graph: return "graph"
-        default: return "\(keyPath)"
-        }
-    }
-
-    static func fieldName(for keyPath: AnyKeyPath) -> String {
-        guard let keyPath = keyPath as? PartialKeyPath<NamedGraphStoreQuad> else {
-            return "\(keyPath)"
-        }
-        return fieldName(for: keyPath)
+    init(
+        id: String,
+        subject: String,
+        predicate: String,
+        object: String,
+        graph: String?
+    ) {
+        self.id = id
+        self.subject = subject
+        self.predicate = predicate
+        self.object = object
+        self.graph = graph
     }
 }
 
