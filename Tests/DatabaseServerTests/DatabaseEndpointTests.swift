@@ -32,7 +32,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+            admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
         let request = try makeRequest(
             operation: CapabilitiesDescribeOperation.self,
@@ -82,7 +82,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy,
+            admissionPolicy: Self.unrestrictedAdmissionPolicy,
             middlewares: [AnyDatabaseRequestMiddleware(middleware)]
         )
         let request = try makeRequest(
@@ -116,7 +116,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+            admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
         let request = try makeRequest(
             operation: CapabilitiesDescribeOperation.self,
@@ -151,7 +151,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy,
+            admissionPolicy: Self.unrestrictedAdmissionPolicy,
             limits: limits,
             errorMapper: OversizedEndpointErrorMapper()
         )
@@ -233,7 +233,7 @@ struct DatabaseEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+            admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
 
         let capabilities: CapabilitiesDescribeOperation.Response = try await invoke(
@@ -312,14 +312,14 @@ struct DatabaseEndpointTests {
         return DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: Self.unrestrictedAuthorizationPolicy
+            admissionPolicy: Self.unrestrictedAdmissionPolicy
         )
     }
 
-    private static var unrestrictedAuthorizationPolicy:
-        AnyDatabaseOperationAuthorizationPolicy {
-        AnyDatabaseOperationAuthorizationPolicy(
-            UnrestrictedDatabaseOperationAuthorizationPolicy()
+    private static var unrestrictedAdmissionPolicy:
+        AnyDatabaseOperationAdmissionPolicy {
+        AnyDatabaseOperationAdmissionPolicy(
+            UnrestrictedDatabaseOperationAdmissionPolicy()
         )
     }
 

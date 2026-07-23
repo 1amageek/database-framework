@@ -5,7 +5,7 @@ import DatabaseWire
 public final class DatabaseEndpoint: Sendable {
     private let container: DBContainer
     private let registry: DatabaseOperationRegistry
-    private let authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy
+    private let admissionPolicy: AnyDatabaseOperationAdmissionPolicy
     private let middlewares: [AnyDatabaseRequestMiddleware]
     private let limits: DatabaseWireLimits
     private let errorMapper: AnyDatabaseErrorMapper
@@ -13,13 +13,13 @@ public final class DatabaseEndpoint: Sendable {
     public init(
         container: DBContainer,
         registry: DatabaseOperationRegistry,
-        authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy,
+        admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         limits: DatabaseWireLimits = .default
     ) {
         self.container = container
         self.registry = registry
-        self.authorizationPolicy = authorizationPolicy
+        self.admissionPolicy = admissionPolicy
         self.middlewares = middlewares
         self.limits = limits
         self.errorMapper = AnyDatabaseErrorMapper(CanonicalDatabaseErrorMapper())
@@ -28,14 +28,14 @@ public final class DatabaseEndpoint: Sendable {
     public init<Mapper: DatabaseErrorMapper>(
         container: DBContainer,
         registry: DatabaseOperationRegistry,
-        authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy,
+        admissionPolicy: AnyDatabaseOperationAdmissionPolicy,
         middlewares: [AnyDatabaseRequestMiddleware] = [],
         limits: DatabaseWireLimits = .default,
         errorMapper: Mapper
     ) {
         self.container = container
         self.registry = registry
-        self.authorizationPolicy = authorizationPolicy
+        self.admissionPolicy = admissionPolicy
         self.middlewares = middlewares
         self.limits = limits
         self.errorMapper = AnyDatabaseErrorMapper(errorMapper)
@@ -49,6 +49,26 @@ public final class DatabaseEndpoint: Sendable {
             throw DatabaseEndpointError.invalidRequestFrame(error)
         }
 
+        let admissionRequest = DatabaseOperationAdmissionRequest(
+            requestID: request.requestID,
+            operation: request.operation,
+            metadata: request.metadata
+        )
+        if case .deny(let denial) = admissionPolicy.decision(
+            for: admissionRequest
+        ) {
+            return try encodeFailureResponse(
+                for: request,
+                error: DatabaseRemoteError(
+                    category: .authorization,
+                    code: denial.code,
+                    message: denial.message,
+                    retryability: denial.retryability,
+                    details: denial.details
+                )
+            )
+        }
+
         let context = DatabaseOperationContext(
             container: container,
             requestID: request.requestID,
@@ -57,10 +77,6 @@ public final class DatabaseEndpoint: Sendable {
         )
         let result: DatabaseOperationResult
         do {
-            try await authorizationPolicy.authorize(
-                request: request,
-                context: context
-            )
             result = try await handlerChain()(request, context)
         } catch is CancellationError {
             throw CancellationError()

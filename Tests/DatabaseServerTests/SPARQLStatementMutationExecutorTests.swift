@@ -1049,8 +1049,8 @@ struct SPARQLStatementMutationExecutorTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
-                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
+                UnrestrictedDatabaseOperationAdmissionPolicy()
             )
         )
         let payload = MutationExecuteOperation.Request(

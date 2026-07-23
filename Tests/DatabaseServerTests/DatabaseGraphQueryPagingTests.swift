@@ -446,8 +446,8 @@ struct DatabaseGraphQueryPagingTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
-                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
+                UnrestrictedDatabaseOperationAdmissionPolicy()
             )
         )
         let operationRequest = request(.construct(constructQuery()), limit: 2)

@@ -153,8 +153,8 @@ struct DatabaseQueryContinuationEndpointTests {
         return DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
-                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
+                UnrestrictedDatabaseOperationAdmissionPolicy()
             )
         )
     }

@@ -37,8 +37,8 @@ struct DatabaseStatementAdmissionEndpointTests {
         let endpoint = DatabaseEndpoint(
             container: container,
             registry: registry,
-            authorizationPolicy: AnyDatabaseOperationAuthorizationPolicy(
-                UnrestrictedDatabaseOperationAuthorizationPolicy()
+            admissionPolicy: AnyDatabaseOperationAdmissionPolicy(
+                UnrestrictedDatabaseOperationAdmissionPolicy()
             )
         )
         let request = MutationExecuteOperation.Request(
