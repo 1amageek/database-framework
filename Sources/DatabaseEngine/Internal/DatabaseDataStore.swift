@@ -380,7 +380,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
         // Determine if post-filtering is needed
         // (needed if predicate has additional conditions beyond the indexed field)
-        let needsPostFiltering = !isSimpleFieldPredicate(predicate, fieldName: condition.fieldName)
+        let needsPostFiltering = selection.requiresPostFilter
 
         return IndexFetchResult(models: models, needsPostFiltering: needsPostFiltering)
     }
@@ -552,16 +552,6 @@ package final class DatabaseDataStore: DataStore, Sendable {
 
                 return indexed.compactMap { $0.1 }
             }
-        }
-    }
-
-    /// Check if predicate is a simple field comparison (no AND/OR/NOT)
-    private func isSimpleFieldPredicate<T: Persistable>(_ predicate: Predicate<T>, fieldName: String) -> Bool {
-        switch predicate {
-        case .comparison(let comparison):
-            return comparison.fieldName == fieldName
-        default:
-            return false
         }
     }
 
@@ -917,10 +907,7 @@ package final class DatabaseDataStore: DataStore, Sendable {
         let accessPath = try encodeScalarIndexAccess(selection)
         let condition = accessPath.condition
         let matchingIndex = accessPath.descriptor
-        let needsPostFiltering = !isSimpleFieldPredicate(
-            predicate,
-            fieldName: condition.fieldName
-        )
+        let needsPostFiltering = selection.requiresPostFilter
         let indexReadLimit = QueryResultWindow.indexReadLimit(
             requestedLimit: requestedLimit,
             offset: offset,

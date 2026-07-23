@@ -116,6 +116,7 @@ struct ScalarIndexAccessPathTests {
         let clauses = try #require(selection?.clauses)
         #expect(clauses.map { $0.fieldName } == ["group", "rank"])
         #expect(clauses.map { $0.value } == [FieldValue.string("alpha"), FieldValue.int64(2)])
+        #expect(selection?.requiresPostFilter == false)
     }
 
     @Test("Planning rejects a forced non-scalar descriptor")

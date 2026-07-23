@@ -10,6 +10,7 @@ struct ScalarIndexClause: Sendable {
 struct ScalarIndexAccessSelection: Sendable {
     let descriptor: IndexDescriptor
     let clauses: [ScalarIndexClause]
+    let requiresPostFilter: Bool
 }
 
 enum ScalarIndexAccessPlanner {
@@ -56,7 +57,11 @@ enum ScalarIndexAccessPlanner {
             if equalityPrefix.count >= 2 {
                 return ScalarIndexAccessSelection(
                     descriptor: descriptor,
-                    clauses: equalityPrefix
+                    clauses: equalityPrefix,
+                    requiresPostFilter: !isFullySatisfied(
+                        predicate,
+                        by: equalityPrefix
+                    )
                 )
             }
         }
@@ -68,7 +73,11 @@ enum ScalarIndexAccessPlanner {
             }) {
                 return ScalarIndexAccessSelection(
                     descriptor: descriptor,
-                    clauses: [clause]
+                    clauses: [clause],
+                    requiresPostFilter: !isFullySatisfied(
+                        predicate,
+                        by: [clause]
+                    )
                 )
             }
         }
@@ -80,7 +89,11 @@ enum ScalarIndexAccessPlanner {
             }) {
                 return ScalarIndexAccessSelection(
                     descriptor: descriptor,
-                    clauses: [clause]
+                    clauses: [clause],
+                    requiresPostFilter: !isFullySatisfied(
+                        predicate,
+                        by: [clause]
+                    )
                 )
             }
         }
@@ -135,6 +148,31 @@ enum ScalarIndexAccessPlanner {
 
         default:
             return []
+        }
+    }
+
+    private static func isFullySatisfied<T: Persistable>(
+        _ predicate: Predicate<T>,
+        by clauses: [ScalarIndexClause]
+    ) -> Bool {
+        switch predicate {
+        case .comparison(let comparison):
+            return clauses.contains { clause in
+                clause.fieldName == comparison.fieldName
+                    && clause.comparison == comparison.op
+                    && clause.value == comparison.value
+            }
+
+        case .and(let predicates):
+            return predicates.allSatisfy {
+                isFullySatisfied($0, by: clauses)
+            }
+
+        case .true:
+            return true
+
+        case .or, .not, .false:
+            return false
         }
     }
 }
