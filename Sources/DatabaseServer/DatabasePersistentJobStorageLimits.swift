@@ -1,18 +1,20 @@
 import DatabaseWire
 
 public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
-    public static let maximumCloudflareStorageValueBytes = 1_048_576
     public static let maximumResultChunkBytes = 512 * 1_024
 
     private static let resultManifestFixedByteCount = 123
     private static let encodedDigestByteCount = 36
     private static let planFixedByteCount = 59
+    private static let minimumUnsuccessfulOutcomeBytes = 4 * 1_024
+    private static let stateInfrastructureReservedBytes = 4 * 1_024
 
     public let maximumStorageValueBytes: Int
     public let maximumSpecificationBytes: Int
     public let maximumPlanBytes: Int
     public let maximumStateBytes: Int
     public let maximumOperationStateBytes: Int
+    public let maximumUnsuccessfulOutcomeBytes: Int
     public let maximumResultBytes: Int
     public let resultChunkBytes: Int
 
@@ -21,11 +23,12 @@ public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
     }
 
     public init(
-        maximumStorageValueBytes: Int = 1_048_576,
+        maximumStorageValueBytes: Int,
         maximumSpecificationBytes: Int = 64 * 1_024,
         maximumPlanBytes: Int = 256 * 1_024,
         maximumStateBytes: Int = 128 * 1_024,
         maximumOperationStateBytes: Int = 64 * 1_024,
+        maximumUnsuccessfulOutcomeBytes: Int = 48 * 1_024,
         maximumResultBytes: Int = 4 * 1_024 * 1_024,
         resultChunkBytes: Int = 512 * 1_024
     ) {
@@ -34,14 +37,17 @@ public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
         self.maximumPlanBytes = maximumPlanBytes
         self.maximumStateBytes = maximumStateBytes
         self.maximumOperationStateBytes = maximumOperationStateBytes
+        self.maximumUnsuccessfulOutcomeBytes = maximumUnsuccessfulOutcomeBytes
         self.maximumResultBytes = maximumResultBytes
         self.resultChunkBytes = resultChunkBytes
     }
 
     public func validate() throws {
+        let statePayloadBudget = maximumOperationStateBytes
+            .addingReportingOverflow(maximumUnsuccessfulOutcomeBytes)
+        let reservedStateBudget = statePayloadBudget.partialValue
+            .addingReportingOverflow(Self.stateInfrastructureReservedBytes)
         guard maximumStorageValueBytes > 0,
-              maximumStorageValueBytes
-                <= Self.maximumCloudflareStorageValueBytes,
               UInt32(exactly: maximumStorageValueBytes) != nil,
               maximumSpecificationBytes > 0,
               maximumSpecificationBytes <= maximumStorageValueBytes,
@@ -51,7 +57,11 @@ public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
               maximumStateBytes > 0,
               maximumStateBytes <= maximumStorageValueBytes,
               maximumOperationStateBytes > 0,
-              maximumOperationStateBytes < maximumStateBytes,
+              maximumUnsuccessfulOutcomeBytes
+                >= Self.minimumUnsuccessfulOutcomeBytes,
+              !statePayloadBudget.overflow,
+              !reservedStateBudget.overflow,
+              reservedStateBudget.partialValue <= maximumStateBytes,
               maximumResultBytes >= 0,
               resultChunkBytes > 0,
               resultChunkBytes <= maximumStorageValueBytes,
@@ -77,10 +87,23 @@ public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
               !manifestBytes.overflow,
               UInt32(exactly: chunkCount) != nil,
               chunkCount <= wireLimits.maximumCollectionCount,
+              maximumSpecificationBytes <= wireLimits.maximumFrameBytes,
+              maximumPlanBytes <= wireLimits.maximumFrameBytes,
+              maximumStateBytes <= wireLimits.maximumFrameBytes,
               manifestBytes.partialValue <= maximumSpecificationBytes,
               manifestBytes.partialValue <= wireLimits.maximumFrameBytes else {
             throw DatabaseJobRuntimeError.invalidConfiguration(
                 "Persistent job result manifest exceeds configured limits"
+            )
+        }
+        do {
+            _ = try DatabasePersistentJobFailureStoragePolicy(
+                storageLimits: self,
+                wireLimits: wireLimits
+            )
+        } catch {
+            throw DatabaseJobRuntimeError.invalidConfiguration(
+                "Persistent job failure diagnostics exceed configured limits"
             )
         }
     }
@@ -108,6 +131,15 @@ public struct DatabasePersistentJobStorageLimits: Sendable, Hashable {
     ) throws(DatabaseWireLimitsError) -> DatabaseWireLimits {
         try payloadWireLimits(
             maximumBytes: maximumResultBytes,
+            basedOn: limits
+        )
+    }
+
+    func unsuccessfulOutcomeWireLimits(
+        basedOn limits: DatabaseWireLimits
+    ) throws(DatabaseWireLimitsError) -> DatabaseWireLimits {
+        try payloadWireLimits(
+            maximumBytes: maximumUnsuccessfulOutcomeBytes,
             basedOn: limits
         )
     }

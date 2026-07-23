@@ -28,11 +28,12 @@ public protocol DatabaseResumableOperation: Sendable {
         context: DatabaseCheckpointedResumableOperationContext
     ) async throws -> DatabaseResumableOperationSlice<State, Job.Response>
 
-    /// Persist operation-owned terminal state in the job terminal transaction.
-    func handleTerminalState(
+    /// Applies operation-owned state in the same transaction that publishes
+    /// the job's unsuccessful outcome. The transaction may retry this invocation.
+    func applyUnsuccessfulOutcome(
         plan: Plan,
         state: State,
-        terminalState: DatabaseResumableOperationTerminalState,
+        outcome: DatabaseJobUnsuccessfulOutcome,
         context: DatabaseResumableOperationContext
     ) async throws
 }
@@ -56,17 +57,5 @@ public extension DatabaseResumableOperation {
         _ = maximumWorkUnits
         _ = context
         throw DatabaseJobRuntimeError.commitModelMismatch
-    }
-
-    func handleTerminalState(
-        plan: Plan,
-        state: State,
-        terminalState: DatabaseResumableOperationTerminalState,
-        context: DatabaseResumableOperationContext
-    ) async throws {
-        _ = plan
-        _ = state
-        _ = terminalState
-        _ = context
     }
 }

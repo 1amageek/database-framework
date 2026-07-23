@@ -90,7 +90,7 @@ private extension EmptyJobDescriptor {
 }
 
 private struct EmptyResumableOperation<Job: EmptyJobDescriptor>:
-    DatabaseResumableOperation {
+    DatabaseUnsuccessfulOutcomeIndependentOperation {
     typealias Plan = DatabaseEmpty
     typealias State = DatabaseEmpty
 

@@ -13,6 +13,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
     let totalWorkUnits: UInt64?
     let executionCount: UInt64
     let currentSliceAttempt: UInt32
+    let unsuccessfulOutcomeCommitAttempt: UInt64
+    let pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?
+    let lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?
     let cancellationRequested: Bool
     let nextAttemptAt: DatabaseTimestamp?
     let leaseOwner: DatabaseUUID?
@@ -28,6 +31,8 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             return nextAttemptAt
         case .running:
             return leaseExpiresAt
+        case .committingUnsuccessfulOutcome:
+            return leaseToken == nil ? nextAttemptAt : leaseExpiresAt
         case .succeeded, .failed, .cancelled:
             return nil
         }
@@ -39,27 +44,61 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         expiresAt: DatabaseTimestamp,
         updatedAt: DatabaseTimestamp
     ) throws -> Self {
-        guard status == .pending || status == .running,
-              executionCount < UInt64.max,
-              currentSliceAttempt < UInt32.max else {
+        switch status {
+        case .pending, .running:
+            guard executionCount < UInt64.max,
+                  currentSliceAttempt < UInt32.max,
+                  pendingUnsuccessfulOutcome == nil else {
+                throw DatabaseJobRuntimeError.invalidStateTransition
+            }
+            return try advancing(
+                status: .running,
+                operationStatePayload: operationStatePayload,
+                completedWorkUnits: completedWorkUnits,
+                totalWorkUnits: totalWorkUnits,
+                executionCount: executionCount + 1,
+                currentSliceAttempt: currentSliceAttempt + 1,
+                unsuccessfulOutcomeCommitAttempt: 0,
+                pendingUnsuccessfulOutcome: nil,
+                lastUnsuccessfulOutcomeCommitError: nil,
+                cancellationRequested: cancellationRequested,
+                nextAttemptAt: nil,
+                leaseOwner: owner,
+                leaseToken: token,
+                leaseExpiresAt: expiresAt,
+                resultDigest: nil,
+                failure: nil,
+                updatedAt: updatedAt
+            )
+        case .committingUnsuccessfulOutcome:
+            guard unsuccessfulOutcomeCommitAttempt < UInt64.max,
+                  pendingUnsuccessfulOutcome != nil else {
+                throw DatabaseJobRuntimeError.invalidStateTransition
+            }
+            return try advancing(
+                status: .committingUnsuccessfulOutcome,
+                operationStatePayload: operationStatePayload,
+                completedWorkUnits: completedWorkUnits,
+                totalWorkUnits: totalWorkUnits,
+                executionCount: executionCount,
+                currentSliceAttempt: currentSliceAttempt,
+                unsuccessfulOutcomeCommitAttempt:
+                    unsuccessfulOutcomeCommitAttempt + 1,
+                pendingUnsuccessfulOutcome: pendingUnsuccessfulOutcome,
+                lastUnsuccessfulOutcomeCommitError:
+                    lastUnsuccessfulOutcomeCommitError,
+                cancellationRequested: false,
+                nextAttemptAt: nil,
+                leaseOwner: owner,
+                leaseToken: token,
+                leaseExpiresAt: expiresAt,
+                resultDigest: nil,
+                failure: nil,
+                updatedAt: updatedAt
+            )
+        case .succeeded, .failed, .cancelled:
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
-        return try advancing(
-            status: .running,
-            operationStatePayload: operationStatePayload,
-            completedWorkUnits: completedWorkUnits,
-            totalWorkUnits: totalWorkUnits,
-            executionCount: executionCount + 1,
-            currentSliceAttempt: currentSliceAttempt + 1,
-            cancellationRequested: cancellationRequested,
-            nextAttemptAt: nil,
-            leaseOwner: owner,
-            leaseToken: token,
-            leaseExpiresAt: expiresAt,
-            resultDigest: nil,
-            failure: nil,
-            updatedAt: updatedAt
-        )
     }
 
     func continuing(
@@ -79,6 +118,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: 0,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: nil,
+            lastUnsuccessfulOutcomeCommitError: nil,
             cancellationRequested: false,
             nextAttemptAt: nextAttemptAt,
             leaseOwner: nil,
@@ -106,6 +148,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: nil,
+            lastUnsuccessfulOutcomeCommitError: nil,
             cancellationRequested: false,
             nextAttemptAt: nil,
             leaseOwner: nil,
@@ -131,6 +176,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: nil,
+            lastUnsuccessfulOutcomeCommitError: nil,
             cancellationRequested: false,
             nextAttemptAt: nextAttemptAt,
             leaseOwner: nil,
@@ -142,33 +190,144 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         )
     }
 
-    func failing(
-        _ error: DatabaseRemoteError,
+    func schedulingUnsuccessfulOutcomeCommit(
+        _ outcome: DatabaseJobUnsuccessfulOutcome,
+        nextAttemptAt: DatabaseTimestamp,
         updatedAt: DatabaseTimestamp
     ) throws -> Self {
         guard status == .pending || status == .running else {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
         return try advancing(
-            status: .failed,
+            status: .committingUnsuccessfulOutcome,
             operationStatePayload: operationStatePayload,
             completedWorkUnits: completedWorkUnits,
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: outcome,
+            lastUnsuccessfulOutcomeCommitError: nil,
+            cancellationRequested: false,
+            nextAttemptAt: nextAttemptAt,
+            leaseOwner: nil,
+            leaseToken: nil,
+            leaseExpiresAt: nil,
+            resultDigest: nil,
+            failure: nil,
+            updatedAt: updatedAt
+        )
+    }
+
+    func schedulingCancellationOutcomeCommitAfterCheckpoint(
+        operationStatePayload: DatabaseBytes,
+        cumulativeWorkUnits: UInt64,
+        totalWorkUnits: UInt64?,
+        updatedAt: DatabaseTimestamp
+    ) throws -> Self {
+        guard status == .running,
+              cancellationRequested else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+        return try advancing(
+            status: .committingUnsuccessfulOutcome,
+            operationStatePayload: operationStatePayload,
+            completedWorkUnits: cumulativeWorkUnits,
+            totalWorkUnits: totalWorkUnits,
+            executionCount: executionCount,
+            currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: 0,
+            pendingUnsuccessfulOutcome: .cancelled,
+            lastUnsuccessfulOutcomeCommitError: nil,
+            cancellationRequested: false,
+            nextAttemptAt: updatedAt,
+            leaseOwner: nil,
+            leaseToken: nil,
+            leaseExpiresAt: nil,
+            resultDigest: nil,
+            failure: nil,
+            updatedAt: updatedAt
+        )
+    }
+
+    func schedulingUnsuccessfulOutcomeCommitRetry(
+        after error: DatabaseRemoteError,
+        at nextAttemptAt: DatabaseTimestamp,
+        updatedAt: DatabaseTimestamp
+    ) throws -> Self {
+        guard status == .committingUnsuccessfulOutcome,
+              pendingUnsuccessfulOutcome != nil,
+              leaseOwner != nil,
+              leaseToken != nil,
+              leaseExpiresAt != nil else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+        return try advancing(
+            status: .committingUnsuccessfulOutcome,
+            operationStatePayload: operationStatePayload,
+            completedWorkUnits: completedWorkUnits,
+            totalWorkUnits: totalWorkUnits,
+            executionCount: executionCount,
+            currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: unsuccessfulOutcomeCommitAttempt,
+            pendingUnsuccessfulOutcome: pendingUnsuccessfulOutcome,
+            lastUnsuccessfulOutcomeCommitError: error,
+            cancellationRequested: false,
+            nextAttemptAt: nextAttemptAt,
+            leaseOwner: nil,
+            leaseToken: nil,
+            leaseExpiresAt: nil,
+            resultDigest: nil,
+            failure: nil,
+            updatedAt: updatedAt
+        )
+    }
+
+    func completingUnsuccessfulOutcomeCommit(
+        updatedAt: DatabaseTimestamp
+    ) throws -> Self {
+        guard status == .committingUnsuccessfulOutcome,
+              let pendingUnsuccessfulOutcome,
+              unsuccessfulOutcomeCommitAttempt > 0,
+              nextAttemptAt == nil,
+              leaseOwner != nil,
+              leaseToken != nil,
+              leaseExpiresAt != nil else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+        let completedStatus: JobStatusOperation.State
+        let failure: DatabaseRemoteError?
+        switch pendingUnsuccessfulOutcome {
+        case .failed(let error):
+            completedStatus = .failed
+            failure = error
+        case .cancelled:
+            completedStatus = .cancelled
+            failure = nil
+        }
+        return try advancing(
+            status: completedStatus,
+            operationStatePayload: operationStatePayload,
+            completedWorkUnits: completedWorkUnits,
+            totalWorkUnits: totalWorkUnits,
+            executionCount: executionCount,
+            currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: unsuccessfulOutcomeCommitAttempt,
+            pendingUnsuccessfulOutcome: nil,
+            lastUnsuccessfulOutcomeCommitError: nil,
             cancellationRequested: false,
             nextAttemptAt: nil,
             leaseOwner: nil,
             leaseToken: nil,
             leaseExpiresAt: nil,
             resultDigest: nil,
-            failure: error,
+            failure: failure,
             updatedAt: updatedAt
         )
     }
 
     func requestingCancellation(updatedAt: DatabaseTimestamp) throws -> Self {
-        guard status == .running else {
+        guard status == .running, !cancellationRequested else {
             throw DatabaseJobRuntimeError.invalidStateTransition
         }
         return try advancing(
@@ -178,6 +337,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: unsuccessfulOutcomeCommitAttempt,
+            pendingUnsuccessfulOutcome: pendingUnsuccessfulOutcome,
+            lastUnsuccessfulOutcomeCommitError: lastUnsuccessfulOutcomeCommitError,
             cancellationRequested: true,
             nextAttemptAt: nextAttemptAt,
             leaseOwner: leaseOwner,
@@ -189,32 +351,45 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         )
     }
 
-    func cancelling(updatedAt: DatabaseTimestamp) throws -> Self {
-        guard status == .pending || status == .running else {
-            throw DatabaseJobRuntimeError.invalidStateTransition
-        }
-        return try advancing(
-            status: .cancelled,
-            operationStatePayload: operationStatePayload,
-            completedWorkUnits: completedWorkUnits,
-            totalWorkUnits: totalWorkUnits,
-            executionCount: executionCount,
-            currentSliceAttempt: currentSliceAttempt,
-            cancellationRequested: false,
-            nextAttemptAt: nil,
-            leaseOwner: nil,
-            leaseToken: nil,
-            leaseExpiresAt: nil,
-            resultDigest: nil,
-            failure: nil,
-            updatedAt: updatedAt
-        )
+    func isCancellationRequest(after leasedState: Self) -> Bool {
+        let nextRevision = leasedState.revision.addingReportingOverflow(1)
+        guard !nextRevision.overflow else { return false }
+        return revision == nextRevision.partialValue
+            && jobID == leasedState.jobID
+            && specificationDigest == leasedState.specificationDigest
+            && status == .running
+            && leasedState.status == .running
+            && operationStatePayload == leasedState.operationStatePayload
+            && completedWorkUnits == leasedState.completedWorkUnits
+            && totalWorkUnits == leasedState.totalWorkUnits
+            && executionCount == leasedState.executionCount
+            && currentSliceAttempt == leasedState.currentSliceAttempt
+            && unsuccessfulOutcomeCommitAttempt
+                == leasedState.unsuccessfulOutcomeCommitAttempt
+            && pendingUnsuccessfulOutcome == leasedState.pendingUnsuccessfulOutcome
+            && lastUnsuccessfulOutcomeCommitError
+                == leasedState.lastUnsuccessfulOutcomeCommitError
+            && cancellationRequested
+            && !leasedState.cancellationRequested
+            && nextAttemptAt == leasedState.nextAttemptAt
+            && leaseOwner == leasedState.leaseOwner
+            && leaseToken == leasedState.leaseToken
+            && leaseExpiresAt == leasedState.leaseExpiresAt
+            && resultDigest == leasedState.resultDigest
+            && failure == leasedState.failure
+            && updatedAt >= leasedState.updatedAt
     }
 
     func validate() throws {
+        let accountedLeaseCount = executionCount.addingReportingOverflow(
+            unsuccessfulOutcomeCommitAttempt
+        )
         guard specificationDigest.count == DatabaseRequestDigest.byteCount,
               executionCount >= UInt64(currentSliceAttempt),
-              totalWorkUnits.map({ $0 >= completedWorkUnits }) ?? true else {
+              !accountedLeaseCount.overflow,
+              accountedLeaseCount.partialValue <= revision,
+              totalWorkUnits.map({ $0 >= completedWorkUnits }) ?? true,
+              nextAttemptAt.map({ $0 >= updatedAt }) ?? true else {
             throw DatabaseJobRuntimeError.corruptedState
         }
         switch status {
@@ -225,6 +400,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
                   leaseExpiresAt == nil,
                   resultDigest == nil,
                   failure == nil,
+                  unsuccessfulOutcomeCommitAttempt == 0,
+                  pendingUnsuccessfulOutcome == nil,
+                  lastUnsuccessfulOutcomeCommitError == nil,
                   !cancellationRequested else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
@@ -235,7 +413,31 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
                   leaseToken != nil,
                   leaseExpiresAt != nil,
                   resultDigest == nil,
-                  failure == nil else {
+                  failure == nil,
+                  unsuccessfulOutcomeCommitAttempt == 0,
+                  pendingUnsuccessfulOutcome == nil,
+                  lastUnsuccessfulOutcomeCommitError == nil else {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+        case .committingUnsuccessfulOutcome:
+            let hasLease = leaseOwner != nil
+                && leaseToken != nil
+                && leaseExpiresAt != nil
+            let isScheduled = leaseOwner == nil
+                && leaseToken == nil
+                && leaseExpiresAt == nil
+                && nextAttemptAt != nil
+            let hasConsistentScheduledDiagnostic = !isScheduled
+                || (unsuccessfulOutcomeCommitAttempt == 0)
+                    == (lastUnsuccessfulOutcomeCommitError == nil)
+            guard pendingUnsuccessfulOutcome != nil,
+                  resultDigest == nil,
+                  failure == nil,
+                  !cancellationRequested,
+                  (hasLease || isScheduled),
+                  !hasLease || nextAttemptAt == nil,
+                  !hasLease || unsuccessfulOutcomeCommitAttempt > 0,
+                  hasConsistentScheduledDiagnostic else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
         case .succeeded:
@@ -245,6 +447,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
                   leaseExpiresAt == nil,
                   resultDigest != nil,
                   failure == nil,
+                  unsuccessfulOutcomeCommitAttempt == 0,
+                  pendingUnsuccessfulOutcome == nil,
+                  lastUnsuccessfulOutcomeCommitError == nil,
                   !cancellationRequested else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
@@ -255,6 +460,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
                   leaseExpiresAt == nil,
                   resultDigest == nil,
                   failure != nil,
+                  unsuccessfulOutcomeCommitAttempt > 0,
+                  pendingUnsuccessfulOutcome == nil,
+                  lastUnsuccessfulOutcomeCommitError == nil,
                   !cancellationRequested else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
@@ -265,6 +473,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
                   leaseExpiresAt == nil,
                   resultDigest == nil,
                   failure == nil,
+                  unsuccessfulOutcomeCommitAttempt > 0,
+                  pendingUnsuccessfulOutcome == nil,
+                  lastUnsuccessfulOutcomeCommitError == nil,
                   !cancellationRequested else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
@@ -285,6 +496,15 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         if let totalWorkUnits { writer.writeUInt64(totalWorkUnits) }
         writer.writeUInt64(executionCount)
         writer.writeUInt32(currentSliceAttempt)
+        writer.writeUInt64(unsuccessfulOutcomeCommitAttempt)
+        writer.writeBool(pendingUnsuccessfulOutcome != nil)
+        if let pendingUnsuccessfulOutcome {
+            try pendingUnsuccessfulOutcome.encode(into: &writer)
+        }
+        writer.writeBool(lastUnsuccessfulOutcomeCommitError != nil)
+        if let lastUnsuccessfulOutcomeCommitError {
+            try lastUnsuccessfulOutcomeCommitError.encode(into: &writer)
+        }
         writer.writeBool(cancellationRequested)
         try Self.encode(nextAttemptAt, into: &writer)
         try Self.encode(leaseOwner, into: &writer)
@@ -320,6 +540,13 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             : nil
         let executionCount = try reader.readUInt64()
         let currentSliceAttempt = try reader.readUInt32()
+        let unsuccessfulOutcomeCommitAttempt = try reader.readUInt64()
+        let pendingUnsuccessfulOutcome = try reader.readBool()
+            ? try DatabaseJobUnsuccessfulOutcome(from: &reader)
+            : nil
+        let lastUnsuccessfulOutcomeCommitError = try reader.readBool()
+            ? try DatabaseRemoteError(from: &reader)
+            : nil
         let cancellationRequested = try reader.readBool()
         let nextAttemptAt = try Self.decodeTimestamp(from: &reader)
         let leaseOwner = try Self.decodeUUID(from: &reader)
@@ -342,6 +569,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: unsuccessfulOutcomeCommitAttempt,
+            pendingUnsuccessfulOutcome: pendingUnsuccessfulOutcome,
+            lastUnsuccessfulOutcomeCommitError: lastUnsuccessfulOutcomeCommitError,
             cancellationRequested: cancellationRequested,
             nextAttemptAt: nextAttemptAt,
             leaseOwner: leaseOwner,
@@ -363,6 +593,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         totalWorkUnits: UInt64?,
         executionCount: UInt64,
         currentSliceAttempt: UInt32,
+        unsuccessfulOutcomeCommitAttempt: UInt64,
+        pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?,
+        lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?,
         cancellationRequested: Bool,
         nextAttemptAt: DatabaseTimestamp?,
         leaseOwner: DatabaseUUID?,
@@ -381,6 +614,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         self.totalWorkUnits = totalWorkUnits
         self.executionCount = executionCount
         self.currentSliceAttempt = currentSliceAttempt
+        self.unsuccessfulOutcomeCommitAttempt = unsuccessfulOutcomeCommitAttempt
+        self.pendingUnsuccessfulOutcome = pendingUnsuccessfulOutcome
+        self.lastUnsuccessfulOutcomeCommitError = lastUnsuccessfulOutcomeCommitError
         self.cancellationRequested = cancellationRequested
         self.nextAttemptAt = nextAttemptAt
         self.leaseOwner = leaseOwner
@@ -398,6 +634,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         totalWorkUnits: UInt64?,
         executionCount: UInt64,
         currentSliceAttempt: UInt32,
+        unsuccessfulOutcomeCommitAttempt: UInt64,
+        pendingUnsuccessfulOutcome: DatabaseJobUnsuccessfulOutcome?,
+        lastUnsuccessfulOutcomeCommitError: DatabaseRemoteError?,
         cancellationRequested: Bool,
         nextAttemptAt: DatabaseTimestamp?,
         leaseOwner: DatabaseUUID?,
@@ -411,6 +650,10 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
         guard !overflow else {
             throw DatabaseJobRuntimeError.stateRevisionOverflow
         }
+        guard updatedAt >= self.updatedAt,
+              nextAttemptAt.map({ $0 >= updatedAt }) ?? true else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
         return Self(
             jobID: jobID,
             specificationDigest: specificationDigest,
@@ -421,6 +664,9 @@ struct DatabasePersistentJobState: DatabaseWireValue, Sendable, Hashable {
             totalWorkUnits: totalWorkUnits,
             executionCount: executionCount,
             currentSliceAttempt: currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt: unsuccessfulOutcomeCommitAttempt,
+            pendingUnsuccessfulOutcome: pendingUnsuccessfulOutcome,
+            lastUnsuccessfulOutcomeCommitError: lastUnsuccessfulOutcomeCommitError,
             cancellationRequested: cancellationRequested,
             nextAttemptAt: nextAttemptAt,
             leaseOwner: leaseOwner,

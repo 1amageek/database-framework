@@ -48,10 +48,10 @@ public struct AnyDatabaseResumableOperation: Sendable {
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
     ) async throws -> Slice
-    private let handleTerminalState: @Sendable (
+    private let applyUnsuccessfulOutcome: @Sendable (
         DatabaseBytes,
         DatabaseBytes,
-        DatabaseResumableOperationTerminalState,
+        DatabaseJobUnsuccessfulOutcome,
         DatabaseResumableOperationContext,
         DatabaseWireLimits,
         DatabasePersistentJobStorageLimits
@@ -225,10 +225,10 @@ public struct AnyDatabaseResumableOperation: Sendable {
                 outcome: outcome
             )
         }
-        self.handleTerminalState = {
+        self.applyUnsuccessfulOutcome = {
             planPayload,
             statePayload,
-            terminalState,
+            outcome,
             context,
             limits,
             storageLimits in
@@ -252,10 +252,10 @@ public struct AnyDatabaseResumableOperation: Sendable {
             } catch {
                 throw DatabaseJobRuntimeError.corruptedState
             }
-            try await operation.handleTerminalState(
+            try await operation.applyUnsuccessfulOutcome(
                 plan: plan,
                 state: state,
-                terminalState: terminalState,
+                outcome: outcome,
                 context: context
             )
         }
@@ -319,18 +319,18 @@ public struct AnyDatabaseResumableOperation: Sendable {
         )
     }
 
-    func handleTerminalState(
+    func applyUnsuccessfulOutcome(
         planPayload: DatabaseBytes,
         statePayload: DatabaseBytes,
-        state: DatabaseResumableOperationTerminalState,
+        outcome: DatabaseJobUnsuccessfulOutcome,
         context: DatabaseResumableOperationContext,
         limits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits
     ) async throws {
-        try await handleTerminalState(
+        try await applyUnsuccessfulOutcome(
             planPayload,
             statePayload,
-            state,
+            outcome,
             context,
             limits,
             storageLimits

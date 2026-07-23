@@ -8,6 +8,9 @@ import StorageKit
 import Synchronization
 import Testing
 
+private let maintenanceJobTestStorageLimits =
+    DatabasePersistentJobStorageLimits(maximumStorageValueBytes: 1_048_576)
+
 @Suite("Database maintenance operation service", .serialized)
 struct DatabaseMaintenanceOperationServiceTests {
     @Test("Migration status and bounded execution use the compiled plan")
@@ -390,7 +393,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             registry: registry,
             scheduler: scheduler,
             clock: FixedClock(),
-            identifierGenerator: identifiers
+            identifierGenerator: identifiers,
+            storageLimits: maintenanceJobTestStorageLimits
         )
         let firstService = try await factory.makeJobService(
             context: maintenanceContext.serviceContext
@@ -578,7 +582,7 @@ struct DatabaseMaintenanceOperationServiceTests {
     @Test("Compaction rolls back physical work when continuation encoding fails")
     func compactionRollsBackWhenContinuationEncodingFails() async throws {
         let limits = try DatabaseWireLimits(
-            maximumFrameBytes: 4_096,
+            maximumFrameBytes: 16 * 1_024,
             maximumStringBytes: 1_024,
             maximumByteStringBytes: 128,
             maximumCollectionCount: 1_024,
@@ -595,7 +599,17 @@ struct DatabaseMaintenanceOperationServiceTests {
         let service = try await makeMaintenanceJobService(
             maintenanceContext: maintenanceContext,
             scheduler: RecordingScheduler(),
-            identifiers: FixedIdentifierGenerator()
+            identifiers: FixedIdentifierGenerator(),
+            storageLimits: DatabasePersistentJobStorageLimits(
+                maximumStorageValueBytes: 1_048_576,
+                maximumSpecificationBytes: 8 * 1_024,
+                maximumPlanBytes: 8 * 1_024,
+                maximumStateBytes: 16 * 1_024,
+                maximumOperationStateBytes: 4 * 1_024,
+                maximumUnsuccessfulOutcomeBytes: 4 * 1_024,
+                maximumResultBytes: 4 * 1_024,
+                resultChunkBytes: 4 * 1_024
+            )
         )
         let nestedRequest = compactionRequest()
         let nestedPayload = try DatabaseEnvelopeCodec.encode(
@@ -631,12 +645,13 @@ struct DatabaseMaintenanceOperationServiceTests {
         ).response
 
         try await service.runScheduledWork()
+        try await service.runScheduledWork()
 
-        let terminalStatus = try await service.status(
+        let completedStatus = try await service.status(
             JobStatusOperation.Request(job: started.job),
             context: context
         )
-        #expect(terminalStatus.state == .failed)
+        #expect(completedStatus.state == .failed)
         let result = try await service.result(
             JobResultOperation.Request(job: started.job),
             context: context
@@ -676,7 +691,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             registry: registry,
             scheduler: RecordingScheduler(),
             clock: FixedClock(),
-            identifierGenerator: identifiers
+            identifierGenerator: identifiers,
+            storageLimits: maintenanceJobTestStorageLimits
         )
         let service = try await factory.makeJobService(
             context: maintenanceContext.serviceContext
@@ -716,7 +732,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             context: cancelContext
         ).response
         #expect(cancelled.accepted)
-        #expect(cancelled.state == .cancelled)
+        #expect(cancelled.state == .committingUnsuccessfulOutcome)
+        try await service.runScheduledWork()
 
         let maintenance = DatabaseMaintenanceOperationService(
             context: maintenanceContext.serviceContext,
@@ -778,7 +795,9 @@ struct DatabaseMaintenanceOperationServiceTests {
     >(
         maintenanceContext: MaintenanceServiceContext,
         scheduler: Scheduler,
-        identifiers: Identifiers
+        identifiers: Identifiers,
+        storageLimits: DatabasePersistentJobStorageLimits =
+            maintenanceJobTestStorageLimits
     ) async throws -> AnyDatabaseJobService {
         let registry = try DatabaseResumableOperationRegistry(
             operations: [
@@ -793,7 +812,8 @@ struct DatabaseMaintenanceOperationServiceTests {
             registry: registry,
             scheduler: scheduler,
             clock: FixedClock(),
-            identifierGenerator: identifiers
+            identifierGenerator: identifiers,
+            storageLimits: storageLimits
         )
         return try await factory.makeJobService(
             context: maintenanceContext.serviceContext
@@ -964,7 +984,9 @@ struct DatabaseMaintenanceOperationServiceTests {
     private actor RecordingScheduler: DatabaseJobScheduler {
         private var timestamps: [DatabaseTimestamp] = []
 
-        func schedule(at timestamp: DatabaseTimestamp) async throws {
+        func ensureWakeUp(
+            noLaterThan timestamp: DatabaseTimestamp
+        ) async throws {
             timestamps.append(timestamp)
         }
 

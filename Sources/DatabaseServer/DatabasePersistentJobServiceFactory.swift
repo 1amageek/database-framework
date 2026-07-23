@@ -20,8 +20,8 @@ public final class DatabasePersistentJobServiceFactory:
         clock: Clock,
         identifierGenerator: IdentifierGenerator,
         errorMapper: ErrorMapper,
-        configuration: DatabaseJobRuntimeConfiguration = .init(),
-        storageLimits: DatabasePersistentJobStorageLimits = .init()
+        storageLimits: DatabasePersistentJobStorageLimits,
+        configuration: DatabaseJobRuntimeConfiguration = .init()
     ) throws {
         try configuration.validate()
         try storageLimits.validate()
@@ -43,8 +43,8 @@ public final class DatabasePersistentJobServiceFactory:
         scheduler: Scheduler,
         clock: Clock,
         identifierGenerator: IdentifierGenerator,
-        configuration: DatabaseJobRuntimeConfiguration = .init(),
-        storageLimits: DatabasePersistentJobStorageLimits = .init()
+        storageLimits: DatabasePersistentJobStorageLimits,
+        configuration: DatabaseJobRuntimeConfiguration = .init()
     ) throws {
         try self.init(
             registry: registry,
@@ -52,8 +52,8 @@ public final class DatabasePersistentJobServiceFactory:
             clock: clock,
             identifierGenerator: identifierGenerator,
             errorMapper: CanonicalDatabaseErrorMapper(),
-            configuration: configuration,
-            storageLimits: storageLimits
+            storageLimits: storageLimits,
+            configuration: configuration
         )
     }
 
@@ -64,6 +64,10 @@ public final class DatabasePersistentJobServiceFactory:
             container: context.container,
             wireLimits: context.wireLimits,
             storageLimits: storageLimits
+        )
+        let failureStoragePolicy = try DatabasePersistentJobFailureStoragePolicy(
+            storageLimits: storageLimits,
+            wireLimits: context.wireLimits
         )
         let runner = DatabasePersistentJobRunner(
             container: context.container,
@@ -76,6 +80,7 @@ public final class DatabasePersistentJobServiceFactory:
             configuration: configuration,
             wireLimits: context.wireLimits,
             storageLimits: storageLimits,
+            failureStoragePolicy: failureStoragePolicy,
             runnerID: identifierGenerator.generate()
         )
         let service = DatabasePersistentJobService(

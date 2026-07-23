@@ -359,10 +359,10 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         }
     }
 
-    public func handleTerminalState(
+    public func applyUnsuccessfulOutcome(
         plan: DatabaseMaintenanceJobPlan,
         state: DatabaseMaintenanceJobState,
-        terminalState: DatabaseResumableOperationTerminalState,
+        outcome: DatabaseJobUnsuccessfulOutcome,
         context: DatabaseResumableOperationContext
     ) async throws {
         switch (plan.invocation, state.value) {
@@ -374,7 +374,7 @@ public struct DatabaseMaintenanceResumableOperation: DatabaseResumableOperation 
         ):
             guard started else { return }
             let detail: String
-            switch terminalState {
+            switch outcome {
             case .failed(let error):
                 detail = "\(error.code): \(error.message)"
             case .cancelled:

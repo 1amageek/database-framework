@@ -128,6 +128,9 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 totalWorkUnits: nil,
                 executionCount: 0,
                 currentSliceAttempt: 0,
+                unsuccessfulOutcomeCommitAttempt: 0,
+                pendingUnsuccessfulOutcome: nil,
+                lastUnsuccessfulOutcomeCommitError: nil,
                 cancellationRequested: false,
                 nextAttemptAt: createdAt,
                 leaseOwner: nil,
@@ -164,13 +167,17 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         if state.status == .succeeded {
             _ = try await store.loadResultManifest(for: snapshot)
         }
-        return JobStatusOperation.Response(
+        return try JobStatusOperation.Response(
             state: state.status,
             job: request.job,
             completedWorkUnits: state.completedWorkUnits,
             totalWorkUnits: state.totalWorkUnits,
             executionCount: state.executionCount,
             currentSliceAttempt: state.currentSliceAttempt,
+            unsuccessfulOutcomeCommitAttempt:
+                state.unsuccessfulOutcomeCommitAttempt,
+            lastUnsuccessfulOutcomeCommitError:
+                state.lastUnsuccessfulOutcomeCommitError,
             cancellationRequested: state.cancellationRequested,
             nextAttemptAt: state.nextAttemptAt,
             updatedAt: state.updatedAt
@@ -229,7 +236,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
             )
         case .cancelled:
             return .cancelled(job: request.job)
-        case .pending, .running:
+        case .pending, .running, .committingUnsuccessfulOutcome:
             throw DatabaseJobRuntimeError.resultNotReady(request.jobID)
         }
     }
@@ -238,11 +245,8 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
         _ request: JobCancelOperation.Request,
         context: DatabaseOperationContext
     ) async throws -> DatabasePreparedOperationResponse<JobCancelOperation> {
-        let cancelledAt = clock.now()
         let store = self.store
-        let registry = self.registry
-        let wireLimits = self.wireLimits
-        let storageLimits = self.storageLimits
+        let clock = self.clock
         let requestPayload = context.requestPayload
         let prepared = try await coordinator.execute(
             JobCancelOperation.self,
@@ -263,35 +267,31 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                     actual: snapshot.specification.operation
                 )
             }
-            let operation = try registry.resolve(snapshot.specification.operation)
+            let cancellationRequestedAt = max(
+                clock.now(),
+                snapshot.state.updatedAt
+            )
             let updated: DatabasePersistentJobState
             switch snapshot.state.status {
             case .pending:
-                try await operation.handleTerminalState(
-                    planPayload: snapshot.plan.payload,
-                    statePayload: snapshot.state.operationStatePayload,
-                    state: .cancelled,
-                    context: DatabaseResumableOperationContext(
-                        jobID: snapshot.specification.jobID,
-                        completedWorkUnitsBeforeSlice: snapshot.state.completedWorkUnits,
-                        transaction: transactionContext,
-                        operationContext: Self.operationContext(
-                            for: snapshot,
-                            container: context.container
-                        )
-                    ),
-                    limits: wireLimits,
-                    storageLimits: storageLimits
-                )
-                updated = try snapshot.state.cancelling(
-                    updatedAt: cancelledAt
+                updated = try snapshot.state.schedulingUnsuccessfulOutcomeCommit(
+                    .cancelled,
+                    nextAttemptAt: cancellationRequestedAt,
+                    updatedAt: cancellationRequestedAt
                 )
             case .running:
+                guard !snapshot.state.cancellationRequested else {
+                    return try JobCancelOperation.Response(
+                        job: request.job,
+                        state: snapshot.state.status,
+                        accepted: false
+                    )
+                }
                 updated = try snapshot.state.requestingCancellation(
-                    updatedAt: cancelledAt
+                    updatedAt: cancellationRequestedAt
                 )
-            case .succeeded, .failed, .cancelled:
-                return JobCancelOperation.Response(
+            case .committingUnsuccessfulOutcome, .succeeded, .failed, .cancelled:
+                return try JobCancelOperation.Response(
                     job: request.job,
                     state: snapshot.state.status,
                     accepted: false
@@ -302,7 +302,7 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
                 replacing: snapshot.state,
                 transaction: transaction
             )
-            return JobCancelOperation.Response(
+            return try JobCancelOperation.Response(
                 job: request.job,
                 state: updated.status,
                 accepted: true
@@ -364,11 +364,12 @@ public final class DatabasePersistentJobService: DatabaseJobService, Sendable {
             )
         }
         guard request.retryPolicy.maximumAttempts > 0,
-              request.retryPolicy.maximumAttempts <= configuration.maximumAttempts,
+              request.retryPolicy.maximumAttempts
+                <= configuration.maximumSliceAttempts,
               request.retryPolicy.initialBackoffMilliseconds
                 <= request.retryPolicy.maximumBackoffMilliseconds,
               request.retryPolicy.maximumBackoffMilliseconds
-                <= configuration.maximumBackoffMilliseconds else {
+                <= configuration.maximumSliceRetryBackoffMilliseconds else {
             throw DatabaseJobRuntimeError.invalidRetryPolicy
         }
     }

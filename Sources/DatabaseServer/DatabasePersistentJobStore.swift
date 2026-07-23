@@ -19,11 +19,12 @@ struct DatabasePersistentJobStore: Sendable {
     private let resultChunks: Subspace
     private let wireLimits: DatabaseWireLimits
     private let storageLimits: DatabasePersistentJobStorageLimits
+    private let unsuccessfulOutcomeWireLimits: DatabaseWireLimits
 
     init(
         container: DBContainer,
         wireLimits: DatabaseWireLimits,
-        storageLimits: DatabasePersistentJobStorageLimits = .init()
+        storageLimits: DatabasePersistentJobStorageLimits
     ) async throws {
         try storageLimits.validate(wireLimits: wireLimits)
         let root = try await container.engine.createOrOpenDirectory(
@@ -38,6 +39,10 @@ struct DatabasePersistentJobStore: Sendable {
         self.resultChunks = root.subspace("result-chunks")
         self.wireLimits = wireLimits
         self.storageLimits = storageLimits
+        self.unsuccessfulOutcomeWireLimits =
+            try storageLimits.unsuccessfulOutcomeWireLimits(
+                basedOn: wireLimits
+            )
     }
 
     func create(
@@ -479,6 +484,7 @@ struct DatabasePersistentJobStore: Sendable {
                 maximum: storageLimits.maximumOperationStateBytes
             )
         }
+        try validateUnsuccessfulOutcome(in: state)
         let bytes = try DatabaseEnvelopeCodec.encode(state, limits: wireLimits)
         guard bytes.count <= storageLimits.maximumStateBytes else {
             throw DatabaseJobRuntimeError.stateTooLarge(
@@ -552,11 +558,41 @@ struct DatabasePersistentJobStore: Sendable {
                     <= storageLimits.maximumOperationStateBytes else {
                 throw DatabaseJobRuntimeError.corruptedState
             }
+            do {
+                try validateUnsuccessfulOutcome(in: value)
+            } catch {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
             return value
         } catch let error as DatabaseJobRuntimeError {
             throw error
         } catch {
             throw DatabaseJobRuntimeError.corruptedState
+        }
+    }
+
+    private func validateUnsuccessfulOutcome(
+        in state: DatabasePersistentJobState
+    ) throws(DatabaseJobRuntimeError) {
+        let outcome: DatabaseJobUnsuccessfulOutcome
+        if let pending = state.pendingUnsuccessfulOutcome {
+            outcome = pending
+        } else if let failure = state.failure {
+            outcome = .failed(failure)
+        } else {
+            return
+        }
+        do {
+            _ = try DatabaseWireWriter.encodedByteCount(
+                limits: unsuccessfulOutcomeWireLimits
+            ) {
+                (writer: inout DatabaseWireWriter)
+                    throws(DatabaseWireError) -> Void in
+                try outcome.encode(into: &writer)
+            }
+        } catch {
+            throw DatabaseJobRuntimeError
+                .unsuccessfulOutcomeExceedsLimits(error)
         }
     }
 

@@ -8,6 +8,7 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
     case specificationTooLarge(actual: Int, maximum: Int)
     case planTooLarge(actual: Int, maximum: Int)
     case stateTooLarge(actual: Int, maximum: Int)
+    case unsuccessfulOutcomeExceedsLimits(DatabaseWireError)
     case jobNotFound(DatabaseUUID)
     case jobOperationMismatch(
         expected: DatabaseJobOperationIdentifier,
@@ -42,6 +43,8 @@ public enum DatabaseJobRuntimeError: Error, CustomStringConvertible, Equatable {
             return "Job plan is too large: \(actual) > \(maximum)"
         case .stateTooLarge(let actual, let maximum):
             return "Job state is too large: \(actual) > \(maximum)"
+        case .unsuccessfulOutcomeExceedsLimits(let error):
+            return "Persistent job unsuccessful outcome exceeds configured limits: \(error)"
         case .jobNotFound(let jobID):
             return "Job not found: \(jobID)"
         case .jobOperationMismatch(let expected, let actual):

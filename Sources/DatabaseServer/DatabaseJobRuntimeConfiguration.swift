@@ -1,21 +1,30 @@
 public struct DatabaseJobRuntimeConfiguration: Sendable, Hashable {
     public let leaseDurationMilliseconds: UInt32
     public let maximumJobsPerRun: Int
-    public let maximumAttempts: UInt32
-    public let maximumBackoffMilliseconds: UInt32
+    public let maximumSliceAttempts: UInt32
+    public let maximumSliceRetryBackoffMilliseconds: UInt32
+    public let unsuccessfulOutcomeCommitInitialBackoffMilliseconds: UInt32
+    public let unsuccessfulOutcomeCommitMaximumBackoffMilliseconds: UInt32
     public let leaseSafetyMarginMilliseconds: UInt32
 
     public init(
         leaseDurationMilliseconds: UInt32 = 60_000,
         maximumJobsPerRun: Int = 8,
-        maximumAttempts: UInt32 = 32,
-        maximumBackoffMilliseconds: UInt32 = 3_600_000,
+        maximumSliceAttempts: UInt32 = 32,
+        maximumSliceRetryBackoffMilliseconds: UInt32 = 3_600_000,
+        unsuccessfulOutcomeCommitInitialBackoffMilliseconds: UInt32 = 100,
+        unsuccessfulOutcomeCommitMaximumBackoffMilliseconds: UInt32 = 3_600_000,
         leaseSafetyMarginMilliseconds: UInt32 = 5_000
     ) {
         self.leaseDurationMilliseconds = leaseDurationMilliseconds
         self.maximumJobsPerRun = maximumJobsPerRun
-        self.maximumAttempts = maximumAttempts
-        self.maximumBackoffMilliseconds = maximumBackoffMilliseconds
+        self.maximumSliceAttempts = maximumSliceAttempts
+        self.maximumSliceRetryBackoffMilliseconds =
+            maximumSliceRetryBackoffMilliseconds
+        self.unsuccessfulOutcomeCommitInitialBackoffMilliseconds =
+            unsuccessfulOutcomeCommitInitialBackoffMilliseconds
+        self.unsuccessfulOutcomeCommitMaximumBackoffMilliseconds =
+            unsuccessfulOutcomeCommitMaximumBackoffMilliseconds
         self.leaseSafetyMarginMilliseconds = leaseSafetyMarginMilliseconds
     }
 
@@ -35,14 +44,21 @@ public struct DatabaseJobRuntimeConfiguration: Sendable, Hashable {
                 "maximumJobsPerRun must be greater than zero"
             )
         }
-        guard maximumAttempts > 0 else {
+        guard maximumSliceAttempts > 0 else {
             throw DatabaseJobRuntimeError.invalidConfiguration(
-                "maximumAttempts must be greater than zero"
+                "maximumSliceAttempts must be greater than zero"
             )
         }
-        guard maximumBackoffMilliseconds > 0 else {
+        guard maximumSliceRetryBackoffMilliseconds > 0 else {
             throw DatabaseJobRuntimeError.invalidConfiguration(
-                "maximumBackoffMilliseconds must be greater than zero"
+                "maximumSliceRetryBackoffMilliseconds must be greater than zero"
+            )
+        }
+        guard unsuccessfulOutcomeCommitInitialBackoffMilliseconds > 0,
+              unsuccessfulOutcomeCommitInitialBackoffMilliseconds
+                <= unsuccessfulOutcomeCommitMaximumBackoffMilliseconds else {
+            throw DatabaseJobRuntimeError.invalidConfiguration(
+                "Unsuccessful outcome backoff limits are inconsistent"
             )
         }
     }

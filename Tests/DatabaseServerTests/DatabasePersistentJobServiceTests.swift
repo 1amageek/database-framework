@@ -8,6 +8,9 @@ import StorageKit
 import Synchronization
 import Testing
 
+private let persistentJobTestStorageLimits =
+    DatabasePersistentJobStorageLimits(maximumStorageValueBytes: 1_048_576)
+
 @Suite("Persistent Database Job Service Tests", .serialized)
 struct DatabasePersistentJobServiceTests {
     @Test("Job resumes across runtime recreation and returns its typed payload")
@@ -420,25 +423,30 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    @Test("Persistent job storage limits reject unsafe configurations")
-    func storageLimitsRejectUnsafeConfigurations() throws {
+    @Test("Persistent job storage limits honor the backend capability")
+    func storageLimitsHonorBackendCapability() throws {
+        try DatabasePersistentJobStorageLimits(
+            maximumStorageValueBytes: 2 * 1_048_576
+        ).validate(wireLimits: .default)
         #expect(throws: DatabaseJobRuntimeError.self) {
             try DatabasePersistentJobStorageLimits(
-                maximumStorageValueBytes: 1_048_577
+                maximumStorageValueBytes: 0
             ).validate()
         }
         #expect(throws: DatabaseJobRuntimeError.self) {
             try DatabasePersistentJobStorageLimits(
+                maximumStorageValueBytes: 1_048_576,
                 resultChunkBytes: 512 * 1_024 + 1
             ).validate()
         }
         #expect(throws: DatabaseJobRuntimeError.self) {
             try DatabasePersistentJobStorageLimits(
+                maximumStorageValueBytes: 1_048_576,
                 maximumResultBytes: 4 * 1_024 * 1_024,
                 resultChunkBytes: 1
             ).validate(wireLimits: .default)
         }
-        try DatabasePersistentJobStorageLimits().validate(
+        try persistentJobTestStorageLimits.validate(
             wireLimits: .default
         )
     }
@@ -639,13 +647,16 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    @Test("A failing terminal hook rolls back its writes and records failure")
-    func failingTerminalHookIsExplicitAndAtomic() async throws {
+    @Test("Unsuccessful outcome commits retry atomically without rerunning work")
+    func unsuccessfulOutcomeCommitRetriesAtomically() async throws {
+        let commitProbe = UnsuccessfulOutcomeCommitProbe(failureCount: 1)
         let jobContext = try await makePersistentJobServiceContext(
-            operation: FailingTerminalHookOperation()
+            operation: RetryingUnsuccessfulOutcomeOperation(
+                commitProbe: commitProbe
+            )
         )
         let request = JobStartOperation.Request(
-            operation: try FailingTerminalHookJob.jobOperationIdentifier(),
+            operation: try RetryingUnsuccessfulOutcomeJob.jobOperationIdentifier(),
             requestPayload: try encodedValue(8),
             maximumSliceWorkUnits: 1,
             retryPolicy: .init(
@@ -657,7 +668,7 @@ struct DatabasePersistentJobServiceTests {
         let context = try operationContext(
             container: jobContext.container,
             request: request,
-            idempotencyKey: "terminal-hook-failure"
+            idempotencyKey: "unsuccessful-outcome-retry"
         )
         let service = try await jobContext.makeService()
         let job = try await service.start(
@@ -665,32 +676,377 @@ struct DatabasePersistentJobServiceTests {
             context: context
         ).response.job
 
-        await #expect(throws: DatabaseJobTerminalHookExecutionError.self) {
-            try await service.runScheduledWork()
-        }
+        try await service.runScheduledWork()
 
-        let status = try await service.status(
+        let prepared = try await service.status(
             JobStatusOperation.Request(job: job),
             context: context
         )
-        #expect(status.state == .failed)
-        let result = try await service.result(
-            JobResultOperation.Request(job: job),
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.executionCount == 1)
+        #expect(prepared.unsuccessfulOutcomeCommitAttempt == 0)
+        #expect(prepared.lastUnsuccessfulOutcomeCommitError == nil)
+        await #expect(
+            throws: DatabaseJobRuntimeError.resultNotReady(job.jobID)
+        ) {
+            try await service.result(
+                JobResultOperation.Request(job: job),
+                context: context
+            )
+        }
+
+        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+            try await service.runScheduledWork()
+        }
+
+        let awaitingRetry = try await service.status(
+            JobStatusOperation.Request(job: job),
             context: context
         )
-        guard case .failed(_, let failure) = result else {
-            Issue.record("Expected terminal hook failure result")
-            return
-        }
-        #expect(failure.code == "JOB_TERMINAL_HOOK_FAILED")
+        #expect(awaitingRetry.state == .committingUnsuccessfulOutcome)
+        #expect(awaitingRetry.executionCount == 1)
+        #expect(awaitingRetry.unsuccessfulOutcomeCommitAttempt == 1)
+        #expect(
+            awaitingRetry.lastUnsuccessfulOutcomeCommitError?.code
+                == "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED"
+        )
         let rolledBackMarker = try await jobContext.container.engine
             .withTransaction(configuration: .readOnly) { transaction in
                 try await transaction.getValue(
-                    for: FailingTerminalHookOperation.markerKey,
+                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
                     snapshot: true
                 )
             }
         #expect(rolledBackMarker == nil)
+
+        let scheduledRetryAt = DatabaseTimestamp(
+            secondsSinceUnixEpoch: 1_000,
+            nanoseconds: 100_000_000
+        )
+        #expect(
+            await jobContext.scheduler.requestedTimestamps()
+                .contains(scheduledRetryAt)
+        )
+        try await service.runScheduledWork()
+        #expect(commitProbe.attemptCount == 1)
+
+        jobContext.clock.advance(milliseconds: 100)
+        let recreatedService = try await jobContext.makeService()
+        try await recreatedService.runScheduledWork()
+
+        let completed = try await recreatedService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(completed.state == .failed)
+        #expect(completed.executionCount == 1)
+        #expect(completed.unsuccessfulOutcomeCommitAttempt == 2)
+        #expect(completed.lastUnsuccessfulOutcomeCommitError == nil)
+        let result = try await recreatedService.result(
+            JobResultOperation.Request(job: job),
+            context: context
+        )
+        guard case .failed(_, let failure) = result else {
+            Issue.record("Expected the original operation failure")
+            return
+        }
+        #expect(failure.code == "SERVER_FAILURE")
+        let committedMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
+                    snapshot: true
+                )
+            }
+        #expect(committedMarker == [0xde])
+        #expect(commitProbe.attemptCount == 2)
+    }
+
+    @Test("Cancelled outcome commits retry atomically after restart")
+    func cancelledOutcomeCommitRetriesAtomically() async throws {
+        let commitProbe = UnsuccessfulOutcomeCommitProbe(failureCount: 1)
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: RetryingUnsuccessfulOutcomeOperation(
+                commitProbe: commitProbe
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try RetryingUnsuccessfulOutcomeJob
+                .jobOperationIdentifier(),
+            requestPayload: try encodedValue(8),
+            maximumSliceWorkUnits: 1
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "cancelled-outcome-retry"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+        let cancelRequest = JobCancelOperation.Request(job: job)
+        let cancelContext = try operationContext(
+            container: jobContext.container,
+            operation: JobCancelOperation.self,
+            request: cancelRequest,
+            idempotencyKey: "cancelled-outcome-retry-request"
+        )
+
+        let accepted = try await service.cancel(
+            cancelRequest,
+            context: cancelContext
+        ).response
+        #expect(accepted.accepted)
+        #expect(accepted.state == .committingUnsuccessfulOutcome)
+
+        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+            try await service.runScheduledWork()
+        }
+        let awaitingRetry = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(awaitingRetry.state == .committingUnsuccessfulOutcome)
+        #expect(awaitingRetry.executionCount == 0)
+        #expect(awaitingRetry.unsuccessfulOutcomeCommitAttempt == 1)
+        let rolledBackMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
+                    snapshot: true
+                )
+            }
+        #expect(rolledBackMarker == nil)
+
+        jobContext.clock.advance(milliseconds: 100)
+        let recreatedService = try await jobContext.makeService()
+        try await recreatedService.runScheduledWork()
+
+        let completed = try await recreatedService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(completed.state == .cancelled)
+        #expect(completed.executionCount == 0)
+        #expect(completed.unsuccessfulOutcomeCommitAttempt == 2)
+        let result = try await recreatedService.result(
+            JobResultOperation.Request(job: job),
+            context: context
+        )
+        guard case .cancelled = result else {
+            Issue.record("Expected a cancelled persistent job result")
+            return
+        }
+        let committedMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
+                    snapshot: true
+                )
+            }
+        #expect(committedMarker == [0xca])
+        #expect(commitProbe.attemptCount == 2)
+    }
+
+    @Test("Expired outcome lease resumes without rerunning operation work")
+    func expiredUnsuccessfulOutcomeLeaseResumesCommit() async throws {
+        let commitProbe = UnsuccessfulOutcomeCommitProbe(failureCount: 0)
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: RetryingUnsuccessfulOutcomeOperation(
+                commitProbe: commitProbe
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try RetryingUnsuccessfulOutcomeJob.jobOperationIdentifier(),
+            requestPayload: try encodedValue(8),
+            maximumSliceWorkUnits: 1,
+            retryPolicy: .init(
+                maximumAttempts: 1,
+                initialBackoffMilliseconds: 1,
+                maximumBackoffMilliseconds: 1
+            )
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "expired-unsuccessful-outcome-lease"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+        try await service.runScheduledWork()
+
+        let store = try await DatabasePersistentJobStore(
+            container: jobContext.container,
+            wireLimits: .default,
+            storageLimits: persistentJobTestStorageLimits
+        )
+        let expiredAt = jobContext.clock.now()
+        try await jobContext.container.newContext().withTransaction(
+            configuration: .batch
+        ) { transactionContext in
+            let transaction = transactionContext.rawTransaction
+            guard let snapshot = try await store.load(
+                job.jobID,
+                transaction: transaction
+            ) else {
+                throw PersistentJobScenarioError.missingRecord
+            }
+            let abandonedLease = try snapshot.state.acquiringLease(
+                owner: DatabaseUUID(high: 29, low: 1),
+                token: DatabaseUUID(high: 39, low: 1),
+                expiresAt: expiredAt,
+                updatedAt: expiredAt
+            )
+            try store.storeState(
+                abandonedLease,
+                replacing: snapshot.state,
+                transaction: transaction
+            )
+        }
+
+        let recreatedService = try await jobContext.makeService()
+        try await recreatedService.runScheduledWork()
+
+        let status = try await recreatedService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(status.state == .failed)
+        #expect(status.executionCount == 1)
+        #expect(status.unsuccessfulOutcomeCommitAttempt == 2)
+        #expect(commitProbe.attemptCount == 1)
+        let committedMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: RetryingUnsuccessfulOutcomeOperation.markerKey,
+                    snapshot: true
+                )
+            }
+        #expect(committedMarker == [0xde])
+    }
+
+    @Test("Expired running lease resumes from persisted operation state")
+    func expiredRunningLeaseResumesOperation() async throws {
+        let jobContext = try await makePersistentJobServiceContext()
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "expired-running-lease"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+        let store = try await DatabasePersistentJobStore(
+            container: jobContext.container,
+            wireLimits: .default,
+            storageLimits: persistentJobTestStorageLimits
+        )
+        let expiredAt = jobContext.clock.now()
+        try await jobContext.container.newContext().withTransaction(
+            configuration: .batch
+        ) { transactionContext in
+            let transaction = transactionContext.rawTransaction
+            guard let snapshot = try await store.load(
+                job.jobID,
+                transaction: transaction
+            ) else {
+                throw PersistentJobScenarioError.missingRecord
+            }
+            let abandonedLease = try snapshot.state.acquiringLease(
+                owner: DatabaseUUID(high: 41, low: 1),
+                token: DatabaseUUID(high: 42, low: 1),
+                expiresAt: expiredAt,
+                updatedAt: expiredAt
+            )
+            try store.storeState(
+                abandonedLease,
+                replacing: snapshot.state,
+                transaction: transaction
+            )
+        }
+
+        let recreatedService = try await jobContext.makeService()
+        try await recreatedService.runScheduledWork()
+        let resumed = try await recreatedService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(resumed.state == .pending)
+        #expect(resumed.completedWorkUnits == 1)
+        #expect(resumed.executionCount == 2)
+        let committedSlice = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: TwoSliceResumableOperation.stateKey,
+                    snapshot: true
+                )
+            }
+        #expect(committedSlice == [1])
+    }
+
+    @Test("Concurrent runners commit each due revision once")
+    func concurrentRunnersCommitEachRevisionOnce() async throws {
+        let jobContext = try await makePersistentJobServiceContext()
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "concurrent-runners"
+        )
+        let firstService = try await jobContext.makeService()
+        let secondService = try await jobContext.makeService()
+        let job = try await firstService.start(
+            request,
+            context: context
+        ).response.job
+
+        async let firstRunner: Void = firstService.runScheduledWork()
+        async let secondRunner: Void = secondService.runScheduledWork()
+        _ = try await (firstRunner, secondRunner)
+
+        let afterFirstRevision = try await firstService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(afterFirstRevision.state == .pending)
+        #expect(afterFirstRevision.completedWorkUnits == 1)
+        #expect(afterFirstRevision.executionCount == 1)
+        let firstMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: TwoSliceResumableOperation.stateKey,
+                    snapshot: true
+                )
+            }
+        #expect(firstMarker == [1])
+
+        async let firstCompletion: Void = firstService.runScheduledWork()
+        async let secondCompletion: Void = secondService.runScheduledWork()
+        _ = try await (firstCompletion, secondCompletion)
+
+        let completed = try await firstService.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(completed.state == .succeeded)
+        #expect(completed.completedWorkUnits == 2)
+        #expect(completed.executionCount == 2)
+        let finalMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: TwoSliceResumableOperation.stateKey,
+                    snapshot: true
+                )
+            }
+        #expect(finalMarker == [2])
     }
 
     @Test("Oversized plans roll back compile-time mutations")
@@ -753,6 +1109,7 @@ struct DatabasePersistentJobServiceTests {
             context: context
         ).response.job
         try await service.runScheduledWork()
+        try await service.runScheduledWork()
 
         let status = try await service.status(
             JobStatusOperation.Request(job: job),
@@ -801,6 +1158,7 @@ struct DatabasePersistentJobServiceTests {
             context: context
         ).response.job
         try await service.runScheduledWork()
+        try await service.runScheduledWork()
 
         let result = try await service.result(
             JobResultOperation.Request(job: job),
@@ -823,7 +1181,140 @@ struct DatabasePersistentJobServiceTests {
         #expect(marker == nil)
     }
 
-    @Test("Pending job cancellation is terminal")
+    @Test("Oversized failures persist a bounded explicit unsuccessful outcome")
+    func oversizedFailureDoesNotRerunOperationWork() async throws {
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: AlwaysFailingResumableOperation(
+                failure: DatabaseRemoteError(
+                    category: .constraint,
+                    code: String(repeating: "C", count: 200 * 1_024),
+                    message: String(repeating: "x", count: 200 * 1_024),
+                    retryability: .never
+                )
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try AlwaysFailingJob.jobOperationIdentifier(),
+            requestPayload: try encodedValue(12),
+            maximumSliceWorkUnits: 1
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "oversized-failure"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+
+        try await service.runScheduledWork()
+        let prepared = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.executionCount == 1)
+
+        try await service.runScheduledWork()
+        let completed = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(completed.state == .failed)
+        #expect(completed.executionCount == 1)
+        let result = try await service.result(
+            JobResultOperation.Request(job: job),
+            context: context
+        )
+        guard case .failed(_, let failure) = result else {
+            Issue.record("Expected a bounded persistent failure")
+            return
+        }
+        #expect(failure.category == .constraint)
+        #expect(failure.code == "JOB_FAILURE_STORAGE_BUDGET_EXCEEDED")
+        #expect(
+            failure.details.first?.value
+                == .string(String(repeating: "C", count: 1_024))
+        )
+    }
+
+    @Test("Invalid failure details terminate without rerunning operation work")
+    func invalidFailureDetailsBecomeExplicitPersistentFailure() async throws {
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: AlwaysFailingResumableOperation(
+                failure: DatabaseRemoteError(
+                    category: .constraint,
+                    code: "INVALID_FAILURE_DETAIL",
+                    message: "The failure detail is not canonical",
+                    retryability: .immediate,
+                    details: [
+                        DatabaseObjectField(
+                            number: 1,
+                            name: "term",
+                            value: .rdfTerm(.iri("not an iri"))
+                        ),
+                    ]
+                )
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try AlwaysFailingJob.jobOperationIdentifier(),
+            requestPayload: try encodedValue(12),
+            maximumSliceWorkUnits: 1
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "invalid-failure-detail"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+
+        try await service.runScheduledWork()
+        let prepared = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.executionCount == 1)
+
+        try await service.runScheduledWork()
+        let completed = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(completed.state == .failed)
+        #expect(completed.executionCount == 1)
+        let result = try await service.result(
+            JobResultOperation.Request(job: job),
+            context: context
+        )
+        guard case .failed(_, let failure) = result else {
+            Issue.record("Expected an explicit failure encoding diagnostic")
+            return
+        }
+        #expect(failure.category == .internalFailure)
+        #expect(failure.code == "JOB_FAILURE_ENCODING_FAILED")
+        #expect(failure.retryability == .never)
+        #expect(
+            failure.details.first?.value == .string("INVALID_FAILURE_DETAIL")
+        )
+
+        try await service.runScheduledWork()
+        let stable = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(stable.state == .failed)
+        #expect(stable.executionCount == 1)
+    }
+
+    @Test("Pending job cancellation commits its unsuccessful outcome")
     func cancelsPendingJob() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = try jobRequest()
@@ -850,7 +1341,7 @@ struct DatabasePersistentJobServiceTests {
             context: cancelContext
         ).response
         #expect(cancelled.accepted)
-        #expect(cancelled.state == .cancelled)
+        #expect(cancelled.state == .committingUnsuccessfulOutcome)
 
         let replayed = try await service.cancel(
             cancelRequest,
@@ -868,6 +1359,181 @@ struct DatabasePersistentJobServiceTests {
             return
         }
         #expect(job == started.job)
+    }
+
+    @Test("In-flight cancellation is observed once without lease expiry")
+    func inFlightCancellationTransitionsDirectlyToOutcomeCommit() async throws {
+        let executionGate = OperationExecutionGate()
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: TwoSliceResumableOperation(
+                executionGate: executionGate
+            )
+        )
+        let request = try jobRequest()
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "in-flight-cancel"
+        )
+        let service = try await jobContext.makeService()
+        let started = try await service.start(
+            request,
+            context: context
+        ).response
+        let execution = Task {
+            try await service.runScheduledWork()
+        }
+        await executionGate.waitUntilEntered()
+
+        let cancelRequest = JobCancelOperation.Request(job: started.job)
+        let firstCancelContext = try operationContext(
+            container: jobContext.container,
+            operation: JobCancelOperation.self,
+            request: cancelRequest,
+            idempotencyKey: "in-flight-cancel-first"
+        )
+        let firstCancel = try await service.cancel(
+            cancelRequest,
+            context: firstCancelContext
+        ).response
+        #expect(firstCancel.accepted)
+        #expect(firstCancel.state == .running)
+
+        let secondCancelContext = try operationContext(
+            container: jobContext.container,
+            operation: JobCancelOperation.self,
+            request: cancelRequest,
+            idempotencyKey: "in-flight-cancel-second"
+        )
+        let secondCancel = try await service.cancel(
+            cancelRequest,
+            context: secondCancelContext
+        ).response
+        #expect(!secondCancel.accepted)
+        #expect(secondCancel.state == .running)
+
+        await executionGate.release()
+        try await execution.value
+
+        let prepared = try await service.status(
+            JobStatusOperation.Request(job: started.job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.executionCount == 1)
+        try await service.runScheduledWork()
+
+        let result = try await service.result(
+            JobResultOperation.Request(job: started.job),
+            context: context
+        )
+        guard case .cancelled(let job) = result else {
+            Issue.record("Expected in-flight cancellation to become cancelled")
+            return
+        }
+        #expect(job == started.job)
+        let rolledBackSliceMarker = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: TwoSliceResumableOperation.stateKey,
+                    snapshot: true
+                )
+            }
+        #expect(rolledBackSliceMarker == nil)
+        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            try await transaction.getValue(
+                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey,
+                snapshot: true
+            )
+        }
+        #expect(unsuccessfulOutcomeMarker == [0xca])
+    }
+
+    @Test("Checkpointed cancellation preserves committed slice progress")
+    func checkpointedCancellationPreservesCommittedProgress() async throws {
+        let executionGate = OperationExecutionGate()
+        let executionCounter = SliceExecutionCounter()
+        let jobContext = try await makePersistentJobServiceContext(
+            operation: CheckpointedCancellationOperation(
+                executionGate: executionGate,
+                executionCounter: executionCounter
+            )
+        )
+        let request = JobStartOperation.Request(
+            operation: try CheckpointedCancellationJob
+                .jobOperationIdentifier(),
+            requestPayload: try encodedValue(13),
+            maximumSliceWorkUnits: 1
+        )
+        let context = try operationContext(
+            container: jobContext.container,
+            request: request,
+            idempotencyKey: "checkpointed-cancel"
+        )
+        let service = try await jobContext.makeService()
+        let job = try await service.start(
+            request,
+            context: context
+        ).response.job
+        let execution = Task {
+            try await service.runScheduledWork()
+        }
+        await executionGate.waitUntilEntered()
+
+        let cancelRequest = JobCancelOperation.Request(job: job)
+        let cancelContext = try operationContext(
+            container: jobContext.container,
+            operation: JobCancelOperation.self,
+            request: cancelRequest,
+            idempotencyKey: "checkpointed-cancel-request"
+        )
+        let cancellation = try await service.cancel(
+            cancelRequest,
+            context: cancelContext
+        ).response
+        #expect(cancellation.accepted)
+        #expect(cancellation.state == .running)
+
+        await executionGate.release()
+        try await execution.value
+
+        let prepared = try await service.status(
+            JobStatusOperation.Request(job: job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.completedWorkUnits == 1)
+        #expect(prepared.executionCount == 1)
+        #expect(executionCounter.count == 1)
+        let checkpoint = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: CheckpointedCancellationOperation.checkpointKey,
+                    snapshot: true
+                )
+            }
+        #expect(checkpoint == [1])
+
+        try await service.runScheduledWork()
+        let result = try await service.result(
+            JobResultOperation.Request(job: job),
+            context: context
+        )
+        guard case .cancelled = result else {
+            Issue.record("Expected checkpointed job cancellation")
+            return
+        }
+        let committedCancellationState = try await jobContext.container.engine
+            .withTransaction(configuration: .readOnly) { transaction in
+                try await transaction.getValue(
+                    for: CheckpointedCancellationOperation.unsuccessfulOutcomeStateKey,
+                    snapshot: true
+                )
+            }
+        #expect(committedCancellationState == [1])
+        #expect(executionCounter.count == 1)
     }
 
     @Test("Job start rejects unregistered resumable operation kinds")
@@ -893,8 +1559,8 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    @Test("Expired final lease runs the operation terminal hook atomically")
-    func exhaustedLeaseRunsTerminalHook() async throws {
+    @Test("Expired final lease commits the operation outcome atomically")
+    func exhaustedLeaseCommitsUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
             operation: try TwoSliceJob.jobOperationIdentifier(),
@@ -918,7 +1584,8 @@ struct DatabasePersistentJobServiceTests {
         ).response
         let store = try await DatabasePersistentJobStore(
             container: jobContext.container,
-            wireLimits: .default
+            wireLimits: .default,
+            storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now()
         try await jobContext.container.newContext().withTransaction(
@@ -957,23 +1624,43 @@ struct DatabasePersistentJobServiceTests {
 
         try await service.runScheduledWork()
 
+        let prepared = try await service.status(
+            JobStatusOperation.Request(job: started.job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.executionCount == 2)
+        #expect(prepared.unsuccessfulOutcomeCommitAttempt == 0)
+        let absentMarker = try await jobContext.container.engine.withTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            try await transaction.getValue(
+                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey
+            )
+        }
+        #expect(absentMarker == nil)
+
+        try await service.runScheduledWork()
+
         let status = try await service.status(
             JobStatusOperation.Request(job: started.job),
             context: context
         )
-        let terminalMarker = try await jobContext.container.engine.withTransaction(
+        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
             configuration: .readOnly
         ) { transaction in
             try await transaction.getValue(
-                for: TwoSliceResumableOperation.terminalKey
+                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey
             )
         }
         #expect(status.state == .failed)
-        #expect(terminalMarker == [0xfa])
+        #expect(status.executionCount == 2)
+        #expect(status.unsuccessfulOutcomeCommitAttempt == 1)
+        #expect(unsuccessfulOutcomeMarker == [0xfa])
     }
 
-    @Test("Expired final lease records a missing operation as a typed failure")
-    func exhaustedLeaseRecordsMissingOperation() async throws {
+    @Test("Missing operation registration keeps outcome commit recoverable")
+    func missingOperationRegistrationPreservesUnsuccessfulOutcome() async throws {
         let jobContext = try await makePersistentJobServiceContext()
         let request = JobStartOperation.Request(
             operation: try TwoSliceJob.jobOperationIdentifier(),
@@ -997,7 +1684,8 @@ struct DatabasePersistentJobServiceTests {
         ).response
         let store = try await DatabasePersistentJobStore(
             container: jobContext.container,
-            wireLimits: .default
+            wireLimits: .default,
+            storageLimits: persistentJobTestStorageLimits
         )
         let expiredAt = jobContext.clock.now()
         try await jobContext.container.newContext().withTransaction(
@@ -1030,7 +1718,8 @@ struct DatabasePersistentJobServiceTests {
             registry: missingRegistry,
             scheduler: jobContext.scheduler,
             clock: jobContext.clock,
-            identifierGenerator: jobContext.identifiers
+            identifierGenerator: jobContext.identifiers,
+            storageLimits: persistentJobTestStorageLimits
         )
         let recreatedService = try await factory.makeJobService(
             context: DatabaseServerServiceContext(
@@ -1044,7 +1733,41 @@ struct DatabasePersistentJobServiceTests {
 
         try await recreatedService.runScheduledWork()
 
-        let result = try await recreatedService.result(
+        let prepared = try await recreatedService.status(
+            JobStatusOperation.Request(job: started.job),
+            context: context
+        )
+        #expect(prepared.state == .committingUnsuccessfulOutcome)
+        #expect(prepared.unsuccessfulOutcomeCommitAttempt == 0)
+
+        await #expect(throws: DatabaseJobUnsuccessfulOutcomeCommitError.self) {
+            try await recreatedService.runScheduledWork()
+        }
+
+        let awaitingRegistration = try await recreatedService.status(
+            JobStatusOperation.Request(job: started.job),
+            context: context
+        )
+        #expect(awaitingRegistration.state == .committingUnsuccessfulOutcome)
+        #expect(awaitingRegistration.unsuccessfulOutcomeCommitAttempt == 1)
+        #expect(
+            awaitingRegistration.lastUnsuccessfulOutcomeCommitError?.code
+                == "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED"
+        )
+        await #expect(
+            throws: DatabaseJobRuntimeError.resultNotReady(started.jobID)
+        ) {
+            try await recreatedService.result(
+                JobResultOperation.Request(job: started.job),
+                context: context
+            )
+        }
+
+        jobContext.clock.advance(milliseconds: 100)
+        let restoredService = try await jobContext.makeService()
+        try await restoredService.runScheduledWork()
+
+        let result = try await restoredService.result(
             JobResultOperation.Request(job: started.job),
             context: context
         )
@@ -1053,9 +1776,18 @@ struct DatabasePersistentJobServiceTests {
             return
         }
         #expect(job == started.job)
-        #expect(failure.code == "JOB_OPERATION_NOT_RESUMABLE")
-        #expect(failure.category == .invalidRequest)
+        #expect(failure.code == "JOB_ATTEMPTS_EXHAUSTED")
+        #expect(failure.category == .internalFailure)
         #expect(failure.retryability == .never)
+        let unsuccessfulOutcomeMarker = try await jobContext.container.engine.withTransaction(
+            configuration: .readOnly
+        ) { transaction in
+            try await transaction.getValue(
+                for: TwoSliceResumableOperation.unsuccessfulOutcomeKey,
+                snapshot: true
+            )
+        }
+        #expect(unsuccessfulOutcomeMarker == [0xfa])
     }
 
     @Test("Scheduler failure preserves the canonical JobStart response for retry")
@@ -1066,7 +1798,8 @@ struct DatabasePersistentJobServiceTests {
             registry: jobContext.registry,
             scheduler: scheduler,
             clock: jobContext.clock,
-            identifierGenerator: jobContext.identifiers
+            identifierGenerator: jobContext.identifiers,
+            storageLimits: persistentJobTestStorageLimits
         )
         let service = try await factory.makeJobService(
             context: DatabaseServerServiceContext(
@@ -1367,7 +2100,8 @@ struct DatabasePersistentJobServiceTests {
                 registry: registry,
                 scheduler: scheduler,
                 clock: clock,
-                identifierGenerator: identifiers
+                identifierGenerator: identifiers,
+                storageLimits: persistentJobTestStorageLimits
             )
             return try await factory.makeJobService(
                 context: DatabaseServerServiceContext(
@@ -1460,7 +2194,7 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct FailingTerminalHookJob: DatabaseJobDescriptor {
+    private struct RetryingUnsuccessfulOutcomeJob: DatabaseJobDescriptor {
         typealias Request = JobStepValue
         typealias Response = JobStepValue
 
@@ -1468,7 +2202,7 @@ struct DatabasePersistentJobServiceTests {
             throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
             try DatabaseJobOperationIdentifier(
                 family: .maintenanceExecute,
-                kind: "database.test.failing-terminal-hook"
+                kind: "database.test.retrying-unsuccessful-outcome"
             )
         }
     }
@@ -1512,6 +2246,32 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private struct AlwaysFailingJob: DatabaseJobDescriptor {
+        typealias Request = JobStepValue
+        typealias Response = JobStepValue
+
+        static func jobOperationIdentifier()
+            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
+            try DatabaseJobOperationIdentifier(
+                family: .maintenanceExecute,
+                kind: "database.test.always-failing"
+            )
+        }
+    }
+
+    private struct CheckpointedCancellationJob: DatabaseJobDescriptor {
+        typealias Request = JobStepValue
+        typealias Response = JobStepValue
+
+        static func jobOperationIdentifier()
+            throws(DatabaseWireError) -> DatabaseJobOperationIdentifier {
+            try DatabaseJobOperationIdentifier(
+                family: .maintenanceExecute,
+                kind: "database.test.checkpointed-cancellation"
+            )
+        }
+    }
+
     private struct RetryingJob: DatabaseJobDescriptor {
         typealias Request = JobStepValue
         typealias Response = JobStepValue
@@ -1537,17 +2297,73 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private final class SliceExecutionCounter: Sendable {
+        private let storage = Mutex(0)
+
+        var count: Int {
+            storage.withLock { $0 }
+        }
+
+        func recordExecution() {
+            storage.withLock { $0 += 1 }
+        }
+    }
+
+    private actor OperationExecutionGate {
+        private var entered = false
+        private var released = false
+        private var entryWaiters: [CheckedContinuation<Void, Never>] = []
+        private var releaseWaiters: [CheckedContinuation<Void, Never>] = []
+
+        func waitUntilEntered() async {
+            guard !entered else { return }
+            await withCheckedContinuation { continuation in
+                entryWaiters.append(continuation)
+            }
+        }
+
+        func waitForRelease() async {
+            if !entered {
+                entered = true
+                let waiters = entryWaiters
+                entryWaiters.removeAll(keepingCapacity: false)
+                for waiter in waiters {
+                    waiter.resume()
+                }
+            }
+            guard !released else { return }
+            await withCheckedContinuation { continuation in
+                releaseWaiters.append(continuation)
+            }
+        }
+
+        func release() {
+            guard !released else { return }
+            released = true
+            let waiters = releaseWaiters
+            releaseWaiters.removeAll(keepingCapacity: false)
+            for waiter in waiters {
+                waiter.resume()
+            }
+        }
+    }
+
     private struct TwoSliceResumableOperation: DatabaseResumableOperation {
         static let stateKey = Bytes("job-test-state".utf8)
-        static let terminalKey = Bytes("job-test-terminal".utf8)
+        static let unsuccessfulOutcomeKey = Bytes("job-test-unsuccessful-outcome".utf8)
 
         typealias Job = TwoSliceJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
         let compilationCounter: CompilationCounter
+        let executionGate: OperationExecutionGate?
 
-        init(compilationCounter: CompilationCounter = CompilationCounter()) {
+        init(
+            compilationCounter: CompilationCounter = CompilationCounter(),
+            executionGate: OperationExecutionGate? = nil
+        ) {
             self.compilationCounter = compilationCounter
+            self.executionGate = executionGate
         }
 
         func compile(
@@ -1577,6 +2393,9 @@ struct DatabasePersistentJobServiceTests {
             }
             switch state.value {
             case 0:
+                if let executionGate {
+                    await executionGate.waitForRelease()
+                }
                 try context.transaction.rawTransaction.setValue(
                     [1],
                     for: Self.stateKey
@@ -1601,25 +2420,119 @@ struct DatabasePersistentJobServiceTests {
             }
         }
 
-        func handleTerminalState(
+        func applyUnsuccessfulOutcome(
             plan: JobStepValue,
             state: JobStepValue,
-            terminalState: DatabaseResumableOperationTerminalState,
+            outcome: DatabaseJobUnsuccessfulOutcome,
             context: DatabaseResumableOperationContext
         ) async throws {
             _ = plan
             _ = state
-            guard case .failed = terminalState else {
-                return
+            let marker: Bytes
+            switch outcome {
+            case .failed:
+                marker = [0xfa]
+            case .cancelled:
+                marker = [0xca]
             }
             try context.transaction.rawTransaction.setValue(
-                [0xfa],
-                for: Self.terminalKey
+                marker,
+                for: Self.unsuccessfulOutcomeKey
             )
         }
     }
 
-    private struct FiveSliceResumableOperation: DatabaseResumableOperation {
+    private struct CheckpointedCancellationOperation:
+        DatabaseResumableOperation {
+        static let checkpointKey = Bytes("job-checkpointed-progress".utf8)
+        static let unsuccessfulOutcomeStateKey = Bytes("job-checkpointed-unsuccessful-outcome".utf8)
+
+        typealias Job = CheckpointedCancellationJob
+        typealias Plan = JobStepValue
+        typealias State = JobStepValue
+
+        let executionGate: OperationExecutionGate
+        let executionCounter: SliceExecutionCounter
+
+        func compile(
+            _ request: JobStepValue,
+            context: DatabaseResumableOperationStartContext
+        ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            guard request == JobStepValue(13) else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            return DatabasePreparedResumableJob(
+                plan: request,
+                initialState: JobStepValue(0),
+                sliceTimeoutMilliseconds: 30_000
+            )
+        }
+
+        func commitModel(
+            for plan: JobStepValue
+        ) -> DatabaseResumableOperationCommitModel {
+            _ = plan
+            return .operationCheckpointed
+        }
+
+        func runSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseResumableOperationContext
+        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+            _ = plan
+            _ = state
+            _ = maximumWorkUnits
+            _ = context
+            throw PersistentJobScenarioError.unexpectedExecution
+        }
+
+        func runCheckpointedSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseCheckpointedResumableOperationContext
+        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+            guard plan == JobStepValue(13),
+                  state == JobStepValue(0),
+                  maximumWorkUnits == 1 else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            await executionGate.waitForRelease()
+            executionCounter.recordExecution()
+            try await context.operationContext.container.engine
+                .withTransaction(configuration: .batch) { transaction in
+                    try transaction.setValue([1], for: Self.checkpointKey)
+                }
+            return .incomplete(
+                completedWorkUnits: 1,
+                totalWorkUnits: 2,
+                state: JobStepValue(1)
+            )
+        }
+
+        func applyUnsuccessfulOutcome(
+            plan: JobStepValue,
+            state: JobStepValue,
+            outcome: DatabaseJobUnsuccessfulOutcome,
+            context: DatabaseResumableOperationContext
+        ) async throws {
+            guard plan == JobStepValue(13),
+                  state == JobStepValue(1),
+                  outcome == .cancelled else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            try context.transaction.rawTransaction.setValue(
+                [state.value],
+                for: Self.unsuccessfulOutcomeStateKey
+            )
+        }
+    }
+
+    private struct FiveSliceResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
         typealias Job = FiveSliceJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
@@ -1669,7 +2582,8 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct LargeResultResumableOperation: DatabaseResumableOperation {
+    private struct LargeResultResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
         typealias Job = LargeResultJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
@@ -1710,12 +2624,13 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct FailingTerminalHookOperation: DatabaseResumableOperation {
-        static let markerKey = Bytes("job-terminal-hook-marker".utf8)
+    private struct RetryingUnsuccessfulOutcomeOperation: DatabaseResumableOperation {
+        static let markerKey = Bytes("job-unsuccessful-outcome-marker".utf8)
 
-        typealias Job = FailingTerminalHookJob
+        typealias Job = RetryingUnsuccessfulOutcomeJob
         typealias Plan = JobStepValue
         typealias State = JobStepValue
+        let commitProbe: UnsuccessfulOutcomeCommitProbe
 
         func compile(
             _ request: JobStepValue,
@@ -1744,29 +2659,34 @@ struct DatabasePersistentJobServiceTests {
                 throw PersistentJobScenarioError.invalidPayload
             }
             _ = context
-            throw PersistentJobScenarioError.forcedTerminalFailure
+            throw PersistentJobScenarioError.forcedSliceFailure
         }
 
-        func handleTerminalState(
+        func applyUnsuccessfulOutcome(
             plan: JobStepValue,
             state: JobStepValue,
-            terminalState: DatabaseResumableOperationTerminalState,
+            outcome: DatabaseJobUnsuccessfulOutcome,
             context: DatabaseResumableOperationContext
         ) async throws {
             _ = plan
             _ = state
-            guard case .failed = terminalState else {
-                return
+            let marker: Bytes
+            switch outcome {
+            case .failed:
+                marker = [0xde]
+            case .cancelled:
+                marker = [0xca]
             }
             try context.transaction.rawTransaction.setValue(
-                [0xde],
+                marker,
                 for: Self.markerKey
             )
-            throw PersistentJobScenarioError.terminalHookFailure
+            try commitProbe.recordAttempt()
         }
     }
 
-    private struct OversizedPlanResumableOperation: DatabaseResumableOperation {
+    private struct OversizedPlanResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerKey = Bytes("job-oversized-plan-marker".utf8)
 
         typealias Job = OversizedPlanJob
@@ -1812,7 +2732,8 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct OversizedStateResumableOperation: DatabaseResumableOperation {
+    private struct OversizedStateResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerKey = Bytes("job-oversized-state-marker".utf8)
 
         typealias Job = OversizedStateJob
@@ -1864,7 +2785,8 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
-    private struct OversizedResultResumableOperation: DatabaseResumableOperation {
+    private struct OversizedResultResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
         static let markerKey = Bytes("job-oversized-result-marker".utf8)
 
         typealias Job = OversizedResultJob
@@ -1916,8 +2838,47 @@ struct DatabasePersistentJobServiceTests {
         }
     }
 
+    private struct AlwaysFailingResumableOperation:
+        DatabaseUnsuccessfulOutcomeIndependentOperation {
+        typealias Job = AlwaysFailingJob
+        typealias Plan = JobStepValue
+        typealias State = JobStepValue
+
+        let failure: DatabaseRemoteError
+
+        func compile(
+            _ request: JobStepValue,
+            context: DatabaseResumableOperationStartContext
+        ) async throws -> DatabasePreparedResumableJob<Plan, State> {
+            guard request == JobStepValue(12) else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            return DatabasePreparedResumableJob(
+                plan: request,
+                initialState: JobStepValue(0),
+                sliceTimeoutMilliseconds: 30_000
+            )
+        }
+
+        func runSlice(
+            plan: JobStepValue,
+            state: JobStepValue,
+            maximumWorkUnits: UInt64,
+            context: DatabaseResumableOperationContext
+        ) async throws -> DatabaseResumableOperationSlice<State, Job.Response> {
+            guard plan == JobStepValue(12),
+                  state == JobStepValue(0),
+                  maximumWorkUnits == 1 else {
+                throw PersistentJobScenarioError.invalidPayload
+            }
+            _ = context
+            throw failure
+        }
+    }
+
     private final class RetryingResumableOperation:
-        DatabaseResumableOperation,
+        DatabaseUnsuccessfulOutcomeIndependentOperation,
         Sendable {
         typealias Job = RetryingJob
         typealias Plan = JobStepValue
@@ -1998,24 +2959,80 @@ struct DatabasePersistentJobServiceTests {
         func now() -> DatabaseTimestamp {
             timestamp.withLock { $0 }
         }
+
+        func advance(milliseconds: UInt32) {
+            timestamp.withLock { timestamp in
+                let addedNanoseconds = UInt64(milliseconds % 1_000)
+                    * 1_000_000
+                let nanoseconds = UInt64(timestamp.nanoseconds)
+                    + addedNanoseconds
+                timestamp = DatabaseTimestamp(
+                    secondsSinceUnixEpoch:
+                        timestamp.secondsSinceUnixEpoch
+                        + Int64(milliseconds / 1_000)
+                        + Int64(nanoseconds / 1_000_000_000),
+                    nanoseconds: UInt32(nanoseconds % 1_000_000_000)
+                )
+            }
+        }
+    }
+
+    private final class UnsuccessfulOutcomeCommitProbe: Sendable {
+        private struct State: Sendable {
+            var remainingFailures: Int
+            var attemptCount: Int
+        }
+
+        private let state: Mutex<State>
+
+        init(failureCount: Int) {
+            self.state = Mutex(State(
+                remainingFailures: failureCount,
+                attemptCount: 0
+            ))
+        }
+
+        var attemptCount: Int {
+            state.withLock { $0.attemptCount }
+        }
+
+        func recordAttempt() throws {
+            let shouldFail = state.withLock { state in
+                state.attemptCount += 1
+                guard state.remainingFailures > 0 else { return false }
+                state.remainingFailures -= 1
+                return true
+            }
+            if shouldFail {
+                throw PersistentJobScenarioError.unsuccessfulOutcomeCommitFailure
+            }
+        }
     }
 
     private actor RecordingDatabaseJobScheduler: DatabaseJobScheduler {
         private var timestamps: [DatabaseTimestamp] = []
 
-        func schedule(at timestamp: DatabaseTimestamp) async throws {
+        func ensureWakeUp(
+            noLaterThan timestamp: DatabaseTimestamp
+        ) async throws {
             timestamps.append(timestamp)
         }
 
         func scheduledCount() -> Int {
             timestamps.count
         }
+
+        func requestedTimestamps() -> [DatabaseTimestamp] {
+            timestamps
+        }
     }
 
     private actor FailOnceScheduler: DatabaseJobScheduler {
         private var attempts = 0
 
-        func schedule(at timestamp: DatabaseTimestamp) async throws {
+        func ensureWakeUp(
+            noLaterThan timestamp: DatabaseTimestamp
+        ) async throws {
             _ = timestamp
             attempts += 1
             if attempts == 1 {
@@ -2042,8 +3059,8 @@ struct DatabasePersistentJobServiceTests {
     private enum PersistentJobScenarioError: Error {
         case invalidPayload
         case invalidContinuation
-        case forcedTerminalFailure
-        case terminalHookFailure
+        case forcedSliceFailure
+        case unsuccessfulOutcomeCommitFailure
         case unexpectedExecution
         case missingRecord
         case schedulerFailure

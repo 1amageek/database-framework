@@ -882,7 +882,8 @@ public struct CanonicalDatabaseErrorMapper: DatabaseErrorMapper {
             category = .invalidRequest
             code = "INVALID_JOB_REQUEST"
         case .sliceExceededBudget, .responseTooLarge,
-             .specificationTooLarge, .planTooLarge, .stateTooLarge:
+             .specificationTooLarge, .planTooLarge, .stateTooLarge,
+             .unsuccessfulOutcomeExceedsLimits:
             category = .resourceLimit
             code = "JOB_RESOURCE_LIMIT"
         case .invalidConfiguration, .corruptedSpecification, .corruptedPlan,

@@ -6,7 +6,7 @@ public actor DatabasePersistentJobRunner {
     private struct LeasedJob: Sendable {
         enum Action: Sendable {
             case execute
-            case fail(DatabaseRemoteError)
+            case commitUnsuccessfulOutcome
         }
 
         let snapshot: DatabasePersistentJobSnapshot
@@ -23,6 +23,7 @@ public actor DatabasePersistentJobRunner {
     private let configuration: DatabaseJobRuntimeConfiguration
     private let wireLimits: DatabaseWireLimits
     private let storageLimits: DatabasePersistentJobStorageLimits
+    private let failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy
     private let runnerID: DatabaseUUID
 
     init(
@@ -36,6 +37,7 @@ public actor DatabasePersistentJobRunner {
         configuration: DatabaseJobRuntimeConfiguration,
         wireLimits: DatabaseWireLimits,
         storageLimits: DatabasePersistentJobStorageLimits,
+        failureStoragePolicy: DatabasePersistentJobFailureStoragePolicy,
         runnerID: DatabaseUUID
     ) {
         self.container = container
@@ -48,6 +50,7 @@ public actor DatabasePersistentJobRunner {
         self.configuration = configuration
         self.wireLimits = wireLimits
         self.storageLimits = storageLimits
+        self.failureStoragePolicy = failureStoragePolicy
         self.runnerID = runnerID
     }
 
@@ -56,7 +59,7 @@ public actor DatabasePersistentJobRunner {
     }
 
     public func notifyWorkAvailable(at timestamp: DatabaseTimestamp) async throws {
-        try await scheduler.schedule(at: timestamp)
+        try await scheduler.ensureWakeUp(noLaterThan: timestamp)
     }
 
     public func runScheduledWork() async throws {
@@ -99,20 +102,21 @@ public actor DatabasePersistentJobRunner {
             for: leasedSnapshot,
             container: container
         )
-        let operation: AnyDatabaseResumableOperation
-        do {
-            operation = try registry.resolve(leasedSnapshot.specification.operation)
-        } catch {
-            try await handleFailure(
-                error,
-                operation: nil,
-                snapshot: leasedSnapshot,
-                operationContext: operationContext
-            )
-            return
-        }
         switch leasedJob.action {
         case .execute:
+            let operation: AnyDatabaseResumableOperation
+            do {
+                operation = try registry.resolve(
+                    leasedSnapshot.specification.operation
+                )
+            } catch {
+                try await handleFailure(
+                    error,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+                return
+            }
             do {
                 switch try operation.commitModel(
                     planPayload: leasedSnapshot.plan.payload,
@@ -134,28 +138,52 @@ public actor DatabasePersistentJobRunner {
                 }
             } catch is CancellationError {
                 throw CancellationError()
-            } catch let error as DatabaseJobTerminalHookExecutionError {
-                try await recordTerminalHookFailure(
-                    error,
-                    snapshot: leasedSnapshot,
-                    operationContext: operationContext
-                )
-                throw error
             } catch {
                 try await handleFailure(
                     error,
-                    operation: operation,
                     snapshot: leasedSnapshot,
                     operationContext: operationContext
                 )
             }
-        case .fail(let failure):
-            try await handleFailure(
-                failure,
-                operation: operation,
-                snapshot: leasedSnapshot,
-                operationContext: operationContext
-            )
+        case .commitUnsuccessfulOutcome:
+            guard let outcome = leasedSnapshot.state.pendingUnsuccessfulOutcome else {
+                throw DatabaseJobRuntimeError.corruptedState
+            }
+            let operation: AnyDatabaseResumableOperation
+            do {
+                operation = try registry.resolve(
+                    leasedSnapshot.specification.operation
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                let commitError = DatabaseJobUnsuccessfulOutcomeCommitError(
+                    jobID: leasedSnapshot.specification.jobID,
+                    outcome: outcome,
+                    underlyingError: error
+                )
+                try await recordUnsuccessfulOutcomeCommitFailure(
+                    commitError,
+                    snapshot: leasedSnapshot
+                )
+                throw commitError
+            }
+            do {
+                try await commitUnsuccessfulOutcome(
+                    outcome,
+                    operation: operation,
+                    snapshot: leasedSnapshot,
+                    operationContext: operationContext
+                )
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch let error as DatabaseJobUnsuccessfulOutcomeCommitError {
+                try await recordUnsuccessfulOutcomeCommitFailure(
+                    error,
+                    snapshot: leasedSnapshot
+                )
+                throw error
+            }
         }
     }
 
@@ -165,7 +193,7 @@ public actor DatabasePersistentJobRunner {
         let leaseToken = identifierGenerator.generate()
         let store = self.store
         let runnerID = self.runnerID
-        let maximumAttempts = configuration.maximumAttempts
+        let maximumSliceAttempts = configuration.maximumSliceAttempts
         let leaseDurationMilliseconds = configuration.leaseDurationMilliseconds
         let clock = self.clock
         let container = self.container
@@ -173,11 +201,7 @@ public actor DatabasePersistentJobRunner {
         return try await container.newContext().withTransaction(
             configuration: .batch
         ) { transactionContext in
-            let now = clock.now()
-            let leaseExpiresAt = try Self.adding(
-                milliseconds: leaseDurationMilliseconds,
-                to: now
-            )
+            let observedNow = clock.now()
             let transaction = transactionContext.rawTransaction
             guard let snapshot = try await store.load(
                 dueJob.jobID,
@@ -190,30 +214,60 @@ public actor DatabasePersistentJobRunner {
                 return nil
             }
             guard let scheduledAt = state.scheduledAt,
-                  scheduledAt <= now else {
+                  scheduledAt <= observedNow else {
                 return nil
             }
+            let transitionAt = max(observedNow, state.updatedAt)
+            let leaseExpiresAt = try Self.adding(
+                milliseconds: leaseDurationMilliseconds,
+                to: transitionAt
+            )
             let allowedAttempts = min(
                 snapshot.specification.retryPolicy.maximumAttempts,
-                maximumAttempts
+                maximumSliceAttempts
             )
             let action: LeasedJob.Action
-            if !state.cancellationRequested,
-               state.currentSliceAttempt >= allowedAttempts {
-                action = .fail(DatabaseRemoteError(
-                    category: .internalFailure,
-                    code: "JOB_ATTEMPTS_EXHAUSTED",
-                    message: "Job exhausted its configured attempts",
-                    retryability: .never
-                ))
+            if state.status == .committingUnsuccessfulOutcome {
+                action = .commitUnsuccessfulOutcome
             } else {
+                if state.cancellationRequested {
+                    let committing = try state.schedulingUnsuccessfulOutcomeCommit(
+                        .cancelled,
+                        nextAttemptAt: transitionAt,
+                        updatedAt: transitionAt
+                    )
+                    try store.storeState(
+                        committing,
+                        replacing: state,
+                        transaction: transaction
+                    )
+                    return nil
+                }
+                if state.currentSliceAttempt >= allowedAttempts {
+                    let committing = try state.schedulingUnsuccessfulOutcomeCommit(
+                        .failed(DatabaseRemoteError(
+                            category: .internalFailure,
+                            code: "JOB_ATTEMPTS_EXHAUSTED",
+                            message: "Job exhausted its configured attempts",
+                            retryability: .never
+                        )),
+                        nextAttemptAt: transitionAt,
+                        updatedAt: transitionAt
+                    )
+                    try store.storeState(
+                        committing,
+                        replacing: state,
+                        transaction: transaction
+                    )
+                    return nil
+                }
                 action = .execute
             }
             let leased = try state.acquiringLease(
                 owner: runnerID,
                 token: leaseToken,
                 expiresAt: leaseExpiresAt,
-                updatedAt: now
+                updatedAt: transitionAt
             )
             try store.storeState(
                 leased,
@@ -257,7 +311,7 @@ public actor DatabasePersistentJobRunner {
                 specificationDigest: snapshot.specificationDigest,
                 transaction: transaction
             )
-            try Self.validateLease(
+            try Self.validateOperationLease(
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID,
@@ -270,32 +324,17 @@ public actor DatabasePersistentJobRunner {
                 state: currentState
             )
             if currentState.cancellationRequested {
-                do {
-                    try await operation.handleTerminalState(
-                        planPayload: current.plan.payload,
-                        statePayload: current.state.operationStatePayload,
-                        state: .cancelled,
-                        context: DatabaseResumableOperationContext(
-                            jobID: current.specification.jobID,
-                            completedWorkUnitsBeforeSlice: current.state.completedWorkUnits,
-                            transaction: transactionContext,
-                            operationContext: operationContext
-                        ),
-                        limits: wireLimits,
-                        storageLimits: storageLimits
-                    )
-                } catch is CancellationError {
-                    throw CancellationError()
-                } catch {
-                    throw DatabaseJobTerminalHookExecutionError(
-                        underlyingError: error
-                    )
-                }
-                let cancelled = try current.state.cancelling(
-                    updatedAt: clock.now()
+                let cancellationRequestedAt = max(
+                    clock.now(),
+                    current.state.updatedAt
+                )
+                let committing = try current.state.schedulingUnsuccessfulOutcomeCommit(
+                    .cancelled,
+                    nextAttemptAt: cancellationRequestedAt,
+                    updatedAt: cancellationRequestedAt
                 )
                 try store.storeState(
-                    cancelled,
+                    committing,
                     replacing: current.state,
                     transaction: transaction
                 )
@@ -330,7 +369,7 @@ public actor DatabasePersistentJobRunner {
                 reported: slice.totalWorkUnits,
                 completed: cumulativeWorkUnits
             )
-            let completedAt = clock.now()
+            let completedAt = max(clock.now(), current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
@@ -377,44 +416,6 @@ public actor DatabasePersistentJobRunner {
         let clock = self.clock
         let leasedState = snapshot.state
 
-        if leasedState.cancellationRequested {
-            try await container.newContext().withTransaction(
-                configuration: .batch
-            ) { transactionContext in
-                let transaction = transactionContext.rawTransaction
-                let currentState = try await store.loadState(
-                    snapshot.specification.jobID,
-                    specificationDigest: snapshot.specificationDigest,
-                    transaction: transaction
-                )
-                try Self.validateLease(
-                    currentState,
-                    expected: leasedState,
-                    runnerID: runnerID,
-                    now: clock.now()
-                )
-                try await operation.handleTerminalState(
-                    planPayload: snapshot.plan.payload,
-                    statePayload: currentState.operationStatePayload,
-                    state: .cancelled,
-                    context: DatabaseResumableOperationContext(
-                        jobID: snapshot.specification.jobID,
-                        completedWorkUnitsBeforeSlice: currentState.completedWorkUnits,
-                        transaction: transactionContext,
-                        operationContext: operationContext
-                    ),
-                    limits: wireLimits,
-                    storageLimits: storageLimits
-                )
-                try store.storeState(
-                    try currentState.cancelling(updatedAt: clock.now()),
-                    replacing: currentState,
-                    transaction: transaction
-                )
-            }
-            return
-        }
-
         let slice = try await operation.runCheckpointedSlice(
             planPayload: snapshot.plan.payload,
             statePayload: leasedState.operationStatePayload,
@@ -444,7 +445,7 @@ public actor DatabasePersistentJobRunner {
                 specificationDigest: snapshot.specificationDigest,
                 transaction: transaction
             )
-            try Self.validateLease(
+            try Self.validateOperationLease(
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID,
@@ -456,28 +457,6 @@ public actor DatabasePersistentJobRunner {
                 plan: snapshot.plan,
                 state: currentState
             )
-            if currentState.cancellationRequested {
-                try await operation.handleTerminalState(
-                    planPayload: current.plan.payload,
-                    statePayload: current.state.operationStatePayload,
-                    state: .cancelled,
-                    context: DatabaseResumableOperationContext(
-                        jobID: current.specification.jobID,
-                        completedWorkUnitsBeforeSlice: current.state.completedWorkUnits,
-                        transaction: transactionContext,
-                        operationContext: operationContext
-                    ),
-                    limits: wireLimits,
-                    storageLimits: storageLimits
-                )
-                try store.storeState(
-                    try current.state.cancelling(updatedAt: clock.now()),
-                    replacing: current.state,
-                    transaction: transaction
-                )
-                return
-            }
-
             let (cumulativeWorkUnits, overflow) = current.state
                 .completedWorkUnits
                 .addingReportingOverflow(slice.completedWorkUnits)
@@ -489,7 +468,7 @@ public actor DatabasePersistentJobRunner {
                 reported: slice.totalWorkUnits,
                 completed: cumulativeWorkUnits
             )
-            let completedAt = clock.now()
+            let completedAt = max(clock.now(), current.state.updatedAt)
             let updated: DatabasePersistentJobState
             switch slice.outcome {
             case .complete(let responsePayload):
@@ -506,14 +485,24 @@ public actor DatabasePersistentJobRunner {
                     updatedAt: completedAt
                 )
             case .incomplete(let operationStatePayload):
-                updated = try current.state.continuing(
-                    operationStatePayload: operationStatePayload,
-                    cumulativeWorkUnits: cumulativeWorkUnits,
-                    totalWorkUnits: slice.totalWorkUnits
-                        ?? current.state.totalWorkUnits,
-                    nextAttemptAt: completedAt,
-                    updatedAt: completedAt
-                )
+                let totalWorkUnits = slice.totalWorkUnits
+                    ?? current.state.totalWorkUnits
+                if current.state.cancellationRequested {
+                    updated = try current.state.schedulingCancellationOutcomeCommitAfterCheckpoint(
+                        operationStatePayload: operationStatePayload,
+                        cumulativeWorkUnits: cumulativeWorkUnits,
+                        totalWorkUnits: totalWorkUnits,
+                        updatedAt: completedAt
+                    )
+                } else {
+                    updated = try current.state.continuing(
+                        operationStatePayload: operationStatePayload,
+                        cumulativeWorkUnits: cumulativeWorkUnits,
+                        totalWorkUnits: totalWorkUnits,
+                        nextAttemptAt: completedAt,
+                        updatedAt: completedAt
+                    )
+                }
             }
             try store.storeState(
                 updated,
@@ -525,11 +514,10 @@ public actor DatabasePersistentJobRunner {
 
     private func handleFailure(
         _ error: any Error,
-        operation: AnyDatabaseResumableOperation?,
         snapshot: DatabasePersistentJobSnapshot,
         operationContext: DatabaseOperationContext
     ) async throws {
-        let failedAt = clock.now()
+        let observedFailureAt = clock.now()
         let remoteError = errorMapper.remoteError(
             for: error,
             context: operationContext,
@@ -539,11 +527,88 @@ public actor DatabasePersistentJobRunner {
         let container = self.container
         let runnerID = self.runnerID
         let configuration = self.configuration
+        let clock = self.clock
+        let leasedState = snapshot.state
+        let failureStoragePolicy = self.failureStoragePolicy
+
+        try await container.newContext().withTransaction(
+            configuration: Self.batchConfiguration(
+                timeoutMilliseconds: snapshot.specification
+                    .sliceTimeoutMilliseconds
+            )
+        ) { transactionContext in
+            let transaction = transactionContext.rawTransaction
+            let currentState = try await store.loadState(
+                snapshot.specification.jobID,
+                specificationDigest: snapshot.specificationDigest,
+                transaction: transaction
+            )
+            try Self.validateOperationLease(
+                currentState,
+                expected: leasedState,
+                runnerID: runnerID,
+                now: clock.now()
+            )
+            let updated: DatabasePersistentJobState
+            let failedAt = max(observedFailureAt, currentState.updatedAt)
+            if currentState.cancellationRequested {
+                updated = try currentState.schedulingUnsuccessfulOutcomeCommit(
+                    .cancelled,
+                    nextAttemptAt: failedAt,
+                    updatedAt: failedAt
+                )
+            } else {
+                let persistentFailure = try failureStoragePolicy.storableFailure(
+                    for: remoteError
+                )
+                if persistentFailure.retryability != .never,
+                   currentState.currentSliceAttempt
+                    < snapshot.specification.retryPolicy.maximumAttempts,
+                   currentState.currentSliceAttempt
+                    < configuration.maximumSliceAttempts {
+                    let backoff = Self.backoffMilliseconds(
+                        retryability: persistentFailure.retryability,
+                        policy: snapshot.specification.retryPolicy,
+                        currentSliceAttempt: currentState.currentSliceAttempt,
+                        maximum:
+                            configuration.maximumSliceRetryBackoffMilliseconds
+                    )
+                    updated = try currentState.retrying(
+                        at: try Self.adding(
+                            milliseconds: backoff,
+                            to: failedAt
+                        ),
+                        updatedAt: failedAt
+                    )
+                } else {
+                    updated = try currentState.schedulingUnsuccessfulOutcomeCommit(
+                        .failed(persistentFailure),
+                        nextAttemptAt: failedAt,
+                        updatedAt: failedAt
+                    )
+                }
+            }
+            try store.storeState(
+                updated,
+                replacing: currentState,
+                transaction: transaction
+            )
+        }
+    }
+
+    private func commitUnsuccessfulOutcome(
+        _ outcome: DatabaseJobUnsuccessfulOutcome,
+        operation: AnyDatabaseResumableOperation,
+        snapshot: DatabasePersistentJobSnapshot,
+        operationContext: DatabaseOperationContext
+    ) async throws {
+        let store = self.store
+        let container = self.container
+        let runnerID = self.runnerID
         let wireLimits = self.wireLimits
         let storageLimits = self.storageLimits
         let clock = self.clock
         let leasedState = snapshot.state
-
         do {
             try await container.newContext().withTransaction(
                 configuration: Self.batchConfiguration(
@@ -557,106 +622,67 @@ public actor DatabasePersistentJobRunner {
                     specificationDigest: snapshot.specificationDigest,
                     transaction: transaction
                 )
-                try Self.validateLease(
+                try Self.validateUnsuccessfulOutcomeLease(
                     currentState,
                     expected: leasedState,
                     runnerID: runnerID,
                     now: clock.now()
                 )
-                let current = DatabasePersistentJobSnapshot(
-                    specification: snapshot.specification,
-                    specificationDigest: snapshot.specificationDigest,
-                    plan: snapshot.plan,
-                    state: currentState
+                guard currentState.pendingUnsuccessfulOutcome == outcome else {
+                    throw DatabaseJobRuntimeError.invalidStateTransition
+                }
+                try await operation.applyUnsuccessfulOutcome(
+                    planPayload: snapshot.plan.payload,
+                    statePayload: currentState.operationStatePayload,
+                    outcome: outcome,
+                    context: DatabaseResumableOperationContext(
+                        jobID: snapshot.specification.jobID,
+                        completedWorkUnitsBeforeSlice:
+                            currentState.completedWorkUnits,
+                        transaction: transactionContext,
+                        operationContext: operationContext
+                    ),
+                    limits: wireLimits,
+                    storageLimits: storageLimits
                 )
-                let updated: DatabasePersistentJobState
-                let terminalState: DatabaseResumableOperationTerminalState?
-                if current.state.cancellationRequested {
-                    updated = try current.state.cancelling(updatedAt: failedAt)
-                    terminalState = .cancelled
-                } else if remoteError.retryability != .never,
-                          current.state.currentSliceAttempt
-                            < current.specification.retryPolicy.maximumAttempts,
-                          current.state.currentSliceAttempt
-                            < configuration.maximumAttempts {
-                    let backoff = Self.backoffMilliseconds(
-                        retryability: remoteError.retryability,
-                        policy: current.specification.retryPolicy,
-                        currentSliceAttempt: current.state.currentSliceAttempt,
-                        maximum: configuration.maximumBackoffMilliseconds
-                    )
-                    updated = try current.state.retrying(
-                        at: try Self.adding(milliseconds: backoff, to: failedAt),
-                        updatedAt: failedAt
-                    )
-                    terminalState = nil
-                } else {
-                    updated = try current.state.failing(
-                        remoteError,
-                        updatedAt: failedAt
-                    )
-                    terminalState = .failed(remoteError)
-                }
-                if let operation, let terminalState {
-                    do {
-                        try await operation.handleTerminalState(
-                            planPayload: current.plan.payload,
-                            statePayload: current.state.operationStatePayload,
-                            state: terminalState,
-                            context: DatabaseResumableOperationContext(
-                                jobID: current.specification.jobID,
-                                completedWorkUnitsBeforeSlice: current.state.completedWorkUnits,
-                                transaction: transactionContext,
-                                operationContext: operationContext
-                            ),
-                            limits: wireLimits,
-                            storageLimits: storageLimits
-                        )
-                    } catch is CancellationError {
-                        throw CancellationError()
-                    } catch {
-                        throw DatabaseJobTerminalHookExecutionError(
-                            underlyingError: error
-                        )
-                    }
-                }
                 try store.storeState(
-                    updated,
-                    replacing: current.state,
+                    try currentState.completingUnsuccessfulOutcomeCommit(
+                        updatedAt: max(clock.now(), currentState.updatedAt)
+                    ),
+                    replacing: currentState,
                     transaction: transaction
                 )
             }
-        } catch let error as DatabaseJobTerminalHookExecutionError {
-            try await recordTerminalHookFailure(
-                error,
-                snapshot: snapshot,
-                operationContext: operationContext
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            throw DatabaseJobUnsuccessfulOutcomeCommitError(
+                jobID: snapshot.specification.jobID,
+                outcome: outcome,
+                underlyingError: error
             )
-            throw error
         }
     }
 
-    private func recordTerminalHookFailure(
-        _ error: DatabaseJobTerminalHookExecutionError,
-        snapshot: DatabasePersistentJobSnapshot,
-        operationContext: DatabaseOperationContext
+    private func recordUnsuccessfulOutcomeCommitFailure(
+        _ error: DatabaseJobUnsuccessfulOutcomeCommitError,
+        snapshot: DatabasePersistentJobSnapshot
     ) async throws {
-        let mapped = errorMapper.remoteError(
-            for: error.underlyingError,
-            context: operationContext,
-            limits: wireLimits
-        )
-        let failure = DatabaseRemoteError(
+        let diagnostic = DatabaseRemoteError(
             category: .internalFailure,
-            code: "JOB_TERMINAL_HOOK_FAILED",
-            message: "Terminal hook failed with \(mapped.code): \(mapped.message)",
-            retryability: .never
+            code: "JOB_UNSUCCESSFUL_OUTCOME_COMMIT_FAILED",
+            message: "The operation unsuccessful outcome could not be committed",
+            retryability: .backoff
         )
-        let failedAt = clock.now()
+        let observedFailureAt = clock.now()
         let store = self.store
         let container = self.container
         let runnerID = self.runnerID
         let leasedState = snapshot.state
+        let initialBackoffMilliseconds =
+            configuration.unsuccessfulOutcomeCommitInitialBackoffMilliseconds
+        let maximumBackoffMilliseconds =
+            configuration.unsuccessfulOutcomeCommitMaximumBackoffMilliseconds
         try await container.newContext().withTransaction(
             configuration: Self.batchConfiguration(
                 timeoutMilliseconds: snapshot.specification
@@ -669,13 +695,26 @@ public actor DatabasePersistentJobRunner {
                 specificationDigest: snapshot.specificationDigest,
                 transaction: transaction
             )
-            try Self.validateLeaseIdentity(
+            try Self.validateUnsuccessfulOutcomeLeaseIdentity(
                 currentState,
                 expected: leasedState,
                 runnerID: runnerID
             )
+            guard currentState.pendingUnsuccessfulOutcome == error.outcome else {
+                throw DatabaseJobRuntimeError.invalidStateTransition
+            }
+            let failedAt = max(observedFailureAt, currentState.updatedAt)
+            let backoff = Self.unsuccessfulOutcomeCommitBackoffMilliseconds(
+                initial: initialBackoffMilliseconds,
+                commitAttempt: currentState.unsuccessfulOutcomeCommitAttempt,
+                maximum: maximumBackoffMilliseconds
+            )
             try store.storeState(
-                try currentState.failing(failure, updatedAt: failedAt),
+                try currentState.schedulingUnsuccessfulOutcomeCommitRetry(
+                    after: diagnostic,
+                    at: try Self.adding(milliseconds: backoff, to: failedAt),
+                    updatedAt: failedAt
+                ),
                 replacing: currentState,
                 transaction: transaction
             )
@@ -686,16 +725,34 @@ public actor DatabasePersistentJobRunner {
         guard let next = try await store.earliestScheduledAt() else {
             return
         }
-        try await scheduler.schedule(at: next)
+        try await scheduler.ensureWakeUp(noLaterThan: next)
     }
 
-    private static func validateLease(
+    private static func validateOperationLease(
         _ current: DatabasePersistentJobState,
         expected: DatabasePersistentJobState,
         runnerID: DatabaseUUID,
         now: DatabaseTimestamp
     ) throws {
-        try validateLeaseIdentity(
+        guard current.status == .running,
+              expected.status == .running,
+              current.leaseOwner == runnerID,
+              current.leaseToken == expected.leaseToken,
+              current.leaseExpiresAt == expected.leaseExpiresAt,
+              current.revision == expected.revision
+                || current.isCancellationRequest(after: expected),
+              current.leaseExpiresAt.map({ $0 > now }) == true else {
+            throw DatabaseJobRuntimeError.invalidStateTransition
+        }
+    }
+
+    private static func validateUnsuccessfulOutcomeLease(
+        _ current: DatabasePersistentJobState,
+        expected: DatabasePersistentJobState,
+        runnerID: DatabaseUUID,
+        now: DatabaseTimestamp
+    ) throws {
+        try validateUnsuccessfulOutcomeLeaseIdentity(
             current,
             expected: expected,
             runnerID: runnerID
@@ -706,12 +763,13 @@ public actor DatabasePersistentJobRunner {
         }
     }
 
-    private static func validateLeaseIdentity(
+    private static func validateUnsuccessfulOutcomeLeaseIdentity(
         _ current: DatabasePersistentJobState,
         expected: DatabasePersistentJobState,
         runnerID: DatabaseUUID
     ) throws {
-        guard current.status == .running,
+        guard current.status == expected.status,
+              current.status == .committingUnsuccessfulOutcome,
               current.revision == expected.revision,
               current.leaseOwner == runnerID,
               current.leaseToken == expected.leaseToken else {
@@ -760,12 +818,30 @@ public actor DatabasePersistentJobRunner {
             maximum
         )
         var value = UInt64(policy.initialBackoffMilliseconds)
+        guard value > 0 else { return 0 }
         var remainingDoublings = currentSliceAttempt > 0
             ? currentSliceAttempt - 1
             : 0
         while remainingDoublings > 0,
               value < UInt64(configuredMaximum) {
             value = min(value * 2, UInt64(configuredMaximum))
+            remainingDoublings -= 1
+        }
+        return UInt32(value)
+    }
+
+    private static func unsuccessfulOutcomeCommitBackoffMilliseconds(
+        initial: UInt32,
+        commitAttempt: UInt64,
+        maximum: UInt32
+    ) -> UInt32 {
+        var value = UInt64(initial)
+        var remainingDoublings = commitAttempt > 0
+            ? commitAttempt - 1
+            : 0
+        while remainingDoublings > 0,
+              value < UInt64(maximum) {
+            value = min(value * 2, UInt64(maximum))
             remainingDoublings -= 1
         }
         return UInt32(value)
